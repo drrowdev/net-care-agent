@@ -65,6 +65,28 @@ respect it as a hard constraint:
 3. You can mark questions as **asked** during or after the appointment.
 4. Manual questions can be added with **Add question** at any time.
 
+## 5a. Log a symptom
+
+In the sidebar (below **Active alerts**) there is a **Symptoms** block.
+Use it to record any patient-reported symptom or side effect — nausea
+after lanreotide, persistent fatigue, mild diarrhea, etc.
+
+1. Type the symptom name (e.g. *nausea*).
+2. Pick a severity 1–5 (1 = mild, 5 = severe).
+3. Optionally add a short note.
+4. Click **+**. The entry is saved with `source="manual"` and today's date.
+
+When the intake agent processes a doctor's note that mentions a
+patient-reported symptom (e.g. *"patient reports grade-2 diarrhea since
+starting lanreotide"*) it logs the symptom automatically with
+`source="ai"`. AI-captured entries get a small `AI` tag in the list.
+Same-day same-name entries are deduped so re-feeding a document does
+not double-log.
+
+All downstream agents read the recent-symptoms block in the patient
+summary, so a fresh digest will surface side-effect-management
+literature if the orchestrator decides the symptoms warrant it.
+
 ## 6. Chat with the record
 
 UI → **✦ Ask Claude** in the header. Free-form conversation grounded in the

@@ -76,6 +76,23 @@
 
   <div class="section-head">Active alerts</div>
   <div id="alerts-list"></div>
+
+  <div class="section-head">Symptoms</div>
+  <div class="symptom-add-row">
+    <input id="sym-name" placeholder="Symptom (e.g. nausea)" maxlength="60">
+    <select id="sym-sev" title="Severity 1=mild .. 5=severe">
+      <option value="">sev</option>
+      <option value="1">1</option>
+      <option value="2">2</option>
+      <option value="3">3</option>
+      <option value="4">4</option>
+      <option value="5">5</option>
+    </select>
+    <button onclick="addSymptom()" title="Log symptom">+</button>
+  </div>
+  <input id="sym-note" placeholder="optional note" maxlength="200"
+         onkeydown="if(event.key==='Enter')addSymptom()">
+  <div id="symptoms-list"></div>
 </aside>
 
 <!-- ── Main ── -->

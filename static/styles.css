@@ -1209,3 +1209,99 @@
   .chat-bubble.assistant { background:var(--bg2);color:var(--text0);border-radius:10px 10px 10px 2px;border:0.5px solid var(--border); }
   .chat-bubble.thinking { color:var(--text2);font-style:italic; }
   .chat-time { font-size:10px;color:var(--text2);padding:0 4px; }
+
+
+  /* ── Symptoms (sidebar block, R2) ─────────────────────────────────── */
+  .symptom-add-row {
+    display: flex;
+    gap: 6px;
+    padding: 6px 12px 4px;
+  }
+  .symptom-add-row input[type=text],
+  .symptom-add-row input:not([type]),
+  .symptom-add-row select,
+  #sym-note {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--text1);
+    font-family: var(--sans);
+    font-size: 11px;
+    padding: 4px 8px;
+    outline: none;
+  }
+  .symptom-add-row input { flex: 1; }
+  .symptom-add-row select { width: 50px; }
+  .symptom-add-row button {
+    background: var(--bg2);
+    border: 1px solid var(--border2);
+    border-radius: 3px;
+    color: var(--text1);
+    cursor: pointer;
+    font-size: 13px;
+    padding: 4px 10px;
+  }
+  .symptom-add-row button:hover { background: var(--accent-dim); color: var(--accent); }
+  #sym-note { width: calc(100% - 24px); margin: 0 12px 6px; }
+  #symptoms-list { padding: 0 12px 12px; max-height: 260px; overflow-y: auto; }
+  .sym-empty { font-size: 11px; color: var(--text2); padding: 6px 0; }
+  .sym-row {
+    padding: 6px 0;
+    border-bottom: 0.5px solid var(--border);
+    font-size: 11px;
+  }
+  .sym-row:last-child { border-bottom: 0; }
+  .sym-head { display: flex; align-items: center; gap: 6px; }
+  .sym-date { font-family: var(--mono); color: var(--text2); font-size: 10px; }
+  .sym-name { color: var(--text0); flex: 1; }
+  .sym-sev {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    font-size: 10px;
+    font-weight: 600;
+    color: white;
+  }
+  .sym-sev.sev-1 { background: #7ea25c; }
+  .sym-sev.sev-2 { background: #b8a647; }
+  .sym-sev.sev-3 { background: var(--amber); }
+  .sym-sev.sev-4 { background: #c2632c; }
+  .sym-sev.sev-5 { background: var(--red); }
+  .sym-ai {
+    background: var(--bg3);
+    border: 0.5px solid var(--border);
+    border-radius: 3px;
+    padding: 1px 4px;
+    font-size: 9px;
+    font-weight: 600;
+    color: var(--text1);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .sym-del {
+    background: none;
+    border: none;
+    color: var(--text2);
+    cursor: pointer;
+    font-size: 11px;
+    padding: 0 2px;
+    opacity: 0.4;
+  }
+  .sym-del:hover { opacity: 1; color: var(--red); }
+  .sym-note {
+    color: var(--text1);
+    font-size: 11px;
+    margin-top: 3px;
+    margin-left: 22px;
+    line-height: 1.4;
+  }
+  .sym-related {
+    display: block;
+    color: var(--text2);
+    font-size: 10px;
+    margin-top: 2px;
+    margin-left: 22px;
+    font-style: italic;
+  }

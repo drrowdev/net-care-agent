@@ -489,6 +489,75 @@
     await loadJudgments();
   }
 
+  // ── Symptoms ─────────────────────────────────────────────────────────────
+  async function loadSymptoms() {
+    try {
+      const r = await fetch('/api/symptoms');
+      const list = await r.json();
+      renderSymptoms(list);
+    } catch (e) { console.error('Symptoms error:', e); }
+  }
+
+  function renderSymptoms(symptoms) {
+    const wrap = document.getElementById('symptoms-list');
+    if (!wrap) return;
+    if (!symptoms.length) {
+      wrap.innerHTML = '<div class="sym-empty">No symptoms logged.</div>';
+      return;
+    }
+    wrap.innerHTML = symptoms.slice(0, 30).map(s => {
+      const sev = s.severity ? `<span class="sym-sev sev-${s.severity}">${s.severity}</span>` : '';
+      const src = s.source === 'ai' ? '<span class="sym-ai" title="auto-captured by intake">AI</span>' : '';
+      const note = s.note ? `<div class="sym-note">${escHtml(s.note)}</div>` : '';
+      const related = s.related_treatment ? `<span class="sym-related">↳ ${escHtml(s.related_treatment)}</span>` : '';
+      return `
+        <div class="sym-row" data-id="${s.id}">
+          <div class="sym-head">
+            <span class="sym-date">${s.date || ''}</span>
+            ${sev}
+            <span class="sym-name">${escHtml(s.symptom || '')}</span>
+            ${src}
+            <button class="sym-del" onclick="deleteSymptom('${s.id}')" title="Delete">✕</button>
+          </div>
+          ${note}
+          ${related}
+        </div>`;
+    }).join('');
+  }
+
+  async function addSymptom() {
+    const name = document.getElementById('sym-name').value.trim();
+    if (!name) return;
+    const sev = document.getElementById('sym-sev').value;
+    const note = document.getElementById('sym-note').value.trim();
+    try {
+      const r = await fetch('/api/symptoms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          symptom: name,
+          severity: sev ? parseInt(sev, 10) : null,
+          note: note || null,
+        }),
+      });
+      if (!r.ok) {
+        const err = await r.json();
+        alert(err.error || 'Failed to log symptom');
+        return;
+      }
+      document.getElementById('sym-name').value = '';
+      document.getElementById('sym-sev').value = '';
+      document.getElementById('sym-note').value = '';
+      await loadSymptoms();
+    } catch (e) { console.error('Add symptom error:', e); }
+  }
+
+  async function deleteSymptom(sid) {
+    if (!confirm('Delete this symptom entry?')) return;
+    await fetch(`/api/symptoms/${sid}`, { method: 'DELETE' });
+    await loadSymptoms();
+  }
+
   async function loadSummary() {
     try {
       const r = await fetch('/api/summary');
@@ -1476,5 +1545,6 @@
   loadSummary();
   loadQuestions();
   loadJudgments();
+  loadSymptoms();
   startPolling();
   if (isMobile()) switchMobPanel('summary');

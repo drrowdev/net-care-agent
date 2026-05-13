@@ -8,6 +8,10 @@ incremented when something user-visible or operationally meaningful changes.
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.8.0] — 2026-05-13
+
 ### Added
 - `SECURITY.md` describing the GitHub Security Advisory reporting flow,
   scope, and the hardening already in place.

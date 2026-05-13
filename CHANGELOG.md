@@ -14,6 +14,23 @@ incremented when something user-visible or operationally meaningful changes.
 - `.github/pull_request_template.md` with a doc-update checklist (from
   the `AGENTS.md` policy) and a public-repo safety checklist (no PHI,
   no infra names, no personal email).
+- **Tests for the eight previously-uncovered agent modules**:
+  `chat`, `classify`, `exec_summary`, `intake` (already had treatment-
+  matching tests; this adds end-to-end and synonym pinning), `judgments`,
+  `llm`, `orchestrator`, `questions`. The suite grows from 61 → 103
+  tests, all under 10 s, no network, no API key.
+- `tests/_llm_fake.py` shared helper for the in-memory LLM stub. Uses
+  a context-manager `patch_llm` that installs a per-call handler on the
+  live `agent.client` instance and restores the previous value on exit.
+
+### Fixed
+- `tests/conftest.py::agent` fixture now also pops every `agent.*`
+  submodule before re-importing, so tests that imported `agent.X` at
+  module top during pytest collection (which races the
+  `_stub_anthropic` session fixture) get a fresh fake LLM client. The
+  previous behaviour silently let a real Anthropic client persist
+  across the stub, causing 401s in tests that rely on canned LLM
+  responses.
 
 ### Changed
 - **Chat now sees the full clinical record, not just recent slices.**

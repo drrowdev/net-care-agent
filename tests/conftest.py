@@ -83,13 +83,22 @@ def agent(_isolated_data_dir, monkeypatch):
     """Import (or re-import) net_agent with a per-test profile path.
 
     Yields the imported module. Each test starts with no profile file.
+
+    Pops both ``net_agent`` and every ``agent.*`` submodule so the next
+    import path constructs a fresh ``agent.llm.client`` against the
+    (already-stubbed) ``anthropic.Anthropic`` class. Without this, tests
+    that imported ``agent.X`` at module-top during pytest collection
+    would still hold a reference to a real Anthropic client created
+    before the stub fixture ran.
     """
     profile_path = _isolated_data_dir / "patient_profile.json"
     if profile_path.exists():
         profile_path.unlink()
 
-    # Force a fresh import so module-level constants pick up DATA_DIR.
-    sys.modules.pop("net_agent", None)
+    for mod_name in list(sys.modules):
+        if mod_name == "net_agent" or mod_name == "agent" or mod_name.startswith("agent."):
+            del sys.modules[mod_name]
+
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     import net_agent as ag  # type: ignore  # noqa: E402
 

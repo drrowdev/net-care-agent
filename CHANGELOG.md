@@ -8,6 +8,10 @@ incremented when something user-visible or operationally meaningful changes.
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.7.0] — 2026-05-13
+
 ### Changed
 - **Patient demographics are now read from the profile, not hard-coded.** Five
   agent modules (`chat`, `orchestrator`, `exec_summary`, `classify`, `questions`)

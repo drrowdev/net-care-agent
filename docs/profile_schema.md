@@ -20,6 +20,7 @@ All sub-models accept **extra** fields (forward-compat) and treat every document
   'alerts': list[Alert],
   'treatments_classified': list[TreatmentClassified],
   'clinical_judgments': list[ClinicalJudgment],
+  'symptoms': list[Symptom],
   'questions': list[Question],
   'executive_summary': ExecutiveSummary | None,
 }
@@ -143,6 +144,24 @@ Hard constraints captured from oncologist consultations.
 | `date` | `str \| None` |  |
 | `category` | `'constraint' \| 'preference' \| 'outcome' \| 'context' \| null` |  |
 | `text` | `str \| None` |  |
+| `source` | `'manual' \| 'ai' \| null` |  |
+
+## `symptoms[]`
+
+Patient-reported symptom or side effect.
+
+    Bridges the gap between objective biomarkers and the oncologist's
+    consultation notes — the day-to-day experiential data that informs
+    appointment prep.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `str \| None` |  |
+| `date` | `str \| None` | YYYY-MM-DD |
+| `symptom` | `str \| None` |  |
+| `severity` | `int \| None` | 1=mild .. 5=severe |
+| `note` | `str \| None` |  |
+| `related_treatment` | `str \| None` | Optional link to a treatment name in current_treatments |
 | `source` | `'manual' \| 'ai' \| null` |  |
 
 ## `questions[]`

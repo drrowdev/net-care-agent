@@ -60,6 +60,12 @@ D) ALERTS (flag only what is genuinely actionable)
    - Only call flag_alert for findings that require action within 2 weeks
    - Include specific action text, not just "discuss with doctor"
 
+E) SIDE-EFFECT MANAGEMENT (run only when recent symptoms are present)
+   - If the patient summary shows recent symptoms that match known
+     side-effect profiles of any active treatment, run one targeted
+     literature search for management strategies (e.g. "lanreotide-induced
+     diarrhea management"). Skip otherwise.
+
 ━━━ STEP 4: REPORT STRUCTURE ━━━
 Write your final report following this structure exactly:
 

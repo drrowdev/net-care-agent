@@ -22,6 +22,33 @@ incremented when something user-visible or operationally meaningful changes.
 - `tests/_llm_fake.py` shared helper for the in-memory LLM stub. Uses
   a context-manager `patch_llm` that installs a per-call handler on the
   live `agent.client` instance and restores the previous value on exit.
+- **Symptoms log (backend).** First-class `symptoms[]` array on the
+  patient profile, bridging objective biomarkers and oncologist
+  judgments with the caregiver's day-to-day record of how the patient
+  feels.
+  - New `Symptom` pydantic model: `id`, `date`, `symptom`,
+    `severity` (1–5), `note`, `related_treatment`, `source` (`manual`
+    or `ai`). Extras allowed.
+  - The intake agent extracts patient-reported symptoms when documents
+    mention them (e.g. "patient reports grade-2 diarrhea since starting
+    lanreotide") and appends them to the profile with `source="ai"`.
+    Same-day same-name entries are deduped to prevent re-feeding a
+    document from double-logging.
+  - The orchestrator now runs one targeted side-effect-management
+    literature search when active treatments correlate with recent
+    symptoms.
+  - `get_patient_summary` shows the five most-recent symptoms, so every
+    downstream agent (orchestrator, exec_summary, chat, questions) sees
+    them automatically.
+  - The chat prompt includes a SYMPTOMS section listing every recorded
+    symptom — Ask Claude can now answer "when did the nausea start?"
+    or "is the fatigue getting worse?".
+  - REST API: `GET /api/symptoms`, `POST /api/symptoms`,
+    `PATCH /api/symptoms/<sid>`, `DELETE /api/symptoms/<sid>`.
+  - `tests/test_symptoms.py` (7 tests): schema validation including
+    out-of-range severity, default-profile shape, intake auto-capture
+    round-trip, `_persist_symptoms` dedup invariants, patient-summary
+    surfacing.
 
 ### Fixed
 - `tests/conftest.py::agent` fixture now also pops every `agent.*`
@@ -46,6 +73,8 @@ incremented when something user-visible or operationally meaningful changes.
   DOCUMENTS / BIOMARKERS / IMAGING sections when asked about specific
   past content, and `docs/operating_manual.md §6` is updated to describe
   the broadened search behaviour.
+- `docs/profile_schema.md` regenerated to document the new
+  `symptoms[]` list.
 
 ## [0.7.0] — 2026-05-13
 

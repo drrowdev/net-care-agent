@@ -96,6 +96,23 @@ def build_chat_system(profile: dict) -> str:
             lines.append(line)
         lines.append("")
 
+    symptoms = profile.get("symptoms", [])
+    if symptoms:
+        lines.append(f"── SYMPTOMS ({len(symptoms)} entries, most recent first) ──")
+        for s in sorted(symptoms, key=lambda x: x.get("date", ""), reverse=True):
+            sev = s.get("severity")
+            sev_str = f" [sev {sev}/5]" if sev else ""
+            src = s.get("source")
+            src_str = " (ai)" if src == "ai" else ""
+            related = s.get("related_treatment")
+            related_str = f" — related to {related}" if related else ""
+            note = (s.get("note") or "").strip()
+            note_str = f"  · note: {note}" if note else ""
+            lines.append(
+                f"{s.get('date', '')} {s.get('symptom', '?')}{sev_str}{src_str}{related_str}{note_str}"
+            )
+        lines.append("")
+
     trials = profile.get("trials_tracked", [])
     if trials:
         lines.append(f"── TRACKED TRIALS ({len(trials)}) ──")

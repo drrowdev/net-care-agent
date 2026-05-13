@@ -39,6 +39,7 @@ AlertPriority = Literal["urgent", "high", "medium", "low"]
 TreatmentCategory = Literal["active", "planned", "completed"]
 JudgmentCategory = Literal["constraint", "preference", "outcome", "context"]
 JudgmentSource = Literal["manual", "ai"]
+SymptomSource = Literal["manual", "ai"]
 QuestionCategory = Literal["Treatment", "Diagnostics", "Symptoms", "Trials", "Monitoring", "Other"]
 QuestionPriority = Literal["urgent", "high", "medium"]
 QuestionSource = Literal["ai", "manual"]
@@ -174,6 +175,25 @@ class ClinicalJudgment(_Lenient):
     source: JudgmentSource | None = None
 
 
+class Symptom(_Lenient):
+    """Patient-reported symptom or side effect.
+
+    Bridges the gap between objective biomarkers and the oncologist's
+    consultation notes — the day-to-day experiential data that informs
+    appointment prep.
+    """
+
+    id: str | None = None
+    date: str | None = Field(None, description="YYYY-MM-DD")
+    symptom: str | None = None
+    severity: int | None = Field(None, ge=1, le=5, description="1=mild .. 5=severe")
+    note: str | None = None
+    related_treatment: str | None = Field(
+        None, description="Optional link to a treatment name in current_treatments"
+    )
+    source: SymptomSource | None = None
+
+
 class Question(_Lenient):
     id: str | None = None
     text: str | None = None
@@ -215,6 +235,7 @@ class PatientProfile(_Lenient):
     alerts: list[Alert] = Field(default_factory=list)
     treatments_classified: list[TreatmentClassified] = Field(default_factory=list)
     clinical_judgments: list[ClinicalJudgment] = Field(default_factory=list)
+    symptoms: list[Symptom] = Field(default_factory=list)
     questions: list[Question] = Field(default_factory=list)
     executive_summary: ExecutiveSummary | None = None
 
@@ -281,6 +302,7 @@ def render_schema_markdown() -> str:
         ("alerts[]", Alert),
         ("treatments_classified[]", TreatmentClassified),
         ("clinical_judgments[]", ClinicalJudgment),
+        ("symptoms[]", Symptom),
         ("questions[]", Question),
         ("appointments[]", Appointment),
         ("executive_summary", ExecutiveSummary),
@@ -371,6 +393,7 @@ __all__ = [
     "Patient",
     "PatientProfile",
     "Question",
+    "Symptom",
     "TrialTracked",
     "TreatmentClassified",
     "normalize_profile",

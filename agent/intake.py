@@ -39,10 +39,20 @@ liver enzymes, kidney function, CBC, hemoglobin, radiation dose metrics).
   "ki67_update": number_or_null,
   "sstr_status_update": "positive|negative|null",
   "sstr_score_update": number_or_null,
+  "symptoms_reported": [
+    {{"symptom": "name", "severity": 1-5_or_null, "note": "string_or_null",
+     "related_treatment": "treatment_name_or_null"}}
+  ],
   "key_findings": ["3-5 most clinically important findings"],
   "suggested_workflows": ["pubmed_search", "trial_search", "biomarker_analysis", "appointment_prep"],
   "workflow_rationale": "brief explanation of why these workflows are recommended"
 }}
+
+Notes on symptoms_reported: extract ONLY explicitly-described patient symptoms
+or side effects (e.g. "patient reports nausea grade 2 since starting lanreotide").
+Do NOT invent symptoms from biomarker values, imaging findings, or the
+clinician's own conclusions — those belong in key_findings. severity is 1=mild
+through 5=severe; leave null if the source text doesn't specify.
 
 No markdown, no prose outside the JSON object."""
 
@@ -82,6 +92,35 @@ def _treatment_similarity(a: str, b: str) -> float:
     intersection = words_a & words_b
     union = words_a | words_b
     return len(intersection) / len(union)
+
+
+def _persist_symptoms(profile: dict, reported: list, doc_date: str) -> None:
+    """Append AI-extracted symptoms to profile["symptoms"], deduping against
+    same-day same-name entries so re-feeding a document doesn't double-log."""
+    profile.setdefault("symptoms", [])
+    existing = profile["symptoms"]
+    for s in reported:
+        name = (s.get("symptom") or "").strip()
+        if not name:
+            continue
+        name_lower = name.lower()
+        dup = any(
+            (e.get("symptom") or "").lower() == name_lower and (e.get("date") or "") == doc_date
+            for e in existing
+        )
+        if dup:
+            continue
+        existing.append(
+            {
+                "id": f"sym_ai_{doc_date.replace('-', '')}_{len(existing)}",
+                "date": doc_date,
+                "symptom": name,
+                "severity": s.get("severity"),
+                "note": (s.get("note") or "").strip() or None,
+                "related_treatment": (s.get("related_treatment") or "").strip() or None,
+                "source": "ai",
+            }
+        )
 
 
 def run_intake(text: str, profile: dict) -> tuple[dict, dict]:
@@ -144,6 +183,8 @@ def run_intake(text: str, profile: dict) -> tuple[dict, dict]:
 
     if extracted.get("sstr_score_update") is not None:
         profile["patient"]["sstr_score"] = extracted["sstr_score_update"]
+
+    _persist_symptoms(profile, extracted.get("symptoms_reported") or [], doc_date)
 
     for tx in extracted.get("treatment_changes", []):
         tx_lower = tx.lower().strip()

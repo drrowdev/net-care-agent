@@ -635,6 +635,89 @@ def api_judgments_delete(jid):
     return jsonify({"ok": True})
 
 
+# ── symptoms ─────────────────────────────────────────────────────────────────
+@app.route("/api/symptoms")
+def api_symptoms():
+    profile = agent.load_profile()
+    symptoms = sorted(
+        profile.get("symptoms", []),
+        key=lambda x: x.get("date", ""),
+        reverse=True,
+    )
+    return jsonify(symptoms)
+
+
+@app.route("/api/symptoms", methods=["POST"])
+def api_symptoms_add():
+    data = request.get_json(force=True) or {}
+    name = (data.get("symptom") or "").strip()
+    if not name:
+        return jsonify({"error": "No symptom name"}), 400
+    severity = data.get("severity")
+    try:
+        severity = int(severity) if severity is not None else None
+    except (TypeError, ValueError):
+        severity = None
+    if severity is not None and not (1 <= severity <= 5):
+        return jsonify({"error": "Severity must be 1-5"}), 400
+    profile = agent.load_profile()
+    today = datetime.date.today().isoformat()
+    symptom = {
+        "id"               : f"sym_manual_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}",
+        "date"             : (data.get("date") or today),
+        "symptom"          : name,
+        "severity"         : severity,
+        "note"             : (data.get("note") or "").strip() or None,
+        "related_treatment": (data.get("related_treatment") or "").strip() or None,
+        "source"           : "manual",
+    }
+    profile.setdefault("symptoms", []).insert(0, symptom)
+    agent.save_profile(profile)
+    return jsonify(symptom)
+
+
+@app.route("/api/symptoms/<sid>", methods=["PATCH"])
+def api_symptoms_edit(sid):
+    data = request.get_json(force=True) or {}
+    profile = agent.load_profile()
+    for s in profile.get("symptoms", []):
+        if s.get("id") == sid:
+            if "symptom" in data:
+                name = (data.get("symptom") or "").strip()
+                if not name:
+                    return jsonify({"error": "Symptom name cannot be empty"}), 400
+                s["symptom"] = name
+            if "severity" in data:
+                sev = data.get("severity")
+                try:
+                    sev = int(sev) if sev not in (None, "") else None
+                except (TypeError, ValueError):
+                    return jsonify({"error": "Severity must be 1-5 or null"}), 400
+                if sev is not None and not (1 <= sev <= 5):
+                    return jsonify({"error": "Severity must be 1-5"}), 400
+                s["severity"] = sev
+            if "note" in data:
+                s["note"] = (data.get("note") or "").strip() or None
+            if "related_treatment" in data:
+                s["related_treatment"] = (data.get("related_treatment") or "").strip() or None
+            if "date" in data and data["date"]:
+                s["date"] = data["date"]
+            agent.save_profile(profile)
+            return jsonify(s)
+    return jsonify({"error": "Not found"}), 404
+
+
+@app.route("/api/symptoms/<sid>", methods=["DELETE"])
+def api_symptoms_delete(sid):
+    profile = agent.load_profile()
+    profile["symptoms"] = [
+        s for s in profile.get("symptoms", [])
+        if s.get("id") != sid
+    ]
+    agent.save_profile(profile)
+    return jsonify({"ok": True})
+
+
 @app.route("/api/summary/dismiss-action/<int:idx>", methods=["POST"])
 def api_dismiss_action(idx):
     data = request.get_json(force=True) or {}

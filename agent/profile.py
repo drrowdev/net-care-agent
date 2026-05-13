@@ -38,6 +38,7 @@ DEFAULT_PROFILE: dict = {
     "trials_tracked": [],
     "literature_watched": [],
     "alerts": [],
+    "symptoms": [],
 }
 
 
@@ -116,6 +117,22 @@ def get_patient_summary(profile: dict) -> str:
     if docs:
         for d in docs:
             lines.append(f"  [{d.get('date','')}] {d.get('type','?')}: {d.get('summary','')[:100]}")
+    else:
+        lines.append("  None recorded")
+
+    symptoms = sorted(profile.get("symptoms", []), key=lambda x: x.get("date", ""), reverse=True)[
+        :5
+    ]
+    lines += ["", "─── Recent symptoms ───"]
+    if symptoms:
+        for s in symptoms:
+            sev = s.get("severity")
+            sev_str = f" [sev {sev}/5]" if sev else ""
+            src = s.get("source", "")
+            src_str = " (ai)" if src == "ai" else ""
+            note = s.get("note", "")
+            note_str = f" — {note[:60]}" if note else ""
+            lines.append(f"  {s.get('date','')} {s.get('symptom','?')}{sev_str}{src_str}{note_str}")
     else:
         lines.append("  None recorded")
 

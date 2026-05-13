@@ -1,0 +1,52 @@
+{
+  "totalCount": 2,
+  "studies": [
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT09000001",
+          "briefTitle": "Ac-225 DOTATATE in NET patients refractory to Lu-177"
+        },
+        "statusModule": {
+          "overallStatus": "RECRUITING",
+          "phase": "PHASE2"
+        },
+        "descriptionModule": {
+          "briefSummary": "Alpha-PRRT with Ac-225 in metastatic neuroendocrine tumors after Lu-177 progression."
+        },
+        "eligibilityModule": {
+          "eligibilityCriteria": "Histologically confirmed metastatic NET, prior Lu-177 PRRT, ECOG 0-2, adequate renal function."
+        },
+        "contactsLocationsModule": {
+          "locations": [
+            {"country": "Germany", "city": "Berlin"},
+            {"country": "Germany", "city": "Bad Berka"}
+          ]
+        }
+      }
+    },
+    {
+      "protocolSection": {
+        "identificationModule": {
+          "nctId": "NCT09000099",
+          "briefTitle": "Pembrolizumab in metastatic melanoma"
+        },
+        "statusModule": {
+          "overallStatus": "RECRUITING",
+          "phase": "PHASE3"
+        },
+        "descriptionModule": {
+          "briefSummary": "Anti-PD-1 therapy in advanced melanoma."
+        },
+        "eligibilityModule": {
+          "eligibilityCriteria": "Stage IV melanoma."
+        },
+        "contactsLocationsModule": {
+          "locations": [
+            {"country": "United States", "city": "Boston"}
+          ]
+        }
+      }
+    }
+  ]
+}

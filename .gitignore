@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.Python
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Local data (patient profile, jobs, reports — never commit)
+data/
+*.json.bak
+patient_profile.json
+jobs.json
+reports/
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Editor / IDE state (may contain deployment-target paths)
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Office artifacts (may contain non-public operator documentation)
+*.docx
+*.doc
+*.xlsx
+*.xls
+
+# Logs
+*.log
+logs/
+
+# OS
+Thumbs.db
+
+# Azure
+.azure/
+
+Scratchpad-data/
+venv311/
+.venv/
+.venv311/

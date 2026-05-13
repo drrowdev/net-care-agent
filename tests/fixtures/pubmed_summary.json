@@ -1,0 +1,31 @@
+{
+  "result": {
+    "uids": ["40000001", "40000002", "40000003"],
+    "40000001": {
+      "uid": "40000001",
+      "title": "PRRT with Lu-177-DOTATATE in metastatic neuroendocrine tumors",
+      "source": "Journal of Nuclear Medicine",
+      "pubdate": "2025 Mar",
+      "authors": [
+        {"name": "Smith J"},
+        {"name": "Park K"},
+        {"name": "Lee M"},
+        {"name": "Doe A"}
+      ]
+    },
+    "40000002": {
+      "uid": "40000002",
+      "title": "Surufatinib in advanced neuroendocrine carcinoma",
+      "source": "Lancet Oncology",
+      "pubdate": "2024 Nov",
+      "authors": [{"name": "Chen Y"}]
+    },
+    "40000003": {
+      "uid": "40000003",
+      "title": "Glioblastoma immunotherapy update",
+      "source": "Neuro-Oncology",
+      "pubdate": "2025 Jan",
+      "authors": [{"name": "Foo B"}]
+    }
+  }
+}

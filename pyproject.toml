@@ -1,0 +1,45 @@
+[project]
+name = "net-care-agent"
+version = "0.1.0"
+description = "NET/Care Research Agent — multi-agent AI system for monitoring NET cancer treatment options"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "anthropic>=0.40",
+    "flask>=3.0",
+    "gunicorn>=22.0",
+    "requests>=2.32",
+    "pdfplumber>=0.11",
+    "python-dotenv>=1.0",
+    "pydantic>=2.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-mock>=3.14",
+    "responses>=0.25",
+    "freezegun>=1.5",
+    "ruff>=0.7",
+]
+
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["app", "net_agent"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]  # line length handled by formatter

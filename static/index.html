@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>NET Care Agent</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<!-- ── Header ── -->
+<header>
+  <div class="logo">NET<span>/</span>Care <span>—</span> Research Agent</div>
+  <div class="header-right">
+    <div class="pulse-dot" id="pulse-dot"></div>
+    <div class="status-pill" id="header-status">Idle</div>
+    <button class="btn-digest" id="btn-feed-toggle" onclick="toggleFeedPopover()" title="Feed a document or paste text">📄 Feed</button>
+    <button class="btn-digest" id="btn-digest" onclick="runDigest()">↻ Run digest</button>
+    <button class="btn-digest" onclick="toggleChat()" style="border-color:var(--blue);color:var(--blue)" title="Chat with Claude about this patient">✦ Ask Claude</button>
+  </div>
+</header>
+
+<!-- ── Feed popover ── -->
+<div class="feed-backdrop" id="feed-backdrop" onclick="toggleFeedPopover(false)"></div>
+<div class="feed-popover" id="feed-popover" role="dialog" aria-label="Feed document">
+  <div class="feed-popover-head">
+    <span>Feed document</span>
+    <button class="feed-popover-close" onclick="toggleFeedPopover(false)" aria-label="Close">×</button>
+  </div>
+  <div class="feed-tabs">
+    <button class="tab-btn active" onclick="switchTab('text')">Paste text</button>
+    <button class="tab-btn" onclick="switchTab('file')">Upload file</button>
+  </div>
+  <div class="text-input-wrap visible" id="tab-text">
+    <textarea id="feed-textarea" placeholder="Paste lab result, imaging report, doctor notes, research abstract, or any clinical text…" oninput="updateCharCount()"></textarea>
+    <div class="feed-footer">
+      <div class="char-count" id="char-count">0 chars</div>
+      <button class="btn-feed" id="btn-feed" onclick="feedText()">→ Process</button>
+    </div>
+  </div>
+  <div class="drop-zone" id="tab-file"
+       ondragover="event.preventDefault();this.classList.add('drag-over')"
+       ondragleave="this.classList.remove('drag-over')"
+       ondrop="handleDrop(event)"
+       onclick="document.getElementById('file-input').click()">
+    <div class="drop-zone-text">Drop a .txt or .pdf* file here</div>
+    <div class="drop-zone-sub">or click to browse</div>
+    <div class="drop-zone-sub" style="margin-top:8px;font-size:10px;color:var(--text2)">*PDF requires pdfplumber installed</div>
+    <input type="file" id="file-input" accept=".txt,.text,.pdf,.md" onchange="handleFileSelect(event)">
+  </div>
+</div>
+
+<!-- ── Sidebar ── -->
+<aside id="sidebar">
+  <div class="section-head">Patient</div>
+  <div class="patient-block" id="patient-block">
+    <div class="patient-dx" id="patient-dx">Loading…</div>
+    <div class="patient-meta" id="patient-meta"></div>
+  </div>
+
+  <div class="section-head">Treatments</div>
+  <div class="tx-list" id="tx-list"></div>
+
+  <div class="section-head">Recent biomarkers</div>
+  <div style="display:flex;flex-direction:column;max-height:320px;border-bottom:0.5px solid var(--border)">
+    <div style="padding:6px 12px 4px;flex-shrink:0">
+      <input id="bm-search" type="text" placeholder="Search biomarkers…"
+        oninput="filterBiomarkers()"
+        style="width:100%;background:var(--bg2);border:1px solid var(--border);border-radius:3px;
+               color:var(--text1);font-family:var(--mono);font-size:11px;padding:4px 8px;outline:none">
+    </div>
+    <div class="bm-list" id="bm-list" style="overflow-y:auto;flex:1"></div>
+  </div>
+
+  <div class="section-head">Active alerts</div>
+  <div id="alerts-list"></div>
+</aside>
+
+<!-- ── Main ── -->
+<main>
+  <div class="running-bar" id="running-bar"></div>
+
+  <!-- Executive Summary -->
+  <div class="summary-card" id="summary-card">
+    <div class="summary-toggle" onclick="toggleSummary()">
+      <div class="summary-toggle-left">
+        <span class="summary-caret open" id="summary-caret">▶</span>
+        <span class="summary-toggle-label">Executive Summary</span>
+        <span id="summary-status-inline"></span>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <button class="btn-digest" id="btn-gen-summary" onclick="event.stopPropagation();generateSummary()" style="font-size:10px;padding:3px 10px">↻ Refresh</button>
+        <span class="summary-updated" id="summary-updated"></span>
+      </div>
+    </div>
+    <div class="summary-body" id="summary-body">
+      <div class="summary-empty" id="summary-empty">
+        <div style="margin-bottom:10px">No summary generated yet.</div>
+        <button class="btn-digest" id="btn-gen-summary" onclick="generateSummary()">⊙ Generate summary</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="feed-area" style="display:none"></div>
+
+  <!-- Task log -->
+  <div class="log-area">
+    <div class="log-section-head">
+      <span>Activity log</span>
+      <span class="log-count" id="log-count">0 tasks</span>
+    </div>
+    <div id="task-list"></div>
+  </div>
+</main>
+
+<!-- ── Right panel ── -->
+<div class="panel collapsed" id="report-panel">
+  <div class="panel-head">
+    <span>Analysis</span>
+    <div style="display:flex;align-items:center;gap:8px">
+      <button class="panel-copy-btn" id="copy-btn" onclick="copyReport()">Copy</button>
+      <button class="modal-close" onclick="closePanel()" title="Close">✕</button>
+    </div>
+  </div>
+  <div class="panel-body" id="panel-body">
+    <div class="report-empty">
+      <div class="report-empty-icon">◈</div>
+      <div class="report-empty-text">Select a completed task<br>to view its analysis report</div>
+    </div>
+  </div>
+</div>
+
+<!-- Questions panel — always visible on desktop, separate from report panel -->
+<div id="desktop-q-panel" style="grid-area:panel;background:var(--bg1);border-left:0.5px solid var(--border);display:flex;flex-direction:column;overflow:hidden;position:relative;z-index:1">
+
+  <!-- Questions section — scrollable, takes remaining space -->
+  <div class="q-panel" style="border-top:none;flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden">
+    <div class="q-panel-head" onclick="toggleQuestions()" style="border-bottom:0.5px solid var(--border);flex-shrink:0">
+      <div class="q-panel-label">
+        <span id="q-caret">▶</span>
+        Kysymykset lääkärille
+        <span class="q-count-badge" id="q-count-badge">0</span>
+      </div>
+      <div class="q-panel-actions" onclick="event.stopPropagation()">
+        <button class="q-gen-btn" id="q-gen-btn" onclick="generateQuestions()">↻ Luo</button>
+      </div>
+    </div>
+    <div class="q-body hidden" id="q-body" style="flex:1;min-height:0;overflow-y:auto">
+      <div class="q-add-row">
+        <input class="q-add-input" id="q-add-input" placeholder="Lisää oma kysymys…" onkeydown="if(event.key==='Enter')addQuestion()">
+        <button class="q-add-btn" onclick="addQuestion()">+ Lisää</button>
+      </div>
+      <div id="q-list"><div class="q-empty">Ei kysymyksiä vielä. Click ↻ Luo or add your own.</div></div>
+    </div>
+  </div>
+
+  <!-- Clinical Notes — fixed 220px at bottom, always visible -->
+  <div style="height:220px;flex-shrink:0;border-top:0.5px solid var(--border);display:flex;flex-direction:column;overflow:hidden;background:var(--bg1)">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 14px 7px;border-bottom:0.5px solid var(--border);flex-shrink:0">
+      <span style="font-size:11px;font-weight:600;color:var(--text1)">Clinical notes</span>
+      <span style="font-size:10px;color:var(--text2)">feeds back into agent</span>
+    </div>
+    <div style="flex:1;min-height:0;overflow-y:auto;padding:0 14px">
+      <div id="judgments-list"></div>
+    </div>
+    <div style="padding:8px 14px;border-top:0.5px solid var(--border);display:flex;gap:6px;flex-shrink:0">
+      <select id="judgment-cat" style="font-size:11px;padding:4px 6px;border:0.5px solid var(--border);border-radius:4px;background:var(--bg1);color:var(--text1);cursor:pointer">
+        <option value="constraint">Constraint</option>
+        <option value="preference">Preference</option>
+        <option value="outcome">Outcome</option>
+        <option value="context" selected>Context</option>
+      </select>
+      <input id="judgment-input" placeholder="Add clinical note…" style="flex:1;font-size:12px;padding:4px 8px;border:0.5px solid var(--border);border-radius:4px;background:var(--bg1);color:var(--text0);outline:none" onkeydown="if(event.key==='Enter')addJudgment()">
+      <button onclick="addJudgment()" style="font-size:11px;padding:4px 10px;border:0.5px solid var(--border2);border-radius:4px;background:var(--bg1);color:var(--text1);cursor:pointer">+ Add</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Tutkimukset / Artikkelit Modal ── -->
+<div class="modal-overlay" id="modal-overlay" onclick="closeModal(event)">
+  <div class="modal">
+    <div class="modal-head">
+      <span class="modal-title" id="modal-title">Tutkimukset</span>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="modal-body">
+      <div class="modal-empty">Loading…</div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Mobile panels ── -->
+<div id="mob-summary" class="mob-panel active"></div>
+
+<div id="mob-feed" class="mob-panel">
+  <div class="feed-title" style="font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--text2);margin-bottom:12px">Feed document</div>
+  <div class="feed-tabs">
+    <button class="tab-btn active" onclick="switchTab('text')">Paste text</button>
+    <button class="tab-btn" onclick="switchTab('file')">Upload file</button>
+  </div>
+  <div class="text-input-wrap visible" id="mob-tab-text">
+    <textarea id="mob-feed-textarea" placeholder="Paste lab result, imaging report, doctor notes…" oninput="syncTextarea(this)"></textarea>
+    <div class="feed-footer">
+      <div class="char-count" id="mob-char-count">0 chars</div>
+      <button class="btn-feed" onclick="feedMobText()">→ Process</button>
+    </div>
+  </div>
+  <div class="log-area">
+    <div class="log-section-head"><span>Activity log</span><span class="log-count" id="mob-log-count"></span></div>
+    <div id="mob-task-list"></div>
+  </div>
+</div>
+
+<div id="mob-patient" class="mob-panel">
+  <div class="section-head">Patient</div>
+  <div class="patient-block" id="mob-patient-block">
+    <div class="patient-dx" id="mob-patient-dx">Loading…</div>
+    <div class="patient-meta" id="mob-patient-meta"></div>
+  </div>
+  <div class="section-head">Treatments</div>
+  <div class="tx-list" id="mob-tx-list"></div>
+  <div class="section-head">Recent biomarkers</div>
+  <div style="padding:6px 12px 4px">
+    <input id="mob-bm-search" type="text" placeholder="Search biomarkers…" oninput="filterBiomarkers()"
+      style="width:100%;background:var(--bg2);border:1px solid var(--border);border-radius:3px;
+             color:var(--text1);font-family:var(--mono);font-size:11px;padding:6px 8px;outline:none">
+  </div>
+  <div class="bm-list" id="mob-bm-list"></div>
+  <div class="section-head">Active alerts</div>
+  <div id="mob-alerts-list"></div>
+</div>
+
+<!-- Mobile analysis overlay -->
+<div id="mob-analysis">
+  <div class="mob-analysis-head">
+    <span>Analysis</span>
+    <div style="display:flex;gap:8px;align-items:center">
+      <button class="panel-copy-btn visible" id="mob-copy-btn" onclick="copyReport()" style="display:block">Copy</button>
+      <button class="modal-close" onclick="closeMobAnalysis()">✕</button>
+    </div>
+  </div>
+  <div class="mob-analysis-body" id="mob-panel-body">
+    <div class="report-empty">
+      <div class="report-empty-icon">◈</div>
+      <div class="report-empty-text">Select a task to view its report</div>
+    </div>
+  </div>
+</div>
+
+<!-- Bottom nav -->
+<nav class="mob-nav">
+  <button class="mob-nav-btn active" id="mobnav-summary" onclick="switchMobPanel('summary')">
+    <span class="mob-nav-icon">◈</span>Summary
+  </button>
+  <button class="mob-nav-btn" id="mobnav-feed" onclick="switchMobPanel('feed')">
+    <span class="mob-nav-icon">↑</span>Feed
+  </button>
+  <button class="mob-nav-btn" id="mobnav-questions" onclick="switchMobPanel('questions')">
+    <span class="mob-nav-icon">?</span>Questions
+  </button>
+  <button class="mob-nav-btn" id="mobnav-patient" onclick="switchMobPanel('patient')">
+    <span class="mob-nav-icon">♡</span>Patient
+  </button>
+</nav>
+
+<!-- Mobile questions panel -->
+<div id="mob-questions" class="mob-panel" style="overflow-y:auto;display:flex;flex-direction:column">
+  <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-bottom:0.5px solid var(--border);position:sticky;top:0;background:var(--bg1);z-index:5;flex-shrink:0">
+    <div style="font-size:12px;font-weight:600;color:var(--text1)">
+      Kysymykset lääkärille
+    </div>
+    <div style="display:flex;gap:6px;align-items:center">
+      <button class="q-gen-btn" id="mob-q-gen-btn" onclick="generateQuestions(true)">↻ Luo</button>
+    </div>
+  </div>
+  <div class="q-add-row" style="flex-shrink:0">
+    <input class="q-add-input" id="mob-q-add-input" placeholder="Lisää oma kysymys…" onkeydown="if(event.key==='Enter')addQuestion(true)">
+    <button class="q-add-btn" onclick="addQuestion(true)">+ Lisää</button>
+  </div>
+  <div id="mob-q-list" style="flex-shrink:0"><div class="q-empty">Ei kysymyksiä vielä.</div></div>
+
+  <!-- Clinical notes section — visible on mobile -->
+  <div style="border-top:0.5px solid var(--border);margin-top:8px;flex-shrink:0">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px 8px;border-bottom:0.5px solid var(--border)">
+      <span style="font-size:12px;font-weight:600;color:var(--text1)">Clinical notes</span>
+      <span style="font-size:10px;color:var(--text2)">feeds back into agent</span>
+    </div>
+    <div style="padding:0 16px">
+      <div id="mob-judgments-list"></div>
+    </div>
+    <div style="padding:10px 16px;border-top:0.5px solid var(--border);display:flex;gap:6px;flex-wrap:wrap">
+      <select id="mob-judgment-cat" style="font-size:12px;padding:6px 8px;border:0.5px solid var(--border);border-radius:6px;background:var(--bg1);color:var(--text1);cursor:pointer;flex-shrink:0">
+        <option value="constraint">Constraint</option>
+        <option value="preference">Preference</option>
+        <option value="outcome">Outcome</option>
+        <option value="context" selected>Context</option>
+      </select>
+      <input id="mob-judgment-input" placeholder="Add clinical note…" style="flex:1;min-width:120px;font-size:13px;padding:6px 10px;border:0.5px solid var(--border);border-radius:6px;background:var(--bg1);color:var(--text0);outline:none" onkeydown="if(event.key==='Enter')addMobJudgment()">
+      <button onclick="addMobJudgment()" style="font-size:12px;padding:6px 12px;border:0.5px solid var(--border2);border-radius:6px;background:var(--bg1);color:var(--text1);cursor:pointer;flex-shrink:0">+ Add</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Chat panel ── -->
+<div id="chat-panel" style="display:none;position:fixed;top:48px;right:0;width:400px;bottom:0;background:var(--bg1);border-left:0.5px solid var(--border);flex-direction:column;z-index:200;box-shadow:-4px 0 20px rgba(0,0,0,0.08)">
+  <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:0.5px solid var(--border);flex-shrink:0">
+    <div>
+      <div style="font-size:13px;font-weight:600;color:var(--text0)">Ask Claude</div>
+      <div style="font-size:11px;color:var(--text2);margin-top:1px">Grounded in patient record</div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <button onclick="clearChat()" style="font-size:11px;padding:3px 8px;border:0.5px solid var(--border);border-radius:4px;background:none;color:var(--text2);cursor:pointer">Clear</button>
+      <button onclick="toggleChat()" style="background:none;border:none;font-size:16px;color:var(--text2);cursor:pointer;padding:0">✕</button>
+    </div>
+  </div>
+  <div id="chat-messages" style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px">
+    <div style="font-size:12px;color:var(--text2);text-align:center;padding:20px 0">
+      Ask anything about the patient's data, research findings, or treatment options.
+      <div style="margin-top:12px;display:flex;flex-direction:column;gap:6px">
+        <button class="chat-suggestion" onclick="sendSuggestion(this)">What are the most urgent actions right now?</button>
+        <button class="chat-suggestion" onclick="sendSuggestion(this)">Summarise the biomarker trends over time</button>
+        <button class="chat-suggestion" onclick="sendSuggestion(this)">Why is PRRT still being considered given the renal concerns?</button>
+        <button class="chat-suggestion" onclick="sendSuggestion(this)">What do the tracked trials have in common?</button>
+      </div>
+    </div>
+  </div>
+  <div style="padding:12px 16px;border-top:0.5px solid var(--border);flex-shrink:0">
+    <div style="display:flex;gap:8px;align-items:flex-end">
+      <textarea id="chat-input" placeholder="Ask a question about the patient…" rows="2" style="flex:1;min-height:60px;max-height:120px;resize:vertical;font-size:13px;padding:8px 10px;border:0.5px solid var(--border);border-radius:6px;background:var(--bg2);color:var(--text0);outline:none;font-family:var(--sans);line-height:1.5" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}"></textarea>
+      <button onclick="sendChat()" id="chat-send-btn" style="background:var(--blue);border:none;color:#fff;font-size:13px;font-weight:500;padding:8px 14px;border-radius:6px;cursor:pointer;flex-shrink:0;height:60px">Send</button>
+    </div>
+    <div style="font-size:10px;color:var(--text2);margin-top:6px">Shift+Enter for new line · history kept for session</div>
+  </div>
+</div>
+
+<script defer src="/static/app.js"></script>
+</body>
+</html>

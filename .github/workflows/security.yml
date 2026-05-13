@@ -43,4 +43,4 @@ jobs:
           # in fork-originated PRs (GitHub redacts secrets in those),
           # in which case the script no-ops with a notice.
           SENSITIVE_PATTERNS: ${{ secrets.SENSITIVE_PATTERNS }}
-        run: python scripts/check_sensitive_patterns.py --all
+        run: python Scripts/check_sensitive_patterns.py --all

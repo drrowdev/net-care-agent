@@ -35,14 +35,14 @@ repos:
     hooks:
       - id: block-sensitive-staged
         name: Block sensitive patterns (staged content)
-        entry: python scripts/check_sensitive_patterns.py --staged
+        entry: python Scripts/check_sensitive_patterns.py --staged
         language: system
         pass_filenames: false
         stages: [pre-commit]
         always_run: true
       - id: block-sensitive-tree
         name: Block sensitive patterns (full tree, pre-push)
-        entry: python scripts/check_sensitive_patterns.py --all
+        entry: python Scripts/check_sensitive_patterns.py --all
         language: system
         pass_filenames: false
         stages: [pre-push]

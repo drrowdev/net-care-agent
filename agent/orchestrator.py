@@ -1,4 +1,5 @@
 """Orchestrator agentic loop."""
+
 from __future__ import annotations
 
 import json
@@ -157,11 +158,13 @@ def run_orchestrator(profile: dict, extracted: dict) -> str:
             if getattr(block, "type", None) == "tool_use":
                 print(f"   → {block.name}({json.dumps(block.input)[:70]}…)")
                 result = execute_tool(block.name, block.input, profile)
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": json.dumps(result, default=str),
-                })
+                tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": json.dumps(result, default=str),
+                    }
+                )
 
         if not tool_results:
             break
@@ -172,15 +175,22 @@ def run_orchestrator(profile: dict, extracted: dict) -> str:
     combined = "\n\n".join(report_parts).strip()
     if len(combined) < 300:
         print("  ⚙  Requesting explicit final synthesis...")
-        messages.append({"role": "user", "content": [{
-            "type": "text",
-            "text": (
-                "Based on all the research you have conducted above, write the complete "
-                "report now. Include: key literature findings with PMIDs, relevant clinical "
-                "trials with NCT IDs and eligibility notes, biomarker trend assessment, and "
-                "specific recommended actions. Be comprehensive and detailed."
-            ),
-        }]})
+        messages.append(
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Based on all the research you have conducted above, write the complete "
+                            "report now. Include: key literature findings with PMIDs, relevant clinical "
+                            "trials with NCT IDs and eligibility notes, biomarker trend assessment, and "
+                            "specific recommended actions. Be comprehensive and detailed."
+                        ),
+                    }
+                ],
+            }
+        )
         final_resp = client.messages.create(
             model=config.MODEL_ORCHESTRATOR,
             max_tokens=4096,

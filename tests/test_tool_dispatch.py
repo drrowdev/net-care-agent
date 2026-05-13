@@ -3,6 +3,7 @@
 Network calls (PubMed, ClinicalTrials.gov) are intercepted with the
 `responses` library to assert behaviour without external dependencies.
 """
+
 from __future__ import annotations
 
 import json
@@ -11,11 +12,15 @@ import responses
 
 # ─── flag_alert ──────────────────────────────────────────────────────────────
 
+
 def test_flag_alert_appends_to_profile(agent, empty_profile):
     result = agent.execute_tool(
         "flag_alert",
-        {"priority": "urgent", "message": "Renal function declining",
-         "action_required": "Hold PRRT cycle"},
+        {
+            "priority": "urgent",
+            "message": "Renal function declining",
+            "action_required": "Hold PRRT cycle",
+        },
         empty_profile,
     )
     assert result["status"] == "alert_flagged"
@@ -26,6 +31,7 @@ def test_flag_alert_appends_to_profile(agent, empty_profile):
 
 
 # ─── analyze_biomarker_trends ────────────────────────────────────────────────
+
 
 def test_dispatch_to_biomarker_trends(agent, empty_profile):
     empty_profile["biomarkers"] = [
@@ -41,6 +47,7 @@ def test_dispatch_to_biomarker_trends(agent, empty_profile):
 
 
 # ─── search_pubmed ───────────────────────────────────────────────────────────
+
 
 @responses.activate
 def test_search_pubmed_filters_irrelevant_and_dedupes(agent, empty_profile, fixtures_dir):
@@ -87,6 +94,7 @@ def test_search_pubmed_filters_irrelevant_and_dedupes(agent, empty_profile, fixt
 
 # ─── search_clinical_trials ──────────────────────────────────────────────────
 
+
 @responses.activate
 def test_search_clinical_trials_filters_unrelated(agent, empty_profile, fixtures_dir):
     responses.add(
@@ -113,12 +121,14 @@ def test_search_clinical_trials_filters_unrelated(agent, empty_profile, fixtures
 
 # ─── unknown tool ────────────────────────────────────────────────────────────
 
+
 def test_unknown_tool_returns_error(agent, empty_profile):
     result = agent.execute_tool("does_not_exist", {}, empty_profile)
     assert "error" in result
 
 
 # ─── network failure (PubMed) ────────────────────────────────────────────────
+
 
 @responses.activate
 def test_pubmed_network_error_is_handled(agent, empty_profile):

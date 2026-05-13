@@ -1,10 +1,12 @@
 """Longitudinal biomarker trend computation."""
+
 from __future__ import annotations
 
 
 def analyze_biomarker_trends(marker_name: str, profile: dict) -> dict:
     readings = [
-        b for b in profile.get("biomarkers", [])
+        b
+        for b in profile.get("biomarkers", [])
         if b.get("marker", "").lower() == marker_name.lower()
     ]
     readings.sort(key=lambda x: x.get("date", ""))
@@ -13,14 +15,13 @@ def analyze_biomarker_trends(marker_name: str, profile: dict) -> dict:
         return {"marker": marker_name, "trend": "no_data", "readings": []}
     if len(readings) == 1:
         return {
-            "marker": marker_name, "trend": "single_reading",
-            "readings": readings, "latest": readings[0],
+            "marker": marker_name,
+            "trend": "single_reading",
+            "readings": readings,
+            "latest": readings[0],
         }
 
-    numeric = [
-        (r["date"], r["value"]) for r in readings
-        if isinstance(r.get("value"), (int, float))
-    ]
+    numeric = [(r["date"], r["value"]) for r in readings if isinstance(r.get("value"), int | float)]
     if len(numeric) < 2:
         return {"marker": marker_name, "trend": "non_numeric", "readings": readings}
 

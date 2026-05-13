@@ -1,4 +1,5 @@
 """Chat handler — pure function for the /api/chat endpoint."""
+
 from __future__ import annotations
 
 from . import config
@@ -102,9 +103,7 @@ def build_chat_system(profile: dict) -> str:
     if judgments:
         lines.append("── CLINICAL JUDGMENTS FROM CONSULTATIONS ──")
         for j in judgments:
-            lines.append(
-                f"[{j.get('category','').upper()}] {j.get('date','')} {j.get('text','')}"
-            )
+            lines.append(f"[{j.get('category','').upper()}] {j.get('date','')} {j.get('text','')}")
         lines.append("")
 
     alerts = [a for a in profile.get("alerts", []) if not a.get("resolved")]

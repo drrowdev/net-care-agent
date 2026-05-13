@@ -4,6 +4,7 @@ This is the highest-risk function: a false negative here lets duplicate
 treatments accumulate in the profile (Somatuline + lanreotide both showing
 as 'active'), which the orchestrator would then reason about incorrectly.
 """
+
 from __future__ import annotations
 
 

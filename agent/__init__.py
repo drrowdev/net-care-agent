@@ -4,6 +4,7 @@ Public symbols are re-exported here so existing callers (`app.py`, tests,
 `net_agent.py` shim) can `from agent import …` without knowing the
 internal module layout.
 """
+
 from __future__ import annotations
 
 # Agents
@@ -47,23 +48,41 @@ from .tools import (
 
 __all__ = [
     # config
-    "DATA_DIR", "PROFILE_PATH", "REPORTS_DIR",
-    "MODEL", "MODEL_INTAKE", "MODEL_ORCHESTRATOR",
-    "MODEL_EXEC_SUMMARY", "MODEL_QUESTIONS", "MODEL_CLASSIFY", "MODEL_CHAT",
+    "DATA_DIR",
+    "PROFILE_PATH",
+    "REPORTS_DIR",
+    "MODEL",
+    "MODEL_INTAKE",
+    "MODEL_ORCHESTRATOR",
+    "MODEL_EXEC_SUMMARY",
+    "MODEL_QUESTIONS",
+    "MODEL_CLASSIFY",
+    "MODEL_CHAT",
     # llm
-    "client", "strip_code_fences",
+    "client",
+    "strip_code_fences",
     # profile
-    "DEFAULT_PROFILE", "load_profile", "save_profile", "get_patient_summary",
+    "DEFAULT_PROFILE",
+    "load_profile",
+    "save_profile",
+    "get_patient_summary",
     # tools
-    "TOOLS", "_is_relevant", "execute_tool",
-    "search_pubmed", "search_clinical_trials", "analyze_biomarker_trends",
+    "TOOLS",
+    "_is_relevant",
+    "execute_tool",
+    "search_pubmed",
+    "search_clinical_trials",
+    "analyze_biomarker_trends",
     # judgments
     "get_clinical_judgments_context",
     # agents
-    "run_intake", "_treatment_similarity",
+    "run_intake",
+    "_treatment_similarity",
     "run_orchestrator",
     "classify_treatments",
     "generate_executive_summary",
-    "generate_appointment_questions", "generate_questions_for_profile",
-    "build_chat_system", "handle_chat",
+    "generate_appointment_questions",
+    "generate_questions_for_profile",
+    "build_chat_system",
+    "handle_chat",
 ]

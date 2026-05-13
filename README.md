@@ -213,5 +213,3 @@ The full doc-update policy (which doc to touch for which kind of change),
 commit conventions, deploy mechanism, and common pitfalls are in
 [`AGENTS.md`](AGENTS.md). AI assistants working in this repo should read it
 first.
-
-

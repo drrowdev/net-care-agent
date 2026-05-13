@@ -1,4 +1,5 @@
 """Tool registry, schema for Claude tool-use, dispatcher, relevance filter."""
+
 from __future__ import annotations
 
 import datetime
@@ -21,8 +22,15 @@ TOOLS: list[dict] = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "PubMed search query. Use MeSH terms where applicable."},
-                "max_results": {"type": "integer", "description": "Results to return (default 6, max 10)", "default": 6},
+                "query": {
+                    "type": "string",
+                    "description": "PubMed search query. Use MeSH terms where applicable.",
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Results to return (default 6, max 10)",
+                    "default": 6,
+                },
             },
             "required": ["query"],
         },
@@ -38,11 +46,21 @@ TOOLS: list[dict] = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "condition": {"type": "string", "description": "Condition to search for. E.g. 'neuroendocrine tumor'"},
-                "status": {"type": "string", "description": "Trial status",
-                           "enum": ["RECRUITING", "ACTIVE_NOT_RECRUITING", "COMPLETED"], "default": "RECRUITING"},
+                "condition": {
+                    "type": "string",
+                    "description": "Condition to search for. E.g. 'neuroendocrine tumor'",
+                },
+                "status": {
+                    "type": "string",
+                    "description": "Trial status",
+                    "enum": ["RECRUITING", "ACTIVE_NOT_RECRUITING", "COMPLETED"],
+                    "default": "RECRUITING",
+                },
                 "phase": {"type": "string", "description": "Trial phase filter, e.g. 'PHASE2'"},
-                "country": {"type": "string", "description": "Country to filter by, e.g. 'USA', 'Germany', or a regional grouping"},
+                "country": {
+                    "type": "string",
+                    "description": "Country to filter by, e.g. 'USA', 'Germany', or a regional grouping",
+                },
             },
             "required": ["condition"],
         },
@@ -56,7 +74,10 @@ TOOLS: list[dict] = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "marker_name": {"type": "string", "description": "Biomarker name, e.g. 'CgA', 'NSE', '5-HIAA'"},
+                "marker_name": {
+                    "type": "string",
+                    "description": "Biomarker name, e.g. 'CgA', 'NSE', '5-HIAA'",
+                },
             },
             "required": ["marker_name"],
         },
@@ -70,8 +91,15 @@ TOOLS: list[dict] = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "appointment_type": {"type": "string", "description": "E.g. 'oncology follow-up', 'PRRT consultation', 'nuclear medicine review'"},
-                "focus_areas": {"type": "array", "items": {"type": "string"}, "description": "Specific areas to focus on"},
+                "appointment_type": {
+                    "type": "string",
+                    "description": "E.g. 'oncology follow-up', 'PRRT consultation', 'nuclear medicine review'",
+                },
+                "focus_areas": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Specific areas to focus on",
+                },
             },
             "required": ["appointment_type"],
         },
@@ -87,7 +115,10 @@ TOOLS: list[dict] = [
             "type": "object",
             "properties": {
                 "priority": {"type": "string", "enum": ["urgent", "high", "medium", "low"]},
-                "message": {"type": "string", "description": "Clear description of the finding or concern"},
+                "message": {
+                    "type": "string",
+                    "description": "Clear description of the finding or concern",
+                },
                 "action_required": {"type": "string", "description": "Specific recommended action"},
             },
             "required": ["priority", "message"],
@@ -98,37 +129,79 @@ TOOLS: list[dict] = [
 
 # ─── Relevance filter ────────────────────────────────────────────────────────
 NET_REQUIRED = [
-    "neuroendocrine", "carcinoid", "net ", "nets ", "pnet",
-    "dotatate", "dotatoc", "dotanoc", "somatostatin", "octreotide",
-    "lanreotide", "pasireotide", "prrt", "lutathera", "lu-177",
-    "lutetium", "everolimus", "sunitinib", "temozolomide",
-    "streptozocin", "capecitabine", "chromogranin", "cga",
-    "gastrinoma", "insulinoma", "glucagonoma", "vipoma",
-    "paraganglioma", "pheochromocytoma",
+    "neuroendocrine",
+    "carcinoid",
+    "net ",
+    "nets ",
+    "pnet",
+    "dotatate",
+    "dotatoc",
+    "dotanoc",
+    "somatostatin",
+    "octreotide",
+    "lanreotide",
+    "pasireotide",
+    "prrt",
+    "lutathera",
+    "lu-177",
+    "lutetium",
+    "everolimus",
+    "sunitinib",
+    "temozolomide",
+    "streptozocin",
+    "capecitabine",
+    "chromogranin",
+    "cga",
+    "gastrinoma",
+    "insulinoma",
+    "glucagonoma",
+    "vipoma",
+    "paraganglioma",
+    "pheochromocytoma",
 ]
 
 EXCLUSION_TERMS = [
-    "glioblastoma", "glioma", "melanoma", "lymphoma", "leukemia",
-    "myeloma", "breast cancer", "prostate cancer", "lung cancer",
-    "colorectal cancer", "pancreatic cancer",
-    "hepatocellular", "cholangiocarcinoma", "cervical cancer",
+    "glioblastoma",
+    "glioma",
+    "melanoma",
+    "lymphoma",
+    "leukemia",
+    "myeloma",
+    "breast cancer",
+    "prostate cancer",
+    "lung cancer",
+    "colorectal cancer",
+    "pancreatic cancer",
+    "hepatocellular",
+    "cholangiocarcinoma",
+    "cervical cancer",
     "ovarian cancer",
-    "endometrial", "uterine cancer", "bladder cancer", "renal cell",
+    "endometrial",
+    "uterine cancer",
+    "bladder cancer",
+    "renal cell",
 ]
 
 NET_TITLE_TERMS = [
-    "neuroendocrine", "net", "carcinoid", "dotatate", "prrt", "somatostatin",
+    "neuroendocrine",
+    "net",
+    "carcinoid",
+    "dotatate",
+    "prrt",
+    "somatostatin",
 ]
 
 
 def _is_relevant(item: dict, item_type: str) -> bool:
     """Rule-based filter: True only if plausibly relevant to neuroendocrine tumor research."""
-    text = " ".join([
-        item.get("title", ""),
-        item.get("brief_summary", ""),
-        item.get("eligibility_excerpt", ""),
-        item.get("journal", ""),
-    ]).lower()
+    text = " ".join(
+        [
+            item.get("title", ""),
+            item.get("brief_summary", ""),
+            item.get("eligibility_excerpt", ""),
+            item.get("journal", ""),
+        ]
+    ).lower()
 
     if not any(term in text for term in NET_REQUIRED):
         return False
@@ -153,17 +226,19 @@ def execute_tool(name: str, inputs: dict, profile: dict) -> dict:
                 continue
             if not _is_relevant(article, "paper"):
                 continue
-            profile.setdefault("literature_watched", []).append({
-                "pmid": article["pmid"],
-                "title": article.get("title", ""),
-                "authors": article.get("authors", ""),
-                "journal": article.get("journal", ""),
-                "date": article.get("date", ""),
-                "url": article.get("url", ""),
-                "query": inputs["query"],
-                "date_added": today,
-                "relevance_notes": "",
-            })
+            profile.setdefault("literature_watched", []).append(
+                {
+                    "pmid": article["pmid"],
+                    "title": article.get("title", ""),
+                    "authors": article.get("authors", ""),
+                    "journal": article.get("journal", ""),
+                    "date": article.get("date", ""),
+                    "url": article.get("url", ""),
+                    "query": inputs["query"],
+                    "date_added": today,
+                    "relevance_notes": "",
+                }
+            )
             existing_pmids.add(article["pmid"])
             saved += 1
         if saved:
@@ -185,18 +260,20 @@ def execute_tool(name: str, inputs: dict, profile: dict) -> dict:
                 continue
             if not _is_relevant(trial, "trial"):
                 continue
-            profile.setdefault("trials_tracked", []).append({
-                "nct_id": trial["nct_id"],
-                "title": trial.get("title", ""),
-                "status": trial.get("status", ""),
-                "phase": trial.get("phase", ""),
-                "countries": trial.get("countries", []),
-                "url": trial.get("url", ""),
-                "brief_summary": trial.get("brief_summary", "")[:300],
-                "eligibility_excerpt": trial.get("eligibility_excerpt", "")[:300],
-                "date_added": today,
-                "eligibility_notes": "",
-            })
+            profile.setdefault("trials_tracked", []).append(
+                {
+                    "nct_id": trial["nct_id"],
+                    "title": trial.get("title", ""),
+                    "status": trial.get("status", ""),
+                    "phase": trial.get("phase", ""),
+                    "countries": trial.get("countries", []),
+                    "url": trial.get("url", ""),
+                    "brief_summary": trial.get("brief_summary", "")[:300],
+                    "eligibility_excerpt": trial.get("eligibility_excerpt", "")[:300],
+                    "date_added": today,
+                    "eligibility_notes": "",
+                }
+            )
             existing_ncts.add(trial["nct_id"])
             saved += 1
         if saved:
@@ -209,6 +286,7 @@ def execute_tool(name: str, inputs: dict, profile: dict) -> dict:
     elif name == "generate_appointment_questions":
         # Avoid circular import: questions module depends on tools schema.
         from ..questions import generate_appointment_questions
+
         return generate_appointment_questions(
             inputs["appointment_type"],
             inputs.get("focus_areas", []),

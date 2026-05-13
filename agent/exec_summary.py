@@ -1,4 +1,5 @@
 """Executive summary generator — single-turn, temperature 0, JSON output."""
+
 from __future__ import annotations
 
 import datetime
@@ -120,25 +121,27 @@ def generate_executive_summary(profile: dict) -> dict:
             max_tokens=8000,
             temperature=0,
             system=system_prompt,
-            messages=[{
-                "role": "user",
-                "content": (
-                    f"Generate an executive summary based on this patient profile.\n\n"
-                    f"{timeframe_guide}\n\n"
-                    f"{'='*60}\n"
-                    f"STEP 1 — READ CLINICAL JUDGMENTS FIRST (these override your analysis):\n"
-                    f"{get_clinical_judgments_context(profile)}\n\n"
-                    f"{'='*60}\n"
-                    f"STEP 2 — Patient profile and raw data:\n\n"
-                    f"{get_patient_summary(profile)}\n\n"
-                    f"Full biomarker history ({len(profile.get('biomarkers', []))} entries):\n"
-                    f"{json.dumps(profile.get('biomarkers', []), default=str)}\n\n"
-                    f"Full imaging history ({len(profile.get('imaging', []))} entries):\n"
-                    f"{json.dumps(profile.get('imaging', []), default=str)}\n\n"
-                    f"Tracked trials: {json.dumps(profile.get('trials_tracked', [])[:5], default=str)}\n\n"
-                    f"Active alerts: {json.dumps([a for a in profile.get('alerts', []) if not a.get('resolved')], default=str)}\n\n"
-                ),
-            }],
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        f"Generate an executive summary based on this patient profile.\n\n"
+                        f"{timeframe_guide}\n\n"
+                        f"{'='*60}\n"
+                        f"STEP 1 — READ CLINICAL JUDGMENTS FIRST (these override your analysis):\n"
+                        f"{get_clinical_judgments_context(profile)}\n\n"
+                        f"{'='*60}\n"
+                        f"STEP 2 — Patient profile and raw data:\n\n"
+                        f"{get_patient_summary(profile)}\n\n"
+                        f"Full biomarker history ({len(profile.get('biomarkers', []))} entries):\n"
+                        f"{json.dumps(profile.get('biomarkers', []), default=str)}\n\n"
+                        f"Full imaging history ({len(profile.get('imaging', []))} entries):\n"
+                        f"{json.dumps(profile.get('imaging', []), default=str)}\n\n"
+                        f"Tracked trials: {json.dumps(profile.get('trials_tracked', [])[:5], default=str)}\n\n"
+                        f"Active alerts: {json.dumps([a for a in profile.get('alerts', []) if not a.get('resolved')], default=str)}\n\n"
+                    ),
+                }
+            ],
         )
         if resp.stop_reason == "max_tokens":
             raise ValueError(

@@ -1,6 +1,7 @@
 """
 Phase 4 UI hygiene checks: cache headers + static asset split integrity.
 """
+
 from __future__ import annotations
 
 import re

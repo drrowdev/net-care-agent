@@ -11,6 +11,7 @@ Goals:
 
 Run `python -m agent.schema dump-md` to regenerate the schema doc.
 """
+
 from __future__ import annotations
 
 import datetime
@@ -38,9 +39,7 @@ AlertPriority = Literal["urgent", "high", "medium", "low"]
 TreatmentCategory = Literal["active", "planned", "completed"]
 JudgmentCategory = Literal["constraint", "preference", "outcome", "context"]
 JudgmentSource = Literal["manual", "ai"]
-QuestionCategory = Literal[
-    "Treatment", "Diagnostics", "Symptoms", "Trials", "Monitoring", "Other"
-]
+QuestionCategory = Literal["Treatment", "Diagnostics", "Symptoms", "Trials", "Monitoring", "Other"]
 QuestionPriority = Literal["urgent", "high", "medium"]
 QuestionSource = Literal["ai", "manual"]
 
@@ -301,7 +300,7 @@ def render_schema_markdown() -> str:
 
     sections.append(
         "## Notes\n\n"
-        "- `extra=\"allow\"` on every sub-model — unknown keys are preserved on "
+        '- `extra="allow"` on every sub-model — unknown keys are preserved on '
         "round-trip through `normalize_profile()`.\n"
         "- Enum-like fields (e.g. `sex`, `priority`, `modality`) document the "
         "expected values via `Literal[...]` but are not strictly enforced — "

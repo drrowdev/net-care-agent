@@ -1,4 +1,5 @@
 """Tests for atomic_write_text + daily backup logic."""
+
 from __future__ import annotations
 
 import datetime
@@ -6,6 +7,7 @@ import datetime
 
 def test_atomic_write_replaces_target(tmp_path):
     from agent.io import atomic_write_text
+
     target = tmp_path / "out.json"
     atomic_write_text(target, '{"v": 1}')
     assert target.read_text() == '{"v": 1}'
@@ -17,6 +19,7 @@ def test_atomic_write_replaces_target(tmp_path):
 
 def test_atomic_write_creates_parent_dirs(tmp_path):
     from agent.io import atomic_write_text
+
     target = tmp_path / "nested" / "dir" / "file.txt"
     atomic_write_text(target, "hello")
     assert target.read_text() == "hello"

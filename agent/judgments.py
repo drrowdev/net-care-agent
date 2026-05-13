@@ -4,6 +4,7 @@ Judgments captured from oncologist consultations are injected verbatim
 into the orchestrator and exec-summary system prompts. They override
 data-driven conclusions in those agents.
 """
+
 from __future__ import annotations
 
 
@@ -27,8 +28,8 @@ def get_clinical_judgments_context(profile: dict) -> str:
     cat_labels = {
         "constraint": "⛔ Constraints (rules out or limits certain approaches)",
         "preference": "★ Oncologist preferences and areas of interest",
-        "outcome":    "✓ Treatment/trial outcomes and responses",
-        "context":    "ℹ Clinical context and background",
+        "outcome": "✓ Treatment/trial outcomes and responses",
+        "context": "ℹ Clinical context and background",
     }
     for cat in ["constraint", "preference", "outcome", "context"]:
         items = by_cat.get(cat, [])

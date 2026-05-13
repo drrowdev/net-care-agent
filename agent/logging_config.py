@@ -3,6 +3,7 @@
 By default emits human-readable logs. Set LOG_FORMAT=json for structured
 output suitable for Azure App Service log aggregation.
 """
+
 from __future__ import annotations
 
 import json
@@ -21,7 +22,8 @@ class _JsonFormatter(logging.Formatter):
         }
         # Include any structured fields passed via `extra=`
         reserved = set(logging.LogRecord("", 0, "", 0, "", None, None).__dict__) | {
-            "message", "asctime"
+            "message",
+            "asctime",
         }
         for k, v in record.__dict__.items():
             if k not in reserved and not k.startswith("_"):
@@ -51,10 +53,12 @@ def configure_logging() -> None:
     if fmt == "json":
         handler.setFormatter(_JsonFormatter())
     else:
-        handler.setFormatter(logging.Formatter(
-            "%(asctime)s %(levelname)s %(name)s: %(message)s",
-            datefmt="%H:%M:%S",
-        ))
+        handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s %(levelname)s %(name)s: %(message)s",
+                datefmt="%H:%M:%S",
+            )
+        )
 
     root = logging.getLogger()
     root.setLevel(level)

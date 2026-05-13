@@ -1,4 +1,5 @@
 """Treatment classifier — dedupe + active/planned/completed labelling."""
+
 from __future__ import annotations
 
 import datetime
@@ -65,11 +66,11 @@ def classify_treatments(profile: dict) -> list:
 
     recent_docs = sorted(
         profile.get("documents", []),
-        key=lambda x: x.get("date", ""), reverse=True,
+        key=lambda x: x.get("date", ""),
+        reverse=True,
     )[:5]
     doc_context = "\n\n".join(
-        f"[{d.get('date','')} {d.get('type','')}]: {d.get('summary','')}"
-        for d in recent_docs
+        f"[{d.get('date','')} {d.get('type','')}]: {d.get('summary','')}" for d in recent_docs
     )
 
     try:
@@ -81,15 +82,17 @@ def classify_treatments(profile: dict) -> list:
             max_tokens=1500,
             temperature=0,
             system=system_prompt,
-            messages=[{
-                "role": "user",
-                "content": (
-                    f"Classify these treatment entries:\n\n"
-                    f"{json.dumps(treatments, indent=2)}\n\n"
-                    f"Recent clinical context:\n{doc_context}\n\n"
-                    f"Today: {datetime.date.today().isoformat()}"
-                ),
-            }],
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        f"Classify these treatment entries:\n\n"
+                        f"{json.dumps(treatments, indent=2)}\n\n"
+                        f"Recent clinical context:\n{doc_context}\n\n"
+                        f"Today: {datetime.date.today().isoformat()}"
+                    ),
+                }
+            ],
         )
         raw = strip_code_fences(resp.content[0].text)
         classified = json.loads(raw)
@@ -99,8 +102,7 @@ def classify_treatments(profile: dict) -> list:
         for item in classified:
             item_key = (item.get("label") or item.get("text") or "").lower().strip()
             for override_key, override in manual_overrides.items():
-                if (item_key in override_key or override_key in item_key
-                        or item_key == override_key):
+                if item_key in override_key or override_key in item_key or item_key == override_key:
                     item["category"] = override["category"]
                     break
 
@@ -109,6 +111,5 @@ def classify_treatments(profile: dict) -> list:
     except Exception as e:
         print(f"  ⚠  Treatment classification failed: {e}")
         return [
-            {"text": t, "category": "active", "label": t[:60], "date": None}
-            for t in treatments
+            {"text": t, "category": "active", "label": t[:60], "date": None} for t in treatments
         ]

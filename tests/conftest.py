@@ -13,6 +13,7 @@ Tests must NOT hit the network or require ANTHROPIC_API_KEY. We achieve this by:
 3. Patching ``requests.get`` per-test via the ``responses`` library for any test
    that exercises PubMed or ClinicalTrials.gov.
 """
+
 from __future__ import annotations
 
 import json
@@ -75,6 +76,7 @@ def _stub_anthropic(_isolated_data_dir) -> None:
 
 
 # ─── Per-test: load net_agent fresh after env is set ─────────────────────────
+
 
 @pytest.fixture
 def agent(_isolated_data_dir, monkeypatch):

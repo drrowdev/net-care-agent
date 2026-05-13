@@ -1,4 +1,5 @@
 """Intake agent: classify document, extract structured medical data, dedupe treatments."""
+
 from __future__ import annotations
 
 import datetime
@@ -48,17 +49,25 @@ No markdown, no prose outside the JSON object."""
 
 # Treatment-name synonyms used by the fuzzy similarity check below.
 _TREATMENT_SYNONYMS: dict[str, str] = {
-    "somatuline": "lanreotide", "lanreotide": "lanreotide",
-    "sst analogue": "lanreotide", "somatostatin analogue": "lanreotide",
+    "somatuline": "lanreotide",
+    "lanreotide": "lanreotide",
+    "sst analogue": "lanreotide",
+    "somatostatin analogue": "lanreotide",
     "octreotide": "lanreotide",
-    "lu-177": "prrt", "lutetium": "prrt", "177lu": "prrt",
-    "dotatate": "prrt", "lutathera": "prrt", "lu177": "prrt",
-    "177lu-octreotate": "prrt", "lu-177-dotatate": "prrt",
+    "lu-177": "prrt",
+    "lutetium": "prrt",
+    "177lu": "prrt",
+    "dotatate": "prrt",
+    "lutathera": "prrt",
+    "lu177": "prrt",
+    "177lu-octreotate": "prrt",
+    "lu-177-dotatate": "prrt",
 }
 
 
 def _treatment_similarity(a: str, b: str) -> float:
     """Word-overlap similarity (Jaccard) between two treatment strings, after synonym normalization."""
+
     def normalize(s: str) -> set[str]:
         for k, v in _TREATMENT_SYNONYMS.items():
             s = s.replace(k, v)
@@ -104,13 +113,15 @@ def run_intake(text: str, profile: dict) -> tuple[dict, dict]:
     today = datetime.date.today().isoformat()
     doc_date = extracted.get("date") or today
 
-    profile["documents"].append({
-        "date": doc_date,
-        "type": extracted.get("document_type", "other"),
-        "summary": extracted.get("summary", ""),
-        "key_findings": extracted.get("key_findings", []),
-        "raw_text": text[:3000],
-    })
+    profile["documents"].append(
+        {
+            "date": doc_date,
+            "type": extracted.get("document_type", "other"),
+            "summary": extracted.get("summary", ""),
+            "key_findings": extracted.get("key_findings", []),
+            "raw_text": text[:3000],
+        }
+    )
 
     KI67_MARKERS = {"ki-67", "ki67", "mib-1", "mib1", "ki 67", "mib 1"}
 
@@ -138,7 +149,8 @@ def run_intake(text: str, profile: dict) -> tuple[dict, dict]:
         tx_lower = tx.lower().strip()
         existing = profile["patient"]["current_treatments"]
         is_duplicate = any(
-            tx_lower in e.lower() or e.lower() in tx_lower
+            tx_lower in e.lower()
+            or e.lower() in tx_lower
             or _treatment_similarity(tx_lower, e.lower()) > 0.7
             for e in existing
         )

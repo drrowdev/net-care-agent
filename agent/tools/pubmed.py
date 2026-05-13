@@ -1,4 +1,5 @@
 """PubMed E-utilities client (no API key required for basic use)."""
+
 from __future__ import annotations
 
 import requests
@@ -10,8 +11,11 @@ def search_pubmed(query: str, max_results: int = 6) -> dict:
         sr = requests.get(
             f"{base}/esearch.fcgi",
             params={
-                "db": "pubmed", "term": query, "retmax": max_results,
-                "retmode": "json", "sort": "relevance",
+                "db": "pubmed",
+                "term": query,
+                "retmax": max_results,
+                "retmode": "json",
+                "sort": "relevance",
             },
             timeout=12,
         )
@@ -34,15 +38,17 @@ def search_pubmed(query: str, max_results: int = 6) -> dict:
                 continue
             a = raw[pmid]
             authors = [au.get("name", "") for au in a.get("authors", [])[:3]]
-            articles.append({
-                "pmid": pmid,
-                "title": a.get("title", ""),
-                "authors": ", ".join(authors)
-                + (" et al." if len(a.get("authors", [])) > 3 else ""),
-                "journal": a.get("source", ""),
-                "date": a.get("pubdate", ""),
-                "url": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
-            })
+            articles.append(
+                {
+                    "pmid": pmid,
+                    "title": a.get("title", ""),
+                    "authors": ", ".join(authors)
+                    + (" et al." if len(a.get("authors", [])) > 3 else ""),
+                    "journal": a.get("source", ""),
+                    "date": a.get("pubdate", ""),
+                    "url": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
+                }
+            )
         return {"results": articles, "query": query, "count": len(articles)}
 
     except requests.RequestException as e:

@@ -1,4 +1,5 @@
 """Filesystem helpers — atomic writes and small utilities."""
+
 from __future__ import annotations
 
 import os

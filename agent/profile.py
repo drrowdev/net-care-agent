@@ -1,4 +1,5 @@
 """Patient profile load/save and human-readable summary."""
+
 from __future__ import annotations
 
 import json
@@ -92,7 +93,9 @@ def get_patient_summary(profile: dict) -> str:
     ]
     if bms:
         for b in bms:
-            flag = f" [{b.get('flag','').upper()}]" if b.get("flag") and b["flag"] != "normal" else ""
+            flag = (
+                f" [{b.get('flag','').upper()}]" if b.get("flag") and b["flag"] != "normal" else ""
+            )
             lines.append(
                 f"  {b.get('date','')}  {b.get('marker','?')} = {b.get('value','?')} "
                 f"{b.get('unit','')} (ref: {b.get('reference_range','?')}){flag}"
@@ -103,7 +106,9 @@ def get_patient_summary(profile: dict) -> str:
     lines += ["", "─── Recent imaging ───"]
     if imgs:
         for i in imgs:
-            lines.append(f"  {i.get('date','')}  {i.get('modality','?')}: {i.get('impression','')[:120]}")
+            lines.append(
+                f"  {i.get('date','')}  {i.get('modality','?')}: {i.get('impression','')[:120]}"
+            )
     else:
         lines.append("  None recorded")
 

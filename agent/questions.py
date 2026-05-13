@@ -1,4 +1,5 @@
 """Appointment-question generation (output language configurable via profile)."""
+
 from __future__ import annotations
 
 import datetime
@@ -14,9 +15,7 @@ from .profile import (
 )
 
 
-def generate_appointment_questions(appointment_type: str,
-                                   focus_areas: list,
-                                   profile: dict) -> dict:
+def generate_appointment_questions(appointment_type: str, focus_areas: list, profile: dict) -> dict:
     """Use Claude to generate targeted pre-appointment questions (English, simple list).
 
     Used by the orchestrator's tool dispatcher; the rich language-aware version
@@ -30,17 +29,19 @@ def generate_appointment_questions(appointment_type: str,
             "prepare for a cancer consultation. Generate specific, informed questions "
             "based on the patient's current profile. Be concise but thorough."
         ),
-        messages=[{
-            "role": "user",
-            "content": (
-                f"Generate 10-12 specific questions for an upcoming {appointment_type} appointment.\n\n"
-                f"Patient context:\n{get_patient_summary(profile)}\n\n"
-                f"Focus areas: {', '.join(focus_areas) if focus_areas else 'general follow-up'}\n\n"
-                "Return ONLY a JSON object:\n"
-                '{"questions": ["...", ...], "documents_to_bring": ["...", ...], '
-                '"tests_to_request_if_not_done": ["...", ...]}'
-            ),
-        }],
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    f"Generate 10-12 specific questions for an upcoming {appointment_type} appointment.\n\n"
+                    f"Patient context:\n{get_patient_summary(profile)}\n\n"
+                    f"Focus areas: {', '.join(focus_areas) if focus_areas else 'general follow-up'}\n\n"
+                    "Return ONLY a JSON object:\n"
+                    '{"questions": ["...", ...], "documents_to_bring": ["...", ...], '
+                    '"tests_to_request_if_not_done": ["...", ...]}'
+                ),
+            }
+        ],
     )
     raw = strip_code_fences(resp.content[0].text)
     try:
@@ -72,13 +73,9 @@ def _build_questions_system_prompt(profile: dict) -> str:
             f"The caregiver will ask these questions to a {language}-speaking oncologist.\n\n"
         )
 
-    regions = [
-        r for r in (profile.get("patient", {}).get("regions_of_interest") or []) if r
-    ]
+    regions = [r for r in (profile.get("patient", {}).get("regions_of_interest") or []) if r]
     region_phrase = " or ".join(regions) if regions else "your country or region"
-    referral_example = (
-        f"'Which centers in {region_phrase} should we contact about PRRT trials?'"
-    )
+    referral_example = f"'Which centers in {region_phrase} should we contact about PRRT trials?'"
 
     return (
         "You are a specialist medical research assistant helping a caregiver "
@@ -115,8 +112,9 @@ def _build_questions_system_prompt(profile: dict) -> str:
     )
 
 
-def generate_questions_for_profile(profile: dict,
-                                    appointment_type: str = "oncology follow-up") -> list:
+def generate_questions_for_profile(
+    profile: dict, appointment_type: str = "oncology follow-up"
+) -> list:
     """Structured appointment question list for the UI.
 
     Output language is configurable via `patient.language` in the profile
@@ -128,19 +126,21 @@ def generate_questions_for_profile(profile: dict,
             max_tokens=8000,
             temperature=0,
             system=_build_questions_system_prompt(profile),
-            messages=[{
-                "role": "user",
-                "content": (
-                    f"Generate appointment questions for a {appointment_type} visit.\n\n"
-                    f"Patient profile:\n{get_patient_summary(profile)}\n\n"
-                    f"Active alerts: {json.dumps([a for a in profile.get('alerts', []) if not a.get('resolved')], default=str)}\n\n"
-                    f"Most recent imaging: {json.dumps(profile.get('imaging', [])[-2:], default=str)}\n\n"
-                    f"Recent biomarkers: {json.dumps(profile.get('biomarkers', [])[-6:], default=str)}\n\n"
-                    f"IMPORTANT — Clinical judgments from previous consultations (do not generate questions about things already addressed):\n"
-                    f"{get_clinical_judgments_context(profile)}\n\n"
-                    f"Today: {datetime.date.today().isoformat()}"
-                ),
-            }],
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        f"Generate appointment questions for a {appointment_type} visit.\n\n"
+                        f"Patient profile:\n{get_patient_summary(profile)}\n\n"
+                        f"Active alerts: {json.dumps([a for a in profile.get('alerts', []) if not a.get('resolved')], default=str)}\n\n"
+                        f"Most recent imaging: {json.dumps(profile.get('imaging', [])[-2:], default=str)}\n\n"
+                        f"Recent biomarkers: {json.dumps(profile.get('biomarkers', [])[-6:], default=str)}\n\n"
+                        f"IMPORTANT — Clinical judgments from previous consultations (do not generate questions about things already addressed):\n"
+                        f"{get_clinical_judgments_context(profile)}\n\n"
+                        f"Today: {datetime.date.today().isoformat()}"
+                    ),
+                }
+            ],
         )
         raw = strip_code_fences(resp.content[0].text)
         questions = json.loads(raw)
@@ -158,7 +158,8 @@ def generate_questions_for_profile(profile: dict,
                 "asked": False,
                 "created_at": today,
             }
-            for i, q in enumerate(questions) if q.get("text")
+            for i, q in enumerate(questions)
+            if q.get("text")
         ]
     except Exception as e:
         print(f"  ⚠  Question generation failed: {e}")

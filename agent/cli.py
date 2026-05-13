@@ -1,4 +1,5 @@
 """Command-line interface (used for ad-hoc local testing)."""
+
 from __future__ import annotations
 
 import argparse

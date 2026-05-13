@@ -1,4 +1,5 @@
 """Tests for /api/health endpoint and basic Flask wiring."""
+
 from __future__ import annotations
 
 import pytest
@@ -9,9 +10,11 @@ def client(agent, monkeypatch):
     # Ensure app picks up the per-test DATA_DIR (set by `agent` fixture).
     import importlib
     import sys
+
     if "app" in sys.modules:
         del sys.modules["app"]
     import app as app_mod
+
     importlib.reload(app_mod)
     app_mod.app.config["TESTING"] = True
     return app_mod.app.test_client()

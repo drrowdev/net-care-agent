@@ -3,6 +3,7 @@
 Reads from environment variables so production (Azure App Service) and
 local dev share the same code path. Defaults match production.
 """
+
 from __future__ import annotations
 
 import os

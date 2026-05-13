@@ -238,6 +238,11 @@ class PatientProfile(_Lenient):
     symptoms: list[Symptom] = Field(default_factory=list)
     questions: list[Question] = Field(default_factory=list)
     executive_summary: ExecutiveSummary | None = None
+    acknowledged_at: str | None = Field(
+        None,
+        description="ISO timestamp of the last user 'mark all read' action; "
+        "items dated after this are 'new since last login' for the delta view.",
+    )
 
 
 # ── public helpers ────────────────────────────────────────────────────────────

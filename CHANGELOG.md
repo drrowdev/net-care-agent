@@ -22,10 +22,9 @@ incremented when something user-visible or operationally meaningful changes.
 - `tests/_llm_fake.py` shared helper for the in-memory LLM stub. Uses
   a context-manager `patch_llm` that installs a per-call handler on the
   live `agent.client` instance and restores the previous value on exit.
-- **Symptoms log (backend).** First-class `symptoms[]` array on the
-  patient profile, bridging objective biomarkers and oncologist
-  judgments with the caregiver's day-to-day record of how the patient
-  feels.
+- **Symptoms log.** First-class `symptoms[]` array on the patient
+  profile, bridging objective biomarkers and oncologist judgments with
+  the caregiver's day-to-day record of how the patient feels.
   - New `Symptom` pydantic model: `id`, `date`, `symptom`,
     `severity` (1–5), `note`, `related_treatment`, `source` (`manual`
     or `ai`). Extras allowed.
@@ -45,10 +44,26 @@ incremented when something user-visible or operationally meaningful changes.
     or "is the fatigue getting worse?".
   - REST API: `GET /api/symptoms`, `POST /api/symptoms`,
     `PATCH /api/symptoms/<sid>`, `DELETE /api/symptoms/<sid>`.
+  - **Sidebar UI** under *Active alerts*: compact inline add row
+    (symptom name + severity 1–5 + optional note), recent-entry list
+    with date / color-coded severity dot / AI tag / delete button.
   - `tests/test_symptoms.py` (7 tests): schema validation including
     out-of-range severity, default-profile shape, intake auto-capture
     round-trip, `_persist_symptoms` dedup invariants, patient-summary
     surfacing.
+- **"Mark all read" delta indicator (R9).** New
+  `acknowledged_at: str | None` field on `PatientProfile`. New
+  endpoints `GET /api/changes` and `POST /api/changes/acknowledge`
+  return per-category counts of items dated after the acknowledgment
+  timestamp (biomarkers, imaging, documents, trials, papers, alerts,
+  symptoms, judgments, plus a boolean for whether the executive
+  summary has been regenerated since last ack). Header gains a
+  *✓ Mark all read · N new* pill which hides at zero and lists the
+  per-category breakdown on hover. Polled alongside `/api/status`
+  every 3 s.
+- `tests/test_changes.py` (5 tests): no-ack returns all-new, ack
+  zeroes the counts, items dated after ack re-increment, executive
+  summary regenerate-after-ack flagged, items pre-ack not counted.
 
 ### Fixed
 - `tests/conftest.py::agent` fixture now also pops every `agent.*`

@@ -558,6 +558,50 @@
     await loadSymptoms();
   }
 
+  // ── "Since last login" delta indicator ───────────────────────────────────
+  async function loadChanges() {
+    try {
+      const r = await fetch('/api/changes');
+      const d = await r.json();
+      renderChangesBadge(d);
+    } catch (e) { console.error('Changes error:', e); }
+  }
+
+  function renderChangesBadge(d) {
+    const btn = document.getElementById('btn-changes');
+    const count = document.getElementById('changes-count');
+    if (!btn || !count) return;
+    const total = (d && d.new && d.new.total_new) || 0;
+    if (total > 0) {
+      count.textContent = total;
+      btn.style.display = '';
+      btn.title = _changesBreakdown(d.new);
+    } else {
+      btn.style.display = 'none';
+    }
+  }
+
+  function _changesBreakdown(n) {
+    const parts = [];
+    if (n.biomarkers) parts.push(`${n.biomarkers} biomarker${n.biomarkers === 1 ? '' : 's'}`);
+    if (n.imaging) parts.push(`${n.imaging} imaging`);
+    if (n.documents) parts.push(`${n.documents} document${n.documents === 1 ? '' : 's'}`);
+    if (n.trials) parts.push(`${n.trials} trial${n.trials === 1 ? '' : 's'}`);
+    if (n.papers) parts.push(`${n.papers} paper${n.papers === 1 ? '' : 's'}`);
+    if (n.alerts) parts.push(`${n.alerts} alert${n.alerts === 1 ? '' : 's'}`);
+    if (n.symptoms) parts.push(`${n.symptoms} symptom${n.symptoms === 1 ? '' : 's'}`);
+    if (n.judgments) parts.push(`${n.judgments} judgment${n.judgments === 1 ? '' : 's'}`);
+    if (n.executive_summary) parts.push('exec summary refreshed');
+    return parts.length ? `New since last ack: ${parts.join(', ')}` : 'Mark all updates as seen';
+  }
+
+  async function acknowledgeChanges() {
+    try {
+      await fetch('/api/changes/acknowledge', { method: 'POST' });
+      await loadChanges();
+    } catch (e) { console.error('Acknowledge error:', e); }
+  }
+
   async function loadSummary() {
     try {
       const r = await fetch('/api/summary');
@@ -1232,6 +1276,7 @@
     pollingInterval = setInterval(async () => {
       await loadTasks();
       await loadStatus();
+      await loadChanges();
       // If selected task just completed, auto-load its report and refresh summary
       if (selectedTaskId) {
         const r = await fetch(`/api/jobs/${selectedTaskId}`);
@@ -1546,5 +1591,6 @@
   loadQuestions();
   loadJudgments();
   loadSymptoms();
+  loadChanges();
   startPolling();
   if (isMobile()) switchMobPanel('summary');

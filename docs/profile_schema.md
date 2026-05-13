@@ -23,6 +23,7 @@ All sub-models accept **extra** fields (forward-compat) and treat every document
   'symptoms': list[Symptom],
   'questions': list[Question],
   'executive_summary': ExecutiveSummary | None,
+  'acknowledged_at': str | None,
 }
 ```
 

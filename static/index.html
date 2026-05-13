@@ -16,6 +16,7 @@
   <div class="header-right">
     <div class="pulse-dot" id="pulse-dot"></div>
     <div class="status-pill" id="header-status">Idle</div>
+    <button class="btn-changes" id="btn-changes" onclick="acknowledgeChanges()" title="Mark all updates as seen" style="display:none">✓ Mark all read · <span id="changes-count">0</span> new</button>
     <button class="btn-digest" id="btn-feed-toggle" onclick="toggleFeedPopover()" title="Feed a document or paste text">📄 Feed</button>
     <button class="btn-digest" id="btn-digest" onclick="runDigest()">↻ Run digest</button>
     <button class="btn-digest" onclick="toggleChat()" style="border-color:var(--blue);color:var(--blue)" title="Chat with Claude about this patient">✦ Ask Claude</button>

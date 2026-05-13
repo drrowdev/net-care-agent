@@ -718,6 +718,78 @@ def api_symptoms_delete(sid):
     return jsonify({"ok": True})
 
 
+# ── changes / "since last login" ─────────────────────────────────────────────
+def _is_after(item_date: str, ack: str) -> bool:
+    """Return True iff item_date is strictly later than ack.
+
+    Compares as strings — relies on ISO-8601-ish ordering. Both date-only
+    (YYYY-MM-DD) and datetime (YYYY-MM-DDTHH:MM:SS) strings sort
+    correctly under lexicographic comparison.
+    """
+    if not item_date:
+        return False
+    return item_date > ack
+
+
+def _count_new(profile: dict) -> dict:
+    """Compute per-category counts of items dated after acknowledged_at.
+
+    A summary is considered "regenerated since ack" if its
+    ``generated_at`` is later than the ack timestamp.
+    """
+    ack = profile.get("acknowledged_at") or ""
+    if not ack:
+        # Never acknowledged — every item counts as new.
+        ack = ""
+
+    def _count(items, key):
+        return sum(1 for it in items if _is_after(it.get(key, "") or "", ack))
+
+    summary = profile.get("executive_summary") or {}
+    summary_generated = summary.get("generated_at") or ""
+    summary_new = bool(summary_generated and summary_generated > ack)
+
+    counts = {
+        "biomarkers"    : _count(profile.get("biomarkers", []), "date"),
+        "imaging"       : _count(profile.get("imaging", []), "date"),
+        "trials"        : _count(profile.get("trials_tracked", []), "date_added"),
+        "papers"        : _count(profile.get("literature_watched", []), "date_added"),
+        "alerts"        : _count(profile.get("alerts", []), "date"),
+        "documents"     : _count(profile.get("documents", []), "date"),
+        "judgments"     : _count(profile.get("clinical_judgments", []), "date"),
+        "symptoms"      : _count(profile.get("symptoms", []), "date"),
+        "executive_summary": summary_new,
+    }
+    counts["total_new"] = (
+        counts["biomarkers"] + counts["imaging"] + counts["trials"]
+        + counts["papers"] + counts["alerts"] + counts["documents"]
+        + counts["judgments"] + counts["symptoms"]
+        + (1 if counts["executive_summary"] else 0)
+    )
+    return counts
+
+
+@app.route("/api/changes")
+def api_changes():
+    profile = agent.load_profile()
+    return jsonify({
+        "acknowledged_at": profile.get("acknowledged_at"),
+        "new": _count_new(profile),
+    })
+
+
+@app.route("/api/changes/acknowledge", methods=["POST"])
+def api_changes_acknowledge():
+    profile = agent.load_profile()
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    profile["acknowledged_at"] = now
+    agent.save_profile(profile)
+    return jsonify({
+        "acknowledged_at": now,
+        "new": _count_new(profile),
+    })
+
+
 @app.route("/api/summary/dismiss-action/<int:idx>", methods=["POST"])
 def api_dismiss_action(idx):
     data = request.get_json(force=True) or {}

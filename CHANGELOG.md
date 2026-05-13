@@ -8,7 +8,12 @@ incremented when something user-visible or operationally meaningful changes.
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+- `SECURITY.md` describing the GitHub Security Advisory reporting flow,
+  scope, and the hardening already in place.
+- `.github/pull_request_template.md` with a doc-update checklist (from
+  the `AGENTS.md` policy) and a public-repo safety checklist (no PHI,
+  no infra names, no personal email).
 
 ## [0.7.0] — 2026-05-13
 

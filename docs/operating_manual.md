@@ -67,12 +67,21 @@ respect it as a hard constraint:
 
 ## 6. Chat with the record
 
-UI → **Chat** tab. Free-form conversation grounded in the full patient record:
-- Last 30 biomarker readings
-- Last 10 imaging studies
+UI → **✦ Ask Claude** in the header. Free-form conversation grounded in the
+**full** patient record:
+- Every biomarker reading (no recency cap)
+- Every imaging study (no recency cap)
+- Every fed document (date + type + summary + key findings — the raw text
+  is intentionally not in the chat prompt to keep it sane)
 - All tracked trials & papers
 - Active alerts and clinical judgments
 - The latest executive summary
+
+Use it for either general questions ("how has CgA trended?") or specific
+content lookup ("what did the CT report from August say about the hilar
+lymph node?"). When you ask about a specific past artefact, the chat
+points Claude at the DOCUMENTS / BIOMARKERS / IMAGING sections of its
+context so it cites real data instead of hallucinating.
 
 The chat is stateless across page reloads; only the in-tab history is sent
 back with each turn.

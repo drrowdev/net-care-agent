@@ -17,6 +17,9 @@ def build_chat_system(profile: dict) -> str:
         "Answer questions about the case using the data below. Be precise, cite specific values and dates.",
         "When uncertain, say so. Never give generic advice — always tie answers to the actual patient data.",
         "If asked about something not in the record, say the data isn't available.",
+        "When asked about a specific past document, biomarker reading, or imaging study, "
+        "consult the DOCUMENTS / BIOMARKERS / IMAGING sections below — they list every "
+        "clinical artefact the system has seen, not just the most recent.",
         "",
         "═══ PATIENT RECORD ═══",
         "",
@@ -62,22 +65,35 @@ def build_chat_system(profile: dict) -> str:
     biomarkers = profile.get("biomarkers", [])
     if biomarkers:
         lines.append(f"── BIOMARKERS ({len(biomarkers)} entries, most recent first) ──")
-        for b in sorted(biomarkers, key=lambda x: x.get("date", ""), reverse=True)[:30]:
-            flag = f" [{b.get('flag','')}]" if b.get("flag") else ""
-            ref = f" ref: {b.get('reference_range','')}" if b.get("reference_range") else ""
+        for b in sorted(biomarkers, key=lambda x: x.get("date", ""), reverse=True):
+            flag = f" [{b.get('flag', '')}]" if b.get("flag") else ""
+            ref = f" ref: {b.get('reference_range', '')}" if b.get("reference_range") else ""
             lines.append(
-                f"{b.get('date','')} {b.get('marker','')}: {b.get('value','')} {b.get('unit','')}{flag}{ref}"
+                f"{b.get('date', '')} {b.get('marker', '')}: {b.get('value', '')} {b.get('unit', '')}{flag}{ref}"
             )
         lines.append("")
 
     imaging = profile.get("imaging", [])
     if imaging:
-        lines.append(f"── IMAGING ({len(imaging)} studies) ──")
-        for img in sorted(imaging, key=lambda x: x.get("date", ""), reverse=True)[:10]:
+        lines.append(f"── IMAGING ({len(imaging)} studies, most recent first) ──")
+        for img in sorted(imaging, key=lambda x: x.get("date", ""), reverse=True):
             lines.append(
-                f"{img.get('date','')} {img.get('modality','')}: "
-                f"{img.get('impression','') or img.get('findings','')}"
+                f"{img.get('date', '')} {img.get('modality', '')}: "
+                f"{img.get('impression', '') or img.get('findings', '')}"
             )
+        lines.append("")
+
+    documents = profile.get("documents", [])
+    if documents:
+        lines.append(f"── DOCUMENTS ({len(documents)} entries, most recent first) ──")
+        for d in sorted(documents, key=lambda x: x.get("date", ""), reverse=True):
+            findings = d.get("key_findings") or []
+            findings_str = " | ".join(findings[:3]) if findings else ""
+            summary = (d.get("summary") or "").strip()
+            line = f"[{d.get('date', '')}] {d.get('type', '?')}: {summary}"
+            if findings_str:
+                line += f"  · key: {findings_str}"
+            lines.append(line)
         lines.append("")
 
     trials = profile.get("trials_tracked", [])

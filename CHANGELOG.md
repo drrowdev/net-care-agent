@@ -15,6 +15,21 @@ incremented when something user-visible or operationally meaningful changes.
   the `AGENTS.md` policy) and a public-repo safety checklist (no PHI,
   no infra names, no personal email).
 
+### Changed
+- **Chat now sees the full clinical record, not just recent slices.**
+  `build_chat_system` previously capped biomarkers at 30 entries and
+  imaging at 10, and never included the documents array. The chat could
+  not reliably answer "find that CT report from August" — it would
+  either drop the document from context or hallucinate. The prompt
+  builder now includes every biomarker, every imaging study, and every
+  document (date + type + summary + key_findings; raw_text intentionally
+  excluded). For a 100-document profile this adds ~30 KB to the chat
+  prompt, well within the model's context window.
+- The chat system prompt now explicitly directs Claude to consult the
+  DOCUMENTS / BIOMARKERS / IMAGING sections when asked about specific
+  past content, and `docs/operating_manual.md §6` is updated to describe
+  the broadened search behaviour.
+
 ## [0.7.0] — 2026-05-13
 
 ### Changed

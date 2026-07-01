@@ -8,7 +8,14 @@ incremented when something user-visible or operationally meaningful changes.
 
 ## [Unreleased]
 
-_Nothing yet._
+### Changed
+- **Anthropic model upgraded** from `claude-sonnet-4-6` → `claude-sonnet-5`
+  across all agent roles (intake, orchestrator, exec_summary, questions,
+  classify, chat). Sonnet 5 brings a 1M-token context window and up to
+  128k output tokens. The code default lives in `agent/config.py`; the
+  model actually used in production is controlled by the `ANTHROPIC_MODEL`
+  (and optional per-role `ANTHROPIC_MODEL_*`) app settings on the webapp —
+  set those to `claude-sonnet-5` to complete the rollout.
 
 ## [0.8.0] — 2026-05-13
 

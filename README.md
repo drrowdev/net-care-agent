@@ -14,7 +14,7 @@ learns from every consultation with the treating oncologist.
 
 | Layer       | Implementation                                              |
 |-------------|-------------------------------------------------------------|
-| LLM         | Anthropic Claude (Sonnet 4.6) with tool use                 |
+| LLM         | Anthropic Claude (Sonnet 5) with tool use                   |
 | Backend     | Flask + gunicorn                                            |
 | Storage     | JSON file on Azure Files mount (`/home/data`)               |
 | Frontend    | Single-page vanilla JS UI (`static/index.html` + `app.js` + `styles.css`) |
@@ -75,7 +75,7 @@ Environment variables to set as Application Settings:
   resolved via the webapp's system-assigned managed identity. See
   [`AGENTS.md` → Secrets](AGENTS.md#secrets) for the rotation runbook.
 - `DATA_DIR` defaults to `/home/data` on Azure (Azure Files mount)
-- `ANTHROPIC_MODEL` defaults to `claude-sonnet-4-6`; per-role overrides
+- `ANTHROPIC_MODEL` defaults to `claude-sonnet-5`; per-role overrides
   (`ANTHROPIC_MODEL_INTAKE`, `ANTHROPIC_MODEL_ORCHESTRATOR`, …) — see
   `.env.example`
 

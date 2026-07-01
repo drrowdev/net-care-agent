@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "NET/Care Research Agent — multi-agent AI system for monitoring NET cancer treatment options"
 requires-python = ">=3.11,<3.12"
 dependencies = [
-    "anthropic>=0.40",
+    "anthropic>=0.115",
     "flask>=3.0",
     "gunicorn>=22.0",
     "requests>=2.32",

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from . import config
-from .llm import client
+from .llm import client, first_text
 from .profile import build_patient_context
 
 
@@ -163,8 +163,9 @@ def handle_chat(profile: dict, user_message: str, history: list[dict]) -> str:
 
     resp = client.messages.create(
         model=config.MODEL_CHAT,
-        max_tokens=1500,
+        max_tokens=6000,
+        thinking=config.THINKING,
         system=system_prompt,
         messages=messages,
     )
-    return resp.content[0].text
+    return first_text(resp)

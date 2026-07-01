@@ -6,7 +6,7 @@ import datetime
 import json
 
 from . import config
-from .llm import client, strip_code_fences
+from .llm import client, first_text, strip_code_fences
 from .profile import build_patient_context
 
 TREATMENT_CLASSIFIER_SYSTEM_TEMPLATE = """\
@@ -79,8 +79,8 @@ def classify_treatments(profile: dict) -> list:
         )
         resp = client.messages.create(
             model=config.MODEL_CLASSIFY,
-            max_tokens=1500,
-            temperature=0,
+            max_tokens=6000,
+            thinking=config.THINKING,
             system=system_prompt,
             messages=[
                 {
@@ -94,7 +94,7 @@ def classify_treatments(profile: dict) -> list:
                 }
             ],
         )
-        raw = strip_code_fences(resp.content[0].text)
+        raw = strip_code_fences(first_text(resp))
         classified = json.loads(raw)
         if not isinstance(classified, list):
             classified = []

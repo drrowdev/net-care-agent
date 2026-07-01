@@ -104,7 +104,9 @@ A daily backup is written to `${DATA_DIR}/backups/profile_YYYYMMDD.json`
 
 ## Safety notes
 
-- All Claude calls that produce structured output run at `temperature=0`.
+- All Claude calls run with adaptive thinking (Sonnet 5); structured-output
+  calls parse the first `text` block (after any `thinking` block) and no
+  longer set `temperature` (it must be unset when thinking is enabled).
 - Clinical judgments from the oncologist override AI recommendations as hard constraints.
 - Trial and paper relevance is filtered before being persisted.
 - Treatment names are fuzzy-matched against synonyms (Somatuline = lanreotide etc.).

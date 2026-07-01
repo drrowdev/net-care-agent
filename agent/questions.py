@@ -7,7 +7,7 @@ import json
 
 from . import config
 from .judgments import get_clinical_judgments_context
-from .llm import client, strip_code_fences
+from .llm import client, first_text, strip_code_fences
 from .profile import (
     build_patient_context,
     get_output_language,
@@ -23,7 +23,8 @@ def generate_appointment_questions(appointment_type: str, focus_areas: list, pro
     """
     resp = client.messages.create(
         model=config.MODEL_QUESTIONS,
-        max_tokens=4000,
+        max_tokens=12000,
+        thinking=config.THINKING,
         system=(
             "You are a specialist medical research assistant helping a caregiver "
             "prepare for a cancer consultation. Generate specific, informed questions "
@@ -43,12 +44,13 @@ def generate_appointment_questions(appointment_type: str, focus_areas: list, pro
             }
         ],
     )
-    raw = strip_code_fences(resp.content[0].text)
+    text = first_text(resp)
+    raw = strip_code_fences(text)
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
         return {
-            "questions": [resp.content[0].text],
+            "questions": [text],
             "documents_to_bring": [],
             "tests_to_request_if_not_done": [],
         }
@@ -123,8 +125,8 @@ def generate_questions_for_profile(
     try:
         resp = client.messages.create(
             model=config.MODEL_QUESTIONS,
-            max_tokens=8000,
-            temperature=0,
+            max_tokens=16000,
+            thinking=config.THINKING,
             system=_build_questions_system_prompt(profile),
             messages=[
                 {
@@ -142,7 +144,7 @@ def generate_questions_for_profile(
                 }
             ],
         )
-        raw = strip_code_fences(resp.content[0].text)
+        raw = strip_code_fences(first_text(resp))
         questions = json.loads(raw)
         if not isinstance(questions, list):
             return []

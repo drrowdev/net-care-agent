@@ -1,4 +1,4 @@
-"""Executive summary generator — single-turn, temperature 0, JSON output."""
+"""Executive summary generator — single-turn, adaptive thinking, JSON output."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import json
 
 from . import config
 from .judgments import get_clinical_judgments_context
-from .llm import client, strip_code_fences
+from .llm import client, first_text, strip_code_fences
 from .profile import (
     build_patient_context,
     get_caregiver_relationship,
@@ -118,8 +118,8 @@ def generate_executive_summary(profile: dict) -> dict:
         )
         resp = client.messages.create(
             model=config.MODEL_EXEC_SUMMARY,
-            max_tokens=8000,
-            temperature=0,
+            max_tokens=16000,
+            thinking=config.THINKING,
             system=system_prompt,
             messages=[
                 {
@@ -147,7 +147,7 @@ def generate_executive_summary(profile: dict) -> dict:
             raise ValueError(
                 "model response truncated at max_tokens — bump max_tokens in exec_summary.py"
             )
-        raw = strip_code_fences(resp.content[0].text)
+        raw = strip_code_fences(first_text(resp))
         summary = json.loads(raw)
         summary["generated_at"] = datetime.date.today().isoformat()
         return summary

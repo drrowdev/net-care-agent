@@ -71,7 +71,7 @@ the Azure Files mount at `/home/data/patient_profile.json`. There is one user
 ```
 
 The **orchestrator** is the only agentic loop (max 12 iterations of tool use).
-All other agents are single-turn, `temperature=0`, return JSON.
+All other agents are single-turn, run with adaptive thinking, and return JSON.
 
 ## Why this shape
 

@@ -23,3 +23,18 @@ def strip_code_fences(text: str) -> str:
     if s.endswith("```"):
         s = s[: -len("```")].rstrip()
     return s.strip()
+
+
+def first_text(resp) -> str:
+    """Return the text of the first ``text`` content block in a response.
+
+    Adaptive thinking (on by default for Sonnet 5) prepends ``thinking``
+    blocks to the response, so the answer is not necessarily ``content[0]``.
+    This scans for the first ``text`` block and skips thinking / tool_use
+    blocks. Raises ``ValueError`` if the response has no text block (for
+    example, a response truncated mid-thinking at ``max_tokens``).
+    """
+    for block in resp.content:
+        if getattr(block, "type", None) == "text":
+            return block.text
+    raise ValueError("model response contained no text block")

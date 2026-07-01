@@ -15,7 +15,7 @@ PROFILE_PATH = DATA_DIR / "patient_profile.json"
 REPORTS_DIR = DATA_DIR / "reports"
 
 # Models — single env var per agent so they can be tuned independently.
-_DEFAULT_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+_DEFAULT_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5")
 
 MODEL_INTAKE = os.environ.get("ANTHROPIC_MODEL_INTAKE", _DEFAULT_MODEL)
 MODEL_ORCHESTRATOR = os.environ.get("ANTHROPIC_MODEL_ORCHESTRATOR", _DEFAULT_MODEL)

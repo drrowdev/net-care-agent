@@ -220,7 +220,7 @@
       "y": 260,
       "width": 210,
       "height": 70,
-      "text": "Anthropic Claude API\n(Sonnet 4.5)\ntool use + JSON mode",
+      "text": "Anthropic Claude API\n(Sonnet 5)\ntool use + JSON mode",
       "fontSize": 13,
       "fontFamily": 1,
       "strokeColor": "#000000",

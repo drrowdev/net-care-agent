@@ -17,7 +17,7 @@ day one without re-discovering it from chat history.
 A single-tenant clinical research assistant for one neuroendocrine tumour
 (NET) patient. The caregiver feeds it clinical documents (lab reports,
 imaging, oncology notes); intake/orchestrator/exec-summary agents (all
-Claude Sonnet 4.6) parse them, search PubMed and ClinicalTrials.gov v2 for
+Claude Sonnet 5) parse them, search PubMed and ClinicalTrials.gov v2 for
 relevant developments, and produce a JSON executive summary plus a
 caregiver-language appointment-question list. Everything lives in **one
 JSON file** on Azure Files. There is no database, no scheduler, no MSAL,

@@ -8,7 +8,7 @@ import re
 
 from . import config
 from . import profile as profile_mod
-from .llm import client, strip_code_fences
+from .llm import client, first_text, strip_code_fences
 from .profile import build_patient_context
 
 INTAKE_SYSTEM_TEMPLATE = """\
@@ -132,12 +132,13 @@ def run_intake(text: str, profile: dict) -> tuple[dict, dict]:
     )
     resp = client.messages.create(
         model=config.MODEL_INTAKE,
-        max_tokens=4000,
+        max_tokens=12000,
+        thinking=config.THINKING,
         system=system_prompt,
         messages=[{"role": "user", "content": f"Extract structured data:\n\n{text}"}],
     )
 
-    raw = strip_code_fences(resp.content[0].text)
+    raw = strip_code_fences(first_text(resp))
     try:
         extracted: dict = json.loads(raw)
     except json.JSONDecodeError:

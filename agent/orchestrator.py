@@ -146,7 +146,8 @@ def run_orchestrator(profile: dict, extracted: dict) -> str:
         iteration += 1
         resp = client.messages.create(
             model=config.MODEL_ORCHESTRATOR,
-            max_tokens=4096,
+            max_tokens=12000,
+            thinking=config.THINKING,
             system=system,
             tools=TOOLS,
             messages=messages,
@@ -199,7 +200,8 @@ def run_orchestrator(profile: dict, extracted: dict) -> str:
         )
         final_resp = client.messages.create(
             model=config.MODEL_ORCHESTRATOR,
-            max_tokens=4096,
+            max_tokens=12000,
+            thinking=config.THINKING,
             system=system,
             tools=[],
             messages=messages,

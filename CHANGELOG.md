@@ -16,6 +16,17 @@ incremented when something user-visible or operationally meaningful changes.
   model actually used in production is controlled by the `ANTHROPIC_MODEL`
   (and optional per-role `ANTHROPIC_MODEL_*`) app settings on the webapp —
   set those to `claude-sonnet-5` to complete the rollout.
+- **Adaptive thinking enabled** on every agent call (`thinking={"type":
+  "adaptive"}`, Sonnet 5's default). Responses now carry leading `thinking`
+  blocks, so parsing uses a new `agent.llm.first_text()` helper that returns
+  the first `text` block instead of assuming `content[0]`.
+- **Dropped `temperature=0`** from the exec-summary, classify, and
+  question-generation calls — temperature must be unset (or 1) when thinking
+  is enabled.
+- **Raised `max_tokens`** across all agents for thinking headroom
+  (exec_summary 8000→16000, orchestrator 4096→12000, others 2–3×).
+- **`anthropic` SDK floor raised** to `>=0.115` for native adaptive-thinking
+  support.
 
 ## [0.8.0] — 2026-05-13
 

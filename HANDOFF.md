@@ -225,7 +225,7 @@ Recovery Services Vault listed in your operator runbook.
   `os.replace`) so a crash mid-write never corrupts the JSON.
 - **The orchestrator is the only agentic loop.** Max 12 iterations of
   tool-use. Other agents (intake, exec-summary, questions, classify, chat)
-  are single-turn, `temperature=0`, return JSON.
+  are single-turn, run with adaptive thinking, and return JSON.
 - **JSON-decode fallback in every agent.** If Claude returns malformed JSON
   the agent returns an `insufficient_data` shaped object instead of 500-ing
   the whole request. Look for `try: json.loads(raw) except` in each module.

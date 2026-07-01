@@ -26,3 +26,8 @@ MODEL_CHAT = os.environ.get("ANTHROPIC_MODEL_CHAT", _DEFAULT_MODEL)
 
 # Back-compat: callers that don't care about per-agent overrides.
 MODEL = _DEFAULT_MODEL
+
+# Adaptive thinking (Sonnet 5+): let Claude decide when and how much to think.
+# Passed on every messages.create call. IMPORTANT: temperature must be unset
+# (or 1) whenever thinking is enabled — never send temperature=0 with this.
+THINKING = {"type": "adaptive"}

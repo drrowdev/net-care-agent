@@ -8,6 +8,22 @@ incremented when something user-visible or operationally meaningful changes.
 
 ## [Unreleased]
 
+### Changed
+- **All six agent system prompts rewritten** (Fable 5 audit, tuned for Opus 4.8).
+  Highlights: intake JSON schema is no longer interrupted by prose and gains an
+  anti-fabrication + date-disambiguation rule; the orchestrator swaps its rigid
+  A–E script for decision criteria + interleaved-thinking budget discipline and a
+  hard "cite only tool-returned PMIDs/NCTs" rule; exec_summary forbids inventing
+  an NCT for `best_trial` and tightens per-field brevity to avoid truncation;
+  classify makes date-based reasoning primary; questions anchors every item to a
+  profile datum; chat gains explicit decision-support framing and a red-flag rule.
+  Output contracts (JSON keys/enums, report section headers) are unchanged.
+- **Prompt templating switched to `agent.llm.render_prompt`** (`[[SENTINEL]]`
+  placeholders) for the JSON-schema prompts, so literal `{`/`}` no longer need
+  escaping. Runtime injection points (patient context, summary, clinical
+  judgments, region filter, output language) are preserved; a render-safety test
+  suite asserts no placeholder ever leaks into a live prompt.
+
 ### Fixed
 - **Safety: clinical judgments now override data-derived conclusions in all four
   agents that receive them.** Previously only the orchestrator and exec-summary

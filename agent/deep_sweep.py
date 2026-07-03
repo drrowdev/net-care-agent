@@ -32,7 +32,7 @@ import time
 from . import config
 from . import orchestrator as orch
 from .judgments import get_clinical_judgments_context
-from .llm import client, first_text
+from .llm import client, first_text, render_prompt
 from .profile import (
     build_patient_context,
     get_caregiver_relationship,
@@ -118,12 +118,13 @@ Keep it decision-support only. The oncologist reviews everything before acting.
 
 def _build_system(profile: dict) -> str:
     return (
-        orch.ORCHESTRATOR_SYSTEM_TEMPLATE.format(
-            patient_context=build_patient_context(profile),
-            caregiver_relationship=get_caregiver_relationship(profile),
-            patient_summary=get_patient_summary(profile),
-            clinical_judgments=get_clinical_judgments_context(profile),
-            region_filter_instruction=orch._region_filter_instruction(profile),
+        render_prompt(
+            orch.ORCHESTRATOR_SYSTEM_TEMPLATE,
+            PATIENT_CONTEXT=build_patient_context(profile),
+            CAREGIVER=get_caregiver_relationship(profile),
+            PATIENT_SUMMARY=get_patient_summary(profile),
+            CLINICAL_JUDGMENTS=get_clinical_judgments_context(profile),
+            REGION_FILTER=orch._region_filter_instruction(profile),
         )
         + _EXPLORATORY_ADDENDUM
     )

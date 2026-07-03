@@ -38,3 +38,19 @@ def first_text(resp) -> str:
         if getattr(block, "type", None) == "text":
             return block.text
     raise ValueError("model response contained no text block")
+
+
+def render_prompt(template: str, **values: str) -> str:
+    """Fill ``[[SENTINEL]]`` placeholders in a prompt template.
+
+    Used instead of ``str.format`` for prompts that embed literal JSON schemas:
+    ``format`` would require every ``{``/``}`` in the schema to be doubled, which
+    is error-prone. Sentinels like ``[[PATIENT_CONTEXT]]`` sidestep that entirely
+    so JSON braces stay literal. Unknown placeholders are left untouched (a render
+    test asserts none remain), and a value of ``""`` cleanly removes its line's
+    content without leaving a stray token.
+    """
+    out = template
+    for key, val in values.items():
+        out = out.replace(f"[[{key}]]", val)
+    return out

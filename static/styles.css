@@ -451,6 +451,7 @@
     color: var(--text1);
   }
   .task-type.digest { background: #deeaf7; color: var(--blue); }
+  .task-type.deep-sweep { background: #ece4f7; color: #7c5cbf; }
   .task-doctype { font-family: var(--mono); font-size: 11px; color: var(--teal); }
   .task-time { font-family: var(--mono); font-size: 10px; color: var(--text2); margin-left: auto; }
   .task-preview { font-size: 12px; color: var(--text1); line-height: 1.5; margin-bottom: 4px; }

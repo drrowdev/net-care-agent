@@ -31,3 +31,16 @@ MODEL = _DEFAULT_MODEL
 # Passed on every messages.create call. IMPORTANT: temperature must be unset
 # (or 1) whenever thinking is enabled — never send temperature=0 with this.
 THINKING = {"type": "adaptive"}
+
+# Ensemble deep-sweep: on-demand, high-effort research pass that runs several
+# strong models with relaxed suppression, then synthesises a unioned report.
+# Comma-separated model IDs; the synthesiser merges their reports. This is a
+# read-only pre-appointment tool — it never writes findings back to the profile.
+DEEPSWEEP_MODELS = [
+    m.strip()
+    for m in os.environ.get("ANTHROPIC_DEEPSWEEP_MODELS", "claude-fable-5,claude-opus-4-8").split(
+        ","
+    )
+    if m.strip()
+]
+DEEPSWEEP_SYNTHESIS_MODEL = os.environ.get("ANTHROPIC_DEEPSWEEP_SYNTHESIS", "claude-opus-4-8")

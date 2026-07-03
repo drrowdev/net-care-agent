@@ -34,6 +34,23 @@ Use this when no new document has arrived but you want a fresh literature/trial 
    new papers / trials added.
 3. The text report is saved to `/home/data/reports/report_digest_*.txt`.
 
+## 2b. Run an ensemble deep-sweep (pre-appointment deep prep)
+
+Use this before an oncology appointment when you want the most thorough,
+insight-hunting pass — not just a routine sweep:
+
+1. UI → header **⁂ Deep sweep** button, then confirm the prompt.
+2. It runs two premium models (default **Fable 5 + Opus 4.8**) with the routine
+   "skip what's already tracked" rules relaxed, then a synthesis pass **unions**
+   their findings into one briefing with a **Cross-Cutting Insights** and a
+   **Where the models diverged** section.
+3. Takes a few minutes and costs ~$1–2 (a cost footer is shown on the report).
+   The report is saved to `/home/data/reports/report_deepsweep_*.md`.
+4. **Read-only:** unlike Feed/Digest, the deep-sweep does **not** add anything to
+   your tracked papers / trials / alerts — it is purely a briefing for you to
+   take to the oncologist. Everything is decision-support only; your clinician
+   reviews it before any action.
+
 ## 3. Record a clinical judgment
 
 After every consultation, capture the oncologist's actual position so future AI runs

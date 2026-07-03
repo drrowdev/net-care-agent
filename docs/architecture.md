@@ -73,6 +73,13 @@ the Azure Files mount at `/home/data/patient_profile.json`. There is one user
 The **orchestrator** is the only agentic loop (max 12 iterations of tool use).
 All other agents are single-turn, run with adaptive thinking, and return JSON.
 
+The **ensemble deep-sweep** (`agent/deep_sweep.py`, `POST /api/deep-sweep`) is an
+on-demand variant of the orchestrator: it runs the same system prompt + tools
+across several strong models (default Fable 5 + Opus 4.8) with suppression
+relaxed, then a synthesis pass unions their reports. It is **read-only** — it
+runs on deep copies and never writes back to the profile — so it is safe to run
+repeatedly for pre-appointment prep without polluting the tracked lists.
+
 ## Why this shape
 
 | Decision | Why |

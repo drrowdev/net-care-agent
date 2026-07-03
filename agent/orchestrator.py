@@ -6,7 +6,7 @@ import json
 
 from . import config
 from .judgments import get_clinical_judgments_context
-from .llm import client, render_prompt
+from .llm import cached_system, cached_tools, client, render_prompt
 from .profile import (
     build_patient_context,
     get_caregiver_relationship,
@@ -92,6 +92,9 @@ def run_orchestrator(profile: dict, extracted: dict) -> str:
         CLINICAL_JUDGMENTS=get_clinical_judgments_context(profile),
         REGION_FILTER=_region_filter_instruction(profile),
     )
+    # P7: cache the stable system+tools prefix so tool-loop iterations reuse it.
+    cached_sys = cached_system(system)
+    cached_tool_list = cached_tools(TOOLS)
 
     existing_pmids = [p["pmid"] for p in profile.get("literature_watched", [])]
     existing_ncts = [t["nct_id"] for t in profile.get("trials_tracked", [])]
@@ -122,8 +125,8 @@ def run_orchestrator(profile: dict, extracted: dict) -> str:
             model=config.MODEL_ORCHESTRATOR,
             max_tokens=12000,
             thinking=config.THINKING,
-            system=system,
-            tools=TOOLS,
+            system=cached_sys,
+            tools=cached_tool_list,
             messages=messages,
         )
 
@@ -176,7 +179,7 @@ def run_orchestrator(profile: dict, extracted: dict) -> str:
             model=config.MODEL_ORCHESTRATOR,
             max_tokens=12000,
             thinking=config.THINKING,
-            system=system,
+            system=cached_sys,
             tools=[],
             messages=messages,
         )

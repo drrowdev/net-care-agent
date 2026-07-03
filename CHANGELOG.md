@@ -42,6 +42,11 @@ incremented when something user-visible or operationally meaningful changes.
   - **Pre-save rotating snapshots** (`agent/backups.py`): every `save_profile`
     first snapshots the prior state (last 20 kept), so a bad write/merge is
     recoverable to the immediately-prior state rather than yesterday's backup.
+  - **Prompt caching** (`agent/llm.py` `cached_system`/`cached_tools`): the stable
+    system+tools prefix of the orchestrator tool-loop, the deep-sweep, and the
+    chat system prompt are marked cacheable (`cache_control: ephemeral`), so
+    repeated prefills are reused at ~0.1x input cost with lower latency. Fully
+    behaviour-neutral; the 5-minute TTL covers a loop or chat session.
 
 ### Changed
 - **All six agent system prompts rewritten** (Fable 5 audit, tuned for Opus 4.8).

@@ -54,3 +54,32 @@ def render_prompt(template: str, **values: str) -> str:
     for key, val in values.items():
         out = out.replace(f"[[{key}]]", val)
     return out
+
+
+_CACHE_CONTROL = {"type": "ephemeral"}
+
+
+def cached_system(text: str) -> list[dict]:
+    """Wrap a system prompt as a single cacheable block (prompt caching, P7).
+
+    Marking the stable system prefix ephemeral lets the API reuse it at ~0.1x
+    input cost (and lower latency) across the orchestrator's tool-loop iterations
+    and a chat session's messages, where the prefix is re-sent unchanged. The
+    5-minute TTL comfortably covers a ≤3-minute loop or a chat session. Behaviour
+    is unchanged — caching is transparent.
+    """
+    return [{"type": "text", "text": text, "cache_control": _CACHE_CONTROL}]
+
+
+def cached_tools(tools: list[dict]) -> list[dict]:
+    """Return ``tools`` with a cache breakpoint on the last one.
+
+    A ``cache_control`` on the final tool marks the whole (stable) tool array as
+    cacheable, so it too is reused across loop iterations. Returns a shallow copy;
+    the shared ``TOOLS`` registry is not mutated.
+    """
+    if not tools:
+        return tools
+    out = [dict(t) for t in tools]
+    out[-1] = {**out[-1], "cache_control": _CACHE_CONTROL}
+    return out

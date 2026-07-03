@@ -44,3 +44,10 @@ DEEPSWEEP_MODELS = [
     if m.strip()
 ]
 DEEPSWEEP_SYNTHESIS_MODEL = os.environ.get("ANTHROPIC_DEEPSWEEP_SYNTHESIS", "claude-opus-4-8")
+
+# Dual-pass intake verification (architecture-review P1). OFF by default: it adds
+# a second extraction pass that can only ADD items whose verbatim source quote is
+# found in the document, so it is monotonically safe — but its recall benefit is
+# unproven until measured on a golden set (see scripts/eval_harness). Enable with
+# INTAKE_VERIFY=1 once the eval harness shows a real lift.
+INTAKE_VERIFY = os.environ.get("INTAKE_VERIFY", "0").strip().lower() in ("1", "true", "yes")

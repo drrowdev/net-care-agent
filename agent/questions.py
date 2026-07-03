@@ -6,7 +6,7 @@ import datetime
 import json
 
 from . import config
-from .judgments import get_clinical_judgments_context
+from .judgments import CLINICAL_JUDGMENTS_OVERRIDE, get_clinical_judgments_context
 from .llm import client, first_text, strip_code_fences
 from .profile import (
     build_patient_context,
@@ -110,7 +110,8 @@ def _build_questions_system_prompt(profile: dict) -> str:
         "- Trials: clinical trial eligibility and access\n"
         "- Monitoring: follow-up schedule, biomarker tracking\n"
         "- Other: prognosis, referrals, logistics\n\n"
-        "Generate 10-15 questions. Prioritise based on current clinical situation."
+        "Generate 10-15 questions. Prioritise based on current clinical situation.\n\n"
+        + CLINICAL_JUDGMENTS_OVERRIDE
     )
 
 

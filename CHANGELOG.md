@@ -8,6 +8,16 @@ incremented when something user-visible or operationally meaningful changes.
 
 ## [Unreleased]
 
+### Fixed
+- **Safety: clinical judgments now override data-derived conclusions in all four
+  agents that receive them.** Previously only the orchestrator and exec-summary
+  framed the oncologist's `clinical_judgments` as hard constraints; the **chat**
+  and **questions** agents included them only as context, so a judgment (e.g.
+  "trial X is ruled out") could be under-weighted. A single shared
+  `CLINICAL_JUDGMENTS_OVERRIDE` block (in `agent/judgments.py`) is now wired into
+  both, instructing the model to treat judgments as ground truth that overrides
+  the raw data. Decision-support only; the oncologist still reviews all output.
+
 ### Added
 - **Ensemble deep-sweep** (`agent/deep_sweep.py`, `POST /api/deep-sweep`, and a
   header **⁂ Deep sweep** button). An on-demand, high-effort pre-appointment

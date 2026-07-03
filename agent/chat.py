@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from . import config
+from .judgments import CLINICAL_JUDGMENTS_OVERRIDE
 from .llm import client, first_text
 from .profile import build_patient_context
 
@@ -134,6 +135,7 @@ def build_chat_system(profile: dict) -> str:
 
     judgments = profile.get("clinical_judgments", [])
     if judgments:
+        lines.append(CLINICAL_JUDGMENTS_OVERRIDE)
         lines.append("── CLINICAL JUDGMENTS FROM CONSULTATIONS ──")
         for j in judgments:
             lines.append(f"[{j.get('category','').upper()}] {j.get('date','')} {j.get('text','')}")

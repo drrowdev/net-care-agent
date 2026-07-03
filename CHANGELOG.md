@@ -8,6 +8,24 @@ incremented when something user-visible or operationally meaningful changes.
 
 ## [Unreleased]
 
+### Added
+- **Ensemble deep-sweep** (`agent/deep_sweep.py`, `POST /api/deep-sweep`, and a
+  header **⁂ Deep sweep** button). An on-demand, high-effort pre-appointment
+  research pass that runs several strong models (default **Claude Fable 5 +
+  Claude Opus 4.8**) with the routine dedup/suppression rules relaxed, then a
+  synthesis pass (default Opus 4.8) **unions** their reports — every unique,
+  grounded catch from either model is preserved and disagreements are surfaced
+  for clinician confirmation. Rationale: an A/B on the live record showed Fable 5
+  uniquely spotting cross-trial connections while Opus 4.8 uniquely caught a
+  −20% platelet drop; the union beats any single model.
+  - **Read-only by design:** each model runs against a deep copy of the profile
+    and the job never calls `save_profile`, so re-surfaced papers/trials/alerts
+    do not pollute the tracked lists or contaminate future runs. The report is
+    saved to `/home/data/reports/report_deepsweep_*.md`.
+  - Configurable via `ANTHROPIC_DEEPSWEEP_MODELS` and
+    `ANTHROPIC_DEEPSWEEP_SYNTHESIS` app settings. Cost is shown as a footer on
+    each report (~$1–2/run at current pricing). Decision-support only.
+
 ### Changed
 - **Anthropic model upgraded** from `claude-sonnet-4-6` → `claude-sonnet-5`
   across all agent roles (intake, orchestrator, exec_summary, questions,

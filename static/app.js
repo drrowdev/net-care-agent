@@ -1015,7 +1015,7 @@
       <div class="task-item status-${t.status} ${selectedTaskId === t.id ? 'selected' : ''}"
            onclick="selectTask('${t.id}')">
         <div class="task-header">
-          <span class="task-type ${t.type === 'digest' ? 'digest' : ''}">${t.type}</span>
+          <span class="task-type ${t.type === 'digest' ? 'digest' : (t.type === 'deep-sweep' ? 'deep-sweep' : '')}">${t.type}</span>
           ${t.doc_type ? `<span class="task-doctype">${docTypeLabel(t)}</span>` : ''}
           <span class="task-time">${relativeTime(t.created_at)}</span>
         </div>
@@ -1260,6 +1260,25 @@
     btn.disabled = true;
     try {
       const r = await fetch('/api/digest', { method: 'POST' });
+      const d = await r.json();
+      if (d.job_id) {
+        selectedTaskId = d.job_id;
+        await loadTasks();
+        selectTask(d.job_id);
+      }
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function runDeepSweep() {
+    const btn = document.getElementById('btn-deep-sweep');
+    if (!confirm('Run an ensemble deep-sweep? This runs two premium models (Fable 5 + Opus 4.8) plus a synthesis pass — it takes a few minutes and costs roughly $1–2 per run. Findings are for oncologist review and are NOT saved to the tracked lists.')) {
+      return;
+    }
+    btn.disabled = true;
+    try {
+      const r = await fetch('/api/deep-sweep', { method: 'POST' });
       const d = await r.json();
       if (d.job_id) {
         selectedTaskId = d.job_id;

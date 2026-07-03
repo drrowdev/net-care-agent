@@ -24,6 +24,7 @@ from .config import (
     PROFILE_PATH,
     REPORTS_DIR,
 )
+from .deep_sweep import run_deep_sweep
 from .exec_summary import generate_executive_summary
 from .intake import _treatment_similarity, run_intake
 from .judgments import get_clinical_judgments_context
@@ -80,6 +81,7 @@ __all__ = [
     "run_intake",
     "_treatment_similarity",
     "run_orchestrator",
+    "run_deep_sweep",
     "classify_treatments",
     "generate_executive_summary",
     "generate_appointment_questions",

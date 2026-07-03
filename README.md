@@ -78,6 +78,9 @@ Environment variables to set as Application Settings:
 - `ANTHROPIC_MODEL` defaults to `claude-sonnet-5`; per-role overrides
   (`ANTHROPIC_MODEL_INTAKE`, `ANTHROPIC_MODEL_ORCHESTRATOR`, …) — see
   `.env.example`
+- `ANTHROPIC_DEEPSWEEP_MODELS` / `ANTHROPIC_DEEPSWEEP_SYNTHESIS` — models used by
+  the on-demand ensemble deep-sweep (default `claude-fable-5,claude-opus-4-8`
+  synthesised by `claude-opus-4-8`)
 
 ## Profile schema
 
@@ -132,6 +135,7 @@ A daily backup is written to `${DATA_DIR}/backups/profile_YYYYMMDD.json`
 │   ├── judgments.py      # clinical-judgment context formatter
 │   ├── intake.py         # extract structured medical data from text
 │   ├── orchestrator.py   # agentic loop driving the tools
+│   ├── deep_sweep.py     # on-demand ensemble deep-sweep (multi-model, read-only)
 │   ├── classify.py       # treatment dedup + active/planned/completed
 │   ├── exec_summary.py   # JSON executive summary generator
 │   ├── questions.py      # Appointment questions (language via patient.language)

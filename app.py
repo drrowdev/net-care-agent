@@ -202,6 +202,43 @@ def _run_digest_job(job_id: str):
         })
 
 
+def _run_deepsweep_job(job_id: str):
+    """Ensemble deep-sweep: multi-model exploratory research pass.
+
+    Deliberately READ-ONLY — it never calls save_profile(), so re-surfaced
+    papers/trials/alerts do not pollute the tracked lists. Produces a unioned
+    report artifact for pre-appointment prep only.
+    """
+    try:
+        _update_job(job_id, {"status": "running", "stage": "deep-sweep"})
+        profile = agent.load_profile()
+        result = agent.run_deep_sweep(profile)  # non-mutating; profile NOT saved
+        report = result["report"]
+
+        reports_dir = DATA_DIR / "reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        rpath = reports_dir / f"report_deepsweep_{stamp}.md"
+        rpath.write_text(report, encoding="utf-8")
+
+        _update_job(job_id, {
+            "status"     : "done",
+            "stage"      : "done",
+            "report"     : report,
+            "report_file": str(rpath),
+            "cost_total" : result.get("cost_total"),
+            "finished_at": datetime.datetime.now().isoformat(),
+        })
+
+    except Exception as e:
+        _update_job(job_id, {
+            "status"   : "error",
+            "stage"    : "error",
+            "error"    : str(e),
+            "traceback": traceback.format_exc(),
+        })
+
+
 # ── API routes ────────────────────────────────────────────────────────────────
 @app.after_request
 def _add_cache_headers(response):
@@ -375,6 +412,31 @@ def api_digest():
     }
     _add_job(job)
     threading.Thread(target=_run_digest_job, args=(job["id"],), daemon=True).start()
+    return jsonify({"job_id": job["id"]})
+
+
+@app.route("/api/deep-sweep", methods=["POST"])
+def api_deep_sweep():
+    """Enqueue an ensemble deep-sweep (multi-model exploratory research pass).
+
+    Read-only: the job does not write findings back to the profile.
+    """
+    job = {
+        "id"           : _new_id(),
+        "type"         : "deep-sweep",
+        "status"       : "queued",
+        "stage"        : "queued",
+        "created_at"   : datetime.datetime.now().isoformat(),
+        "finished_at"  : None,
+        "input_preview": "Ensemble deep-sweep — multi-model, unioned findings",
+        "document_type": "deep-sweep",
+        "summary"      : None,
+        "key_findings" : [],
+        "report"       : None,
+        "error"        : None,
+    }
+    _add_job(job)
+    threading.Thread(target=_run_deepsweep_job, args=(job["id"],), daemon=True).start()
     return jsonify({"job_id": job["id"]})
 
 

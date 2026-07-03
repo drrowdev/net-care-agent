@@ -46,6 +46,8 @@ from .tools import (
     search_clinical_trials,
     search_pubmed,
 )
+from .trials_poll import poll_tracked_trials
+from .verify import verification_note, verify_references
 
 __all__ = [
     # config
@@ -83,6 +85,9 @@ __all__ = [
     "_treatment_similarity",
     "run_orchestrator",
     "run_deep_sweep",
+    "poll_tracked_trials",
+    "verify_references",
+    "verification_note",
     "classify_treatments",
     "generate_executive_summary",
     "generate_appointment_questions",

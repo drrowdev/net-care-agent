@@ -14,6 +14,7 @@ from .profile import (
     get_trial_region_filter,
 )
 from .tools import TOOLS, execute_tool
+from .verify import verification_note, verify_references
 
 ORCHESTRATOR_SYSTEM_TEMPLATE = """\
 You are a specialist oncology research agent monitoring [[PATIENT_CONTEXT]].
@@ -184,4 +185,11 @@ def run_orchestrator(profile: dict, extracted: dict) -> str:
                 report_parts.append(block.text.strip())
 
     print(f"  ✓  Orchestrator finished ({iteration} iteration(s))")
-    return "\n\n".join(report_parts)
+    report = "\n\n".join(report_parts)
+    # P3: deterministic backstop — flag any cited PMID/NCT that does not resolve
+    # in its primary registry (guards against fabricated citations).
+    try:
+        report += verification_note(verify_references(report))
+    except Exception as e:  # verification must never break report delivery
+        print(f"  ⚠  Reference verification skipped: {e}")
+    return report

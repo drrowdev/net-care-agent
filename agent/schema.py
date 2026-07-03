@@ -211,6 +211,8 @@ class Appointment(_Lenient):
     with_: str | None = Field(None, alias="with")
     location: str | None = None
     notes: str | None = None
+    description: str | None = None
+    type: str | None = None
 
 
 class ExecutiveSummary(_Lenient):

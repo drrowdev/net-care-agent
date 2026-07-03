@@ -39,6 +39,9 @@ SCHEMA (omit keys that have no data; never add keys):
     {"symptom": "name", "severity": 1-5_or_null, "note": "string_or_null",
      "related_treatment": "treatment_name_or_null"}
   ],
+  "appointments": [
+    {"date": "YYYY-MM-DD", "description": "what the event is", "type": "call|appointment|scan|review|infusion|other"}
+  ],
   "key_findings": ["3-5 most clinically important findings"],
   "suggested_workflows": ["pubmed_search", "trial_search", "biomarker_analysis", "appointment_prep"],
   "workflow_rationale": "brief explanation of why these workflows are recommended"
@@ -53,6 +56,7 @@ EXTRACTION RULES
 - sstr_status_update / sstr_score_update: only when explicitly reported (SSTR imaging such as DOTATATE/octreotide scans, or pathology IHC). The score is the Krenning score (0-4) or the stated IHC score — record it exactly as given.
 - treatment_changes: explicit starts, stops, and dose/schedule changes only.
 - symptoms_reported: ONLY explicitly-described patient symptoms or side effects (e.g. "patient reports nausea grade 2 since starting lanreotide"). Do NOT invent symptoms from biomarker values, imaging findings, or the clinician's own conclusions — those belong in key_findings. severity is 1=mild through 5=severe; null if the text doesn't specify.
+- appointments: any scheduled or planned FUTURE event with a concrete date — follow-up calls, clinic visits, scans, infusions, MDT/tumour-board reviews (e.g. "follow-up call 14.7.2026", "next CT on 3 Aug", "review appointment in two weeks"). Convert the date to YYYY-MM-DD; if the text gives only a relative date, resolve it against the document's clinical date. Omit the entry if no concrete date can be determined. description is a short noun phrase; type is one of call/appointment/scan/review/infusion/other. Do NOT include past/completed events here.
 - key_findings: the 3-5 most clinically important findings, each traceable to a specific statement in the document.
 - suggested_workflows: choose only from the four listed values, and only when THIS document creates a concrete reason: new/changed abnormal lab → "biomarker_analysis"; new lesion, progression, grade change, or treatment question → "pubmed_search"; a change relevant to trial eligibility (Ki-67, SSTR, progression, organ function) → "trial_search"; an upcoming decision or consultation implied → "appointment_prep". workflow_rationale: one brief sentence tied to the specific finding.
 - document_type: pick the best fit; use "other" when genuinely ambiguous.
@@ -122,6 +126,39 @@ def _persist_symptoms(profile: dict, reported: list, doc_date: str) -> None:
                 "note": (s.get("note") or "").strip() or None,
                 "related_treatment": (s.get("related_treatment") or "").strip() or None,
                 "source": "ai",
+            }
+        )
+
+
+def _persist_appointments(profile: dict, appointments: list, doc_date: str) -> None:
+    """Append AI-extracted appointments to profile["appointments"], deduping by
+    (date, description) so re-feeding a document doesn't double-log. Only entries
+    with a concrete date are kept; the dashboard timeline merge surfaces upcoming
+    ones deterministically."""
+    profile.setdefault("appointments", [])
+    existing = profile["appointments"]
+    for a in appointments:
+        if not isinstance(a, dict):
+            continue
+        date = (a.get("date") or "").strip()[:10]
+        desc = (a.get("description") or a.get("notes") or "").strip()
+        if not date or not desc:
+            continue
+        desc_lower = desc.lower()
+        dup = any(
+            (e.get("date") or "")[:10] == date
+            and (e.get("description") or e.get("notes") or "").strip().lower() == desc_lower
+            for e in existing
+        )
+        if dup:
+            continue
+        existing.append(
+            {
+                "date": date,
+                "description": desc,
+                "type": (a.get("type") or "").strip().lower() or "appointment",
+                "source": "ai",
+                "recorded_from_date": doc_date or None,
             }
         )
 
@@ -327,6 +364,7 @@ def run_intake(text: str, profile: dict) -> tuple[dict, dict]:
         profile["patient"]["sstr_score"] = extracted["sstr_score_update"]
 
     _persist_symptoms(profile, extracted.get("symptoms_reported") or [], doc_date)
+    _persist_appointments(profile, extracted.get("appointments") or [], doc_date)
 
     for tx in extracted.get("treatment_changes", []):
         tx_lower = tx.lower().strip()

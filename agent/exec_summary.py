@@ -81,6 +81,63 @@ Rules:
 """
 
 
+_APPT_TYPE_MAP = {
+    "call": "appointment",
+    "appointment": "appointment",
+    "scan": "scan",
+    "imaging": "scan",
+    "review": "milestone",
+    "infusion": "milestone",
+    "treatment": "milestone",
+    "test": "test",
+    "other": "milestone",
+}
+
+
+def _merge_upcoming_appointments(summary: dict, profile: dict) -> dict:
+    """Guarantee upcoming structured appointments appear on the timeline.
+
+    The LLM timeline is capped at 6 and re-ranked each run, so a near-term
+    follow-up can be dropped for more distant items. This deterministically adds
+    any upcoming appointment from ``profile['appointments']`` that the LLM's
+    timeline doesn't already cover, then sorts by date. Additions are marked
+    provisional (they come from documents, not a confirmed schedule beyond what
+    the note stated). Never raises.
+    """
+    try:
+        today = datetime.date.today().isoformat()
+        timeline = summary.get("timeline") or []
+        for appt in profile.get("appointments", []) or []:
+            a_date = (appt.get("date") or "")[:10]
+            if not a_date or a_date < today:
+                continue  # only upcoming, dated events
+            desc = (appt.get("description") or appt.get("notes") or "Appointment").strip()
+            # Skip if a timeline item already covers this date with overlapping text.
+            dup = any(
+                a_date == (t.get("date") or "")[:10]
+                and (
+                    desc.lower()[:20] in (t.get("event") or "").lower()
+                    or (t.get("event") or "").lower()[:20] in desc.lower()
+                )
+                for t in timeline
+            )
+            if dup:
+                continue
+            timeline.append(
+                {
+                    "date": a_date,
+                    "event": desc,
+                    "type": _APPT_TYPE_MAP.get((appt.get("type") or "").lower(), "appointment"),
+                    "provisional": True,
+                }
+            )
+        timeline.sort(key=lambda t: (t.get("date") or "9999-99-99"))
+        summary["timeline"] = timeline[:12]  # keep bounded, nearest-first
+    except Exception as e:  # never let timeline merge break summary delivery
+        print(f"  ⚠  appointment timeline merge skipped: {e}")
+    return summary
+
+
 def generate_executive_summary(profile: dict) -> dict:
     try:
         today = datetime.date.today()
@@ -116,6 +173,8 @@ def generate_executive_summary(profile: dict) -> dict:
             f"Full imaging history ({len(profile.get('imaging', []))} entries):\n"
             f"{json.dumps(profile.get('imaging', []), default=str)}\n\n"
             f"Tracked trials: {json.dumps(profile.get('trials_tracked', [])[:5], default=str)}\n\n"
+            f"Upcoming appointments (already recorded — reflect these in the timeline): "
+            f"{json.dumps(profile.get('appointments', []), default=str)}\n\n"
             f"Active alerts: {json.dumps([a for a in profile.get('alerts', []) if not a.get('resolved')], default=str)}\n\n"
         )
         brevity_note = (
@@ -147,20 +206,23 @@ def generate_executive_summary(profile: dict) -> dict:
             summary = json.loads(raw)
             break
         summary["generated_at"] = datetime.date.today().isoformat()
-        return summary
+        return _merge_upcoming_appointments(summary, profile)
     except Exception as e:
-        return {
-            "overall_status": "insufficient_data",
-            "status_confidence": "low",
-            "status_rationale": "Could not generate summary — check profile data",
-            "key_concern": "Summary generation failed",
-            "summary": f"Error: {str(e)}",
-            "prrt_status": "unknown",
-            "prrt_rationale": "",
-            "cga_trend": "insufficient_data",
-            "cga_trend_detail": "",
-            "next_actions": [],
-            "timeline": [],
-            "best_trial": None,
-            "generated_at": datetime.date.today().isoformat(),
-        }
+        return _merge_upcoming_appointments(
+            {
+                "overall_status": "insufficient_data",
+                "status_confidence": "low",
+                "status_rationale": "Could not generate summary — check profile data",
+                "key_concern": "Summary generation failed",
+                "summary": f"Error: {str(e)}",
+                "prrt_status": "unknown",
+                "prrt_rationale": "",
+                "cga_trend": "insufficient_data",
+                "cga_trend_detail": "",
+                "next_actions": [],
+                "timeline": [],
+                "best_trial": None,
+                "generated_at": datetime.date.today().isoformat(),
+            },
+            profile,
+        )

@@ -26,9 +26,10 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-03.
 ## 2. Machine-parsed output contracts (do NOT rename keys or change enums)
 - **intake** JSON object keys: `document_type, date, summary, biomarkers[],
   imaging_findings, treatment_changes[], ki67_update, sstr_status_update,
-  sstr_score_update, symptoms_reported[], key_findings[], suggested_workflows[],
-  workflow_rationale`. Biomarker items: `marker, value, unit, reference_range,
-  flag`.
+  sstr_score_update, symptoms_reported[], appointments[], key_findings[],
+  suggested_workflows[], workflow_rationale`. Biomarker items: `marker, value,
+  unit, reference_range, flag`. Appointment items: `date, description, type`
+  (persisted to `profile['appointments']` and merged into the summary timeline).
 - **exec_summary** JSON keys: `overall_status` (enum
   `stable|responding|progressing|insufficient_data`), `status_confidence`
   (`high|medium|low`), `status_rationale, key_concern, summary, prrt_status`

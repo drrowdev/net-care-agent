@@ -9,6 +9,13 @@ incremented when something user-visible or operationally meaningful changes.
 ## [Unreleased]
 
 ### Added
+- **Appointment extraction + guaranteed timeline events.** Intake now extracts
+  scheduled/planned events (follow-up calls, appointments, scans, reviews) into a
+  structured `appointments[]` field on the profile, and `generate_executive_summary`
+  deterministically merges any *upcoming* appointment into the dashboard timeline
+  (sorted nearest-first). Previously the timeline was an LLM-only, 6-item,
+  re-ranked list, so a near-term event (e.g. a "14.7 follow-up call") could be
+  silently dropped in favour of more distant items — now it can't.
 - **Deterministic accuracy & robustness guards** (from the architecture review):
   - **Biomarker same-date trend guard** (`analyze_biomarker_trends`): readings
     sharing a date are excluded from slope arithmetic and surfaced as a

@@ -187,6 +187,8 @@ Patient-reported symptom or side effect.
 | `with` | `str \| None` |  |
 | `location` | `str \| None` |  |
 | `notes` | `str \| None` |  |
+| `description` | `str \| None` |  |
+| `type` | `str \| None` |  |
 
 ## `executive_summary`
 

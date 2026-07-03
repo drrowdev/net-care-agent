@@ -181,6 +181,65 @@ def _extract_json(text: str, system_prompt: str) -> tuple[dict, bool]:
             )
 
 
+def _verify_intake(text: str, extracted: dict) -> list:
+    """Second, monotonically-safe extraction pass (P1, gated by INTAKE_VERIFY).
+
+    Asks the model to surface biomarkers / treatment_changes the first pass may
+    have missed, each REQUIRING a verbatim ``source_quote``. Only candidates whose
+    quote is actually a substring of the document are merged — a hallucinated
+    "miss" cannot enter the profile. Returns the list of additions (also appended
+    into ``extracted`` in place). Never raises.
+    """
+    system = (
+        "You are a verification agent. Given a clinical document and a prior "
+        "extraction, find biomarker readings or treatment changes the prior "
+        "extraction MISSED. Return ONLY a JSON array; each item: "
+        '{"field": "biomarkers"|"treatment_changes", "item": <same shape as the '
+        'intake schema for that field>, "source_quote": "<verbatim text copied '
+        'from the document proving this item exists>"}. If nothing was missed, '
+        "return []. Never invent — every source_quote must be copied exactly."
+    )
+    try:
+        resp = client.messages.create(
+            model=config.MODEL_INTAKE,
+            max_tokens=6000,
+            thinking=config.THINKING,
+            system=system,
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        f"DOCUMENT:\n{text}\n\nPRIOR EXTRACTION:\n"
+                        f"{json.dumps(extracted, default=str)}"
+                    ),
+                }
+            ],
+        )
+        candidates = json.loads(strip_code_fences(first_text(resp)))
+    except Exception:  # noqa: BLE001 — verification is best-effort, never fatal
+        return []
+    if not isinstance(candidates, list):
+        return []
+
+    norm_text = text.lower()
+    added: list = []
+    for c in candidates:
+        if not isinstance(c, dict):
+            continue
+        quote = (c.get("source_quote") or "").strip().lower()
+        if not quote or quote not in norm_text:
+            continue  # unanchored / hallucinated — discard programmatically
+        field = c.get("field")
+        item = c.get("item")
+        if field == "biomarkers" and isinstance(item, dict) and item.get("marker"):
+            extracted.setdefault("biomarkers", []).append(item)
+            added.append({"field": field, "item": item})
+        elif field == "treatment_changes" and isinstance(item, str) and item.strip():
+            extracted.setdefault("treatment_changes", []).append(item)
+            added.append({"field": field, "item": item})
+    return added
+
+
 def run_intake(text: str, profile: dict) -> tuple[dict, dict]:
     """Classify and extract structured data from free-form text."""
     print("\n⚙  Running intake agent ...")
@@ -190,6 +249,13 @@ def run_intake(text: str, profile: dict) -> tuple[dict, dict]:
         PATIENT_CONTEXT=build_patient_context(profile),
     )
     extracted, extraction_failed = _extract_json(text, system_prompt)
+
+    # P1: optional quote-anchored verification pass (off unless INTAKE_VERIFY set).
+    if config.INTAKE_VERIFY and not extraction_failed:
+        added = _verify_intake(text, extracted)
+        if added:
+            extracted["verification_added"] = added
+            print(f"  ✓  Verification pass added {len(added)} source-anchored item(s)")
 
     today = datetime.date.today().isoformat()
     doc_date = extracted.get("date") or today

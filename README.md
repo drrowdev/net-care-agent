@@ -125,6 +125,8 @@ A daily backup is written to `${DATA_DIR}/backups/profile_YYYYMMDD.json`
 ├── AGENTS.md             # Onboarding + doc-update policy for AI assistants
 ├── app.py                # Flask app: HTTP endpoints + background jobs + /api/health
 ├── net_agent.py          # Back-compat shim — re-exports the agent.* package
+├── INVARIANTS.md         # Load-bearing rules & output contracts (read before editing)
+├── scripts/              # deploy.ps1 (test-gated deploy+rollback), eval_harness.py (P9)
 ├── agent/                # Modular agent core
 │   ├── config.py         # paths + per-agent ANTHROPIC_MODEL_* env overrides
 │   ├── llm.py            # Anthropic client + JSON-fence stripper

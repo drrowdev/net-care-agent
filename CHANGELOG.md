@@ -47,6 +47,20 @@ incremented when something user-visible or operationally meaningful changes.
     chat system prompt are marked cacheable (`cache_control: ephemeral`), so
     repeated prefills are reused at ~0.1x input cost with lower latency. Fully
     behaviour-neutral; the 5-minute TTL covers a loop or chat session.
+  - **`INVARIANTS.md` + contract-conformance tests** (`tests/test_invariants.py`):
+    load-bearing rules and every machine-parsed key/enum are documented and pinned
+    so a future edit that renames a contract key or adds a save to the read-only
+    deep-sweep fails CI — insurance for the handoff to smaller teams/AI sessions.
+  - **Test-gated deploy script** (`scripts/deploy.ps1`): refuses to build/ship the
+    zip unless pytest/ruff (+gitleaks) pass, retains the previous zip for a
+    one-command `-Rollback`, and health-checks after deploy.
+  - **Extraction eval-harness scaffold** (`scripts/eval_harness.py`): scores intake
+    recall/precision against a golden set so model/prompt changes become
+    measurable; ships a synthetic sample (real PHI cases live on the mount).
+  - **Optional quote-anchored intake verification** (`INTAKE_VERIFY`, off by
+    default): a second extraction pass that adds only items whose verbatim source
+    quote is found in the document (monotonically safe); enable once the eval
+    harness shows a recall lift.
 
 ### Changed
 - **All six agent system prompts rewritten** (Fable 5 audit, tuned for Opus 4.8).

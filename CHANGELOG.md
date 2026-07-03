@@ -34,6 +34,14 @@ incremented when something user-visible or operationally meaningful changes.
     change writes a `status_history` entry and a high-priority alert — the
     highest-value caregiver event class is now deterministically detected instead
     of depending on the LLM choosing to re-search a suppressed trial.
+  - **Mutating-job serialization** (`agent/serialize.py`): document-feed and
+    digest jobs now run through one in-process mutating slot, so a concurrent
+    feed+digest can no longer silently lose one job's extracted data
+    (last-writer-wins on the single JSON profile). Read-only work (deep-sweep,
+    chat) bypasses it. A queued job shows "waiting for current job".
+  - **Pre-save rotating snapshots** (`agent/backups.py`): every `save_profile`
+    first snapshots the prior state (last 20 kept), so a bad write/merge is
+    recoverable to the immediately-prior state rather than yesterday's backup.
 
 ### Changed
 - **All six agent system prompts rewritten** (Fable 5 audit, tuned for Opus 4.8).

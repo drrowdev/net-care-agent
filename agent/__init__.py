@@ -36,6 +36,7 @@ from .orchestrator import run_orchestrator
 # Profile
 from .profile import DEFAULT_PROFILE, get_patient_summary, load_profile, save_profile
 from .questions import generate_appointment_questions, generate_questions_for_profile
+from .serialize import mutating_lock, serialized_mutation
 
 # Tools (registry + dispatcher + relevance + individual tool fns)
 from .tools import (
@@ -71,6 +72,8 @@ __all__ = [
     "load_profile",
     "save_profile",
     "get_patient_summary",
+    "mutating_lock",
+    "serialized_mutation",
     # tools
     "TOOLS",
     "_is_relevant",

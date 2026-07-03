@@ -109,6 +109,11 @@ def _new_id() -> str:
 
 # ── background workers ────────────────────────────────────────────────────────
 def _run_feed_job(job_id: str, text: str):
+    # P6: serialize profile-mutating jobs so a concurrent feed+digest can't
+    # silently lose one job's extracted data (last-writer-wins on the JSON file).
+    if agent.mutating_lock.locked():
+        _update_job(job_id, {"status": "running", "stage": "waiting for current job"})
+    agent.mutating_lock.acquire()
     try:
         _update_job(job_id, {"status": "running", "stage": "intake"})
         profile = agent.load_profile()
@@ -153,9 +158,14 @@ def _run_feed_job(job_id: str, text: str):
             "error"    : str(e),
             "traceback": traceback.format_exc(),
         })
+    finally:
+        agent.mutating_lock.release()
 
 
 def _run_digest_job(job_id: str):
+    if agent.mutating_lock.locked():
+        _update_job(job_id, {"status": "running", "stage": "waiting for current job"})
+    agent.mutating_lock.acquire()
     try:
         _update_job(job_id, {"status": "running", "stage": "orchestrating"})
         profile = agent.load_profile()
@@ -209,6 +219,8 @@ def _run_digest_job(job_id: str):
             "error"    : str(e),
             "traceback": traceback.format_exc(),
         })
+    finally:
+        agent.mutating_lock.release()
 
 
 def _run_deepsweep_job(job_id: str):

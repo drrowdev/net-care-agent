@@ -62,6 +62,12 @@ def save_profile(profile: dict) -> None:
         validate_profile(profile)
     except Exception as e:
         log.warning("save_profile: validation issues (writing anyway): %s", e)
+    # P12: snapshot the pre-write state so any single bad save is recoverable to
+    # the immediately-prior state (never blocks the save on failure).
+    try:
+        backups.rotating_snapshot(config.PROFILE_PATH)
+    except Exception as e:
+        log.warning("rotating_snapshot raised: %s", e)
     atomic_write_text(
         config.PROFILE_PATH,
         json.dumps(profile, indent=2, default=str),

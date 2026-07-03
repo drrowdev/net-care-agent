@@ -8,6 +8,23 @@ incremented when something user-visible or operationally meaningful changes.
 
 ## [Unreleased]
 
+### Added
+- **Deterministic accuracy & robustness guards** (from the architecture review):
+  - **Biomarker same-date trend guard** (`analyze_biomarker_trends`): readings
+    sharing a date are excluded from slope arithmetic and surfaced as a
+    `data_quality_caveats` note instead of producing a spurious trend (fixes the
+    observed 8-same-date 5-HIAA "+38%" artefact). Same-date readings are never
+    deleted — only flagged for disambiguation.
+  - **Loud intake-failure path**: when a document can't be parsed into JSON,
+    intake now does one repair retry; if it still fails, the document is stored
+    raw AND an **urgent alert** is raised so the caregiver knows its contents are
+    invisible to analysis (previously a silent "unstructured" fallback).
+  - **Intake biomarker dedup**: exact `(marker, date, value)` triples are no
+    longer double-logged when a document is re-fed.
+  - **Executive-summary brevity retry**: on a `max_tokens` truncation the summary
+    is regenerated once with a concision instruction before falling back to the
+    error placeholder.
+
 ### Changed
 - **All six agent system prompts rewritten** (Fable 5 audit, tuned for Opus 4.8).
   Highlights: intake JSON schema is no longer interrupted by prose and gains an

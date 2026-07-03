@@ -126,6 +126,61 @@ def _persist_symptoms(profile: dict, reported: list, doc_date: str) -> None:
         )
 
 
+def _extract_json(text: str, system_prompt: str) -> tuple[dict, bool]:
+    """Call the intake model and parse strict JSON, with one repair retry.
+
+    Returns ``(extracted, failed)``. On the first JSON-decode failure it feeds
+    the invalid output and the decoder error back to the model and asks for
+    corrected JSON only. If that still fails, ``failed`` is True and a minimal
+    unstructured record is returned so the document is at least logged — but the
+    caller raises a loud, caregiver-visible alert (a silently-unstructured
+    document is data loss dressed up as a soft fallback).
+    """
+    resp = client.messages.create(
+        model=config.MODEL_INTAKE,
+        max_tokens=12000,
+        thinking=config.THINKING,
+        system=system_prompt,
+        messages=[{"role": "user", "content": f"Extract structured data:\n\n{text}"}],
+    )
+    raw = strip_code_fences(first_text(resp))
+    try:
+        return json.loads(raw), False
+    except json.JSONDecodeError as err:
+        print("  ⚠  Intake JSON parse failed — attempting one repair retry")
+        repair = client.messages.create(
+            model=config.MODEL_INTAKE,
+            max_tokens=12000,
+            thinking=config.THINKING,
+            system=system_prompt,
+            messages=[
+                {"role": "user", "content": f"Extract structured data:\n\n{text}"},
+                {"role": "assistant", "content": raw},
+                {
+                    "role": "user",
+                    "content": (
+                        f"That was not valid JSON (json.loads error: {err}). "
+                        "Return ONLY the corrected JSON object — no prose, no fences."
+                    ),
+                },
+            ],
+        )
+        raw2 = strip_code_fences(first_text(repair))
+        try:
+            return json.loads(raw2), False
+        except json.JSONDecodeError:
+            print("  ⚠  Repair retry also failed — storing unstructured + raising alert")
+            return (
+                {
+                    "document_type": "other",
+                    "summary": text[:200],
+                    "key_findings": [],
+                    "suggested_workflows": ["pubmed_search"],
+                },
+                True,
+            )
+
+
 def run_intake(text: str, profile: dict) -> tuple[dict, dict]:
     """Classify and extract structured data from free-form text."""
     print("\n⚙  Running intake agent ...")
@@ -134,28 +189,33 @@ def run_intake(text: str, profile: dict) -> tuple[dict, dict]:
         INTAKE_SYSTEM_TEMPLATE,
         PATIENT_CONTEXT=build_patient_context(profile),
     )
-    resp = client.messages.create(
-        model=config.MODEL_INTAKE,
-        max_tokens=12000,
-        thinking=config.THINKING,
-        system=system_prompt,
-        messages=[{"role": "user", "content": f"Extract structured data:\n\n{text}"}],
-    )
-
-    raw = strip_code_fences(first_text(resp))
-    try:
-        extracted: dict = json.loads(raw)
-    except json.JSONDecodeError:
-        print("  ⚠  Intake JSON parse failed — storing as unstructured document")
-        extracted = {
-            "document_type": "other",
-            "summary": text[:200],
-            "key_findings": [],
-            "suggested_workflows": ["pubmed_search"],
-        }
+    extracted, extraction_failed = _extract_json(text, system_prompt)
 
     today = datetime.date.today().isoformat()
     doc_date = extracted.get("date") or today
+
+    if extraction_failed:
+        # Loud, recoverable failure surfaced through the existing alerts UI —
+        # the caregiver must know a fed document is structurally invisible to
+        # analysis rather than silently believing it was ingested.
+        profile.setdefault("alerts", []).append(
+            {
+                "priority": "urgent",
+                "message": (
+                    "A fed document could NOT be structurally extracted — its "
+                    "contents are invisible to biomarker, trend, and summary "
+                    "analysis. Only a raw copy was stored."
+                ),
+                "action_required": (
+                    "Re-feed the document (ideally as cleaner text), or review it "
+                    "manually with the oncologist. Then resolve this alert."
+                ),
+                "resolved": False,
+                "date": doc_date,
+                "source": "intake_extraction_failure",
+            }
+        )
+        extracted["extraction_failed"] = True
 
     profile["documents"].append(
         {
@@ -169,11 +229,22 @@ def run_intake(text: str, profile: dict) -> tuple[dict, dict]:
 
     KI67_MARKERS = {"ki-67", "ki67", "mib-1", "mib1", "ki 67", "mib 1"}
 
+    existing_triples = {
+        (b.get("marker", "").lower().strip(), b.get("date", ""), b.get("value"))
+        for b in profile["biomarkers"]
+    }
     for bm in extracted.get("biomarkers", []):
         marker_name = bm.get("marker", "").lower().strip()
         if any(k in marker_name for k in KI67_MARKERS):
             continue
         bm["date"] = doc_date
+        # Skip exact (marker, date, value) duplicates so re-feeding the same
+        # document does not double-log readings (which would also trip the
+        # same-date trend guard downstream).
+        triple = (marker_name, doc_date, bm.get("value"))
+        if triple in existing_triples:
+            continue
+        existing_triples.add(triple)
         profile["biomarkers"].append(bm)
 
     if extracted.get("imaging_findings"):

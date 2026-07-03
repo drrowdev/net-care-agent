@@ -102,39 +102,50 @@ def generate_executive_summary(profile: dict) -> dict:
             PATIENT_CONTEXT=build_patient_context(profile),
             CAREGIVER=get_caregiver_relationship(profile),
         )
-        resp = client.messages.create(
-            model=config.MODEL_EXEC_SUMMARY,
-            max_tokens=16000,
-            thinking=config.THINKING,
-            system=system_prompt,
-            messages=[
-                {
-                    "role": "user",
-                    "content": (
-                        f"Generate an executive summary based on this patient profile.\n\n"
-                        f"{timeframe_guide}\n\n"
-                        f"{'='*60}\n"
-                        f"STEP 1 — READ CLINICAL JUDGMENTS FIRST (these override your analysis):\n"
-                        f"{get_clinical_judgments_context(profile)}\n\n"
-                        f"{'='*60}\n"
-                        f"STEP 2 — Patient profile and raw data:\n\n"
-                        f"{get_patient_summary(profile)}\n\n"
-                        f"Full biomarker history ({len(profile.get('biomarkers', []))} entries):\n"
-                        f"{json.dumps(profile.get('biomarkers', []), default=str)}\n\n"
-                        f"Full imaging history ({len(profile.get('imaging', []))} entries):\n"
-                        f"{json.dumps(profile.get('imaging', []), default=str)}\n\n"
-                        f"Tracked trials: {json.dumps(profile.get('trials_tracked', [])[:5], default=str)}\n\n"
-                        f"Active alerts: {json.dumps([a for a in profile.get('alerts', []) if not a.get('resolved')], default=str)}\n\n"
-                    ),
-                }
-            ],
+        user_content = (
+            f"Generate an executive summary based on this patient profile.\n\n"
+            f"{timeframe_guide}\n\n"
+            f"{'='*60}\n"
+            f"STEP 1 — READ CLINICAL JUDGMENTS FIRST (these override your analysis):\n"
+            f"{get_clinical_judgments_context(profile)}\n\n"
+            f"{'='*60}\n"
+            f"STEP 2 — Patient profile and raw data:\n\n"
+            f"{get_patient_summary(profile)}\n\n"
+            f"Full biomarker history ({len(profile.get('biomarkers', []))} entries):\n"
+            f"{json.dumps(profile.get('biomarkers', []), default=str)}\n\n"
+            f"Full imaging history ({len(profile.get('imaging', []))} entries):\n"
+            f"{json.dumps(profile.get('imaging', []), default=str)}\n\n"
+            f"Tracked trials: {json.dumps(profile.get('trials_tracked', [])[:5], default=str)}\n\n"
+            f"Active alerts: {json.dumps([a for a in profile.get('alerts', []) if not a.get('resolved')], default=str)}\n\n"
         )
-        if resp.stop_reason == "max_tokens":
-            raise ValueError(
-                "model response truncated at max_tokens — bump max_tokens in exec_summary.py"
+        brevity_note = (
+            "\n\nIMPORTANT: a previous attempt was truncated at the token limit. Be "
+            "materially more concise in every field — one sentence where the schema "
+            "says one sentence — while still returning ALL required keys as valid JSON."
+        )
+        # One brevity retry before giving up: truncation is usually verbosity, not
+        # a hard limit, so a tighter re-ask recovers the dashboard summary cheaply.
+        summary = None
+        for attempt in range(2):
+            resp = client.messages.create(
+                model=config.MODEL_EXEC_SUMMARY,
+                max_tokens=16000,
+                thinking=config.THINKING,
+                system=system_prompt,
+                messages=[
+                    {"role": "user", "content": user_content + (brevity_note if attempt else "")}
+                ],
             )
-        raw = strip_code_fences(first_text(resp))
-        summary = json.loads(raw)
+            if resp.stop_reason == "max_tokens":
+                if attempt == 0:
+                    continue
+                raise ValueError(
+                    "model response truncated at max_tokens even after a brevity "
+                    "retry — bump max_tokens in exec_summary.py"
+                )
+            raw = strip_code_fences(first_text(resp))
+            summary = json.loads(raw)
+            break
         summary["generated_at"] = datetime.date.today().isoformat()
         return summary
     except Exception as e:

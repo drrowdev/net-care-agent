@@ -84,8 +84,10 @@ def _build_questions_system_prompt(profile: dict) -> str:
         f"prepare for a cancer consultation for {patient_context}.\n\n"
         f"{language_block}"
         "Generate specific, clinically informed questions based on the patient's "
-        "current profile. Group them by category. Each question should be "
-        "concrete and answerable by the treating oncologist.\n\n"
+        "current profile. Each question must be concrete, answerable by the treating "
+        "oncologist, and anchored to a specific datum in the profile (a value with its "
+        "date, an imaging finding, a treatment, an alert, or a gap such as a missing "
+        "test) — the rationale should name that anchor. No generic questionnaire items.\n\n"
         "IMPORTANT RULES:\n"
         "- Do NOT generate questions about specific clinical trial eligibility "
         "(e.g. 'Does the patient qualify for NCT...'). Trial enrollment is handled by "
@@ -103,6 +105,9 @@ def _build_questions_system_prompt(profile: dict) -> str:
         f'    "rationale": "Why this question matters now (1 sentence in {language})"\n'
         "  }\n"
         "]\n\n"
+        'The "category" and "priority" values must stay EXACTLY these English enum '
+        "strings — the UI matches on them. The text and rationale go in the caregiver's "
+        "language above.\n"
         "Categories (keep in English for code, display translated in UI):\n"
         "- Treatment: current/upcoming treatment decisions\n"
         "- Diagnostics: scans, tests, biopsies needed\n"
@@ -110,8 +115,16 @@ def _build_questions_system_prompt(profile: dict) -> str:
         "- Trials: clinical trial eligibility and access\n"
         "- Monitoring: follow-up schedule, biomarker tracking\n"
         "- Other: prognosis, referrals, logistics\n\n"
-        "Generate 10-15 questions. Prioritise based on current clinical situation.\n\n"
+        "Priority: urgent = affects a decision or safety issue that cannot wait past "
+        "this appointment; high = materially affects the treatment plan or next steps; "
+        "medium = useful context, not time-critical.\n\n"
+        "Generate 10-15 questions when the profile supports them; if the profile is "
+        "sparse, return fewer well-grounded questions rather than padding with generic "
+        "ones. Order matters less than correct priority values — the UI groups and "
+        "sorts.\n\n"
         + CLINICAL_JUDGMENTS_OVERRIDE
+        + "- You MAY ask a clarifying question where a judgment is ambiguous, "
+        "conditional, or time-limited (e.g. what result would change the plan).\n"
     )
 
 

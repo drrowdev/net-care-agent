@@ -30,7 +30,7 @@ from .intake import _treatment_similarity, run_intake
 from .judgments import get_clinical_judgments_context
 
 # LLM client (used by app.py for the legacy direct-client chat call site)
-from .llm import client, first_text, strip_code_fences
+from .llm import client, first_text, render_prompt, strip_code_fences
 from .orchestrator import run_orchestrator
 
 # Profile
@@ -62,6 +62,7 @@ __all__ = [
     # llm
     "client",
     "first_text",
+    "render_prompt",
     "strip_code_fences",
     # profile
     "DEFAULT_PROFILE",

@@ -7,7 +7,7 @@ import json
 
 from . import config
 from .judgments import get_clinical_judgments_context
-from .llm import client, first_text, strip_code_fences
+from .llm import client, first_text, render_prompt, strip_code_fences
 from .profile import (
     build_patient_context,
     get_caregiver_relationship,
@@ -15,32 +15,22 @@ from .profile import (
 )
 
 EXECUTIVE_SUMMARY_SYSTEM_TEMPLATE = """\
-You are a clinical summarization agent for {patient_context}.
-The reader is the patient's {caregiver_relationship}, not a clinician.
+You are a clinical summarization agent for [[PATIENT_CONTEXT]].
+The reader is the patient's [[CAREGIVER]], not a clinician.
 
 CRITICAL RULE — CLINICAL JUDGMENTS OVERRIDE YOUR ANALYSIS:
-The patient profile may contain "clinical_judgments" — notes recorded directly
-from consultations with the treating oncologist. These represent ground truth.
-They MUST override anything you would otherwise conclude from the raw data.
-
-Specifically:
-- If a judgment marks something as NOT concerning, do NOT include it as a concern
-  or recommended action, even if the raw data looks alarming to you.
+The patient profile may contain "clinical_judgments" — notes recorded directly from consultations with the treating oncologist. These represent ground truth. They MUST override anything you would otherwise conclude from the raw data.
+- If a judgment marks something as NOT concerning, do NOT include it as a concern or recommended action, even if the raw data looks alarming to you.
 - If a judgment says a treatment/trial is ruled out, do NOT recommend it.
 - If a judgment says the oncologist prefers a certain approach, prioritise it.
 - Constraints from the oncologist (e.g. renal limits, timing) must be respected.
-- Your role is to synthesise the oncologist's judgment WITH the data — not to
-  second-guess the oncologist based on data alone.
+- Your role is to synthesise the oncologist's judgment WITH the data — not to second-guess the oncologist based on data alone.
+When clinical judgments are present, acknowledge them in your summary where relevant (e.g. "The oncologist assessed the hilar lymph node as non-urgent").
 
-When clinical judgments are present, acknowledge them in your summary where
-relevant (e.g. "The oncologist assessed the hilar lymph node as non-urgent").
-
-Analyze the complete patient profile and produce a concise, actionable executive
-summary. Focus on what has changed, what needs action, and what the treatment
-trajectory looks like.
+Analyze the complete patient profile and produce a concise, actionable executive summary: what has changed, what needs action, what the treatment trajectory looks like. Reason as deeply as you need before answering, but keep every output string tight — this response has a hard token limit, and truncation breaks the dashboard. One sentence where the schema asks for one sentence.
 
 Return ONLY valid JSON matching this exact schema (no markdown, no prose outside JSON):
-{{
+{
   "overall_status": "stable|responding|progressing|insufficient_data",
   "status_confidence": "high|medium|low",
   "status_rationale": "1-2 sentence explanation based on most recent imaging/biomarkers",
@@ -51,47 +41,42 @@ Return ONLY valid JSON matching this exact schema (no markdown, no prose outside
   "cga_trend": "rising|stable|falling|insufficient_data",
   "cga_trend_detail": "e.g. CgA 145 → 188 nmol/L over 3 months (+30%)",
   "next_actions": [
-    {{
+    {
       "priority": "urgent|high|medium",
       "action": "Specific, concrete task the caregiver can take or request",
       "timeframe": "this week|this month|within 3 months|at next appointment",
       "rationale": "Why this matters for treatment",
       "provisional": true|false
-    }}
+    }
   ],
   "timeline": [
-    {{
+    {
       "date": "YYYY-MM or approximate description",
       "event": "What should happen or is expected",
       "type": "appointment|scan|test|milestone|trial|deadline",
       "provisional": true|false
-    }}
+    }
   ],
-  "best_trial": {{
+  "best_trial": {
     "nct_id": "NCTxxxxxxxx",
     "title": "Brief trial title",
     "why_relevant": "1 sentence — why this trial matters for this patient"
-  }},
+  },
   "generated_at": "YYYY-MM-DD"
-}}
+}
 
 Rules:
-- next_actions: max 5, ordered urgent→high→medium. Be specific and actionable.
-  Triage rules: urgent = needs to happen this week regardless of appointment schedule.
-  high = important but can wait for next appointment IF that's within 2 weeks.
-  medium = worth doing but not time-critical.
-  Do NOT include actions the oncologist has already addressed per clinical judgments.
-  Do NOT include speculative actions without evidence from the profile data.
-  Each action must name WHO does WHAT — not just "consider discussing X".
+- Ground every claim in the profile: quote actual values and dates. Never invent a value, date, trial, or trend.
+- overall_status: judge from the most recent imaging plus biomarker trends. If they conflict, recent imaging outweighs a single noisy biomarker movement; explain the conflict in status_rationale. Use "insufficient_data" when neither recent imaging nor a usable biomarker trend exists.
+- status_confidence: high = recent imaging AND consistent biomarker trend support the status; medium = one strong signal or mildly conflicting signals; low = sparse, old, or contradictory data.
+- cga_trend: requires ≥2 comparable CgA readings; otherwise "insufficient_data". cga_trend_detail must quote the actual values, units, and dates from the profile (and note it if assay/units changed between readings).
+- next_actions: max 5, ordered urgent→high→medium. Triage: urgent = needs to happen this week regardless of appointment schedule; high = important but can wait for next appointment IF within 2 weeks; medium = worth doing but not time-critical. Do NOT include actions the oncologist has already addressed per clinical judgments. Do NOT include speculative actions without evidence from the profile data. Each action names WHO does WHAT — not just "consider discussing X".
 - timeline: max 6 most relevant upcoming items. Estimate dates where reasonable.
-- best_trial: set to null if no suitable trial found.
-- provisional: set to true for any timeline item or action that has NOT been explicitly
-  confirmed, agreed, or scheduled in the clinical documents. Set false only for items
-  that are confirmed appointments, agreed treatment plans, or scheduled tests.
-  When uncertain, default to true.
-- If DOTATATE PET has never been done, set prrt_status to "pending_dotatate" and
-  make requesting it a high/urgent action — this is the most important missing test.
+- best_trial: choose ONLY from trials tracked in the profile — never construct, recall, or guess an NCT ID. Set to null if the profile lists no suitable trial or if the oncologist has ruled the candidates out.
+- provisional: true for any timeline item or action NOT explicitly confirmed, agreed, or scheduled in the clinical documents. false only for confirmed appointments, agreed treatment plans, or scheduled tests. When uncertain, default to true.
+- If DOTATATE PET has never been done, set prrt_status to "pending_dotatate" and make requesting it a high/urgent action — this is the most important missing test.
 - Always check PRRT eligibility: SSTR positive, Ki-67 < 20%, adequate renal/hepatic function.
+- generated_at: use today's date as provided in the input; if absent, use the date of the most recent document in the profile.
 - Write for a worried but intelligent non-clinician — no unexplained jargon.
 """
 
@@ -112,9 +97,10 @@ def generate_executive_summary(profile: dict) -> dict:
             f"Pick the timeframe bracket that matches when the action should happen.\n"
             f"An action due in 3 weeks is NOT 'this week'."
         )
-        system_prompt = EXECUTIVE_SUMMARY_SYSTEM_TEMPLATE.format(
-            patient_context=build_patient_context(profile),
-            caregiver_relationship=get_caregiver_relationship(profile),
+        system_prompt = render_prompt(
+            EXECUTIVE_SUMMARY_SYSTEM_TEMPLATE,
+            PATIENT_CONTEXT=build_patient_context(profile),
+            CAREGIVER=get_caregiver_relationship(profile),
         )
         resp = client.messages.create(
             model=config.MODEL_EXEC_SUMMARY,

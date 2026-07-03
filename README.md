@@ -135,6 +135,8 @@ A daily backup is written to `${DATA_DIR}/backups/profile_YYYYMMDD.json`
 │   ├── judgments.py      # clinical-judgment context formatter
 │   ├── intake.py         # extract structured medical data from text
 │   ├── orchestrator.py   # agentic loop driving the tools
+│   ├── verify.py         # deterministic PMID/NCT existence verifier (report backstop)
+│   ├── trials_poll.py    # deterministic tracked-trial status poller
 │   ├── deep_sweep.py     # on-demand ensemble deep-sweep (multi-model, read-only)
 │   ├── classify.py       # treatment dedup + active/planned/completed
 │   ├── exec_summary.py   # JSON executive summary generator

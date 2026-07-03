@@ -159,6 +159,15 @@ def _run_digest_job(job_id: str):
     try:
         _update_job(job_id, {"status": "running", "stage": "orchestrating"})
         profile = agent.load_profile()
+        # P5: deterministically poll tracked-trial statuses before the LLM pass so
+        # status changes become alerts (and reach the orchestrator) even though the
+        # dedup logic would otherwise suppress already-tracked trials.
+        try:
+            poll = agent.poll_tracked_trials(profile)
+            if poll["changed"]:
+                _update_job(job_id, {"stage": f"trial updates: {len(poll['changed'])}"})
+        except Exception as e:
+            print(f"trial poll skipped: {e}")
         extracted = {
             "document_type"      : "scheduled_digest",
             "summary"            : "Manual research digest",
@@ -543,6 +552,16 @@ def api_trials():
         key=lambda x: x.get("date_added", ""), reverse=True
     )
     return jsonify(trials)
+
+
+@app.route("/api/trials/poll", methods=["POST"])
+def api_trials_poll():
+    """On-demand deterministic poll of tracked-trial statuses (P5)."""
+    profile = agent.load_profile()
+    result = agent.poll_tracked_trials(profile)
+    if result["changed"]:
+        agent.save_profile(profile)
+    return jsonify(result)
 
 
 @app.route("/api/trials/<nct_id>", methods=["DELETE"])

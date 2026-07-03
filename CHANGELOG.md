@@ -24,6 +24,16 @@ incremented when something user-visible or operationally meaningful changes.
   - **Executive-summary brevity retry**: on a `max_tokens` truncation the summary
     is regenerated once with a concision instruction before falling back to the
     error placeholder.
+  - **Deterministic reference verifier** (`agent/verify.py`): every PMID/NCT ID in
+    an orchestrator report is existence-checked against PubMed / ClinicalTrials.gov;
+    unresolved IDs are flagged inline under "⚠ Reference verification" so a
+    fabricated citation can't pass as real. Registry outages mark a reference
+    "unavailable", never "unverified".
+  - **Trial-status poller** (`agent/trials_poll.py`, `POST /api/trials/poll`, and
+    each digest run): the tracked trials are polled by NCT ID; an `overallStatus`
+    change writes a `status_history` entry and a high-priority alert — the
+    highest-value caregiver event class is now deterministically detected instead
+    of depending on the LLM choosing to re-search a suppressed trial.
 
 ### Changed
 - **All six agent system prompts rewritten** (Fable 5 audit, tuned for Opus 4.8).

@@ -1542,6 +1542,116 @@
     sendChat();
   }
 
+  // ── Lightweight, self-contained Markdown renderer for chat replies ────────
+  // Assistant messages arrive as Markdown (headings, tables, lists, bold…).
+  // We render a safe subset to HTML. Input is HTML-escaped FIRST, then a fixed
+  // set of tags is introduced, so model output can never inject live markup.
+  function mdSanitizeUrl(url) {
+    const u = (url || '').trim();
+    if (/^(https?:\/\/|mailto:|tel:|#|\/)/i.test(u)) return u.replace(/"/g, '%22');
+    if (/^[a-z0-9._~\-]+(\/|\?|#|$)/i.test(u)) return u.replace(/"/g, '%22');
+    return '';
+  }
+
+  function mdInline(s) {
+    // s is already HTML-escaped. Protect inline code spans from other passes.
+    const codes = [];
+    s = s.replace(/`([^`]+)`/g, (_, c) => `\u0000${codes.push(c) - 1}\u0000`);
+    s = s.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (m, t, url) => {
+      const safe = mdSanitizeUrl(url);
+      return safe ? `<a href="${safe}" target="_blank" rel="noopener noreferrer">${t}</a>` : t;
+    });
+    s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    s = s.replace(/(^|[\s(])__(?!\s)(.+?)__(?=[\s).,;:!?]|$)/g, '$1<strong>$2</strong>');
+    s = s.replace(/(^|[^*\w])\*(?!\s)([^*]+?)\*(?!\*)/g, '$1<em>$2</em>');
+    s = s.replace(/(^|[\s(])_(?!\s)([^_]+?)_(?=[\s).,;:!?]|$)/g, '$1<em>$2</em>');
+    s = s.replace(/~~(.+?)~~/g, '<del>$1</del>');
+    s = s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${codes[+i]}</code>`);
+    return s;
+  }
+
+  function renderMarkdown(text) {
+    if (!text) return '';
+    const lines = escHtml(text).replace(/\r\n?/g, '\n').split('\n');
+    const isSep = (l) =>
+      l != null && l.includes('-') &&
+      /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$/.test(l);
+    const splitRow = (l) => {
+      let t = l.trim();
+      if (t.startsWith('|')) t = t.slice(1);
+      if (t.endsWith('|')) t = t.slice(0, -1);
+      return t.split('|').map((c) => c.trim());
+    };
+    const blockStart = (l, next) =>
+      /^\s*$/.test(l) || /^\s*#{1,6}\s+/.test(l) || /^\s*```+/.test(l) ||
+      /^\s*[-*+]\s+/.test(l) || /^\s*\d+\.\s+/.test(l) || /^\s*&gt;\s?/.test(l) ||
+      /^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(l) || (/\|/.test(l) && isSep(next));
+
+    let html = '';
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      if (/^\s*$/.test(line)) { i++; continue; }
+
+      if (/^\s*```+/.test(line)) {
+        i++;
+        const buf = [];
+        while (i < lines.length && !/^\s*```+\s*$/.test(lines[i])) buf.push(lines[i++]);
+        i++;
+        html += `<pre><code>${buf.join('\n')}</code></pre>`;
+        continue;
+      }
+
+      if (/\|/.test(line) && isSep(lines[i + 1])) {
+        const header = splitRow(line);
+        i += 2;
+        const rows = [];
+        while (i < lines.length && /\|/.test(lines[i]) && !/^\s*$/.test(lines[i])) rows.push(splitRow(lines[i++]));
+        let t = '<table><thead><tr>' + header.map((h) => `<th>${mdInline(h)}</th>`).join('') + '</tr></thead>';
+        if (rows.length) {
+          t += '<tbody>' + rows.map((r) => {
+            let cells = '';
+            for (let c = 0; c < header.length; c++) cells += `<td>${mdInline(r[c] || '')}</td>`;
+            return `<tr>${cells}</tr>`;
+          }).join('') + '</tbody>';
+        }
+        html += t + '</table>';
+        continue;
+      }
+
+      const h = line.match(/^\s*(#{1,6})\s+(.*)$/);
+      if (h) { const n = h[1].length; html += `<h${n}>${mdInline(h[2].trim())}</h${n}>`; i++; continue; }
+
+      if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { html += '<hr>'; i++; continue; }
+
+      if (/^\s*&gt;\s?/.test(line)) {
+        const buf = [];
+        while (i < lines.length && /^\s*&gt;\s?/.test(lines[i])) buf.push(lines[i++].replace(/^\s*&gt;\s?/, ''));
+        html += `<blockquote>${mdInline(buf.join('<br>'))}</blockquote>`;
+        continue;
+      }
+
+      if (/^\s*[-*+]\s+/.test(line)) {
+        const buf = [];
+        while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) buf.push(lines[i++].replace(/^\s*[-*+]\s+/, ''));
+        html += '<ul>' + buf.map((it) => `<li>${mdInline(it)}</li>`).join('') + '</ul>';
+        continue;
+      }
+
+      if (/^\s*\d+\.\s+/.test(line)) {
+        const buf = [];
+        while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) buf.push(lines[i++].replace(/^\s*\d+\.\s+/, ''));
+        html += '<ol>' + buf.map((it) => `<li>${mdInline(it)}</li>`).join('') + '</ol>';
+        continue;
+      }
+
+      const buf = [];
+      while (i < lines.length && !blockStart(lines[i], lines[i + 1])) buf.push(lines[i++]);
+      html += `<p>${mdInline(buf.join('<br>'))}</p>`;
+    }
+    return html || '<p></p>';
+  }
+
   function appendMsg(role, text) {
     const msgs = document.getElementById('chat-messages');
     // Remove suggestion block on first message
@@ -1551,8 +1661,9 @@
     const now = new Date().toLocaleTimeString('en', {hour:'2-digit', minute:'2-digit'});
     const div = document.createElement('div');
     div.className = `chat-msg ${role}`;
+    const body = role === 'assistant' ? renderMarkdown(text) : escHtml(text).replace(/\n/g,'<br>');
     div.innerHTML = `
-      <div class="chat-bubble ${role}">${escHtml(text).replace(/\n/g,'<br>')}</div>
+      <div class="chat-bubble ${role}">${body}</div>
       <div class="chat-time">${now}</div>`;
     msgs.appendChild(div);
     msgs.scrollTop = msgs.scrollHeight;
@@ -1561,7 +1672,8 @@
 
   function updateLastMsg(div, text) {
     const bubble = div.querySelector('.chat-bubble');
-    if (bubble) bubble.innerHTML = escHtml(text).replace(/\n/g,'<br>');
+    // updateLastMsg is only ever called for assistant replies/errors.
+    if (bubble) bubble.innerHTML = renderMarkdown(text);
     const msgs = document.getElementById('chat-messages');
     msgs.scrollTop = msgs.scrollHeight;
   }

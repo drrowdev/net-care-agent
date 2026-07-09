@@ -8,6 +8,16 @@ incremented when something user-visible or operationally meaningful changes.
 
 ## [Unreleased]
 
+### Fixed
+- **Ask Claude replies now render Markdown.** The chat panel previously displayed
+  the assistant's Markdown as raw text — headings (`##`), GitHub-style tables,
+  `**bold**`, and bullet lists leaked through as literal characters (only newlines
+  were converted). Added a small, self-contained, XSS-safe Markdown renderer
+  (headings, tables, ordered/unordered lists, bold/italic, inline code, fenced
+  code blocks, blockquotes, links, horizontal rules) for assistant messages, plus
+  scoped chat styles. User messages stay plain text; HTML is escaped before any
+  formatting is applied and `javascript:` links are neutralised.
+
 ### Added
 - **Appointment extraction + guaranteed timeline events.** Intake now extracts
   scheduled/planned events (follow-up calls, appointments, scans, reviews) into a

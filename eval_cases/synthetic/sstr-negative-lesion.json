@@ -1,0 +1,52 @@
+{
+  "schema_version": "2.0.0",
+  "id": "sstr-negative-lesion",
+  "text": "DOTATATE PET 2026-04-13: known liver lesions are SSTR-avid; a new 1.2 cm lung nodule shows no radiotracer uptake and is indeterminate.",
+  "expected": {
+    "document_type": "imaging_report",
+    "ki67_update": null,
+    "sstr_status_update": "positive",
+    "sstr_score_update": null,
+    "biomarkers": [],
+    "treatment_changes": [],
+    "imaging_facts": [
+      {
+        "finding": "known liver lesions are SSTR-avid; a new 1.2 cm lung nodule shows no radiotracer uptake and is indeterminate",
+        "date": "2026-04-13",
+        "status": "mixed",
+        "source_quote": "known liver lesions are SSTR-avid; a new 1.2 cm lung nodule shows no radiotracer uptake and is indeterminate"
+      }
+    ],
+    "symptoms": [],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "Known liver lesions were SSTR-avid, while a new 1.2 cm lung nodule had no radiotracer uptake and was indeterminate",
+        "date": "2026-04-13",
+        "source_quote": "known liver lesions are SSTR-avid; a new 1.2 cm lung nodule shows no radiotracer uptake and is indeterminate"
+      }
+    ],
+    "critical_events": [],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "known liver lesions are SSTR-avid; a new 1.2 cm lung nodule shows no radiotracer uptake and is indeterminate"
+      },
+      {
+        "field": "imaging_facts",
+        "quote": "known liver lesions are SSTR-avid; a new 1.2 cm lung nodule shows no radiotracer uptake and is indeterminate"
+      },
+      {
+        "field": "sstr_status_update",
+        "quote": "known liver lesions are SSTR-avid"
+      }
+    ],
+    "must_not_infer": [
+      "lung metastasis"
+    ]
+  },
+  "tags": [
+    "sstr",
+    "ambiguity"
+  ]
+}

@@ -1,0 +1,55 @@
+{
+  "schema_version": "2.0.0",
+  "id": "historical-not-current",
+  "text": "History section: everolimus stopped in 2023 due to rash. Current plan 2026-04-11: continue lanreotide.",
+  "expected": {
+    "document_type": "doctor_note",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [],
+    "treatment_changes": [
+      {
+        "treatment": "everolimus",
+        "state": "stopped",
+        "date": "2023",
+        "source_quote": "everolimus stopped in 2023"
+      }
+    ],
+    "imaging_facts": [],
+    "symptoms": [],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "Everolimus was stopped in 2023 due to rash",
+        "date": "2023",
+        "source_quote": "everolimus stopped in 2023 due to rash"
+      },
+      {
+        "finding": "The current plan is to continue lanreotide",
+        "date": "2026-04-11",
+        "source_quote": "Current plan 2026-04-11: continue lanreotide"
+      }
+    ],
+    "critical_events": [],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "everolimus stopped in 2023 due to rash"
+      },
+      {
+        "field": "key_findings",
+        "quote": "Current plan 2026-04-11: continue lanreotide"
+      },
+      {
+        "field": "treatment_changes",
+        "quote": "everolimus stopped in 2023"
+      }
+    ],
+    "must_not_infer": []
+  },
+  "tags": [
+    "historical",
+    "treatment"
+  ]
+}

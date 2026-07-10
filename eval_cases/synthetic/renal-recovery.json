@@ -1,0 +1,60 @@
+{
+  "schema_version": "2.0.0",
+  "id": "renal-recovery",
+  "text": "Labs: creatinine was 1.8 mg/dL on 2026-04-01; on 2026-04-25 creatinine 1.1 mg/dL (0.6-1.2).",
+  "expected": {
+    "document_type": "lab_result",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [
+      {
+        "marker": "creatinine",
+        "value": "1.8",
+        "unit": "mg/dL",
+        "date": "2026-04-01",
+        "reference_range": null,
+        "source_quote": "creatinine was 1.8 mg/dL on 2026-04-01"
+      },
+      {
+        "marker": "creatinine",
+        "value": "1.1",
+        "unit": "mg/dL",
+        "date": "2026-04-25",
+        "reference_range": "0.6-1.2",
+        "source_quote": "2026-04-25 creatinine 1.1 mg/dL (0.6-1.2)"
+      }
+    ],
+    "treatment_changes": [],
+    "imaging_facts": [],
+    "symptoms": [],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "Creatinine improved from 1.8 mg/dL on 2026-04-01 to 1.1 mg/dL on 2026-04-25",
+        "date": "2026-04-25",
+        "source_quote": "creatinine was 1.8 mg/dL on 2026-04-01; on 2026-04-25 creatinine 1.1 mg/dL (0.6-1.2)"
+      }
+    ],
+    "critical_events": [],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "creatinine was 1.8 mg/dL on 2026-04-01; on 2026-04-25 creatinine 1.1 mg/dL (0.6-1.2)"
+      },
+      {
+        "field": "biomarkers",
+        "quote": "creatinine was 1.8 mg/dL on 2026-04-01"
+      },
+      {
+        "field": "biomarkers",
+        "quote": "2026-04-25 creatinine 1.1 mg/dL (0.6-1.2)"
+      }
+    ],
+    "must_not_infer": []
+  },
+  "tags": [
+    "renal",
+    "conflicting-dates"
+  ]
+}

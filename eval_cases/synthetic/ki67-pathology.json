@@ -1,0 +1,48 @@
+{
+  "schema_version": "2.0.0",
+  "id": "ki67-pathology",
+  "text": "Pathology report dated 2026-02-11: well-differentiated neuroendocrine tumor, WHO grade 2. Ki-67 proliferation index 8% (counted 500 cells).",
+  "expected": {
+    "document_type": "pathology_report",
+    "ki67_update": 8,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [],
+    "treatment_changes": [],
+    "imaging_facts": [],
+    "symptoms": [],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "well-differentiated neuroendocrine tumor, WHO grade 2",
+        "date": "2026-02-11",
+        "source_quote": "well-differentiated neuroendocrine tumor, WHO grade 2"
+      },
+      {
+        "finding": "Ki-67 proliferation index was 8% based on 500 counted cells",
+        "date": "2026-02-11",
+        "source_quote": "Ki-67 proliferation index 8% (counted 500 cells)"
+      }
+    ],
+    "critical_events": [],
+    "source_quotes": [
+      {
+        "field": "ki67_update",
+        "quote": "Ki-67 proliferation index 8%"
+      },
+      {
+        "field": "key_findings",
+        "quote": "well-differentiated neuroendocrine tumor, WHO grade 2"
+      },
+      {
+        "field": "key_findings",
+        "quote": "Ki-67 proliferation index 8% (counted 500 cells)"
+      }
+    ],
+    "must_not_infer": []
+  },
+  "tags": [
+    "pathology",
+    "ki-67"
+  ]
+}

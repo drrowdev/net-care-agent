@@ -1,0 +1,50 @@
+{
+  "schema_version": "2.0.0",
+  "id": "reference-range-sex-specific",
+  "text": "Lab 2026-05-11: hemoglobin 11.8 g/dL. Reference ranges printed: male 13.5-17.5; female 12.0-15.5. Patient field: female.",
+  "expected": {
+    "document_type": "lab_result",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [
+      {
+        "marker": "hemoglobin",
+        "value": "11.8",
+        "unit": "g/dL",
+        "date": "2026-05-11",
+        "reference_range": "12.0-15.5",
+        "source_quote": "hemoglobin 11.8 g/dL. Reference ranges printed: male 13.5-17.5; female 12.0-15.5"
+      }
+    ],
+    "treatment_changes": [],
+    "imaging_facts": [],
+    "symptoms": [],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "Hemoglobin was 11.8 g/dL against the female reference range of 12.0-15.5",
+        "date": "2026-05-11",
+        "source_quote": "hemoglobin 11.8 g/dL. Reference ranges printed: male 13.5-17.5; female 12.0-15.5"
+      }
+    ],
+    "critical_events": [],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "hemoglobin 11.8 g/dL. Reference ranges printed: male 13.5-17.5; female 12.0-15.5"
+      },
+      {
+        "field": "biomarkers",
+        "quote": "hemoglobin 11.8 g/dL. Reference ranges printed: male 13.5-17.5; female 12.0-15.5"
+      }
+    ],
+    "must_not_infer": [
+      "male reference range selected"
+    ]
+  },
+  "tags": [
+    "cbc",
+    "reference-range"
+  ]
+}

@@ -1,0 +1,59 @@
+{
+  "schema_version": "2.0.0",
+  "id": "hepatic-bilirubin",
+  "text": "Liver profile 2026-04-02: total bilirubin 2.3 mg/dL (0.2-1.2); alkaline phosphatase 188 U/L (44-147).",
+  "expected": {
+    "document_type": "lab_result",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [
+      {
+        "marker": "total bilirubin",
+        "value": "2.3",
+        "unit": "mg/dL",
+        "date": "2026-04-02",
+        "reference_range": "0.2-1.2",
+        "source_quote": "total bilirubin 2.3 mg/dL (0.2-1.2)"
+      },
+      {
+        "marker": "alkaline phosphatase",
+        "value": "188",
+        "unit": "U/L",
+        "date": "2026-04-02",
+        "reference_range": "44-147",
+        "source_quote": "alkaline phosphatase 188 U/L (44-147)"
+      }
+    ],
+    "treatment_changes": [],
+    "imaging_facts": [],
+    "symptoms": [],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "Total bilirubin was 2.3 mg/dL (0.2-1.2) and alkaline phosphatase was 188 U/L (44-147)",
+        "date": "2026-04-02",
+        "source_quote": "total bilirubin 2.3 mg/dL (0.2-1.2); alkaline phosphatase 188 U/L (44-147)"
+      }
+    ],
+    "critical_events": [],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "total bilirubin 2.3 mg/dL (0.2-1.2); alkaline phosphatase 188 U/L (44-147)"
+      },
+      {
+        "field": "biomarkers",
+        "quote": "total bilirubin 2.3 mg/dL (0.2-1.2)"
+      },
+      {
+        "field": "biomarkers",
+        "quote": "alkaline phosphatase 188 U/L (44-147)"
+      }
+    ],
+    "must_not_infer": []
+  },
+  "tags": [
+    "hepatic"
+  ]
+}

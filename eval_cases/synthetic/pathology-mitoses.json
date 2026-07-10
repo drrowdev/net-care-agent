@@ -1,0 +1,46 @@
+{
+  "schema_version": "2.0.0",
+  "id": "pathology-mitoses",
+  "text": "Biopsy 2026-04-12: NET grade 1, mitotic rate 1 per 2 mm2; necrosis not identified.",
+  "expected": {
+    "document_type": "pathology_report",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [],
+    "treatment_changes": [],
+    "imaging_facts": [],
+    "symptoms": [],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "NET grade 1",
+        "date": "2026-04-12",
+        "source_quote": "NET grade 1"
+      },
+      {
+        "finding": "mitotic rate 1 per 2 mm2",
+        "date": "2026-04-12",
+        "source_quote": "mitotic rate 1 per 2 mm2"
+      }
+    ],
+    "critical_events": [],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "mitotic rate 1 per 2 mm2"
+      },
+      {
+        "field": "key_findings",
+        "quote": "NET grade 1"
+      }
+    ],
+    "must_not_infer": [
+      "tumor necrosis"
+    ]
+  },
+  "tags": [
+    "pathology",
+    "negation"
+  ]
+}

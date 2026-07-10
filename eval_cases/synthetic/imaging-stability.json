@@ -1,0 +1,48 @@
+{
+  "schema_version": "2.0.0",
+  "id": "imaging-stability",
+  "text": "MRI liver 2026-03-18: multiple hepatic metastases are unchanged in size and number compared with 2025-12-18; no new lesion.",
+  "expected": {
+    "document_type": "imaging_report",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [],
+    "treatment_changes": [],
+    "imaging_facts": [
+      {
+        "finding": "hepatic metastases unchanged in size and number",
+        "date": "2026-03-18",
+        "status": "stable",
+        "source_quote": "hepatic metastases are unchanged in size and number"
+      }
+    ],
+    "symptoms": [],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "Multiple hepatic metastases were unchanged in size and number, with no new lesion",
+        "date": "2026-03-18",
+        "source_quote": "multiple hepatic metastases are unchanged in size and number compared with 2025-12-18; no new lesion"
+      }
+    ],
+    "critical_events": [],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "multiple hepatic metastases are unchanged in size and number compared with 2025-12-18; no new lesion"
+      },
+      {
+        "field": "imaging_facts",
+        "quote": "hepatic metastases are unchanged in size and number"
+      }
+    ],
+    "must_not_infer": [
+      "new hepatic lesion"
+    ]
+  },
+  "tags": [
+    "stability",
+    "negation"
+  ]
+}

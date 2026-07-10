@@ -1,0 +1,59 @@
+{
+  "schema_version": "2.0.0",
+  "id": "treatment-held-toxicity",
+  "text": "On 2026-04-16, capecitabine was held because ANC was 0.8 x10^9/L.",
+  "expected": {
+    "document_type": "doctor_note",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [
+      {
+        "marker": "ANC",
+        "value": "0.8",
+        "unit": "x10^9/L",
+        "date": "2026-04-16",
+        "reference_range": null,
+        "source_quote": "ANC was 0.8 x10^9/L"
+      }
+    ],
+    "treatment_changes": [
+      {
+        "treatment": "capecitabine",
+        "state": "held",
+        "date": "2026-04-16",
+        "source_quote": "capecitabine was held"
+      }
+    ],
+    "imaging_facts": [],
+    "symptoms": [],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "Capecitabine was held because ANC was 0.8 x10^9/L",
+        "date": "2026-04-16",
+        "source_quote": "capecitabine was held because ANC was 0.8 x10^9/L"
+      }
+    ],
+    "critical_events": [],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "capecitabine was held because ANC was 0.8 x10^9/L"
+      },
+      {
+        "field": "biomarkers",
+        "quote": "ANC was 0.8 x10^9/L"
+      },
+      {
+        "field": "treatment_changes",
+        "quote": "capecitabine was held"
+      }
+    ],
+    "must_not_infer": []
+  },
+  "tags": [
+    "treatment",
+    "cbc"
+  ]
+}

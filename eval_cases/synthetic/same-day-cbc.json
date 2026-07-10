@@ -1,0 +1,60 @@
+{
+  "schema_version": "2.0.0",
+  "id": "same-day-cbc",
+  "text": "CBC 2026-03-03 08:00: WBC 3.1 x10^9/L (4.0-11.0). Repeat 16:00: WBC 4.2 x10^9/L (4.0-11.0).",
+  "expected": {
+    "document_type": "lab_result",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [
+      {
+        "marker": "WBC",
+        "value": "3.1",
+        "unit": "x10^9/L",
+        "date": "2026-03-03",
+        "reference_range": "4.0-11.0",
+        "source_quote": "WBC 3.1 x10^9/L (4.0-11.0)"
+      },
+      {
+        "marker": "WBC",
+        "value": "4.2",
+        "unit": "x10^9/L",
+        "date": "2026-03-03",
+        "reference_range": "4.0-11.0",
+        "source_quote": "WBC 4.2 x10^9/L (4.0-11.0)"
+      }
+    ],
+    "treatment_changes": [],
+    "imaging_facts": [],
+    "symptoms": [],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "WBC increased from 3.1 x10^9/L at 08:00 to 4.2 x10^9/L at 16:00 on the same day",
+        "date": "2026-03-03",
+        "source_quote": "CBC 2026-03-03 08:00: WBC 3.1 x10^9/L (4.0-11.0). Repeat 16:00: WBC 4.2 x10^9/L (4.0-11.0)"
+      }
+    ],
+    "critical_events": [],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "CBC 2026-03-03 08:00: WBC 3.1 x10^9/L (4.0-11.0). Repeat 16:00: WBC 4.2 x10^9/L (4.0-11.0)"
+      },
+      {
+        "field": "biomarkers",
+        "quote": "WBC 3.1 x10^9/L (4.0-11.0)"
+      },
+      {
+        "field": "biomarkers",
+        "quote": "WBC 4.2 x10^9/L (4.0-11.0)"
+      }
+    ],
+    "must_not_infer": []
+  },
+  "tags": [
+    "same-day",
+    "cbc"
+  ]
+}

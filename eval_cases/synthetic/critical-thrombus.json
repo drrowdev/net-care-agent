@@ -1,0 +1,57 @@
+{
+  "schema_version": "2.0.0",
+  "id": "critical-thrombus",
+  "text": "CT chest 2026-04-30: acute segmental pulmonary embolus in right lower lobe. Same-day emergency assessment arranged.",
+  "expected": {
+    "document_type": "imaging_report",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [],
+    "treatment_changes": [],
+    "imaging_facts": [
+      {
+        "finding": "acute segmental pulmonary embolus right lower lobe",
+        "date": "2026-04-30",
+        "status": "new",
+        "source_quote": "acute segmental pulmonary embolus in right lower lobe"
+      }
+    ],
+    "symptoms": [],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "CT showed an acute segmental pulmonary embolus in the right lower lobe, with same-day emergency assessment arranged",
+        "date": "2026-04-30",
+        "source_quote": "acute segmental pulmonary embolus in right lower lobe. Same-day emergency assessment arranged"
+      }
+    ],
+    "critical_events": [
+      {
+        "event": "acute segmental pulmonary embolus in right lower lobe. Same-day emergency assessment arranged",
+        "date": "2026-04-30",
+        "source_quote": "acute segmental pulmonary embolus in right lower lobe. Same-day emergency assessment arranged",
+        "critical": true
+      }
+    ],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "acute segmental pulmonary embolus in right lower lobe. Same-day emergency assessment arranged"
+      },
+      {
+        "field": "imaging_facts",
+        "quote": "acute segmental pulmonary embolus in right lower lobe"
+      },
+      {
+        "field": "critical_events",
+        "quote": "acute segmental pulmonary embolus in right lower lobe. Same-day emergency assessment arranged"
+      }
+    ],
+    "must_not_infer": []
+  },
+  "tags": [
+    "critical",
+    "urgent"
+  ]
+}

@@ -1,0 +1,59 @@
+{
+  "schema_version": "2.0.0",
+  "id": "renal-creatinine",
+  "text": "Chemistry 2026-04-01: creatinine 1.42 mg/dL (0.60-1.20), eGFR 54 mL/min/1.73m2 (>60).",
+  "expected": {
+    "document_type": "lab_result",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [
+      {
+        "marker": "creatinine",
+        "value": "1.42",
+        "unit": "mg/dL",
+        "date": "2026-04-01",
+        "reference_range": "0.60-1.20",
+        "source_quote": "creatinine 1.42 mg/dL (0.60-1.20)"
+      },
+      {
+        "marker": "eGFR",
+        "value": "54",
+        "unit": "mL/min/1.73m2",
+        "date": "2026-04-01",
+        "reference_range": ">60",
+        "source_quote": "eGFR 54 mL/min/1.73m2 (>60)"
+      }
+    ],
+    "treatment_changes": [],
+    "imaging_facts": [],
+    "symptoms": [],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "Creatinine was 1.42 mg/dL (0.60-1.20) and eGFR was 54 mL/min/1.73m2 (>60)",
+        "date": "2026-04-01",
+        "source_quote": "creatinine 1.42 mg/dL (0.60-1.20), eGFR 54 mL/min/1.73m2 (>60)"
+      }
+    ],
+    "critical_events": [],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "creatinine 1.42 mg/dL (0.60-1.20), eGFR 54 mL/min/1.73m2 (>60)"
+      },
+      {
+        "field": "biomarkers",
+        "quote": "creatinine 1.42 mg/dL (0.60-1.20)"
+      },
+      {
+        "field": "biomarkers",
+        "quote": "eGFR 54 mL/min/1.73m2 (>60)"
+      }
+    ],
+    "must_not_infer": []
+  },
+  "tags": [
+    "renal"
+  ]
+}

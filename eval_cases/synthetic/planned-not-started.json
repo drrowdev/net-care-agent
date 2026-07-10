@@ -1,0 +1,37 @@
+{
+  "schema_version": "2.0.0",
+  "id": "planned-not-started",
+  "text": "Oncology plan 2026-05-07: consider everolimus after next scan; treatment has not started.",
+  "expected": {
+    "document_type": "doctor_note",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [],
+    "treatment_changes": [],
+    "imaging_facts": [],
+    "symptoms": [],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "Everolimus is being considered after the next scan and has not started",
+        "date": "2026-05-07",
+        "source_quote": "consider everolimus after next scan; treatment has not started"
+      }
+    ],
+    "critical_events": [],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "consider everolimus after next scan; treatment has not started"
+      }
+    ],
+    "must_not_infer": [
+      "everolimus started"
+    ]
+  },
+  "tags": [
+    "treatment",
+    "must-not-infer"
+  ]
+}

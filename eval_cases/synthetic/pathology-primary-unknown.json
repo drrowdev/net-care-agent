@@ -1,0 +1,47 @@
+{
+  "schema_version": "2.0.0",
+  "id": "pathology-primary-unknown",
+  "text": "Liver biopsy 2026-05-03: metastatic well-differentiated NET. Immunostains do not establish a primary site.",
+  "expected": {
+    "document_type": "pathology_report",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [],
+    "treatment_changes": [],
+    "imaging_facts": [],
+    "symptoms": [],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "metastatic well-differentiated NET",
+        "date": "2026-05-03",
+        "source_quote": "metastatic well-differentiated NET"
+      },
+      {
+        "finding": "Immunostains did not establish a primary site",
+        "date": "2026-05-03",
+        "source_quote": "Immunostains do not establish a primary site"
+      }
+    ],
+    "critical_events": [],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "metastatic well-differentiated NET"
+      },
+      {
+        "field": "key_findings",
+        "quote": "Immunostains do not establish a primary site"
+      }
+    ],
+    "must_not_infer": [
+      "pancreatic primary",
+      "small bowel primary"
+    ]
+  },
+  "tags": [
+    "pathology",
+    "must-not-infer"
+  ]
+}

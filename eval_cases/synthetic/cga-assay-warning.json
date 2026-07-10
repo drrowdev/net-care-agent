@@ -1,0 +1,59 @@
+{
+  "schema_version": "2.0.0",
+  "id": "cga-assay-warning",
+  "text": "CgA 310 ng/mL on 2026-04-15 (0-100). Note: proton pump inhibitors may elevate CgA; medication effect cannot be excluded.",
+  "expected": {
+    "document_type": "lab_result",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [
+      {
+        "marker": "CgA",
+        "value": "310",
+        "unit": "ng/mL",
+        "date": "2026-04-15",
+        "reference_range": "0-100",
+        "source_quote": "CgA 310 ng/mL on 2026-04-15 (0-100)"
+      }
+    ],
+    "treatment_changes": [],
+    "imaging_facts": [],
+    "symptoms": [],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "CgA was 310 ng/mL (reference 0-100)",
+        "date": "2026-04-15",
+        "source_quote": "CgA 310 ng/mL on 2026-04-15 (0-100)"
+      },
+      {
+        "finding": "Proton pump inhibitors may elevate CgA, so a medication effect cannot be excluded",
+        "date": "2026-04-15",
+        "source_quote": "proton pump inhibitors may elevate CgA; medication effect cannot be excluded"
+      }
+    ],
+    "critical_events": [],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "CgA 310 ng/mL on 2026-04-15 (0-100)"
+      },
+      {
+        "field": "key_findings",
+        "quote": "proton pump inhibitors may elevate CgA; medication effect cannot be excluded"
+      },
+      {
+        "field": "biomarkers",
+        "quote": "CgA 310 ng/mL on 2026-04-15 (0-100)"
+      }
+    ],
+    "must_not_infer": [
+      "tumor progression"
+    ]
+  },
+  "tags": [
+    "distractor",
+    "ambiguity"
+  ]
+}

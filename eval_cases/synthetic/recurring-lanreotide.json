@@ -1,0 +1,34 @@
+{
+  "schema_version": "2.0.0",
+  "id": "recurring-lanreotide",
+  "text": "Medication administration record: lanreotide 120 mg injection given 2026-01-05 and given again 2026-02-02; continue every 28 days.",
+  "expected": {
+    "document_type": "doctor_note",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [],
+    "treatment_changes": [],
+    "imaging_facts": [],
+    "symptoms": [],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "Lanreotide 120 mg was given on 2026-01-05 and 2026-02-02 and continues every 28 days",
+        "date": "2026-02-02",
+        "source_quote": "lanreotide 120 mg injection given 2026-01-05 and given again 2026-02-02; continue every 28 days"
+      }
+    ],
+    "critical_events": [],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "lanreotide 120 mg injection given 2026-01-05 and given again 2026-02-02; continue every 28 days"
+      }
+    ],
+    "must_not_infer": []
+  },
+  "tags": [
+    "recurring-treatment"
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  "schema_version": "2.0.0",
+  "id": "appointment-oncology",
+  "text": "Plan dated 2026-04-05: follow-up with medical oncology on 2026-04-19 at 09:30 to review scans.",
+  "expected": {
+    "document_type": "doctor_note",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [],
+    "treatment_changes": [],
+    "imaging_facts": [],
+    "symptoms": [],
+    "appointments": [
+      {
+        "date": "2026-04-19",
+        "description": "medical oncology follow-up to review scans",
+        "type": "appointment",
+        "source_quote": "follow-up with medical oncology on 2026-04-19 at 09:30 to review scans"
+      }
+    ],
+    "key_findings": [
+      {
+        "finding": "Medical oncology follow-up is scheduled for 2026-04-19 at 09:30 to review scans",
+        "date": "2026-04-19",
+        "source_quote": "follow-up with medical oncology on 2026-04-19 at 09:30 to review scans"
+      }
+    ],
+    "critical_events": [],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "follow-up with medical oncology on 2026-04-19 at 09:30 to review scans"
+      },
+      {
+        "field": "appointments",
+        "quote": "follow-up with medical oncology on 2026-04-19 at 09:30 to review scans"
+      }
+    ],
+    "must_not_infer": []
+  },
+  "tags": [
+    "appointment"
+  ]
+}

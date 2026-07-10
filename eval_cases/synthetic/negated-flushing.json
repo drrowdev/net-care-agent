@@ -1,0 +1,75 @@
+{
+  "schema_version": "2.0.0",
+  "id": "negated-flushing",
+  "text": "Review 2026-04-08: patient denies flushing and wheeze. Reports three loose stools daily.",
+  "expected": {
+    "document_type": "doctor_note",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [],
+    "treatment_changes": [],
+    "imaging_facts": [],
+    "symptoms": [
+      {
+        "symptom": "flushing",
+        "status": "absent",
+        "date": "2026-04-08",
+        "source_quote": "denies flushing"
+      },
+      {
+        "symptom": "wheeze",
+        "status": "absent",
+        "date": "2026-04-08",
+        "source_quote": "denies flushing and wheeze"
+      },
+      {
+        "symptom": "loose stools three daily",
+        "status": "present",
+        "date": "2026-04-08",
+        "source_quote": "Reports three loose stools daily"
+      }
+    ],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "The patient denied flushing and wheeze",
+        "date": "2026-04-08",
+        "source_quote": "patient denies flushing and wheeze"
+      },
+      {
+        "finding": "The patient reported three loose stools daily",
+        "date": "2026-04-08",
+        "source_quote": "Reports three loose stools daily"
+      }
+    ],
+    "critical_events": [],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "patient denies flushing and wheeze"
+      },
+      {
+        "field": "key_findings",
+        "quote": "Reports three loose stools daily"
+      },
+      {
+        "field": "symptoms",
+        "quote": "denies flushing"
+      },
+      {
+        "field": "symptoms",
+        "quote": "denies flushing and wheeze"
+      },
+      {
+        "field": "symptoms",
+        "quote": "Reports three loose stools daily"
+      }
+    ],
+    "must_not_infer": []
+  },
+  "tags": [
+    "negation",
+    "symptoms"
+  ]
+}

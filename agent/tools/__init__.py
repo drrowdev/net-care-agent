@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 
+from ..schema import now_stamp
 from .biomarkers import analyze_biomarker_trends
 from .clinical_trials import search_clinical_trials
 from .pubmed import search_pubmed
@@ -300,6 +301,7 @@ def execute_tool(name: str, inputs: dict, profile: dict) -> dict:
             "message": inputs["message"],
             "action_required": inputs.get("action_required", ""),
             "resolved": False,
+            "added_at": now_stamp(),
         }
         profile["alerts"].append(alert)
         return {"status": "alert_flagged", **alert}

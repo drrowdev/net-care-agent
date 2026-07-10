@@ -30,6 +30,15 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-03.
   suggested_workflows[], workflow_rationale`. Biomarker items: `marker, value,
   unit, reference_range, flag`. Appointment items: `date, description, type`
   (persisted to `profile['appointments']` and merged into the summary timeline).
+- **`added_at` (ingestion timestamp).** Every item appended to the counted
+  profile collections (`biomarkers, imaging, documents, alerts, symptoms,
+  clinical_judgments`) is stamped with `added_at` (wall-clock, seconds) at the
+  append site. The dashboard "new since acknowledged" counter (`_count_new` in
+  app.py) keys on `added_at` first, falling back to the clinical `date` /
+  `date_added` for legacy items that predate the field. Do NOT count these
+  collections purely by clinical date — a back-dated document fed today must
+  still surface as new. `trials_tracked` / `literature_watched` already carry
+  `date_added`, which serves the same role.
 - **exec_summary** JSON keys: `overall_status` (enum
   `stable|responding|progressing|insufficient_data`), `status_confidence`
   (`high|medium|low`), `status_rationale, key_concern, summary, prrt_status`

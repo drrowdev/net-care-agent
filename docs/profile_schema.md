@@ -62,6 +62,7 @@ A single lab result row (CgA, NSE, 5-HIAA, creatinine, etc.).
 | `unit` | `str \| None` |  |
 | `reference_range` | `str \| None` |  |
 | `flag` | `'high' \| 'low' \| 'normal' \| null` |  |
+| `added_at` | `str \| None` | Ingestion timestamp; drives the 'new since acknowledged' counter. |
 
 ## `imaging[]`
 
@@ -72,6 +73,7 @@ A single lab result row (CgA, NSE, 5-HIAA, creatinine, etc.).
 | `findings` | `str \| None` |  |
 | `impression` | `str \| None` |  |
 | `new_lesions` | `bool \| None` |  |
+| `added_at` | `str \| None` | Ingestion timestamp; drives the 'new since acknowledged' counter. |
 
 ## `documents[]`
 
@@ -84,6 +86,7 @@ Every fed document, kept for audit and downstream re-analysis.
 | `summary` | `str \| None` | 1–2 sentence intake-agent summary |
 | `key_findings` | `list[str]` |  |
 | `raw_text` | `str \| None` | First ~3000 chars of input |
+| `added_at` | `str \| None` | Ingestion timestamp; drives the 'new since acknowledged' counter. |
 
 ## `trials_tracked[]`
 
@@ -123,6 +126,7 @@ Every fed document, kept for audit and downstream re-analysis.
 | `message` | `str \| None` |  |
 | `action_required` | `str \| None` |  |
 | `resolved` | `bool` |  |
+| `added_at` | `str \| None` | Ingestion timestamp; drives the 'new since acknowledged' counter. |
 
 ## `treatments_classified[]`
 
@@ -146,6 +150,7 @@ Hard constraints captured from oncologist consultations.
 | `category` | `'constraint' \| 'preference' \| 'outcome' \| 'context' \| null` |  |
 | `text` | `str \| None` |  |
 | `source` | `'manual' \| 'ai' \| null` |  |
+| `added_at` | `str \| None` | Ingestion timestamp; drives the 'new since acknowledged' counter. |
 
 ## `symptoms[]`
 
@@ -164,6 +169,7 @@ Patient-reported symptom or side effect.
 | `note` | `str \| None` |  |
 | `related_treatment` | `str \| None` | Optional link to a treatment name in current_treatments |
 | `source` | `'manual' \| 'ai' \| null` |  |
+| `added_at` | `str \| None` | Ingestion timestamp; drives the 'new since acknowledged' counter. |
 
 ## `questions[]`
 

@@ -9,6 +9,58 @@ incremented when something user-visible or operationally meaningful changes.
 ## [Unreleased]
 
 ### Added
+- **Profile schema versioning and deterministic migrations.**  A new
+  `schema_version` field (integer, current value 1) appears at the top level of
+  every profile.  `agent/migrations.py` provides append-only, idempotent
+  migrations; each migration's `applied_at` timestamp is recorded in
+  `_migration_log` and preserved on subsequent loads.  `load_profile` runs
+  migrations before returning the profile; loading a current-version profile is a
+  fast-path with no mutations.  Migrations only add structural defaults, never
+  infer clinical facts.
+
+- **Robust corrupt-profile recovery.**  `load_profile` now distinguishes three
+  failure classes: (1) transient I/O error → `IOProfileError`, no quarantine;
+  (2) invalid JSON or structurally invalid shape → quarantine forensic copy to
+  `{DATA_DIR}/quarantine/`, atomically restore from the newest valid pre-save
+  snapshot (with optional `.sha256` sidecar validation) or daily backup;
+  (3) no valid candidate → `CorruptProfileError`.  Recovery is under the
+  cross-process lock.  No empty patient is ever returned; first-run missing
+  profile still creates a default.  `save_profile` now rejects structurally
+  invalid data (non-dict, string patient, non-list collection) with `ValueError`.
+
+- **Rotating snapshot sidecar hashes.**  `backups.rotating_snapshot` writes an
+  optional `.sha256` sidecar alongside each snapshot; `_validate_candidate`
+  checks the sidecar when present.
+
+- **Explicit safe recovery API** (`agent/recovery.py`).  Exports
+  `quarantine_profile`, `find_recovery_candidates`, `restore_from_candidate`,
+  `recover_profile`, and `NoRecoveryCandidateError`.  Operator runbook in
+  `docs/operating_manual.md §9`.
+
+- **Enhanced `/api/health` readiness probe.**  Now reports: `schema_version`,
+  `profile_status` (`ok|missing|invalid_json|invalid_shape|io_error`),
+  `stale_job_count`, `interrupted_job_count`, `newest_snapshot_age_seconds`,
+  `newest_backup_age_seconds`, `jobs_healthy`.  No PHI, paths, or secrets in
+  response.  Returns 503 when data dir is not writable or profile is
+  corrupt/unreadable.  Returns 200 degraded when backups are stale (>48 h) or
+  jobs were interrupted.
+
+- **Liveness route `/api/live`.**  Returns `{"alive": true}` 200 unconditionally.
+  Use for k8s/Azure liveness checks separate from readiness.
+
+- **Startup job reconciliation.**  `_load_jobs` marks any job with `status`
+  `queued` or `running` as `interrupted` (with `finished_at` and `retry_guidance`
+  message), persists the change once, and strips the `traceback` field from
+  interrupted records.  A corrupt `jobs.json` (invalid JSON or non-list) is
+  atomically quarantined; `_jobs_healthy` is set `False`; `/api/health` discloses
+  `jobs_healthy: false` without exposing job data.
+
+- **56 new no-network tests** covering migrations (idempotence, unknown field
+  preservation, backfill, timestamp immutability), recovery (quarantine, sidecar
+  hash validation, snapshot skip, no-candidate error, transient-IO guard),
+  health (503 on corrupt, no PHI, liveness, job counts), and job reconciliation.
+
+### Added
 - **Evidence provenance and reviewability.** Every feed now receives a unique
   source-document ID and ingestion timestamp; immutable original/extracted
   artifacts are atomically stored with SHA-256 and length metadata. Intake

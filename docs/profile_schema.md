@@ -10,6 +10,7 @@ All sub-models accept **extra** fields (forward-compat) and treat every document
 
 ```jsonc
 {
+  'schema_version': int,
   'profile_revision': int,
   'profile_updated_at': str | None,
   'profile_saved_at': str | None,

@@ -176,36 +176,93 @@ pytest -q                                         # 45 tests, no network
 python Scripts\seed_test_profile.py               # populate a fake profile
 ```
 
-## 9. Backups & restore
+## 9. Backups, snapshots & automated recovery
 
-Backups are written automatically every time `save_profile` is called (cheap:
-copies once per day, then prunes anything older than 30 days).
+### Normal operation
 
-To roll back manually:
+Every `save_profile` call:
+1. Writes a pre-save **rotating snapshot** (`/home/data/snapshots/profile_<timestamp>.json`)
+   with an optional `.sha256` sidecar.  The last 20 snapshots are kept.
+2. Writes a **daily backup** (`/home/data/backups/profile_YYYYMMDD.json`) once per
+   calendar day and prunes files older than 30 days.
+
+### Automated recovery on corrupt profile
+
+If `patient_profile.json` has invalid JSON or an unusable structural shape,
+`load_profile` automatically:
+
+1. Writes a forensic copy to `/home/data/quarantine/patient_profile_<ts>_<hash8>.json`.
+2. Searches for the **newest valid pre-save snapshot**, then the **newest valid
+   daily backup**.
+3. Atomically restores the best candidate to `patient_profile.json`.
+4. Applies any pending migrations and returns the recovered data.
+
+If no valid candidate is found, `load_profile` raises `CorruptProfileError` and
+the app returns 503 until the operator intervenes.
+
+### Operator manual restore
+
+If automated recovery fails (no valid snapshots or backups), restore from an
+external Azure Backup or Azure Files soft-delete:
+
+```python
+# From Python / SSH shell — use the safe API, not raw cp
+from pathlib import Path
+from agent.recovery import RecoveryCandidate, restore_from_candidate
+
+candidate = RecoveryCandidate(Path("/home/data/backups/profile_20260315.json"), "manual")
+data = restore_from_candidate(candidate)  # validates + atomically restores
+```
+
+Or from the shell using the validation-checked helper:
 
 ```bash
-# On Azure App Service SSH
-ls /home/data/backups/
-cp /home/data/backups/profile_20260315.json /home/data/patient_profile.json
+# 1. Check what's in quarantine (forensic copy of the bad file)
+ls /home/data/quarantine/
+
+# 2. Find the newest valid backup
+ls -lt /home/data/backups/
+
+# 3. Restore via Python (validates before writing)
+python -c "
+from pathlib import Path
+from agent.recovery import RecoveryCandidate, restore_from_candidate
+restore_from_candidate(RecoveryCandidate(Path('/home/data/backups/profile_20260315.json'), 'manual'))
+print('Restored OK')
+"
 ```
+
+**Never use raw `cp` to restore** — it bypasses the cross-process lock and
+structural validation.
 
 ## 10. Health check
 
-`GET /api/health` returns:
+`GET /api/health` returns a readiness report.  `GET /api/live` is a
+lightweight liveness probe that always returns 200 regardless of profile state.
 
-```json
-{
-  "status": "ok",
-  "version": "0.1.0",
-  "profile_loaded": true,
-  "data_dir": "/home/data",
-  "data_dir_writable": true
-}
-```
+### `GET /api/health` response fields (no PHI, no paths, no secrets)
 
-Configure this as the App Service health probe — App Service will recycle the
-instance if `/api/health` returns 503 for too long (e.g. Azure Files mount is
-not writable).
+| Field | Type | Meaning |
+|-------|------|---------|
+| `status` | `"ok"\|"degraded"\|"error"` | Overall readiness |
+| `version` | string | App package version |
+| `schema_version` | int | Current profile schema version |
+| `data_dir_writable` | bool | Storage is writable |
+| `profile_status` | `"ok"\|"missing"\|"invalid_json"\|"invalid_shape"\|"io_error"` | Profile state |
+| `profile_loaded` | bool | Alias: profile_status == "ok" |
+| `stale_job_count` | int | Jobs queued/running >1 h |
+| `interrupted_job_count` | int | Jobs interrupted by restart |
+| `newest_snapshot_age_seconds` | float\|null | Seconds since last snapshot |
+| `newest_backup_age_seconds` | float\|null | Seconds since last daily backup |
+| `jobs_healthy` | bool | False if jobs.json was quarantined |
+
+**HTTP status codes:**
+- `200 status=ok`: everything normal
+- `200 status=degraded`: minor issues (interrupted jobs, stale backup)
+- `503 status=error`: storage not writable, or profile corrupt with no recovery
+
+Configure `/api/health` as the App Service health probe — Azure will recycle
+the instance if it returns 503 persistently (e.g. Azure Files mount not writable).
 
 ## 11. Running digests
 

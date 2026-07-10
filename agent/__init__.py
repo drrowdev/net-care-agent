@@ -34,9 +34,18 @@ from .llm import client, first_text, render_prompt, strip_code_fences
 from .orchestrator import run_orchestrator
 
 # Profile
-from .profile import DEFAULT_PROFILE, get_patient_summary, load_profile, save_profile
+from .profile import (
+    DEFAULT_PROFILE,
+    CorruptProfileError,
+    IOProfileError,
+    ProfileLoadError,
+    get_patient_summary,
+    load_profile,
+    save_profile,
+)
 from .provenance import anchor_source_quote, preserve_source_document, remove_source_document
 from .questions import generate_appointment_questions, generate_questions_for_profile
+from .recovery import get_recovery_state
 from .serialize import mutating_lock, serialized_mutation
 
 # Tools (registry + dispatcher + relevance + individual tool fns)
@@ -73,9 +82,13 @@ __all__ = [
     "load_profile",
     "save_profile",
     "get_patient_summary",
+    "CorruptProfileError",
+    "IOProfileError",
+    "ProfileLoadError",
     "anchor_source_quote",
     "preserve_source_document",
     "remove_source_document",
+    "get_recovery_state",
     "mutating_lock",
     "serialized_mutation",
     # tools

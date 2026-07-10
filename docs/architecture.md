@@ -41,7 +41,9 @@ the Azure Files mount at `/home/data/patient_profile.json`. There is one user
               │ Azure Files mount /home/data/   │
               │   patient_profile.json (atomic) │
               │   jobs.json                     │
+              │   snapshots/profile_<ts>.json   │
               │   backups/profile_YYYYMMDD.json │
+              │   quarantine/                   │
               │   reports/report_*.txt          │
               │   source_documents/<id>/        │
               └─────────────────────────────────┘
@@ -97,8 +99,10 @@ repeatedly for pre-appointment prep without polluting the tracked lists.
 
 | Risk | Mitigation |
 |---|---|
+| Corrupt `patient_profile.json` | `load_profile` quarantines a forensic copy, restores newest valid snapshot/daily backup atomically under the cross-process lock.  `CorruptProfileError` if no candidate. |
+| Interrupted background job on restart | `_load_jobs` marks queued/running jobs `interrupted` with retry guidance; no traceback exposed.  Corrupt `jobs.json` quarantined; health reports `jobs_healthy=false`. |
 | Half-written profile.json on crash | `agent.io.atomic_write_text` (tmp + `os.replace`) |
-| Accidental data loss | `agent.backups.daily_backup` snapshot, 30-day retention |
+| Accidental data loss | `agent.backups.rotating_snapshot` (last 20 pre-write snapshots) + `agent.backups.daily_backup` (30-day retention) with optional `.sha256` sidecar |
 | Anthropic API outage | Each agent has a JSON-decode fallback that returns "insufficient_data" rather than 500 |
 | Irrelevant literature pollution | `agent.tools._is_relevant` rule-based filter before persistence |
 | Treatment duplicates | `agent.intake._treatment_similarity` synonym dedup (Somatuline = lanreotide) |

@@ -6,11 +6,13 @@ Data persisted to /home/data (Azure Files mount)
 """
 
 import datetime
+import hashlib
 import io
 import json
 import os
 import sys
 import threading
+import time
 import traceback
 from functools import wraps
 from pathlib import Path
@@ -41,7 +43,7 @@ except Exception as e:
     sys.exit(1)
 
 # Configure logging once Anthropic + dotenv are loaded.
-from agent.io import atomic_write_text  # noqa: E402
+from agent.io import atomic_write_bytes, atomic_write_text  # noqa: E402
 from agent.logging_config import configure_logging  # noqa: E402
 from agent.provenance import resolve_source_artifact, validate_source_artifact  # noqa: E402
 from agent.schema import now_stamp  # noqa: E402
@@ -76,21 +78,123 @@ JOBS_PATH = DATA_DIR / "jobs.json"
 _jobs: list[dict] = []
 _jobs_lock = threading.Lock()
 _initialized = False
+_jobs_healthy: bool = True  # set False when jobs.json is quarantined on load
 
 
 def _ensure_data_dir():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def _load_jobs():
-    global _jobs
-    # Do NOT call _ensure_data_dir() here — this may run at import time
-    # and the Azure Files mount may not be ready (causes 230s timeout).
-    if JOBS_PATH.exists():
-        try:
-            _jobs = json.loads(JOBS_PATH.read_text())
-        except Exception:
+def _load_jobs() -> bool:
+    """Load and reconcile jobs from disk on startup.
+
+    Three outcomes:
+    - File missing → no-op (_jobs stays []).
+    - File readable + valid JSON list → loaded.  Queued/running jobs are
+      marked ``interrupted`` (persisted once, no traceback exposed).
+    - File corrupt (bad JSON or not a list) → atomically quarantined, _jobs
+      reset to [], _jobs_healthy set False so /api/health discloses degradation.
+
+    Never calls _ensure_data_dir() here — may run at import time on some code
+    paths, and the Azure Files mount may not be ready yet.
+
+    All global state mutations (_jobs, _jobs_healthy) and the reconciliation
+    persistence are performed under _jobs_lock so the assignment, reconciliation,
+    and save are a single atomic unit from other threads' perspective.
+    _save_jobs does not acquire _jobs_lock, so there is no deadlock risk.
+    """
+    global _jobs, _jobs_healthy
+    if not JOBS_PATH.exists():
+        with _jobs_lock:
             _jobs = []
+            _jobs_healthy = True
+        return True
+
+    try:
+        raw = JOBS_PATH.read_bytes()
+    except OSError as exc:
+        log.warning("jobs_read_failed: %s", exc)
+        with _jobs_lock:
+            _jobs_healthy = False
+        return False
+
+    try:
+        loaded = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        with _jobs_lock:
+            _quarantine_jobs(raw_bytes=raw, reason=f"json_decode_error: {exc}")
+            _jobs = []
+            _jobs_healthy = False
+        return True
+
+    if not isinstance(loaded, list):
+        with _jobs_lock:
+            _quarantine_jobs(raw_bytes=raw, reason="not_a_list")
+            _jobs = []
+            _jobs_healthy = False
+        return True
+
+    if not all(
+        isinstance(item, dict)
+        and isinstance(item.get("id"), str)
+        and isinstance(item.get("status"), str)
+        for item in loaded
+    ):
+        with _jobs_lock:
+            _quarantine_jobs(raw_bytes=raw, reason="invalid_job_entry")
+            _jobs = []
+            _jobs_healthy = False
+        return True
+
+    with _jobs_lock:
+        _jobs = loaded
+        _jobs_healthy = True
+
+        # Reconcile: any job that was queued or running when the process last
+        # died is now interrupted.  Persist once, expose retry guidance, no
+        # traceback.
+        now_str = datetime.datetime.now().isoformat(timespec="seconds")
+        needs_save = False
+        for j in _jobs:
+            if j.get("status") in ("queued", "running"):
+                j["status"] = "interrupted"
+                j["finished_at"] = j.get("finished_at") or now_str
+                j["stage"] = "interrupted"
+                j["retry_guidance"] = (
+                    "This job was interrupted by a server restart.  "
+                    "Re-submit the same request to retry."
+                )
+                j.pop("traceback", None)  # never surface traceback in interrupted record
+                needs_save = True
+
+        if needs_save:
+            try:
+                _save_jobs()
+            except Exception as exc:
+                log.warning("jobs_reconcile_save_failed: %s", exc)
+                _jobs_healthy = False
+                return False
+    return True
+
+
+def _quarantine_jobs(*, raw_bytes: bytes, reason: str) -> None:
+    """Move corrupt jobs.json to the quarantine directory (best-effort).
+
+    Logs only the quarantine filename and a hash prefix — no job data or paths.
+    """
+    from agent import config as agent_config
+
+    qdir = agent_config.DATA_DIR / "quarantine"
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    h = hashlib.sha256(raw_bytes).hexdigest()[:8] if raw_bytes else "empty"
+    try:
+        qdir.mkdir(parents=True, exist_ok=True)
+        qpath = qdir / f"jobs_{ts}_{h}.json"
+        atomic_write_bytes(qpath, raw_bytes)
+        JOBS_PATH.unlink(missing_ok=True)
+        log.warning("jobs_quarantined reason=%s file=%s hash_prefix=%s", reason, qpath.name, h)
+    except OSError as exc:
+        log.error("jobs_quarantine_failed reason=%s error=%s", reason, exc)
 
 
 def _save_jobs():
@@ -424,13 +528,31 @@ def _upload_too_large(_error):
     return jsonify({"error": "File exceeds the 20 MB upload limit"}), 413
 
 
+@app.errorhandler(agent.ProfileLoadError)
+def _profile_unavailable(error):
+    log.error("profile_unavailable type=%s", type(error).__name__)
+    return jsonify(
+        {
+            "error": "Patient record is temporarily unavailable.",
+            "retryable": isinstance(error, agent.IOProfileError),
+        }
+    ), 503
+
+
 @app.before_request
 def _lazy_init():
     """Load jobs on the first real request — by then Azure Files is mounted."""
     global _initialized
     if not _initialized:
-        _initialized = True
-        _load_jobs()
+        loaded = _load_jobs()
+        _initialized = loaded
+        if not loaded and request.path not in {"/api/live", "/api/health"}:
+            return jsonify(
+                {
+                    "error": "Job history storage is temporarily unavailable.",
+                    "retryable": True,
+                }
+            ), 503
 
 
 def _source_auth_required(func):
@@ -499,9 +621,47 @@ def _has_active_judgment_successor(
     return False
 
 
+@app.route("/api/live")
+def api_live():
+    """Lightweight liveness probe — just confirms the process is alive.
+
+    Use this for k8s/Azure liveness checks.  Does no I/O and never returns
+    503.  Use ``/api/health`` for readiness/degraded state.
+    """
+    return jsonify({"alive": True}), 200
+
+
 @app.route("/api/health")
 def api_health():
-    """Liveness/readiness probe — used by Azure App Service health check."""
+    """Readiness probe — checks storage, profile validity, and job state.
+
+    Response fields (no PHI, paths, or secrets)
+    --------------------------------------------
+    - ``status``: ``"ok"`` | ``"degraded"`` | ``"error"``
+    - ``version``: app package version
+    - ``schema_version``: current profile schema version
+    - ``data_dir_writable``: bool
+    - ``profile_status``: ``"ok"`` | ``"missing"`` | ``"invalid_json"``
+      | ``"invalid_shape"`` | ``"io_error"``
+    - ``stale_job_count``: jobs queued/running for >1 hour
+    - ``interrupted_job_count``: jobs marked interrupted
+    - ``newest_snapshot_age_seconds``: float | null
+    - ``newest_backup_age_seconds``: float | null
+    - ``jobs_healthy``: bool (False when jobs.json is quarantined or unreadable on load)
+    - ``profile_recovery_state``: ``"none"`` | ``"recovered"`` | ``"failed"`` | ``"unknown"``
+    - ``profile_recovery_source``: ``"snapshot"`` | ``"daily_backup"`` | ``"manual"`` | null
+
+    HTTP status codes
+    -----------------
+    - 200  status=ok or degraded: app is usable
+    - 503  status=error: data dir not writable, or profile is unreadable/invalid
+    """
+    from agent import backups as agent_backups
+    from agent.migrations import CURRENT_SCHEMA_VERSION
+    from agent.recovery import get_recovery_state
+    from agent.schema import clinically_empty_profile, structural_check
+
+    # ── storage writability ───────────────────────────────────────────────────
     data_dir_writable = False
     try:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -512,22 +672,99 @@ def api_health():
     except Exception:
         pass
 
-    profile_loaded = False
+    # ── profile structural check (no side effects — does NOT quarantine) ──────
+    profile_status = "missing"
     try:
-        profile_loaded = agent.PROFILE_PATH.exists()
-    except Exception:
-        pass
+        raw_bytes = agent.PROFILE_PATH.read_bytes()
+        try:
+            pdata = json.loads(raw_bytes)
+            if structural_check(pdata) and not clinically_empty_profile(pdata):
+                profile_status = "ok"
+            elif structural_check(pdata):
+                profile_status = "clinically_empty"
+            else:
+                profile_status = "invalid_shape"
+        except json.JSONDecodeError:
+            profile_status = "invalid_json"
+    except FileNotFoundError:
+        profile_status = "missing"
+    except OSError:
+        profile_status = "io_error"
 
-    healthy = data_dir_writable
+    # ── job counts ────────────────────────────────────────────────────────────
+    stale_threshold = time.time() - 3600  # 1-hour cutoff for "stale" active job
+    stale_job_count = 0
+    interrupted_job_count = 0
+    with _jobs_lock:
+        for j in _jobs:
+            status = j.get("status")
+            if status == "interrupted":
+                interrupted_job_count += 1
+            elif status in ("queued", "running"):
+                created = j.get("created_at", "")
+                try:
+                    ct = datetime.datetime.fromisoformat(created).timestamp()
+                    if ct < stale_threshold:
+                        stale_job_count += 1
+                except (ValueError, TypeError):
+                    stale_job_count += 1
+
+    # ── backup / snapshot ages ────────────────────────────────────────────────
+    snap_age = agent_backups.newest_file_age_seconds(DATA_DIR / "snapshots", "profile_*.json")
+    backup_age = agent_backups.newest_file_age_seconds(DATA_DIR / "backups", "profile_*.json")
+
+    # ── recovery state ────────────────────────────────────────────────────────
+    recovery_state = get_recovery_state()
+
+    # ── overall status ────────────────────────────────────────────────────────
+    missing_indicates_data_loss = profile_status == "missing" and (
+        (DATA_DIR / ".profile-initialized").exists()
+        or snap_age is not None
+        or backup_age is not None
+    )
+    error_conditions = (
+        not data_dir_writable
+        or profile_status in ("invalid_json", "invalid_shape", "clinically_empty", "io_error")
+        or missing_indicates_data_loss
+    )
+    degraded_conditions = (
+        not _jobs_healthy
+        or profile_status == "missing"
+        or interrupted_job_count > 0
+        or stale_job_count > 0
+        or (
+            backup_age is not None and backup_age > 48 * 3600  # >2 days old → conservative degraded
+        )
+    )
+
+    if error_conditions:
+        overall = "error"
+        http_status = 503
+    elif degraded_conditions:
+        overall = "degraded"
+        http_status = 200
+    else:
+        overall = "ok"
+        http_status = 200
+
     return jsonify(
         {
-            "status": "ok" if healthy else "degraded",
+            "status": overall,
             "version": APP_VERSION,
-            "profile_loaded": profile_loaded,
-            "data_dir": str(DATA_DIR),
+            "schema_version": CURRENT_SCHEMA_VERSION,
             "data_dir_writable": data_dir_writable,
+            "profile_status": profile_status,
+            # backward compat field — callers checking profile_loaded still work
+            "profile_loaded": profile_status == "ok",
+            "stale_job_count": stale_job_count,
+            "interrupted_job_count": interrupted_job_count,
+            "newest_snapshot_age_seconds": snap_age,
+            "newest_backup_age_seconds": backup_age,
+            "jobs_healthy": _jobs_healthy,
+            "profile_recovery_state": recovery_state.get("state", "none"),
+            "profile_recovery_source": recovery_state.get("source"),
         }
-    ), (200 if healthy else 503)
+    ), http_status
 
 
 @app.route("/api/status")

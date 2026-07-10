@@ -88,6 +88,7 @@ All patient state lives in a single JSON file at `${DATA_DIR}/patient_profile.js
 
 ```
 {
+  "schema_version": 1,
   "profile_revision": 42,
   "profile_updated_at": "2026-07-10T16:51:49",
   "profile_saved_at": "2026-07-10T16:52:03",
@@ -107,6 +108,12 @@ All patient state lives in a single JSON file at `${DATA_DIR}/patient_profile.js
   "exec_summary": { "summary_revision": 42, "stale": false, ... }
 }
 ```
+
+`schema_version` tracks the profile schema revision. Deterministic, idempotent
+migrations run automatically on load (see `agent/migrations.py`), upgrading
+legacy profiles to the current version and logging each step in `_migration_log`.
+If a corrupt profile is detected, the app automatically recovers the newest valid
+pre-save snapshot or daily backup before applying migrations.
 
 Every clinical-content save advances `profile_revision`; bookkeeping-only saves
 (for example acknowledging unread items or marking a question asked) update

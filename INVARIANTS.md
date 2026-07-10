@@ -76,6 +76,23 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-03.
 - Feedback writes are serialized review-state mutations. `missed`, `incorrect`,
   and `corrected` feedback may mark the current summary stale, but feedback never
   mutates clinical facts or becomes a clinical judgment implicitly.
+- **`save_profile` guards structural validity.** Calling `save_profile` with a
+  non-dict, string patient, or non-list collection raises `ValueError`
+  immediately.  Field-level type issues (out-of-range values, bad enum literals)
+  are still logged as warnings; structural invalidity is rejected outright.
+- **Recovery is the only legitimate path to overwrite a corrupt profile.**
+  Use `agent.recovery.restore_from_candidate` — never raw `cp` or
+  `Path.write_text`.  Recovery validates the candidate, holds the cross-process
+  lock, and uses atomic sibling-replace.  `load_profile` calls recovery
+  automatically on corrupt JSON or invalid structural shape; manual invocation
+  is for operator runbooks only.
+- **Quarantine is forensics, not deletion.** `quarantine_profile` copies the
+  corrupt bytes to `{DATA_DIR}/quarantine/` but does not remove the original
+  (recovery overwrites it atomically).  No patient data is written to quarantine
+  metadata — only a filename-safe timestamp and a truncated hash.
+- **Transient I/O errors are not quarantined.** If `read_bytes` raises
+  `OSError`, `load_profile` raises `IOProfileError` without touching the
+  quarantine dir.  The file may be valid; retrying may succeed.
 
 ### Judgment lifecycle
 - Legacy judgments without `status` are `active`.

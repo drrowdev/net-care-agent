@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 import tempfile
 import types
@@ -91,9 +92,13 @@ def agent(_isolated_data_dir, monkeypatch):
     would still hold a reference to a real Anthropic client created
     before the stub fixture ran.
     """
-    profile_path = _isolated_data_dir / "patient_profile.json"
-    if profile_path.exists():
-        profile_path.unlink()
+    # Every test gets a truly empty storage root. Recovery/source-artifact tests
+    # otherwise leak markers, backups, and evidence directories across cases.
+    for child in _isolated_data_dir.iterdir():
+        if child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
 
     for mod_name in list(sys.modules):
         if mod_name == "net_agent" or mod_name == "agent" or mod_name.startswith("agent."):

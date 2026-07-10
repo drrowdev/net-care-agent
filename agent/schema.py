@@ -19,6 +19,68 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# Collection keys that must be lists (or None/missing → coercible to []).
+# Used by structural_check and the coercion step in load_profile.
+_COLLECTION_KEYS: tuple[str, ...] = (
+    "biomarkers",
+    "imaging",
+    "appointments",
+    "documents",
+    "source_documents",
+    "trials_tracked",
+    "literature_watched",
+    "alerts",
+    "treatments_classified",
+    "clinical_judgments",
+    "symptoms",
+    "questions",
+    "appointment_questions",
+    "feedback",
+)
+
+
+def structural_check(data: object) -> bool:
+    """Return True if *data* is structurally usable as a patient profile.
+
+    A profile is structurally valid when:
+
+    - It is a ``dict``.
+    - The ``patient`` key, if present, is either ``None`` or a ``dict``.
+    - Each collection key, if present, is either ``None`` or a ``list``.
+
+    ``None`` values are *safely coercible* (``None → {}`` / ``None → []``) and
+    pass this check.  Type mismatches (e.g. ``patient = 42``) return ``False``
+    and trigger quarantine in ``load_profile``.
+
+    This check is intentionally permissive on missing keys — they are filled in
+    by migrations and Pydantic defaults.  It only rejects data that cannot be
+    safely coerced into a usable profile shape.
+    """
+    if not isinstance(data, dict):
+        return False
+    patient = data.get("patient")
+    if patient is not None and not isinstance(patient, dict):
+        return False
+    for key in _COLLECTION_KEYS:
+        val = data.get(key)
+        if val is not None and not isinstance(val, list):
+            return False
+    return True
+
+
+def clinically_empty_profile(data: object) -> bool:
+    """Return True when a profile-shaped dict contains no patient/clinical data."""
+    if not isinstance(data, dict) or not data:
+        return True
+    patient = data.get("patient")
+    if isinstance(patient, dict) and any(
+        value not in (None, "", [], {}) for value in patient.values()
+    ):
+        return False
+    if any(isinstance(data.get(key), list) and bool(data[key]) for key in _COLLECTION_KEYS):
+        return False
+    return not bool(data.get("executive_summary"))
+
 
 def now_stamp() -> str:
     """Wall-clock ISO timestamp (seconds precision) for when an item was first
@@ -312,6 +374,10 @@ class ExecutiveSummary(_Lenient):
 class PatientProfile(_Lenient):
     """The complete patient profile. Lives at ${DATA_DIR}/patient_profile.json."""
 
+    schema_version: int = Field(
+        default=1,
+        description="Profile schema version. Incremented when a structural migration runs.",
+    )
     profile_revision: int = 0
     profile_updated_at: str | None = None
     profile_saved_at: str | None = None
@@ -497,8 +563,10 @@ __all__ = [
     "Symptom",
     "TrialTracked",
     "TreatmentClassified",
+    "_COLLECTION_KEYS",
     "normalize_profile",
     "render_schema_markdown",
+    "structural_check",
     "validate_profile",
 ]
 

@@ -9,6 +9,17 @@ incremented when something user-visible or operationally meaningful changes.
 ## [Unreleased]
 
 ### Fixed
+- **Phase 1 correctness containment.** PDF uploads now preserve binary fidelity;
+  all profile transactions serialize across threads and processes and use unique durable atomic-write
+  temporaries; feed/digest refresh revision-bound summaries without discarding
+  successful ingestion when summary generation fails; stored UI values are
+  escaped and responses carry CSP/security headers. ClinicalTrials.gov phase,
+  eligibility, polling, and summary selection are corrected; biomarker trends
+  now separate incompatible units and disclose comparison caveats; every
+  decision-support LLM path receives current oncologist judgments. Manual
+  symptoms now receive the required `added_at` stamp. Bookkeeping-only writes no
+  longer invalidate a current clinical summary, and research-item ingestion uses
+  second-resolution timestamps so same-day additions remain visible as new.
 - **Ask Claude replies now render Markdown.** The chat panel previously displayed
   the assistant's Markdown as raw text — headings (`##`), GitHub-style tables,
   `**bold**`, and bullet lists leaked through as literal characters (only newlines

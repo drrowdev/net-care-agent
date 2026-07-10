@@ -147,3 +147,13 @@ def test_judgment_add_endpoint_stamps_added_at(client, agent):
     assert r.status_code == 200
     prof = agent.load_profile()
     assert prof["clinical_judgments"][0].get("added_at")
+
+
+def test_manual_symptom_endpoint_stamps_added_at(client, agent):
+    response = client.post(
+        "/api/symptoms",
+        json={"symptom": "fatigue", "date": "2020-01-01"},
+    )
+    assert response.status_code == 200
+    assert response.get_json()["added_at"]
+    assert agent.load_profile()["symptoms"][0]["added_at"]

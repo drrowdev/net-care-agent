@@ -73,10 +73,10 @@ def build_chat_system(profile: dict) -> str:
             lines.append("── RECOMMENDED ACTIONS ──")
             for a in actions:
                 lines.append(
-                    f"[{a.get('priority','?').upper()}] {a.get('action','')} — {a.get('timeframe','')}"
+                    f"[{a.get('priority', '?').upper()}] {a.get('action', '')} — {a.get('timeframe', '')}"
                 )
                 if a.get("rationale"):
-                    lines.append(f"  Rationale: {a.get('rationale','')}")
+                    lines.append(f"  Rationale: {a.get('rationale', '')}")
             lines.append("")
 
     treatments = profile.get("treatments_classified") or []
@@ -84,7 +84,7 @@ def build_chat_system(profile: dict) -> str:
         lines.append("── TREATMENTS ──")
         for t in treatments:
             lines.append(
-                f"[{t.get('category','?').upper()}] {t.get('text','')} ({t.get('date','')})"
+                f"[{t.get('category', '?').upper()}] {t.get('text', '')} ({t.get('date', '')})"
             )
         lines.append("")
 
@@ -144,18 +144,18 @@ def build_chat_system(profile: dict) -> str:
         lines.append(f"── TRACKED TRIALS ({len(trials)}) ──")
         for t in trials[:10]:
             lines.append(
-                f"{t.get('nct_id','')} — {t.get('title','')} "
-                f"[{t.get('status','')}] Phase {t.get('phase','?')}"
+                f"{t.get('nct_id', '')} — {t.get('title', '')} "
+                f"[{t.get('status', '')}] Phase {t.get('phase', '?')}"
             )
             if t.get("brief_summary"):
-                lines.append(f"  {t.get('brief_summary','')[:150]}")
+                lines.append(f"  {t.get('brief_summary', '')[:150]}")
         lines.append("")
 
     papers = profile.get("literature_watched", [])
     if papers:
         lines.append(f"── TRACKED PAPERS ({len(papers)}) ──")
         for p2 in papers[:10]:
-            lines.append(f"{p2.get('date','')} {p2.get('title','')} — {p2.get('journal','')}")
+            lines.append(f"{p2.get('date', '')} {p2.get('title', '')} — {p2.get('journal', '')}")
         lines.append("")
 
     judgments = profile.get("clinical_judgments", [])
@@ -163,7 +163,9 @@ def build_chat_system(profile: dict) -> str:
         lines.append(CLINICAL_JUDGMENTS_OVERRIDE)
         lines.append("── CLINICAL JUDGMENTS FROM CONSULTATIONS ──")
         for j in judgments:
-            lines.append(f"[{j.get('category','').upper()}] {j.get('date','')} {j.get('text','')}")
+            lines.append(
+                f"[{j.get('category', '').upper()}] {j.get('date', '')} {j.get('text', '')}"
+            )
         lines.append("")
 
     alerts = [a for a in profile.get("alerts", []) if not a.get("resolved")]
@@ -171,7 +173,7 @@ def build_chat_system(profile: dict) -> str:
         lines.append("── ACTIVE ALERTS ──")
         for a in alerts:
             lines.append(
-                f"[{a.get('priority','?').upper()}] {a.get('message','')} → {a.get('action_required','')}"
+                f"[{a.get('priority', '?').upper()}] {a.get('message', '')} → {a.get('action_required', '')}"
             )
         lines.append("")
 

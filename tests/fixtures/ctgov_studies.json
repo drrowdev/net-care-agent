@@ -8,8 +8,10 @@
           "briefTitle": "Ac-225 DOTATATE in NET patients refractory to Lu-177"
         },
         "statusModule": {
-          "overallStatus": "RECRUITING",
-          "phase": "PHASE2"
+          "overallStatus": "RECRUITING"
+        },
+        "designModule": {
+          "phases": ["PHASE1", "PHASE2"]
         },
         "descriptionModule": {
           "briefSummary": "Alpha-PRRT with Ac-225 in metastatic neuroendocrine tumors after Lu-177 progression."
@@ -32,8 +34,10 @@
           "briefTitle": "Pembrolizumab in metastatic melanoma"
         },
         "statusModule": {
-          "overallStatus": "RECRUITING",
-          "phase": "PHASE3"
+          "overallStatus": "RECRUITING"
+        },
+        "designModule": {
+          "phases": ["PHASE3"]
         },
         "descriptionModule": {
           "briefSummary": "Anti-PD-1 therapy in advanced melanoma."

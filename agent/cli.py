@@ -13,6 +13,7 @@ from .exec_summary import generate_executive_summary  # noqa: F401  (kept for ca
 from .intake import run_intake
 from .orchestrator import run_orchestrator
 from .profile import get_patient_summary, load_profile, save_profile
+from .serialize import serialized_mutation
 
 
 def _print_and_save_report(report: str, tag: str) -> None:
@@ -27,7 +28,6 @@ def _print_and_save_report(report: str, tag: str) -> None:
 
 
 def cmd_feed(args) -> None:
-    profile = load_profile()
     if args.file:
         path = Path(args.file)
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -38,16 +38,15 @@ def cmd_feed(args) -> None:
         print("❌  Provide --text '...' or --file path/to/file.txt")
         sys.exit(1)
 
-    profile, extracted = run_intake(text, profile)
-    save_profile(profile)
-
-    report = run_orchestrator(profile, extracted)
-    save_profile(profile)
+    with serialized_mutation():
+        profile = load_profile()
+        profile, extracted = run_intake(text, profile)
+        report = run_orchestrator(profile, extracted)
+        save_profile(profile)
     _print_and_save_report(report, "feed")
 
 
 def cmd_digest(args) -> None:
-    profile = load_profile()
     print("⚙  Generating research digest …")
     extracted = {
         "document_type": "scheduled_digest",
@@ -59,8 +58,10 @@ def cmd_digest(args) -> None:
             "check for newly opened European trials, review all recorded biomarker trends."
         ),
     }
-    report = run_orchestrator(profile, extracted)
-    save_profile(profile)
+    with serialized_mutation():
+        profile = load_profile()
+        report = run_orchestrator(profile, extracted)
+        save_profile(profile)
     _print_and_save_report(report, "digest")
 
 
@@ -76,9 +77,11 @@ def cmd_status(args) -> None:
 
 
 def cmd_update_profile(args) -> None:
-    profile = load_profile()
-    p = profile["patient"]
-
+    # Gather slow interactive input without holding the shared mutation lock.
+    # Reload under the lock before applying so web/background changes made while
+    # the user was typing are preserved.
+    snapshot = load_profile()
+    current_patient = snapshot["patient"]
     fields = {
         "ki67_percent": ("Ki-67 %", float),
         "sstr_status": ("SSTR status (positive/negative/unknown)", str),
@@ -86,27 +89,29 @@ def cmd_update_profile(args) -> None:
         "treating_center": ("Treating center", str),
         "oncologist": ("Oncologist name", str),
     }
-
+    updates = {}
     print("Leave blank to keep current value.\n")
     for key, (label, cast) in fields.items():
-        current = p.get(key, "not set")
+        current = current_patient.get(key, "not set")
         raw = input(f"  {label} [{current}]: ").strip()
         if raw:
             try:
-                p[key] = cast(raw) if cast is not str else raw
+                updates[key] = cast(raw) if cast is not str else raw
             except ValueError:
                 print(f"  ⚠  Could not parse '{raw}', keeping current value")
 
-    print(f"\n  Current treatments: {p.get('current_treatments', [])}")
+    print(f"\n  Current treatments: {current_patient.get('current_treatments', [])}")
     tx_raw = input("  Add treatment (leave blank to skip): ").strip()
-    if tx_raw:
-        p["current_treatments"].append(tx_raw)
 
-    save_profile(profile)
+    with serialized_mutation():
+        profile = load_profile()
+        profile["patient"].update(updates)
+        if tx_raw:
+            profile["patient"].setdefault("current_treatments", []).append(tx_raw)
+        profile["treatments_classified"] = classify_treatments(profile)
+        save_profile(profile)
     print("\n✓  Profile updated.")
     print(get_patient_summary(profile))
-
-    classify_treatments(profile)  # refresh classification cache
 
 
 def main() -> None:

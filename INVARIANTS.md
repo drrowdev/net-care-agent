@@ -57,20 +57,22 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-03.
   `## ⚠ Reference verification` footer).
 
 ## 3. Read vs write discipline
-- **`_run_feed_job` and `_run_digest_job` MUTATE** the profile (they call
-  `save_profile`). They MUST run under the single mutating slot
-  (`agent.serialized_mutation` / `agent.mutating_lock`) — see §4.
+- **Every complete load-mutate-save transaction is serialized.** This includes
+  `_run_feed_job`, `_run_digest_job`, manual summary generation, and every
+  state-changing Flask route and CLI command. Use `agent.serialized_mutation`;
+  its re-entrant thread lock plus advisory lock on the shared data mount permit
+  nested helpers while preventing web/CLI/deployment-process lost updates.
 - **`deep_sweep` NEVER saves.** It deep-copies the profile and returns a report
   artifact only. Do not add a `save_profile` call to `agent/deep_sweep.py`;
   `tests/test_invariants.py` asserts its source contains none.
 - **`chat` never mutates.** Read-only Q&A.
 
 ## 4. Single gunicorn worker is load-bearing
-The lost-update protection (`agent/serialize.py`) and the jobs list lock
-(`_jobs_lock`) are **in-process** `threading.Lock`s. They only work with ONE
-worker. Do NOT scale gunicorn to multiple workers or add autoscale/containers
-without first moving these to a cross-process lock (e.g. a file lock on the
-Azure Files mount) — otherwise you re-introduce the concurrency bug they fix.
+Profile mutation protection (`agent/serialize.py`) is cross-process on the
+shared data mount. The jobs list and daemon-thread execution model (`_jobs_lock`)
+remain in-process and assume ONE worker. Do NOT scale gunicorn or autoscale
+without moving job state/execution to a durable queue and adding distributed
+coordination.
 
 ## 5. Prompt templating
 System prompts that embed JSON schemas use `agent.llm.render_prompt` with

@@ -85,10 +85,15 @@ _TRIGGER = (
     "non-obvious connections you found."
 )
 
-_SYNTHESIS_SYSTEM = """\
+_SYNTHESIS_SYSTEM_TEMPLATE = """\
 You are a clinical research SYNTHESISER preparing a single deep-review briefing
 for a treating oncologist. You are given two or more independent deep-review
 reports produced by different AI models from the SAME patient record.
+
+━━━ ACTUAL CLINICAL JUDGMENTS — HARD CONSTRAINTS ━━━
+[[CLINICAL_JUDGMENTS]]
+The judgments above come from the treating team. They override conclusions in
+the source reports. Never omit, contradict, or soften them during synthesis.
 
 Your job is to UNION them, not average them:
 - Merge findings the reports share into one clean statement (keep the specific
@@ -206,7 +211,7 @@ def _run_single_model(model: str, base_profile: dict) -> dict:
     }
 
 
-def _synthesise(reports: list[dict], synthesis_model: str) -> dict:
+def _synthesise(reports: list[dict], synthesis_model: str, clinical_judgments: str = "") -> dict:
     """Merge the per-model reports into one unioned briefing."""
     usable = [r for r in reports if r.get("report")]
     if not usable:
@@ -233,7 +238,10 @@ def _synthesise(reports: list[dict], synthesis_model: str) -> dict:
             model=synthesis_model,
             max_tokens=MAX_TOKENS,
             thinking=config.THINKING,
-            system=_SYNTHESIS_SYSTEM,
+            system=render_prompt(
+                _SYNTHESIS_SYSTEM_TEMPLATE,
+                CLINICAL_JUDGMENTS=clinical_judgments or "None recorded.",
+            ),
             messages=[{"role": "user", "content": user_content}],
         )
         u = getattr(resp, "usage", None)
@@ -270,8 +278,7 @@ def _cost_footer(per_model: list[dict], synth: dict, total: float) -> str:
         )
     snote = " (failed)" if synth.get("error") else ""
     lines.append(
-        f"| {synth.get('model', '—')}{snote} | synthesis | — | "
-        f"${synth.get('cost_usd', 0):.2f} |"
+        f"| {synth.get('model', '—')}{snote} | synthesis | — | ${synth.get('cost_usd', 0):.2f} |"
     )
     lines.append(f"| **Total** | | | **${total:.2f}** |")
     return "\n".join(lines)
@@ -292,7 +299,11 @@ def run_deep_sweep(
     synthesis_model = synthesis_model or config.DEEPSWEEP_SYNTHESIS_MODEL
 
     per_model = [_run_single_model(m, profile) for m in models]
-    synth = _synthesise(per_model, synthesis_model)
+    synth = _synthesise(
+        per_model,
+        synthesis_model,
+        get_clinical_judgments_context(profile),
+    )
 
     cost_total = round(
         sum(r.get("cost_usd", 0.0) for r in per_model) + synth.get("cost_usd", 0.0), 4

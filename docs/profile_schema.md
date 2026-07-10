@@ -10,6 +10,10 @@ All sub-models accept **extra** fields (forward-compat) and treat every document
 
 ```jsonc
 {
+  'profile_revision': int,
+  'profile_updated_at': str | None,
+  'profile_saved_at': str | None,
+  'summary_stale': bool,
   'patient': Patient,
   'biomarkers': list[Biomarker],
   'imaging': list[Imaging],
@@ -203,6 +207,10 @@ Most recent JSON output of agent.exec_summary.generate_executive_summary.
 | Field | Type | Description |
 |-------|------|-------------|
 | `generated_at` | `str \| None` |  |
+| `generated_at_timestamp` | `str \| None` |  |
+| `summary_revision` | `int \| None` |  |
+| `stale` | `bool` |  |
+| `summary_error` | `str \| None` |  |
 | `model` | `str \| None` |  |
 | `summary` | `Any` |  |
 

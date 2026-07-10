@@ -49,6 +49,24 @@ def test_questions_system_prompt_includes_override(agent, empty_profile):
     prompt = q_mod._build_questions_system_prompt(_with_judgment(empty_profile))
     assert CLINICAL_JUDGMENTS_OVERRIDE in prompt
     assert "OVERRIDE" in prompt
+    assert _JUDGMENT["text"] in prompt
+
+
+def test_orchestrator_question_tool_receives_actual_judgments(agent, empty_profile):
+    from tests._llm_fake import llm_text, patch_llm
+
+    seen = {}
+
+    def handler(**kwargs):
+        seen["system"] = kwargs["system"]
+        return llm_text('{"questions": []}')
+
+    profile = _with_judgment(empty_profile)
+    with patch_llm(agent, handler):
+        agent.generate_appointment_questions("oncology", [], profile)
+
+    assert _JUDGMENT["text"] in seen["system"]
+    assert "HARD CONSTRAINTS" in seen["system"]
 
 
 def test_override_is_one_shared_verbatim_block(agent):

@@ -4,15 +4,20 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 
 from . import backups, config
 from .io import atomic_write_text
 from .schema import normalize_profile, validate_profile
+from .serialize import serialized_mutation
 
 log = logging.getLogger(__name__)
 
 
 DEFAULT_PROFILE: dict = {
+    "profile_revision": 0,
+    "profile_updated_at": None,
+    "summary_stale": True,
     "patient": {
         "birth_year": None,
         "age": None,
@@ -48,35 +53,63 @@ def load_profile() -> dict:
         # Lenient validation: never blocks the app — bad data is logged and
         # passed through unchanged so existing JSON keeps working.
         return normalize_profile(raw)
-    profile = json.loads(json.dumps(DEFAULT_PROFILE))  # deep copy
-    save_profile(profile)
-    print(f"✓  Created new patient profile at {config.PROFILE_PATH}")
-    return profile
+    # First-run creation is a write transaction. Re-check after taking the
+    # cross-process lock so two simultaneous first requests cannot both create
+    # and replace the profile.
+    with serialized_mutation():
+        if config.PROFILE_PATH.exists():
+            raw = json.loads(config.PROFILE_PATH.read_text())
+            return normalize_profile(raw)
+        profile = json.loads(json.dumps(DEFAULT_PROFILE))  # deep copy
+        save_profile(profile)
+        print(f"✓  Created new patient profile at {config.PROFILE_PATH}")
+        return profile
 
 
-def save_profile(profile: dict) -> None:
-    config.PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    # Run a strict validation pass for the log only — we still write the
-    # caller's dict verbatim so ad-hoc / in-flight fields aren't dropped.
-    try:
-        validate_profile(profile)
-    except Exception as e:
-        log.warning("save_profile: validation issues (writing anyway): %s", e)
-    # P12: snapshot the pre-write state so any single bad save is recoverable to
-    # the immediately-prior state (never blocks the save on failure).
-    try:
-        backups.rotating_snapshot(config.PROFILE_PATH)
-    except Exception as e:
-        log.warning("rotating_snapshot raised: %s", e)
-    atomic_write_text(
-        config.PROFILE_PATH,
-        json.dumps(profile, indent=2, default=str),
-    )
-    # Cheap: only copies once per day, then prunes.
-    try:
-        backups.daily_backup(config.PROFILE_PATH)
-    except Exception as e:  # never let backup failure block a save
-        log.warning("daily_backup raised: %s", e)
+def save_profile(profile: dict, *, clinical_change: bool = True) -> None:
+    """Persist the profile under the global transaction lock.
+
+    ``clinical_change=False`` is reserved for bookkeeping-only writes such as
+    acknowledging the unread counter. Those writes must not invalidate an
+    otherwise current clinical summary.
+    """
+    with serialized_mutation():
+        config.PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        now = datetime.now().isoformat(timespec="seconds")
+        profile["profile_saved_at"] = now
+        if clinical_change:
+            revision = int(profile.get("profile_revision") or 0) + 1
+            profile["profile_revision"] = revision
+            profile["profile_updated_at"] = now
+            summary = profile.get("executive_summary")
+            if isinstance(summary, dict):
+                stale = summary.get("summary_revision") != revision
+                summary["stale"] = stale
+                profile["summary_stale"] = stale
+            else:
+                profile["summary_stale"] = True
+
+        # Run a strict validation pass for the log only — we still write the
+        # caller's dict verbatim so ad-hoc / in-flight fields aren't dropped.
+        try:
+            validate_profile(profile)
+        except Exception as e:
+            log.warning("save_profile: validation issues (writing anyway): %s", e)
+        # P12: snapshot the pre-write state so any single bad save is recoverable
+        # to the immediately-prior state (never blocks the save on failure).
+        try:
+            backups.rotating_snapshot(config.PROFILE_PATH)
+        except Exception as e:
+            log.warning("rotating_snapshot raised: %s", e)
+        atomic_write_text(
+            config.PROFILE_PATH,
+            json.dumps(profile, indent=2, default=str),
+        )
+        # Cheap: only copies once per day, then prunes.
+        try:
+            backups.daily_backup(config.PROFILE_PATH)
+        except Exception as e:  # never let backup failure block a save
+            log.warning("daily_backup raised: %s", e)
 
 
 def get_patient_summary(profile: dict) -> str:
@@ -101,11 +134,11 @@ def get_patient_summary(profile: dict) -> str:
     if bms:
         for b in bms:
             flag = (
-                f" [{b.get('flag','').upper()}]" if b.get("flag") and b["flag"] != "normal" else ""
+                f" [{b.get('flag', '').upper()}]" if b.get("flag") and b["flag"] != "normal" else ""
             )
             lines.append(
-                f"  {b.get('date','')}  {b.get('marker','?')} = {b.get('value','?')} "
-                f"{b.get('unit','')} (ref: {b.get('reference_range','?')}){flag}"
+                f"  {b.get('date', '')}  {b.get('marker', '?')} = {b.get('value', '?')} "
+                f"{b.get('unit', '')} (ref: {b.get('reference_range', '?')}){flag}"
             )
     else:
         lines.append("  None recorded")
@@ -114,7 +147,7 @@ def get_patient_summary(profile: dict) -> str:
     if imgs:
         for i in imgs:
             lines.append(
-                f"  {i.get('date','')}  {i.get('modality','?')}: {i.get('impression','')[:120]}"
+                f"  {i.get('date', '')}  {i.get('modality', '?')}: {i.get('impression', '')[:120]}"
             )
     else:
         lines.append("  None recorded")
@@ -122,7 +155,9 @@ def get_patient_summary(profile: dict) -> str:
     lines += ["", "─── Recent documents ───"]
     if docs:
         for d in docs:
-            lines.append(f"  [{d.get('date','')}] {d.get('type','?')}: {d.get('summary','')[:100]}")
+            lines.append(
+                f"  [{d.get('date', '')}] {d.get('type', '?')}: {d.get('summary', '')[:100]}"
+            )
     else:
         lines.append("  None recorded")
 
@@ -138,7 +173,9 @@ def get_patient_summary(profile: dict) -> str:
             src_str = " (ai)" if src == "ai" else ""
             note = s.get("note", "")
             note_str = f" — {note[:60]}" if note else ""
-            lines.append(f"  {s.get('date','')} {s.get('symptom','?')}{sev_str}{src_str}{note_str}")
+            lines.append(
+                f"  {s.get('date', '')} {s.get('symptom', '?')}{sev_str}{src_str}{note_str}"
+            )
     else:
         lines.append("  None recorded")
 

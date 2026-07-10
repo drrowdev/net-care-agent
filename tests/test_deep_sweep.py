@@ -88,3 +88,24 @@ def test_synthesis_failure_falls_back_to_raw_reports(agent, empty_profile):
     # Raw findings from both models are preserved in the fallback.
     assert "fable-finding" in out["report"]
     assert "opus-finding" in out["report"]
+
+
+def test_synthesis_receives_actual_clinical_judgments(agent, empty_profile):
+    judgment = "Do not pursue START-NET; prior PRRT is an exclusion."
+    empty_profile["clinical_judgments"] = [
+        {"category": "constraint", "date": "2026-05-11", "text": judgment}
+    ]
+    synthesis_systems = []
+
+    def handler(**kwargs):
+        system = kwargs.get("system", "") or ""
+        if "SYNTHESISER" in system:
+            synthesis_systems.append(system)
+        return _handler(**kwargs)
+
+    with patch_llm(agent, handler):
+        agent.run_deep_sweep(empty_profile, models=MODELS, synthesis_model=SYNTH)
+
+    assert len(synthesis_systems) == 1
+    assert judgment in synthesis_systems[0]
+    assert "HARD CONSTRAINTS" in synthesis_systems[0]

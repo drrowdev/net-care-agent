@@ -88,6 +88,10 @@ All patient state lives in a single JSON file at `${DATA_DIR}/patient_profile.js
 
 ```
 {
+  "profile_revision": 42,
+  "profile_updated_at": "2026-07-10T16:51:49",
+  "profile_saved_at": "2026-07-10T16:52:03",
+  "summary_stale": false,
   "patient": { ... },
   "biomarkers":  [ {date, marker, value, unit, ref_low, ref_high}, ... ],
   "imaging":     [ {date, modality, findings, impression}, ... ],
@@ -98,9 +102,15 @@ All patient state lives in a single JSON file at `${DATA_DIR}/patient_profile.js
   "alerts":      [ {priority, action, created, resolved}, ... ],
   "judgments":   [ {category, text, date, source}, ... ],
   "questions":   [ {id, text, category, priority, asked}, ... ],
-  "exec_summary": { ... }
+  "exec_summary": { "summary_revision": 42, "stale": false, ... }
 }
 ```
+
+Every clinical-content save advances `profile_revision`; bookkeeping-only saves
+(for example acknowledging unread items or marking a question asked) update
+`profile_saved_at` without invalidating the summary. Summary freshness compares
+the clinical revision with `executive_summary.summary_revision`, independent of
+clinical dates.
 
 A daily backup is written to `${DATA_DIR}/backups/profile_YYYYMMDD.json`
 (retention: 30 days).

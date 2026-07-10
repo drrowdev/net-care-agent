@@ -249,6 +249,10 @@ class ExecutiveSummary(_Lenient):
     """Most recent JSON output of agent.exec_summary.generate_executive_summary."""
 
     generated_at: str | None = None
+    generated_at_timestamp: str | None = None
+    summary_revision: int | None = None
+    stale: bool = True
+    summary_error: str | None = None
     model: str | None = None
     summary: Any = None  # free-form structure varies by run
 
@@ -257,6 +261,10 @@ class ExecutiveSummary(_Lenient):
 class PatientProfile(_Lenient):
     """The complete patient profile. Lives at ${DATA_DIR}/patient_profile.json."""
 
+    profile_revision: int = 0
+    profile_updated_at: str | None = None
+    profile_saved_at: str | None = None
+    summary_stale: bool = True
     patient: Patient = Field(default_factory=Patient)
     biomarkers: list[Biomarker] = Field(default_factory=list)
     imaging: list[Imaging] = Field(default_factory=list)

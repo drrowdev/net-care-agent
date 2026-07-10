@@ -69,7 +69,7 @@ def classify_treatments(profile: dict) -> list:
         reverse=True,
     )[:5]
     doc_context = "\n\n".join(
-        f"[{d.get('date','')} {d.get('type','')}]: {d.get('summary','')}" for d in recent_docs
+        f"[{d.get('date', '')} {d.get('type', '')}]: {d.get('summary', '')}" for d in recent_docs
     )
 
     try:

@@ -118,6 +118,90 @@ def test_zero_baseline_does_not_divide_by_zero(agent):
         ]
     )
     result = agent.analyze_biomarker_trends("X", profile)
-    # Should not raise; pct_change defaults to 0 -> "stable"
-    assert result["percent_change"] == 0
-    assert result["trend"] == "stable"
+    assert result["percent_change"] is None
+    assert result["trend"] == "indeterminate"
+    assert "baseline is zero" in " ".join(result["data_quality_caveats"])
+
+
+def test_mixed_units_are_not_compared_or_converted(agent):
+    result = agent.analyze_biomarker_trends(
+        "CgA",
+        _profile_with(
+            [
+                {"marker": "CgA", "value": 10, "unit": "ng/mL", "date": "2026-01-01"},
+                {"marker": "CgA", "value": 20, "unit": "nmol/L", "date": "2026-02-01"},
+            ]
+        ),
+    )
+    assert result["trend"] == "incompatible_units"
+    assert result["unit_compatibility"]["conversion_performed"] is False
+    assert set(result["unit_compatibility"]["units"]) == {"ng/ml", "nmol/l"}
+
+
+def test_partly_missing_units_are_not_compared(agent):
+    result = agent.analyze_biomarker_trends(
+        "CgA",
+        _profile_with(
+            [
+                {"marker": "CgA", "value": 10, "unit": "ng/mL", "date": "2026-01-01"},
+                {"marker": "CgA", "value": 20, "date": "2026-02-01"},
+            ]
+        ),
+    )
+    assert result["trend"] == "incompatible_units"
+    assert result["unit_compatibility"]["missing_count"] == 1
+
+
+def test_full_and_latest_three_windows_surface_reversal(agent):
+    result = agent.analyze_biomarker_trends(
+        "CgA",
+        _profile_with(
+            [
+                {"marker": "CgA", "value": 100, "unit": "ng/mL", "date": "2026-01-01"},
+                {"marker": "CgA", "value": 300, "unit": "ng/mL", "date": "2026-02-01"},
+                {"marker": "CgA", "value": 250, "unit": "ng/mL", "date": "2026-03-01"},
+                {"marker": "CgA", "value": 200, "unit": "ng/mL", "date": "2026-04-01"},
+            ]
+        ),
+    )
+    assert result["full_period"]["trend"] == "increasing"
+    assert result["latest_3"]["trend"] == "decreasing"
+    assert result["latest_3"]["number_of_readings"] == 3
+    assert result["trend_reversal"] is True
+
+
+def test_reference_range_changes_are_caveated(agent):
+    result = agent.analyze_biomarker_trends(
+        "CgA",
+        _profile_with(
+            [
+                {
+                    "marker": "CgA",
+                    "value": 100,
+                    "unit": "ng/mL",
+                    "reference_range": "0-100",
+                    "date": "2026-01-01",
+                },
+                {
+                    "marker": "CgA",
+                    "value": 110,
+                    "unit": "ng/mL",
+                    "reference_range": "0-90",
+                    "date": "2026-02-01",
+                },
+            ]
+        ),
+    )
+    assert "Reference ranges differ" in " ".join(result["data_quality_caveats"])
+
+
+def test_same_date_readings_retained_but_excluded(agent):
+    readings = [
+        {"marker": "CgA", "value": 10, "unit": "ng/mL", "date": "2026-01-01"},
+        {"marker": "CgA", "value": 20, "unit": "ng/mL", "date": "2026-01-01"},
+        {"marker": "CgA", "value": 30, "unit": "ng/mL", "date": "2026-02-01"},
+    ]
+    result = agent.analyze_biomarker_trends("CgA", _profile_with(readings))
+    assert result["readings"] == readings
+    assert result["trend"] == "insufficient_data"
+    assert "same-date" in " ".join(result["data_quality_caveats"])

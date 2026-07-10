@@ -11,12 +11,14 @@ import os
 import sys
 import threading
 import traceback
+from functools import wraps
 from pathlib import Path
 
 # Load .env for local development. On Azure App Service, env vars come from
 # Application Settings and this is a no-op.
 try:
     from dotenv import load_dotenv
+
     load_dotenv()
 except ImportError:
     pass
@@ -48,18 +50,25 @@ log = __import__("logging").getLogger("netcare.app")
 # Read package version for /api/health
 try:
     from importlib.metadata import version as _pkg_version
+
     APP_VERSION = _pkg_version("net-care-agent")
 except Exception:
     APP_VERSION = "0.0.0+unknown"
 
 app = Flask(__name__, static_folder="static", template_folder="static")
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+# Multipart framing adds a small amount beyond the file itself. Keep the exact
+# per-file limit below while allowing bounded protocol overhead.
+app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES + 1024 * 1024
+MAX_PDF_PAGES = int(os.environ.get("MAX_PDF_PAGES", "100"))
+MAX_EXTRACTED_TEXT_CHARS = int(os.environ.get("MAX_EXTRACTED_TEXT_CHARS", "1000000"))
 
 # ── persistent storage ───────────────────────────────────────────────────────
 # Default to /home/data (Azure Files mount on App Service).
 # Override with DATA_DIR env var for local development.
 # mkdir is deferred to runtime (inside functions) so a missing mount
 # at import time does not crash the worker before gunicorn can start.
-DATA_DIR  = Path(os.environ.get("DATA_DIR", "/home/data"))
+DATA_DIR = Path(os.environ.get("DATA_DIR", "/home/data"))
 JOBS_PATH = DATA_DIR / "jobs.json"
 
 _jobs: list[dict] = []
@@ -105,123 +114,181 @@ def _update_job(job_id: str, updates: dict):
 
 def _new_id() -> str:
     import uuid
+
     return uuid.uuid4().hex[:12]
+
+
+def serialized_profile_mutation(func):
+    """Serialize a Flask route's complete profile load-mutate-save transaction."""
+
+    @wraps(func)
+    def wrapped(*args, **kwargs):
+        with agent.serialized_mutation():
+            return func(*args, **kwargs)
+
+    return wrapped
+
+
+def _refresh_summary(profile: dict) -> str | None:
+    """Refresh the summary in-place, preserving prior content on LLM failure."""
+    generated = agent.generate_executive_summary(profile)
+    failure = generated.get("generation_failed") if isinstance(generated, dict) else True
+    if failure:
+        message = (
+            generated.get("summary", "Summary generation failed")
+            if isinstance(generated, dict)
+            else "Summary generation failed"
+        )
+        existing = profile.get("executive_summary")
+        if isinstance(existing, dict):
+            existing["stale"] = True
+            existing["summary_error"] = message
+        else:
+            generated["stale"] = True
+            generated["summary_error"] = message
+            profile["executive_summary"] = generated
+        profile["summary_stale"] = True
+        return message
+
+    generated["summary_revision"] = int(profile.get("profile_revision") or 0) + 1
+    generated["generated_at_timestamp"] = now_stamp()
+    generated["stale"] = False
+    generated.pop("summary_error", None)
+    profile["executive_summary"] = generated
+    profile["summary_stale"] = False
+    return None
 
 
 # ── background workers ────────────────────────────────────────────────────────
 def _run_feed_job(job_id: str, text: str):
     # P6: serialize profile-mutating jobs so a concurrent feed+digest can't
     # silently lose one job's extracted data (last-writer-wins on the JSON file).
-    if agent.mutating_lock.locked():
-        _update_job(job_id, {"status": "running", "stage": "waiting for current job"})
-    agent.mutating_lock.acquire()
     try:
-        _update_job(job_id, {"status": "running", "stage": "intake"})
-        profile = agent.load_profile()
-        profile, extracted = agent.run_intake(text, profile)
-        agent.save_profile(profile)
+        with agent.serialized_mutation(
+            lambda: _update_job(
+                job_id,
+                {"status": "running", "stage": "waiting for current job"},
+            )
+        ):
+            _update_job(job_id, {"status": "running", "stage": "intake"})
+            profile = agent.load_profile()
+            profile, extracted = agent.run_intake(text, profile)
 
-        _update_job(job_id, {
-            "stage"        : "orchestrating",
-            "document_type": extracted.get("document_type", "unknown"),
-            "summary"      : extracted.get("summary", ""),
-            "key_findings" : extracted.get("key_findings", []),
-        })
+            _update_job(
+                job_id,
+                {
+                    "stage": "orchestrating",
+                    "document_type": extracted.get("document_type", "unknown"),
+                    "summary": extracted.get("summary", ""),
+                    "key_findings": extracted.get("key_findings", []),
+                },
+            )
 
-        report = agent.run_orchestrator(profile, extracted)
-        agent.save_profile(profile)
+            report = agent.run_orchestrator(profile, extracted)
+            _update_job(job_id, {"stage": "classifying"})
+            profile["treatments_classified"] = agent.classify_treatments(profile)
+            _update_job(job_id, {"stage": "refreshing summary"})
+            summary_error = _refresh_summary(profile)
+            agent.save_profile(profile)
 
-        # Classify treatments after full processing (lightweight, no summary regeneration)
-        _update_job(job_id, {"stage": "classifying"})
-        classified_txs = agent.classify_treatments(profile)
-        profile = agent.load_profile()
-        profile["treatments_classified"] = classified_txs
-        agent.save_profile(profile)
+            reports_dir = DATA_DIR / "reports"
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            rpath = reports_dir / f"report_feed_{stamp}.txt"
+            if summary_error:
+                report += f"\n\n## Summary refresh warning\n{summary_error}"
+            rpath.write_text(report, encoding="utf-8")
 
-        reports_dir = DATA_DIR / "reports"
-        reports_dir.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        rpath = reports_dir / f"report_feed_{stamp}.txt"
-        rpath.write_text(report, encoding="utf-8")
-
-        _update_job(job_id, {
-            "status"     : "done",
-            "stage"      : "done",
-            "report"     : report,
-            "report_file": str(rpath),
-            "finished_at": datetime.datetime.now().isoformat(),
-        })
+            _update_job(
+                job_id,
+                {
+                    "status": "done",
+                    "stage": "done_with_warnings" if summary_error else "done",
+                    "report": report,
+                    "report_file": str(rpath),
+                    "summary_error": summary_error,
+                    "finished_at": datetime.datetime.now().isoformat(),
+                },
+            )
 
     except Exception as e:
-        _update_job(job_id, {
-            "status"   : "error",
-            "stage"    : "error",
-            "error"    : str(e),
-            "traceback": traceback.format_exc(),
-        })
-    finally:
-        agent.mutating_lock.release()
+        _update_job(
+            job_id,
+            {
+                "status": "error",
+                "stage": "error",
+                "error": str(e),
+                "traceback": traceback.format_exc(),
+            },
+        )
 
 
 def _run_digest_job(job_id: str):
-    if agent.mutating_lock.locked():
-        _update_job(job_id, {"status": "running", "stage": "waiting for current job"})
-    agent.mutating_lock.acquire()
     try:
-        _update_job(job_id, {"status": "running", "stage": "orchestrating"})
-        profile = agent.load_profile()
-        # P5: deterministically poll tracked-trial statuses before the LLM pass so
-        # status changes become alerts (and reach the orchestrator) even though the
-        # dedup logic would otherwise suppress already-tracked trials.
-        try:
-            poll = agent.poll_tracked_trials(profile)
-            if poll["changed"]:
-                _update_job(job_id, {"stage": f"trial updates: {len(poll['changed'])}"})
-        except Exception as e:
-            print(f"trial poll skipped: {e}")
-        extracted = {
-            "document_type"      : "scheduled_digest",
-            "summary"            : "Manual research digest",
-            "key_findings"       : [],
-            "suggested_workflows": ["pubmed_search", "trial_search", "biomarker_analysis"],
-            "workflow_rationale" : (
-                "Comprehensive review: search new NET literature, "
-                "check European trials, review biomarker trends."
-            ),
-        }
-        report = agent.run_orchestrator(profile, extracted)
-        agent.save_profile(profile)
+        with agent.serialized_mutation(
+            lambda: _update_job(
+                job_id,
+                {"status": "running", "stage": "waiting for current job"},
+            )
+        ):
+            _update_job(job_id, {"status": "running", "stage": "orchestrating"})
+            profile = agent.load_profile()
+            # P5: deterministically poll tracked-trial statuses before the LLM pass so
+            # status changes become alerts (and reach the orchestrator) even though the
+            # dedup logic would otherwise suppress already-tracked trials.
+            try:
+                poll = agent.poll_tracked_trials(profile)
+                if poll["changed"]:
+                    _update_job(job_id, {"stage": f"trial updates: {len(poll['changed'])}"})
+            except Exception as e:
+                print(f"trial poll skipped: {e}")
+            extracted = {
+                "document_type": "scheduled_digest",
+                "summary": "Manual research digest",
+                "key_findings": [],
+                "suggested_workflows": ["pubmed_search", "trial_search", "biomarker_analysis"],
+                "workflow_rationale": (
+                    "Comprehensive review: search new NET literature, "
+                    "check European trials, review biomarker trends."
+                ),
+            }
+            report = agent.run_orchestrator(profile, extracted)
+            _update_job(job_id, {"stage": "classifying"})
+            profile["treatments_classified"] = agent.classify_treatments(profile)
+            _update_job(job_id, {"stage": "refreshing summary"})
+            summary_error = _refresh_summary(profile)
+            agent.save_profile(profile)
 
-        # Classify treatments after digest
-        _update_job(job_id, {"stage": "classifying"})
-        classified_txs = agent.classify_treatments(profile)
-        profile = agent.load_profile()
-        profile["treatments_classified"] = classified_txs
-        agent.save_profile(profile)
+            reports_dir = DATA_DIR / "reports"
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            rpath = reports_dir / f"report_digest_{stamp}.txt"
+            if summary_error:
+                report += f"\n\n## Summary refresh warning\n{summary_error}"
+            rpath.write_text(report, encoding="utf-8")
 
-        reports_dir = DATA_DIR / "reports"
-        reports_dir.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        rpath = reports_dir / f"report_digest_{stamp}.txt"
-        rpath.write_text(report, encoding="utf-8")
-
-        _update_job(job_id, {
-            "status"     : "done",
-            "stage"      : "done",
-            "report"     : report,
-            "report_file": str(rpath),
-            "finished_at": datetime.datetime.now().isoformat(),
-        })
+            _update_job(
+                job_id,
+                {
+                    "status": "done",
+                    "stage": "done_with_warnings" if summary_error else "done",
+                    "report": report,
+                    "report_file": str(rpath),
+                    "summary_error": summary_error,
+                    "finished_at": datetime.datetime.now().isoformat(),
+                },
+            )
 
     except Exception as e:
-        _update_job(job_id, {
-            "status"   : "error",
-            "stage"    : "error",
-            "error"    : str(e),
-            "traceback": traceback.format_exc(),
-        })
-    finally:
-        agent.mutating_lock.release()
+        _update_job(
+            job_id,
+            {
+                "status": "error",
+                "stage": "error",
+                "error": str(e),
+                "traceback": traceback.format_exc(),
+            },
+        )
 
 
 def _run_deepsweep_job(job_id: str):
@@ -243,22 +310,28 @@ def _run_deepsweep_job(job_id: str):
         rpath = reports_dir / f"report_deepsweep_{stamp}.md"
         rpath.write_text(report, encoding="utf-8")
 
-        _update_job(job_id, {
-            "status"     : "done",
-            "stage"      : "done",
-            "report"     : report,
-            "report_file": str(rpath),
-            "cost_total" : result.get("cost_total"),
-            "finished_at": datetime.datetime.now().isoformat(),
-        })
+        _update_job(
+            job_id,
+            {
+                "status": "done",
+                "stage": "done",
+                "report": report,
+                "report_file": str(rpath),
+                "cost_total": result.get("cost_total"),
+                "finished_at": datetime.datetime.now().isoformat(),
+            },
+        )
 
     except Exception as e:
-        _update_job(job_id, {
-            "status"   : "error",
-            "stage"    : "error",
-            "error"    : str(e),
-            "traceback": traceback.format_exc(),
-        })
+        _update_job(
+            job_id,
+            {
+                "status": "error",
+                "stage": "error",
+                "error": str(e),
+                "traceback": traceback.format_exc(),
+            },
+        )
 
 
 # ── API routes ────────────────────────────────────────────────────────────────
@@ -281,7 +354,32 @@ def _add_cache_headers(response):
         response.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
     elif path.startswith("/api/") or path == "/":
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        # TODO: remove script unsafe-inline after legacy event attributes in
+        # static/index.html are migrated to delegated app.js listeners.
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "img-src 'self' data:; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "connect-src 'self'; "
+        "object-src 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'; "
+        "frame-ancestors 'none'"
+    )
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Permissions-Policy"] = (
+        "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+    )
     return response
+
+
+@app.errorhandler(413)
+def _upload_too_large(_error):
+    return jsonify({"error": "File exceeds the 20 MB upload limit"}), 413
 
 
 @app.before_request
@@ -313,39 +411,40 @@ def api_health():
         pass
 
     healthy = data_dir_writable
-    return jsonify({
-        "status": "ok" if healthy else "degraded",
-        "version": APP_VERSION,
-        "profile_loaded": profile_loaded,
-        "data_dir": str(DATA_DIR),
-        "data_dir_writable": data_dir_writable,
-    }), (200 if healthy else 503)
+    return jsonify(
+        {
+            "status": "ok" if healthy else "degraded",
+            "version": APP_VERSION,
+            "profile_loaded": profile_loaded,
+            "data_dir": str(DATA_DIR),
+            "data_dir_writable": data_dir_writable,
+        }
+    ), (200 if healthy else 503)
 
 
 @app.route("/api/status")
 def api_status():
     profile = agent.load_profile()
     alerts = [a for a in profile.get("alerts", []) if not a.get("resolved")]
-    bms  = sorted(profile.get("biomarkers", []),
-                  key=lambda x: x.get("date", ""), reverse=True)[:50]
-    imgs = sorted(profile.get("imaging",    []),
-                  key=lambda x: x.get("date", ""), reverse=True)[:3]
-    docs = sorted(profile.get("documents",  []),
-                  key=lambda x: x.get("date", ""), reverse=True)[:5]
-    return jsonify({
-        "patient"               : profile.get("patient", {}),
-        "alerts"                : alerts,
-        "recent_biomarkers"     : bms,
-        "recent_imaging"        : imgs,
-        "recent_documents"      : docs,
-        "treatments_classified" : profile.get("treatments_classified", []),
-        "stats": {
-            "trials_tracked"    : len(profile.get("trials_tracked", [])),
-            "literature_watched": len(profile.get("literature_watched", [])),
-            "total_documents"   : len(profile.get("documents", [])),
-            "total_biomarkers"  : len(profile.get("biomarkers", [])),
-        },
-    })
+    bms = sorted(profile.get("biomarkers", []), key=lambda x: x.get("date", ""), reverse=True)[:50]
+    imgs = sorted(profile.get("imaging", []), key=lambda x: x.get("date", ""), reverse=True)[:3]
+    docs = sorted(profile.get("documents", []), key=lambda x: x.get("date", ""), reverse=True)[:5]
+    return jsonify(
+        {
+            "patient": profile.get("patient", {}),
+            "alerts": alerts,
+            "recent_biomarkers": bms,
+            "recent_imaging": imgs,
+            "recent_documents": docs,
+            "treatments_classified": profile.get("treatments_classified", []),
+            "stats": {
+                "trials_tracked": len(profile.get("trials_tracked", [])),
+                "literature_watched": len(profile.get("literature_watched", [])),
+                "total_documents": len(profile.get("documents", [])),
+                "total_biomarkers": len(profile.get("biomarkers", [])),
+            },
+        }
+    )
 
 
 @app.route("/api/feed", methods=["POST"])
@@ -360,18 +459,18 @@ def api_feed():
         return jsonify({"error": "No text provided"}), 400
 
     job = {
-        "id"           : _new_id(),
-        "type"         : "feed",
-        "status"       : "queued",
-        "stage"        : "queued",
-        "created_at"   : datetime.datetime.now().isoformat(),
-        "finished_at"  : None,
+        "id": _new_id(),
+        "type": "feed",
+        "status": "queued",
+        "stage": "queued",
+        "created_at": datetime.datetime.now().isoformat(),
+        "finished_at": None,
         "input_preview": text[:300],
         "document_type": None,
-        "summary"      : None,
-        "key_findings" : [],
-        "report"       : None,
-        "error"        : None,
+        "summary": None,
+        "key_findings": [],
+        "report": None,
+        "error": None,
     }
     _add_job(job)
     threading.Thread(target=_run_feed_job, args=(job["id"], text), daemon=True).start()
@@ -384,32 +483,66 @@ def api_feed_file():
     if not f:
         return jsonify({"error": "No file uploaded"}), 400
 
-    raw_bytes = f.read()
-    if f.filename.lower().endswith(".pdf"):
-        import io
+    raw_bytes = f.read(MAX_UPLOAD_BYTES + 1)
+    if len(raw_bytes) > MAX_UPLOAD_BYTES:
+        return jsonify({"error": "File exceeds the 20 MB upload limit"}), 413
+    try:
+        if (f.filename or "").lower().endswith(".pdf"):
+            import io
 
-        import pdfplumber
-        with pdfplumber.open(io.BytesIO(raw_bytes)) as pdf:
-            text = "\n\n".join(page.extract_text() or "" for page in pdf.pages)
-    else:
-        text = raw_bytes.decode("utf-8", errors="replace")
+            import pdfplumber
+
+            with pdfplumber.open(io.BytesIO(raw_bytes)) as pdf:
+                if len(pdf.pages) > MAX_PDF_PAGES:
+                    return jsonify(
+                        {"error": f"PDF exceeds the {MAX_PDF_PAGES}-page processing limit"}
+                    ), 413
+                chunks: list[str] = []
+                total_chars = 0
+                for page in pdf.pages:
+                    chunk = page.extract_text() or ""
+                    total_chars += len(chunk)
+                    if total_chars > MAX_EXTRACTED_TEXT_CHARS:
+                        return jsonify(
+                            {
+                                "error": (
+                                    "Extracted text exceeds the "
+                                    f"{MAX_EXTRACTED_TEXT_CHARS:,}-character processing limit"
+                                )
+                            }
+                        ), 413
+                    chunks.append(chunk)
+                text = "\n\n".join(chunks)
+        else:
+            text = raw_bytes.decode("utf-8", errors="replace")
+            if len(text) > MAX_EXTRACTED_TEXT_CHARS:
+                return jsonify(
+                    {
+                        "error": (
+                            "Text exceeds the "
+                            f"{MAX_EXTRACTED_TEXT_CHARS:,}-character processing limit"
+                        )
+                    }
+                ), 413
+    except Exception as exc:
+        return jsonify({"error": f"Could not read uploaded file: {exc}"}), 400
 
     if not text.strip():
         return jsonify({"error": "File appears to be empty or unreadable"}), 400
 
     job = {
-        "id"           : _new_id(),
-        "type"         : "feed",
-        "status"       : "queued",
-        "stage"        : "queued",
-        "created_at"   : datetime.datetime.now().isoformat(),
-        "finished_at"  : None,
+        "id": _new_id(),
+        "type": "feed",
+        "status": "queued",
+        "stage": "queued",
+        "created_at": datetime.datetime.now().isoformat(),
+        "finished_at": None,
         "input_preview": f"[File: {f.filename}] " + text[:260],
         "document_type": None,
-        "summary"      : None,
-        "key_findings" : [],
-        "report"       : None,
-        "error"        : None,
+        "summary": None,
+        "key_findings": [],
+        "report": None,
+        "error": None,
     }
     _add_job(job)
     threading.Thread(target=_run_feed_job, args=(job["id"], text), daemon=True).start()
@@ -419,18 +552,18 @@ def api_feed_file():
 @app.route("/api/digest", methods=["POST"])
 def api_digest():
     job = {
-        "id"           : _new_id(),
-        "type"         : "digest",
-        "status"       : "queued",
-        "stage"        : "queued",
-        "created_at"   : datetime.datetime.now().isoformat(),
-        "finished_at"  : None,
+        "id": _new_id(),
+        "type": "digest",
+        "status": "queued",
+        "stage": "queued",
+        "created_at": datetime.datetime.now().isoformat(),
+        "finished_at": None,
         "input_preview": "Research digest — full literature + trial sweep",
         "document_type": "digest",
-        "summary"      : None,
-        "key_findings" : [],
-        "report"       : None,
-        "error"        : None,
+        "summary": None,
+        "key_findings": [],
+        "report": None,
+        "error": None,
     }
     _add_job(job)
     threading.Thread(target=_run_digest_job, args=(job["id"],), daemon=True).start()
@@ -444,18 +577,18 @@ def api_deep_sweep():
     Read-only: the job does not write findings back to the profile.
     """
     job = {
-        "id"           : _new_id(),
-        "type"         : "deep-sweep",
-        "status"       : "queued",
-        "stage"        : "queued",
-        "created_at"   : datetime.datetime.now().isoformat(),
-        "finished_at"  : None,
+        "id": _new_id(),
+        "type": "deep-sweep",
+        "status": "queued",
+        "stage": "queued",
+        "created_at": datetime.datetime.now().isoformat(),
+        "finished_at": None,
         "input_preview": "Ensemble deep-sweep — multi-model, unioned findings",
         "document_type": "deep-sweep",
-        "summary"      : None,
-        "key_findings" : [],
-        "report"       : None,
-        "error"        : None,
+        "summary": None,
+        "key_findings": [],
+        "report": None,
+        "error": None,
     }
     _add_job(job)
     threading.Thread(target=_run_deepsweep_job, args=(job["id"],), daemon=True).start()
@@ -478,6 +611,7 @@ def api_job(job_id):
 
 
 @app.route("/api/treatments/delete", methods=["POST"])
+@serialized_profile_mutation
 def api_delete_treatment():
     data = request.get_json(force=True) or {}
     text = data.get("text", "").strip()
@@ -486,12 +620,12 @@ def api_delete_treatment():
     profile = agent.load_profile()
     # Remove from raw treatments list
     profile["patient"]["current_treatments"] = [
-        t for t in profile["patient"].get("current_treatments", [])
-        if t != text
+        t for t in profile["patient"].get("current_treatments", []) if t != text
     ]
     # Remove from classified list
     profile["treatments_classified"] = [
-        t for t in profile.get("treatments_classified", [])
+        t
+        for t in profile.get("treatments_classified", [])
         if t.get("text") != text and t.get("label") != text
     ]
     agent.save_profile(profile)
@@ -499,6 +633,7 @@ def api_delete_treatment():
 
 
 @app.route("/api/alerts/resolve/<int:idx>", methods=["POST"])
+@serialized_profile_mutation
 def api_resolve_alert(idx):
     profile = agent.load_profile()
     alerts = profile.get("alerts", [])
@@ -510,11 +645,12 @@ def api_resolve_alert(idx):
 
 
 @app.route("/api/treatments/update", methods=["POST"])
+@serialized_profile_mutation
 def api_treatments_update():
     """Update a treatment's category or remove it — syncs both classified and raw lists."""
     data = request.get_json(force=True) or {}
-    action   = data.get("action")   # "remove" or "set_category"
-    idx      = data.get("idx")
+    action = data.get("action")  # "remove" or "set_category"
+    idx = data.get("idx")
     category = data.get("category")
 
     profile = agent.load_profile()
@@ -530,7 +666,8 @@ def api_treatments_update():
         txs.pop(idx)
         # Also remove from raw current_treatments — match by substring
         profile["patient"]["current_treatments"] = [
-            t for t in profile["patient"].get("current_treatments", [])
+            t
+            for t in profile["patient"].get("current_treatments", [])
             if tx_text_lower not in t.lower() and t.lower() not in tx_text_lower
         ]
 
@@ -561,28 +698,28 @@ def api_treatments_update():
 def api_trials():
     profile = agent.load_profile()
     trials = sorted(
-        profile.get("trials_tracked", []),
-        key=lambda x: x.get("date_added", ""), reverse=True
+        profile.get("trials_tracked", []), key=lambda x: x.get("date_added", ""), reverse=True
     )
     return jsonify(trials)
 
 
 @app.route("/api/trials/poll", methods=["POST"])
+@serialized_profile_mutation
 def api_trials_poll():
     """On-demand deterministic poll of tracked-trial statuses (P5)."""
     profile = agent.load_profile()
     result = agent.poll_tracked_trials(profile)
-    if result["changed"]:
+    if result.get("changed") or result.get("refreshed"):
         agent.save_profile(profile)
     return jsonify(result)
 
 
 @app.route("/api/trials/<nct_id>", methods=["DELETE"])
+@serialized_profile_mutation
 def api_delete_trial(nct_id):
     profile = agent.load_profile()
     profile["trials_tracked"] = [
-        t for t in profile.get("trials_tracked", [])
-        if t.get("nct_id") != nct_id
+        t for t in profile.get("trials_tracked", []) if t.get("nct_id") != nct_id
     ]
     agent.save_profile(profile)
     return jsonify({"ok": True})
@@ -592,18 +729,17 @@ def api_delete_trial(nct_id):
 def api_papers():
     profile = agent.load_profile()
     papers = sorted(
-        profile.get("literature_watched", []),
-        key=lambda x: x.get("date_added", ""), reverse=True
+        profile.get("literature_watched", []), key=lambda x: x.get("date_added", ""), reverse=True
     )
     return jsonify(papers)
 
 
 @app.route("/api/papers/<pmid>", methods=["DELETE"])
+@serialized_profile_mutation
 def api_delete_paper(pmid):
     profile = agent.load_profile()
     profile["literature_watched"] = [
-        p for p in profile.get("literature_watched", [])
-        if p.get("pmid") != pmid
+        p for p in profile.get("literature_watched", []) if p.get("pmid") != pmid
     ]
     agent.save_profile(profile)
     return jsonify({"ok": True})
@@ -617,6 +753,7 @@ def api_questions():
 
 
 @app.route("/api/questions/generate", methods=["POST"])
+@serialized_profile_mutation
 def api_questions_generate():
     data = request.get_json(force=True) or {}
     appointment_type = data.get("appointment_type", "oncology follow-up")
@@ -626,11 +763,12 @@ def api_questions_generate():
     existing = profile.get("appointment_questions", [])
     manual = [q for q in existing if q.get("source") == "manual"]
     profile["appointment_questions"] = new_questions + manual
-    agent.save_profile(profile)
+    agent.save_profile(profile, clinical_change=False)
     return jsonify(profile["appointment_questions"])
 
 
 @app.route("/api/questions/add", methods=["POST"])
+@serialized_profile_mutation
 def api_questions_add():
     data = request.get_json(force=True) or {}
     text = (data.get("text") or "").strip()
@@ -639,39 +777,40 @@ def api_questions_add():
     profile = agent.load_profile()
     today = datetime.datetime.now().isoformat()
     question = {
-        "id"        : f"q_manual_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}",
-        "text"      : text,
-        "category"  : data.get("category", "Other"),
-        "priority"  : data.get("priority", "medium"),
-        "rationale" : "",
-        "source"    : "manual",
-        "asked"     : False,
+        "id": f"q_manual_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}",
+        "text": text,
+        "category": data.get("category", "Other"),
+        "priority": data.get("priority", "medium"),
+        "rationale": "",
+        "source": "manual",
+        "asked": False,
         "created_at": today[:10],
     }
     profile.setdefault("appointment_questions", []).insert(0, question)
-    agent.save_profile(profile)
+    agent.save_profile(profile, clinical_change=False)
     return jsonify(question)
 
 
 @app.route("/api/questions/<qid>/toggle", methods=["POST"])
+@serialized_profile_mutation
 def api_questions_toggle(qid):
     profile = agent.load_profile()
     for q in profile.get("appointment_questions", []):
         if q.get("id") == qid:
             q["asked"] = not q.get("asked", False)
             break
-    agent.save_profile(profile)
+    agent.save_profile(profile, clinical_change=False)
     return jsonify({"ok": True})
 
 
 @app.route("/api/questions/<qid>", methods=["DELETE"])
+@serialized_profile_mutation
 def api_questions_delete(qid):
     profile = agent.load_profile()
     profile["appointment_questions"] = [
-        q for q in profile.get("appointment_questions", [])
-        if q.get("id") != qid
+        q for q in profile.get("appointment_questions", []) if q.get("id") != qid
     ]
-    agent.save_profile(profile)
+    agent.save_profile(profile, clinical_change=False)
     return jsonify({"ok": True})
 
 
@@ -682,6 +821,7 @@ def api_judgments():
 
 
 @app.route("/api/judgments/add", methods=["POST"])
+@serialized_profile_mutation
 def api_judgments_add():
     data = request.get_json(force=True) or {}
     text = (data.get("text") or "").strip()
@@ -689,11 +829,11 @@ def api_judgments_add():
         return jsonify({"error": "No text"}), 400
     profile = agent.load_profile()
     judgment = {
-        "id"      : f"j_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}",
-        "text"    : text,
+        "id": f"j_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}",
+        "text": text,
         "category": data.get("category", "context"),
-        "source"  : data.get("source", "manual"),
-        "date"    : datetime.date.today().isoformat(),
+        "source": data.get("source", "manual"),
+        "date": datetime.date.today().isoformat(),
         "added_at": now_stamp(),
     }
     profile.setdefault("clinical_judgments", []).insert(0, judgment)
@@ -702,6 +842,7 @@ def api_judgments_add():
 
 
 @app.route("/api/judgments/<jid>", methods=["PATCH"])
+@serialized_profile_mutation
 def api_judgments_edit(jid):
     data = request.get_json(force=True) or {}
     text = (data.get("text") or "").strip()
@@ -720,11 +861,11 @@ def api_judgments_edit(jid):
 
 
 @app.route("/api/judgments/<jid>", methods=["DELETE"])
+@serialized_profile_mutation
 def api_judgments_delete(jid):
     profile = agent.load_profile()
     profile["clinical_judgments"] = [
-        j for j in profile.get("clinical_judgments", [])
-        if j.get("id") != jid
+        j for j in profile.get("clinical_judgments", []) if j.get("id") != jid
     ]
     agent.save_profile(profile)
     return jsonify({"ok": True})
@@ -743,6 +884,7 @@ def api_symptoms():
 
 
 @app.route("/api/symptoms", methods=["POST"])
+@serialized_profile_mutation
 def api_symptoms_add():
     data = request.get_json(force=True) or {}
     name = (data.get("symptom") or "").strip()
@@ -758,13 +900,14 @@ def api_symptoms_add():
     profile = agent.load_profile()
     today = datetime.date.today().isoformat()
     symptom = {
-        "id"               : f"sym_manual_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}",
-        "date"             : (data.get("date") or today),
-        "symptom"          : name,
-        "severity"         : severity,
-        "note"             : (data.get("note") or "").strip() or None,
+        "id": f"sym_manual_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}",
+        "date": (data.get("date") or today),
+        "symptom": name,
+        "severity": severity,
+        "note": (data.get("note") or "").strip() or None,
         "related_treatment": (data.get("related_treatment") or "").strip() or None,
-        "source"           : "manual",
+        "source": "manual",
+        "added_at": now_stamp(),
     }
     profile.setdefault("symptoms", []).insert(0, symptom)
     agent.save_profile(profile)
@@ -772,6 +915,7 @@ def api_symptoms_add():
 
 
 @app.route("/api/symptoms/<sid>", methods=["PATCH"])
+@serialized_profile_mutation
 def api_symptoms_edit(sid):
     data = request.get_json(force=True) or {}
     profile = agent.load_profile()
@@ -803,12 +947,10 @@ def api_symptoms_edit(sid):
 
 
 @app.route("/api/symptoms/<sid>", methods=["DELETE"])
+@serialized_profile_mutation
 def api_symptoms_delete(sid):
     profile = agent.load_profile()
-    profile["symptoms"] = [
-        s for s in profile.get("symptoms", [])
-        if s.get("id") != sid
-    ]
+    profile["symptoms"] = [s for s in profile.get("symptoms", []) if s.get("id") != sid]
     agent.save_profile(profile)
     return jsonify({"ok": True})
 
@@ -841,29 +983,32 @@ def _count_new(profile: dict) -> dict:
         # Prefer added_at (ingestion time) so a back-dated item fed after the
         # last acknowledgement still surfaces as new; fall back to the clinical
         # date / date_added for legacy items recorded before added_at existed.
-        return sum(
-            1 for it in items if _is_after(it.get("added_at") or it.get(key, "") or "", ack)
-        )
+        return sum(1 for it in items if _is_after(it.get("added_at") or it.get(key, "") or "", ack))
 
     summary = profile.get("executive_summary") or {}
-    summary_generated = summary.get("generated_at") or ""
+    summary_generated = summary.get("generated_at_timestamp") or summary.get("generated_at") or ""
     summary_new = bool(summary_generated and summary_generated > ack)
 
     counts = {
-        "biomarkers"    : _count(profile.get("biomarkers", []), "date"),
-        "imaging"       : _count(profile.get("imaging", []), "date"),
-        "trials"        : _count(profile.get("trials_tracked", []), "date_added"),
-        "papers"        : _count(profile.get("literature_watched", []), "date_added"),
-        "alerts"        : _count(profile.get("alerts", []), "date"),
-        "documents"     : _count(profile.get("documents", []), "date"),
-        "judgments"     : _count(profile.get("clinical_judgments", []), "date"),
-        "symptoms"      : _count(profile.get("symptoms", []), "date"),
+        "biomarkers": _count(profile.get("biomarkers", []), "date"),
+        "imaging": _count(profile.get("imaging", []), "date"),
+        "trials": _count(profile.get("trials_tracked", []), "date_added"),
+        "papers": _count(profile.get("literature_watched", []), "date_added"),
+        "alerts": _count(profile.get("alerts", []), "date"),
+        "documents": _count(profile.get("documents", []), "date"),
+        "judgments": _count(profile.get("clinical_judgments", []), "date"),
+        "symptoms": _count(profile.get("symptoms", []), "date"),
         "executive_summary": summary_new,
     }
     counts["total_new"] = (
-        counts["biomarkers"] + counts["imaging"] + counts["trials"]
-        + counts["papers"] + counts["alerts"] + counts["documents"]
-        + counts["judgments"] + counts["symptoms"]
+        counts["biomarkers"]
+        + counts["imaging"]
+        + counts["trials"]
+        + counts["papers"]
+        + counts["alerts"]
+        + counts["documents"]
+        + counts["judgments"]
+        + counts["symptoms"]
         + (1 if counts["executive_summary"] else 0)
     )
     return counts
@@ -872,25 +1017,31 @@ def _count_new(profile: dict) -> dict:
 @app.route("/api/changes")
 def api_changes():
     profile = agent.load_profile()
-    return jsonify({
-        "acknowledged_at": profile.get("acknowledged_at"),
-        "new": _count_new(profile),
-    })
+    return jsonify(
+        {
+            "acknowledged_at": profile.get("acknowledged_at"),
+            "new": _count_new(profile),
+        }
+    )
 
 
 @app.route("/api/changes/acknowledge", methods=["POST"])
+@serialized_profile_mutation
 def api_changes_acknowledge():
     profile = agent.load_profile()
     now = datetime.datetime.now().isoformat(timespec="seconds")
     profile["acknowledged_at"] = now
-    agent.save_profile(profile)
-    return jsonify({
-        "acknowledged_at": now,
-        "new": _count_new(profile),
-    })
+    agent.save_profile(profile, clinical_change=False)
+    return jsonify(
+        {
+            "acknowledged_at": now,
+            "new": _count_new(profile),
+        }
+    )
 
 
 @app.route("/api/summary/dismiss-action/<int:idx>", methods=["POST"])
+@serialized_profile_mutation
 def api_dismiss_action(idx):
     data = request.get_json(force=True) or {}
     profile = agent.load_profile()
@@ -905,15 +1056,15 @@ def api_dismiss_action(idx):
         if feedback:
             action_text = dismissed.get("action", "")
             judgment = {
-                "id"      : f"j_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}",
-                "text"    : f"Regarding '{action_text[:60]}': {feedback}",
+                "id": f"j_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}",
+                "text": f"Regarding '{action_text[:60]}': {feedback}",
                 "category": data.get("category", "context"),
-                "source"  : "feedback",
-                "date"    : datetime.date.today().isoformat(),
+                "source": "feedback",
+                "date": datetime.date.today().isoformat(),
                 "added_at": now_stamp(),
             }
             profile.setdefault("clinical_judgments", []).insert(0, judgment)
-        agent.save_profile(profile)
+        agent.save_profile(profile, clinical_change=bool(feedback))
     return jsonify({"ok": True})
 
 
@@ -923,19 +1074,37 @@ def api_summary():
     summary = profile.get("executive_summary")
     if not summary:
         return jsonify({"status": "not_generated"})
-    return jsonify(summary)
+    response = dict(summary)
+    response["profile_revision"] = profile.get("profile_revision")
+    response["summary_revision"] = summary.get("summary_revision")
+    response["stale"] = bool(profile.get("summary_stale") or summary.get("stale"))
+    response["profile_updated_at"] = profile.get("profile_updated_at")
+    response["recent_documents"] = sorted(
+        profile.get("documents", []),
+        key=lambda item: item.get("added_at") or item.get("date") or "",
+        reverse=True,
+    )[:5]
+    return jsonify(response)
 
 
 @app.route("/api/summary/generate", methods=["POST"])
+@serialized_profile_mutation
 def api_summary_generate():
     """Generate executive summary and classify treatments on demand."""
     profile = agent.load_profile()
-    summary = agent.generate_executive_summary(profile)
     classified_txs = agent.classify_treatments(profile)
-    profile["executive_summary"] = summary
     profile["treatments_classified"] = classified_txs
+    summary_error = _refresh_summary(profile)
     agent.save_profile(profile)
-    return jsonify({"summary": summary, "treatments_classified": classified_txs})
+    summary = profile["executive_summary"]
+    return jsonify(
+        {
+            "summary": summary,
+            "treatments_classified": classified_txs,
+            "summary_error": summary_error,
+            "profile_revision": profile["profile_revision"],
+        }
+    )
 
 
 @app.route("/api/chat", methods=["POST"])

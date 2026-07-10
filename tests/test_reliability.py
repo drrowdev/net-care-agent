@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import multiprocessing
+import os
 import threading
 import time
 
@@ -54,6 +56,47 @@ def test_serialized_mutation_calls_on_wait_when_held(agent):
 def _enter_and_exit(cm_factory, on_wait):
     with cm_factory(on_wait=on_wait):
         pass
+
+
+def _hold_process_lock(data_dir: str, ready, release) -> None:
+    os.environ["DATA_DIR"] = data_dir
+    from agent.serialize import serialized_mutation
+
+    with serialized_mutation():
+        ready.set()
+        release.wait(5)
+
+
+def test_serialized_mutation_blocks_another_process(agent):
+    from agent import config
+    from agent.serialize import serialized_mutation
+
+    ctx = multiprocessing.get_context("spawn")
+    ready = ctx.Event()
+    release = ctx.Event()
+    process = ctx.Process(
+        target=_hold_process_lock,
+        args=(str(config.DATA_DIR), ready, release),
+    )
+    process.start()
+    assert ready.wait(5)
+
+    entered = threading.Event()
+
+    def enter_parent():
+        with serialized_mutation():
+            entered.set()
+
+    thread = threading.Thread(target=enter_parent)
+    thread.start()
+    time.sleep(0.1)
+    assert not entered.is_set()
+
+    release.set()
+    process.join(5)
+    thread.join(5)
+    assert process.exitcode == 0
+    assert entered.is_set()
 
 
 # ── P12: rotating_snapshot ───────────────────────────────────────────────────

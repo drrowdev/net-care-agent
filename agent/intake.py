@@ -383,15 +383,15 @@ def run_intake(text: str, profile: dict) -> tuple[dict, dict]:
         if not is_duplicate:
             existing.append(tx)
 
-    print(f"  ✓  Type    : {extracted.get('document_type','?')}")
+    print(f"  ✓  Type    : {extracted.get('document_type', '?')}")
     print(f"     Date    : {doc_date}")
-    print(f"     Summary : {extracted.get('summary','')[:100]}")
+    print(f"     Summary : {extracted.get('summary', '')[:100]}")
     if extracted.get("key_findings"):
         print("     Findings:")
         for f in extracted["key_findings"]:
             print(f"       • {f}")
     if extracted.get("workflow_rationale"):
-        print(f"     Workflows: {extracted.get('workflow_rationale','')}")
+        print(f"     Workflows: {extracted.get('workflow_rationale', '')}")
 
     return profile, extracted
 

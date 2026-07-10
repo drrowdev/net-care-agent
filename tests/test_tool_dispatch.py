@@ -117,6 +117,52 @@ def test_search_clinical_trials_filters_unrelated(agent, empty_profile, fixtures
     saved = empty_profile["trials_tracked"][0]
     assert "Germany" in saved["countries"]
     assert saved["status"] == "RECRUITING"
+    assert saved["phase"] == "PHASE1 / PHASE2"
+    assert saved["phases"] == ["PHASE1", "PHASE2"]
+    assert saved["eligibility_excerpt"].endswith("adequate renal function.")
+    assert result["selection_manifest"]["returned_nct_ids"] == [
+        "NCT09000001",
+        "NCT09000099",
+    ]
+    assert result["persistence_manifest"]["omitted"] == [
+        {"nct_id": "NCT09000099", "reason": "not_net_relevant"}
+    ]
+
+
+@responses.activate
+def test_trial_selection_is_deterministic_and_discloses_omissions(agent):
+    studies = []
+    for number in range(21, 0, -1):
+        studies.append(
+            {
+                "protocolSection": {
+                    "identificationModule": {
+                        "nctId": f"NCT{number:08d}",
+                        "briefTitle": "Neuroendocrine tumor study",
+                    },
+                    "statusModule": {"overallStatus": "RECRUITING"},
+                    "designModule": {"phases": ["PHASE2"]},
+                    "descriptionModule": {"briefSummary": "NET treatment"},
+                    "eligibilityModule": {
+                        "eligibilityCriteria": "X" * 900 + f"-criterion-{number}"
+                    },
+                }
+            }
+        )
+    responses.add(
+        responses.GET,
+        "https://clinicaltrials.gov/api/v2/studies",
+        json={"totalCount": 21, "studies": studies},
+    )
+
+    result = agent.search_clinical_trials("neuroendocrine tumor")
+
+    assert len(result["trials"]) == 20
+    assert result["trials"][0]["nct_id"] == "NCT00000001"
+    assert result["selection_manifest"]["omitted"] == 1
+    assert result["selection_manifest"]["omitted_nct_ids"] == ["NCT00000021"]
+    assert "not included" in result["omission_notice"]
+    assert len(result["trials"][0]["eligibility_excerpt"]) > 900
 
 
 # ─── unknown tool ────────────────────────────────────────────────────────────

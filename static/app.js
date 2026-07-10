@@ -22,6 +22,36 @@
   }
 
   // ── Formatting helpers ──────────────────────────────────────────────────
+  function safeClassToken(value, fallback = '') {
+    const token = String(value == null ? '' : value);
+    return /^[a-z0-9_-]+$/i.test(token) ? token : fallback;
+  }
+
+  function safeExternalUrl(value) {
+    try {
+      const url = new URL(String(value || ''), window.location.origin);
+      return /^(https?):$/.test(url.protocol) ? url.href : '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  async function readJsonResponse(response) {
+    let data;
+    try {
+      data = await response.json();
+    } catch (_) {
+      throw new Error(`Invalid JSON response (${response.status})`);
+    }
+    if (!response.ok) {
+      const message = data && typeof data.error === 'string'
+        ? data.error
+        : `Request failed (${response.status})`;
+      throw new Error(message);
+    }
+    return data;
+  }
+
   function relativeTime(iso) {
     if (!iso) return '';
     // Ensure UTC interpretation by appending Z if missing
@@ -72,9 +102,9 @@
       ? bms.map(b => `
         <div class="bm-row">
           <span class="bm-name">${escHtml(b.marker)}</span>
-          <span class="bm-val">${b.value != null ? b.value + ' ' + (b.unit||'') : '—'}</span>
-          <span class="bm-flag ${b.flag || 'normal'}">${b.flag || '—'}</span>
-          <span class="bm-date">${b.date || ''} · ref: ${b.reference_range || '—'}</span>
+          <span class="bm-val">${b.value != null ? escHtml(b.value + ' ' + (b.unit||'')) : '—'}</span>
+          <span class="bm-flag ${safeClassToken(b.flag, 'normal')}">${escHtml(b.flag || '—')}</span>
+          <span class="bm-date">${escHtml(b.date || '')} · ref: ${escHtml(b.reference_range || '—')}</span>
         </div>`).join('')
       : '<div class="empty-state">No biomarkers recorded</div>';
   }
@@ -96,23 +126,23 @@
     document.getElementById('patient-meta').innerHTML = `
       <div class="meta-row">
         <span class="meta-label">Age / Sex</span>
-        <span class="meta-val">${p.age || '—'} / ${p.sex || '—'}</span>
+        <span class="meta-val">${escHtml(p.age || '—')} / ${escHtml(p.sex || '—')}</span>
       </div>
       <div class="meta-row">
         <span class="meta-label">Ki-67</span>
-        <span class="meta-val ${p.ki67_percent == null ? 'unknown' : ''}">${p.ki67_percent != null ? p.ki67_percent + '%' : 'unknown'}</span>
+        <span class="meta-val ${p.ki67_percent == null ? 'unknown' : ''}">${p.ki67_percent != null ? escHtml(p.ki67_percent + '%') : 'unknown'}</span>
       </div>
       <div class="meta-row">
         <span class="meta-label">SSTR</span>
-        <span class="meta-val ${sstrClass}">${p.sstr_status || 'unknown'}${p.sstr_score != null ? ' ('+p.sstr_score+')' : ''}</span>
+        <span class="meta-val ${sstrClass}">${escHtml(p.sstr_status || 'unknown')}${p.sstr_score != null ? ' ('+escHtml(p.sstr_score)+')' : ''}</span>
       </div>
       <div class="meta-row">
         <span class="meta-label">Trials</span>
-        <span class="meta-val clickable" onclick="openModal('trials')">${(d.stats && d.stats.trials_tracked != null) ? d.stats.trials_tracked : 0}</span>
+        <span class="meta-val clickable" onclick="openModal('trials')">${escHtml((d.stats && d.stats.trials_tracked != null) ? d.stats.trials_tracked : 0)}</span>
       </div>
       <div class="meta-row">
         <span class="meta-label">Papers</span>
-        <span class="meta-val clickable" onclick="openModal('papers')">${(d.stats && d.stats.literature_watched != null) ? d.stats.literature_watched : 0}</span>
+        <span class="meta-val clickable" onclick="openModal('papers')">${escHtml((d.stats && d.stats.literature_watched != null) ? d.stats.literature_watched : 0)}</span>
       </div>
     `;
 
@@ -258,11 +288,11 @@
     const alerts = d.alerts || [];
     document.getElementById('alerts-list').innerHTML = alerts.length
       ? alerts.map((a, i) => `
-        <div class="alert-item ${a.priority}">
+        <div class="alert-item ${safeClassToken(a.priority, 'normal')}">
           <div class="alert-msg">${escHtml(a.message)}</div>
           ${a.action_required ? `<div class="alert-action">→ ${escHtml(a.action_required)}</div>` : ''}
           <div class="alert-meta">
-            <span class="alert-priority ${a.priority}">${a.priority}</span>
+            <span class="alert-priority ${safeClassToken(a.priority, 'normal')}">${escHtml(a.priority || '—')}</span>
             <button class="resolve-btn" onclick="resolveAlert(${i})">Resolve</button>
           </div>
         </div>`).join('')
@@ -386,15 +416,15 @@
     const catColor = { constraint:'var(--red)', preference:'var(--accent)', outcome:'var(--blue)', context:'var(--text2)' };
     const catLabel = { constraint:'Constraint', preference:'Preference', outcome:'Outcome', context:'Context' };
     const html = judgments.length ? judgments.map(j => `
-      <div id="judgment-row-${j.id}" style="display:flex;align-items:flex-start;gap:8px;padding:8px 0;border-bottom:0.5px solid var(--border)">
-        <span style="font-size:10px;font-weight:600;padding:2px 6px;border-radius:3px;background:var(--bg2);color:${catColor[j.category]||'var(--text2)'};flex-shrink:0;margin-top:1px">${catLabel[j.category]||j.category}</span>
+      <div class="judgment-row" data-judgment-id="${escHtml(j.id)}" style="display:flex;align-items:flex-start;gap:8px;padding:8px 0;border-bottom:0.5px solid var(--border)">
+        <span style="font-size:10px;font-weight:600;padding:2px 6px;border-radius:3px;background:var(--bg2);color:${catColor[j.category]||'var(--text2)'};flex-shrink:0;margin-top:1px">${escHtml(catLabel[j.category]||j.category||'Context')}</span>
         <div style="flex:1">
-          <div id="judgment-text-${j.id}" style="font-size:12px;color:var(--text0);line-height:1.5">${escHtml(j.text)}</div>
-          <div style="font-size:10px;color:var(--text2);margin-top:2px">${j.date||''}</div>
+          <div class="judgment-text" style="font-size:12px;color:var(--text0);line-height:1.5">${escHtml(j.text)}</div>
+          <div style="font-size:10px;color:var(--text2);margin-top:2px">${escHtml(j.date||'')}</div>
         </div>
         <div style="display:flex;gap:4px;flex-shrink:0">
-          <button onclick="startEditJudgment('${j.id}','${j.category||'context'}')" title="Edit" style="background:none;border:none;color:var(--text2);cursor:pointer;font-size:11px;padding:0 2px;opacity:0.4;line-height:1" onmouseenter="this.style.opacity='1';this.style.color='var(--blue)'" onmouseleave="this.style.opacity='0.4';this.style.color='var(--text2)'">✎</button>
-          <button onclick="deleteJudgment('${j.id}')" title="Delete" style="background:none;border:none;color:var(--text2);cursor:pointer;font-size:12px;padding:0 2px;opacity:0.4;line-height:1" onmouseenter="this.style.opacity='1';this.style.color='var(--red)'" onmouseleave="this.style.opacity='0.4';this.style.color='var(--text2)'">✕</button>
+          <button data-category="${safeClassToken(j.category, 'context')}" onclick="startEditJudgment(this)" title="Edit" style="background:none;border:none;color:var(--text2);cursor:pointer;font-size:11px;padding:0 2px;opacity:0.4;line-height:1" onmouseenter="this.style.opacity='1';this.style.color='var(--blue)'" onmouseleave="this.style.opacity='0.4';this.style.color='var(--text2)'">✎</button>
+          <button onclick="deleteJudgment(this.closest('.judgment-row').dataset.judgmentId)" title="Delete" style="background:none;border:none;color:var(--text2);cursor:pointer;font-size:12px;padding:0 2px;opacity:0.4;line-height:1" onmouseenter="this.style.opacity='1';this.style.color='var(--red)'" onmouseleave="this.style.opacity='0.4';this.style.color='var(--text2)'">✕</button>
         </div>
       </div>`).join('')
     : '<div style="font-size:12px;color:var(--text2);padding:12px 0;text-align:center">No clinical notes yet.<br>Add notes after appointments or dismiss actions with feedback.</div>';
@@ -405,10 +435,11 @@
     if (mobile) mobile.innerHTML = html;
   }
 
-  function startEditJudgment(jid, currentCat) {
-    const row = document.getElementById('judgment-row-' + jid);
-    const textEl = document.getElementById('judgment-text-' + jid);
+  function startEditJudgment(button) {
+    const row = button.closest('.judgment-row');
+    const textEl = row?.querySelector('.judgment-text');
     if (!row || !textEl) return;
+    const currentCat = button.dataset.category || 'context';
 
     // Already editing?
     if (row.querySelector('.judgment-edit-area')) return;
@@ -421,33 +452,36 @@
       .join('');
 
     const editHtml = `<div class="judgment-edit-area" style="display:flex;flex-direction:column;gap:6px;margin-top:2px">
-      <textarea id="judgment-edit-${jid}" style="font-size:12px;padding:6px 8px;border:0.5px solid var(--border2);border-radius:5px;background:var(--bg1);color:var(--text0);outline:none;font-family:var(--sans);line-height:1.5;resize:vertical;min-height:60px;width:100%">${escHtml(currentText)}</textarea>
+      <textarea class="judgment-edit-text" style="font-size:12px;padding:6px 8px;border:0.5px solid var(--border2);border-radius:5px;background:var(--bg1);color:var(--text0);outline:none;font-family:var(--sans);line-height:1.5;resize:vertical;min-height:60px;width:100%">${escHtml(currentText)}</textarea>
       <div style="display:flex;gap:6px;align-items:center">
-        <select id="judgment-edit-cat-${jid}" style="font-size:11px;padding:4px 6px;border:0.5px solid var(--border);border-radius:4px;background:var(--bg1);color:var(--text1);cursor:pointer">${catOptions}</select>
-        <button onclick="saveEditJudgment('${jid}')" style="font-size:11px;padding:4px 10px;border:0.5px solid var(--accent);border-radius:4px;background:var(--accent-dim);color:var(--accent);cursor:pointer;font-weight:500">Save</button>
-        <button onclick="cancelEditJudgment('${jid}')" style="font-size:11px;padding:4px 10px;border:0.5px solid var(--border);border-radius:4px;background:none;color:var(--text2);cursor:pointer">Cancel</button>
+        <select class="judgment-edit-category" style="font-size:11px;padding:4px 6px;border:0.5px solid var(--border);border-radius:4px;background:var(--bg1);color:var(--text1);cursor:pointer">${catOptions}</select>
+        <button onclick="saveEditJudgment(this)" style="font-size:11px;padding:4px 10px;border:0.5px solid var(--accent);border-radius:4px;background:var(--accent-dim);color:var(--accent);cursor:pointer;font-weight:500">Save</button>
+        <button onclick="cancelEditJudgment(this)" style="font-size:11px;padding:4px 10px;border:0.5px solid var(--border);border-radius:4px;background:none;color:var(--text2);cursor:pointer">Cancel</button>
       </div>
     </div>`;
 
     textEl.insertAdjacentHTML('afterend', editHtml);
-    const ta = document.getElementById('judgment-edit-' + jid);
+    const ta = row.querySelector('.judgment-edit-text');
     if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
   }
 
-  function cancelEditJudgment(jid) {
-    const textEl = document.getElementById('judgment-text-' + jid);
-    const editArea = document.querySelector('#judgment-row-' + jid + ' .judgment-edit-area');
+  function cancelEditJudgment(button) {
+    const row = button.closest('.judgment-row');
+    const textEl = row?.querySelector('.judgment-text');
+    const editArea = row?.querySelector('.judgment-edit-area');
     if (textEl) textEl.style.display = '';
     if (editArea) editArea.remove();
   }
 
-  async function saveEditJudgment(jid) {
-    const ta = document.getElementById('judgment-edit-' + jid);
-    const catEl = document.getElementById('judgment-edit-cat-' + jid);
+  async function saveEditJudgment(button) {
+    const row = button.closest('.judgment-row');
+    const jid = row?.dataset.judgmentId;
+    const ta = row?.querySelector('.judgment-edit-text');
+    const catEl = row?.querySelector('.judgment-edit-category');
     const text = (ta?.value || '').trim();
-    if (!text) return;
+    if (!jid || !text) return;
     try {
-      await fetch(`/api/judgments/${jid}`, {
+      await fetch(`/api/judgments/${encodeURIComponent(jid)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text, category: catEl?.value || 'context' }),
@@ -485,7 +519,7 @@
   }
 
   async function deleteJudgment(jid) {
-    await fetch(`/api/judgments/${jid}`, { method: 'DELETE' });
+    await fetch(`/api/judgments/${encodeURIComponent(jid)}`, { method: 'DELETE' });
     await loadJudgments();
   }
 
@@ -506,18 +540,18 @@
       return;
     }
     wrap.innerHTML = symptoms.slice(0, 30).map(s => {
-      const sev = s.severity ? `<span class="sym-sev sev-${s.severity}">${s.severity}</span>` : '';
+      const sev = s.severity ? `<span class="sym-sev sev-${safeClassToken(s.severity, 'unknown')}">${escHtml(s.severity)}</span>` : '';
       const src = s.source === 'ai' ? '<span class="sym-ai" title="auto-captured by intake">AI</span>' : '';
       const note = s.note ? `<div class="sym-note">${escHtml(s.note)}</div>` : '';
       const related = s.related_treatment ? `<span class="sym-related">↳ ${escHtml(s.related_treatment)}</span>` : '';
       return `
-        <div class="sym-row" data-id="${s.id}">
+        <div class="sym-row" data-id="${escHtml(s.id)}">
           <div class="sym-head">
-            <span class="sym-date">${s.date || ''}</span>
+            <span class="sym-date">${escHtml(s.date || '')}</span>
             ${sev}
             <span class="sym-name">${escHtml(s.symptom || '')}</span>
             ${src}
-            <button class="sym-del" onclick="deleteSymptom('${s.id}')" title="Delete">✕</button>
+            <button class="sym-del" onclick="deleteSymptom(this.closest('.sym-row').dataset.id)" title="Delete">✕</button>
           </div>
           ${note}
           ${related}
@@ -554,7 +588,7 @@
 
   async function deleteSymptom(sid) {
     if (!confirm('Delete this symptom entry?')) return;
-    await fetch(`/api/symptoms/${sid}`, { method: 'DELETE' });
+    await fetch(`/api/symptoms/${encodeURIComponent(sid)}`, { method: 'DELETE' });
     await loadSymptoms();
   }
 
@@ -610,6 +644,17 @@
     } catch(e) { console.error('Summary error:', e); }
   }
 
+  function summaryIsStale(d) {
+    if (typeof d.stale === 'boolean') return d.stale;
+    if (d.profile_revision != null && d.summary_revision != null) {
+      return String(d.profile_revision) !== String(d.summary_revision);
+    }
+    const summaryDate = d.generated_at || '';
+    const latestDoc = (d.recent_documents || [])[0];
+    const latestDocDate = latestDoc ? (latestDoc.added_at || latestDoc.date || '') : '';
+    return Boolean(summaryDate && latestDocDate && latestDocDate > summaryDate);
+  }
+
   function renderSummary(d) {
     const body = document.getElementById('summary-body');
     const empty = document.getElementById('summary-empty');
@@ -630,16 +675,13 @@
       stable: 'STABLE', responding: 'RESPONDING',
       progressing: 'PROGRESSING', insufficient_data: 'DATA PENDING'
     };
-    inline.innerHTML = `<span class="s-pill status-${d.overall_status}">${statusLabels[d.overall_status] || d.overall_status}</span>`;
+    inline.innerHTML = `<span class="s-pill status-${safeClassToken(d.overall_status, 'insufficient_data')}">${escHtml(statusLabels[d.overall_status] || d.overall_status || 'DATA PENDING')}</span>`;
 
     // Updated timestamp
-    // Show stale indicator if new documents fed since summary was generated
-    const summaryDate = d.generated_at || '';
-    const latestDoc = (d.recent_documents || [])[0];
-    const latestDocDate = latestDoc ? (latestDoc.date || '') : '';
-    const isStale = summaryDate && latestDocDate && latestDocDate > summaryDate;
+    // Revision fields are authoritative; dates support profiles created before revisions.
+    const isStale = summaryIsStale(d);
     updated.innerHTML = d.generated_at
-      ? `Updated ${fmtDate(d.generated_at)}${isStale ? ' <span style="color:var(--amber);font-size:10px">· new data available</span>' : ''}`
+      ? `Updated ${escHtml(fmtDate(d.generated_at))}${isStale ? ' <span style="color:var(--amber);font-size:10px">· new data available</span>' : ''}`
       : '';
 
     let html = '';
@@ -650,10 +692,10 @@
       eligible: 'PRRT: ELIGIBLE', likely_eligible: 'PRRT: LIKELY ELIGIBLE',
       pending_dotatate: 'PRRT: NEEDS DOTATATE', not_eligible: 'PRRT: NOT ELIGIBLE', unknown: 'PRRT: UNKNOWN'
     };
-    html += `<span class="s-pill prrt-${d.prrt_status}" title="${escHtml(d.prrt_rationale||'')}">${prrtLabels[d.prrt_status] || 'PRRT: UNKNOWN'}</span>`;
+    html += `<span class="s-pill prrt-${safeClassToken(d.prrt_status, 'unknown')}" title="${escHtml(d.prrt_rationale||'')}">${escHtml(prrtLabels[d.prrt_status] || 'PRRT: UNKNOWN')}</span>`;
     if (d.cga_trend) {
       const cgaLabels = { rising: '↑ CgA RISING', stable: '→ CgA STABLE', falling: '↓ CgA FALLING', insufficient_data: 'CgA: NO DATA' };
-      html += `<span class="s-pill cga-${d.cga_trend}" title="${escHtml(d.cga_trend_detail||'')}">${cgaLabels[d.cga_trend]}</span>`;
+      html += `<span class="s-pill cga-${safeClassToken(d.cga_trend, 'insufficient_data')}" title="${escHtml(d.cga_trend_detail||'')}">${escHtml(cgaLabels[d.cga_trend] || 'CgA: NO DATA')}</span>`;
       if (d.cga_trend_detail) {
         html += `<span style="font-family:var(--mono);font-size:10px;color:var(--text2)">${escHtml(d.cga_trend_detail)}</span>`;
       }
@@ -682,7 +724,7 @@
           ? `<span style="font-family:var(--mono);font-size:9px;color:var(--text2);border:0.5px solid var(--border);padding:1px 4px;border-radius:2px;margin-left:4px">TBD</span>`
           : '';
         html += `<div class="action-item" id="action-${idx}">
-          <span class="action-priority ${a.priority}">${a.priority}</span>
+          <span class="action-priority ${safeClassToken(a.priority, 'medium')}">${escHtml(a.priority || 'medium')}</span>
           <div class="action-text">
             <div class="action-main">${escHtml(a.action)}${provBadge}</div>
             ${a.rationale ? `<div class="action-sub">${escHtml(a.rationale)}</div>` : ''}
@@ -805,17 +847,17 @@
           const dateStr = d3 ? fmtDate(t.date) : '?';
           if (dateLabelVisible[i]) {
             nodes += `<line x1="${cx.toFixed(1)}" y1="${AXIS_Y}" x2="${cx.toFixed(1)}" y2="${(AXIS_Y+4).toFixed(1)}" stroke="#cdc8c0" stroke-width="1"/>`;
-            nodes += `<text x="${cx.toFixed(1)}" y="${(AXIS_Y-3).toFixed(1)}" font-size="9" fill="${isPast?'#b0a898':color}" text-anchor="middle" font-family="sans-serif" font-weight="600">${dateStr.replace(/&/g,'&amp;')}</text>`;
+            nodes += `<text x="${cx.toFixed(1)}" y="${(AXIS_Y-3).toFixed(1)}" font-size="9" fill="${isPast?'#b0a898':color}" text-anchor="middle" font-family="sans-serif" font-weight="600">${escHtml(dateStr)}</text>`;
           }
 
           // Main dot
-          const safeEvent = (t.event||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
-          const safeDate  = dateStr.replace(/&/g,'&amp;');
+          const safeEvent = escHtml(t.event || '');
+          const safeDate  = escHtml(dateStr);
           const tid2 = tid + '_' + i;
 
           nodes += `<g class="tl-node" id="${tid2}"
             data-event="${safeEvent}" data-date="${safeDate}"
-            data-type="${(t.type||'').replace(/&/g,'&amp;')}"
+            data-type="${escHtml(t.type||'')}"
             data-prov="${prov?'true':'false'}"
             data-color="${color}" data-bg="${bg}"
             style="cursor:pointer">`;
@@ -832,7 +874,7 @@
           const nextX = eventXs[i+1];
           const labelAnchor = (nextX && Math.abs(nextX - cx) < 80) ? 'start' : 'middle';
           const labelX = labelAnchor === 'start' ? cx + r + 6 : cx;
-          nodes += `<text x="${labelX.toFixed(1)}" y="${(cy + r + 13).toFixed(1)}" font-size="10" fill="${isPast?'#9a9288':'#1e1c18'}" text-anchor="${labelAnchor}" font-family="sans-serif" font-weight="${isCurrent?'600':'400'}">${short.replace(/&/g,'&amp;').replace(/</g,'&lt;')}${provMark}</text>`;
+          nodes += `<text x="${labelX.toFixed(1)}" y="${(cy + r + 13).toFixed(1)}" font-size="10" fill="${isPast?'#9a9288':'#1e1c18'}" text-anchor="${labelAnchor}" font-family="sans-serif" font-weight="${isCurrent?'600':'400'}">${escHtml(short)}${provMark}</text>`;
 
           nodes += `</g>`;
         });
@@ -871,10 +913,10 @@
 
             tt.innerHTML = `
               <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
-                <span style="background:${bg};color:${color};font-size:10px;font-weight:700;padding:2px 8px;border-radius:3px;border:0.5px solid ${color}">${typeLabel}</span>
-                <span style="font-size:12px;font-weight:600;color:#1e1c18">${nodeEl.dataset.date}</span>
+                <span style="background:${bg};color:${color};font-size:10px;font-weight:700;padding:2px 8px;border-radius:3px;border:0.5px solid ${color}">${escHtml(typeLabel)}</span>
+                <span style="font-size:12px;font-weight:600;color:#1e1c18">${escHtml(nodeEl.dataset.date)}</span>
               </div>
-              <div style="font-size:13px;color:#1e1c18;line-height:1.5;font-weight:500">${nodeEl.dataset.event}</div>
+              <div style="font-size:13px;color:#1e1c18;line-height:1.5;font-weight:500">${escHtml(nodeEl.dataset.event)}</div>
               ${provText}`;
             tt.style.display = 'block';
 
@@ -915,12 +957,11 @@
   }
 
   // ── Tutkimukset / Artikkelit Modal ───────────────────────────────────────────────
-  async function removeItem(type, id) {
+  async function removeItem(type, id, button) {
     const endpoint = type === 'trials' ? `/api/trials/${encodeURIComponent(id)}` : `/api/papers/${encodeURIComponent(id)}`;
     const r = await fetch(endpoint, { method: 'DELETE' });
     if (r.ok) {
-      // Remove from DOM immediately
-      const el = document.getElementById(`${type === 'trials' ? 'trial' : 'paper'}-${id}`);
+      const el = button?.closest('.modal-item');
       if (el) el.remove();
       // Refresh sidebar counts
       await loadStatus();
@@ -962,33 +1003,39 @@
     }
 
     if (type === 'trials') {
-      body.innerHTML = items.map(t => `
-        <div class="modal-item" id="trial-${escHtml(t.nct_id)}">
+      body.innerHTML = items.map(t => {
+        const url = safeExternalUrl(t.url);
+        return `
+        <div class="modal-item">
           <div class="modal-item-title">${escHtml(t.title || 'Untitled')}</div>
           <div class="modal-item-meta">
             <span class="modal-item-id">${escHtml(t.nct_id || '')}</span>
             <span class="modal-tag ${(t.status||'').toLowerCase() === 'recruiting' ? 'recruiting' : ''}">${escHtml(t.status || '—')}</span>
             ${t.phase ? `<span class="modal-tag">${escHtml(t.phase)}</span>` : ''}
             ${(t.countries||[]).length ? `<span class="modal-item-sub">${escHtml(t.countries.join(', '))}</span>` : ''}
-            ${t.url ? `<a class="modal-item-link" href="${escHtml(t.url)}" target="_blank" rel="noopener">View ↗</a>` : ''}
-            <button class="modal-close" style="margin-left:auto" title="Remove" onclick="removeItem('trials','${escHtml(t.nct_id)}')">✕</button>
+            ${url ? `<a class="modal-item-link" href="${escHtml(url)}" target="_blank" rel="noopener noreferrer">View ↗</a>` : ''}
+            <button class="modal-close" data-item-id="${escHtml(t.nct_id)}" style="margin-left:auto" title="Remove" onclick="removeItem('trials',this.dataset.itemId,this)">✕</button>
           </div>
           ${t.brief_summary ? `<div class="modal-item-sub" style="margin-top:5px;color:var(--text2)">${escHtml(t.brief_summary.slice(0,200))}${t.brief_summary.length>200?'…':''}</div>` : ''}
-          <div style="font-family:var(--mono);font-size:10px;color:var(--text2);margin-top:4px">Added ${fmtDate(t.date_added||'')}</div>
-        </div>`).join('');
+          <div style="font-family:var(--mono);font-size:10px;color:var(--text2);margin-top:4px">Added ${escHtml(fmtDate(t.date_added||''))}</div>
+        </div>`;
+      }).join('');
     } else {
-      body.innerHTML = items.map(p => `
-        <div class="modal-item" id="paper-${escHtml(p.pmid)}">
+      body.innerHTML = items.map(p => {
+        const url = safeExternalUrl(p.url);
+        return `
+        <div class="modal-item">
           <div class="modal-item-title">${escHtml(p.title || 'Untitled')}</div>
           <div class="modal-item-meta">
             <span class="modal-item-id">PMID ${escHtml(p.pmid || '')}</span>
             <span class="modal-item-sub">${escHtml(p.journal || '')}${p.date ? ' · ' + escHtml(p.date) : ''}</span>
-            ${p.url ? `<a class="modal-item-link" href="${escHtml(p.url)}" target="_blank" rel="noopener">PubMed ↗</a>` : ''}
-            <button class="modal-close" style="margin-left:auto" title="Remove" onclick="removeItem('papers','${escHtml(p.pmid)}')">✕</button>
+            ${url ? `<a class="modal-item-link" href="${escHtml(url)}" target="_blank" rel="noopener noreferrer">PubMed ↗</a>` : ''}
+            <button class="modal-close" data-item-id="${escHtml(p.pmid)}" style="margin-left:auto" title="Remove" onclick="removeItem('papers',this.dataset.itemId,this)">✕</button>
           </div>
           ${p.authors ? `<div class="modal-item-sub" style="margin-top:3px">${escHtml(p.authors)}</div>` : ''}
-          <div style="font-family:var(--mono);font-size:10px;color:var(--text2);margin-top:4px">Query: ${escHtml(p.query||'')} · Added ${fmtDate(p.date_added||'')}</div>
-        </div>`).join('');
+          <div style="font-family:var(--mono);font-size:10px;color:var(--text2);margin-top:4px">Query: ${escHtml(p.query||'')} · Added ${escHtml(fmtDate(p.date_added||''))}</div>
+        </div>`;
+      }).join('');
     }
   }
 
@@ -1012,17 +1059,17 @@
     }
 
     document.getElementById('task-list').innerHTML = tasks.map(t => `
-      <div class="task-item status-${t.status} ${selectedTaskId === t.id ? 'selected' : ''}"
-           onclick="selectTask('${t.id}')">
+      <div class="task-item status-${safeClassToken(t.status, 'unknown')} ${selectedTaskId === t.id ? 'selected' : ''}"
+           data-task-id="${escHtml(t.id)}" onclick="selectTask(this.dataset.taskId)">
         <div class="task-header">
-          <span class="task-type ${t.type === 'digest' ? 'digest' : (t.type === 'deep-sweep' ? 'deep-sweep' : '')}">${t.type}</span>
-          ${t.doc_type ? `<span class="task-doctype">${docTypeLabel(t)}</span>` : ''}
-          <span class="task-time">${relativeTime(t.created_at)}</span>
+          <span class="task-type ${t.type === 'digest' ? 'digest' : (t.type === 'deep-sweep' ? 'deep-sweep' : '')}">${escHtml(t.type || 'task')}</span>
+          ${t.doc_type ? `<span class="task-doctype">${escHtml(docTypeLabel(t))}</span>` : ''}
+          <span class="task-time">${escHtml(relativeTime(t.created_at))}</span>
         </div>
         <div class="task-preview">${escHtml((t.summary || t.input_preview || '').slice(0, 100))}</div>
         <div class="task-status-row">
-          <span class="status-badge ${t.status}">${translateStatus(t.status)}</span>
-          ${t.status === 'done' && duration(t) ? `<span class="task-duration">${duration(t)}</span>` : ''}
+          <span class="status-badge ${safeClassToken(t.status, 'unknown')}">${escHtml(translateStatus(t.status))}</span>
+          ${t.status === 'done' && duration(t) ? `<span class="task-duration">${escHtml(duration(t))}</span>` : ''}
           ${t.status === 'error' ? `<span class="task-duration" style="color:var(--red)">${escHtml((t.error||'').slice(0,60))}</span>` : ''}
         </div>
       </div>`).join('');
@@ -1081,7 +1128,7 @@
           <div class="report-empty-text">
             ${task.status === 'queued' ? 'Queued — starting soon…' : 'Analysing…'}
             <br><br>
-            <span style="color:var(--text2);font-size:10px">Stage: ${task.stage || 'processing'}</span>
+            <span style="color:var(--text2);font-size:10px">Stage: ${escHtml(task.stage || 'processing')}</span>
             <br>
             <span style="color:var(--text2);font-size:10px">This usually takes 30–90 seconds.</span>
           </div>
@@ -1146,8 +1193,13 @@
   }
 
   function escHtml(s) {
-    if (!s) return '';
-    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    if (s == null) return '';
+    return String(s)
+      .replace(/&/g,'&amp;')
+      .replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;')
+      .replace(/'/g,'&#39;');
   }
 
   function fmtDate(s) {
@@ -1212,7 +1264,7 @@
   async function feedText() {
     const text = document.getElementById('feed-textarea').value.trim();
     if (!text) return;
-    await submitFeed(text);
+    if (!await submitFeed(text)) return;
     document.getElementById('feed-textarea').value = '';
     updateCharCount();
     toggleFeedPopover(false);
@@ -1226,33 +1278,57 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text }),
       });
-      const d = await r.json();
-      if (d.task_id) {
-        await loadTasks();
-        selectedTaskId = d.task_id;
-        await loadTasks();
-      }
+      const d = await readJsonResponse(r);
+      await activateSubmittedTask(d);
+      return true;
+    } catch (e) {
+      alert(e.message);
+      return false;
     } finally {
       document.getElementById('btn-feed').disabled = false;
     }
+  }
+
+  async function activateSubmittedTask(data) {
+    const id = data.job_id || data.task_id;
+    if (!id) throw new Error('Response did not include a job ID');
+    selectedTaskId = id;
+    await loadTasks();
+    await selectTask(id);
   }
 
   async function handleDrop(e) {
     e.preventDefault();
     document.getElementById('tab-file').classList.remove('drag-over');
     const file = e.dataTransfer.files[0];
-    if (file) { await processFile(file); toggleFeedPopover(false); }
+    if (file && await processFile(file)) toggleFeedPopover(false);
   }
 
   async function handleFileSelect(e) {
     const file = e.target.files[0];
-    if (file) { await processFile(file); toggleFeedPopover(false); }
+    if (file && await processFile(file)) toggleFeedPopover(false);
     e.target.value = '';
   }
 
   async function processFile(file) {
-    const text = await file.text();
-    await submitFeed(text);
+    const btn = document.getElementById('btn-feed');
+    btn.disabled = true;
+    try {
+      const form = new FormData();
+      form.append('file', file, file.name);
+      const r = await fetch('/api/feed-file', {
+        method: 'POST',
+        body: form,
+      });
+      const d = await readJsonResponse(r);
+      await activateSubmittedTask(d);
+      return true;
+    } catch (e) {
+      alert(e.message);
+      return false;
+    } finally {
+      btn.disabled = false;
+    }
   }
 
   async function runDigest() {
@@ -1342,17 +1418,17 @@
     }
 
     const qRow = (q) => `
-      <div class="q-item${q.asked?' asked':''}" id="qi-${q.id}">
-        <div class="q-priority-dot ${q.priority||'medium'}"></div>
-        <div class="q-checkbox${q.asked?' checked':''}" onclick="toggleQuestion('${q.id}')">${q.asked?'✓':''}</div>
+      <div class="q-item${q.asked?' asked':''}" data-question-id="${escHtml(q.id)}">
+        <div class="q-priority-dot ${safeClassToken(q.priority, 'medium')}"></div>
+        <div class="q-checkbox${q.asked?' checked':''}" onclick="toggleQuestion(this.closest('.q-item').dataset.questionId)">${q.asked?'✓':''}</div>
         <div class="q-text-wrap">
           <div class="q-text${q.asked?' asked':''}">${escHtml(q.text)}</div>
           <div class="q-meta">
-            <span class="q-cat ${q.category||'Other'}">${translateCategory(q.category||'Other')}</span>
+            <span class="q-cat ${safeClassToken(q.category, 'Other')}">${escHtml(translateCategory(q.category||'Other'))}</span>
             ${q.rationale ? `<span class="q-rationale">${escHtml(q.rationale)}</span>` : ''}
           </div>
         </div>
-        <button class="q-delete" onclick="deleteQuestion('${q.id}')" title="Poista">✕</button>
+        <button class="q-delete" onclick="deleteQuestion(this.closest('.q-item').dataset.questionId)" title="Poista">✕</button>
       </div>`;
 
     const grpHdr = (label, color) =>
@@ -1368,7 +1444,7 @@
     const desktop = document.getElementById('q-list');
     if (desktop) desktop.innerHTML = html;
     const mobile = document.getElementById('mob-q-list');
-    if (mobile) mobile.innerHTML = html.replace(/id="qi-/g, 'id="mob-qi-');
+    if (mobile) mobile.innerHTML = html;
   }
 
   async function generateQuestions(isMob = false) {
@@ -1412,14 +1488,14 @@
 
   async function toggleQuestion(qid) {
     try {
-      await fetch(`/api/questions/${qid}/toggle`, { method: 'POST' });
+      await fetch(`/api/questions/${encodeURIComponent(qid)}/toggle`, { method: 'POST' });
       await loadQuestions();
     } catch(e) { console.error('Toggle question error:', e); }
   }
 
   async function deleteQuestion(qid) {
     try {
-      await fetch(`/api/questions/${qid}`, { method: 'DELETE' });
+      await fetch(`/api/questions/${encodeURIComponent(qid)}`, { method: 'DELETE' });
       await loadQuestions();
     } catch(e) { console.error('Delete question error:', e); }
   }
@@ -1485,8 +1561,9 @@
       }
       const statusLabels = {stable:'STABLE',responding:'RESPONDING',progressing:'PROGRESSING',insufficient_data:'DATA PENDING'};
       let html = `<div style="padding:12px 16px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg1);z-index:5">`;
-      html += `<span class="s-pill status-${d.overall_status}">${statusLabels[d.overall_status]||d.overall_status}</span>`;
-      html += `<span style="font-family:var(--mono);font-size:10px;color:var(--text2);flex:1">${d.generated_at?'Updated '+fmtDate(d.generated_at):''}</span>`;
+      html += `<span class="s-pill status-${safeClassToken(d.overall_status, 'insufficient_data')}">${escHtml(statusLabels[d.overall_status]||d.overall_status||'DATA PENDING')}</span>`;
+      const staleLabel = summaryIsStale(d) ? ' · new data available' : '';
+      html += `<span style="font-family:var(--mono);font-size:10px;color:var(--text2);flex:1">${d.generated_at?'Updated '+escHtml(fmtDate(d.generated_at))+staleLabel:''}</span>`;
       html += `<button class="btn-digest" style="font-size:10px;padding:3px 8px" onclick="generateSummary()">↻</button></div>`;
       if (d.key_concern) html += `<div class="summary-concern" style="margin:10px 16px 0"><div class="summary-concern-label">Key concern</div>${escHtml(d.key_concern)}</div>`;
       if (d.summary) html += `<div class="summary-narrative" style="margin:10px 16px">${escHtml(d.summary)}</div>`;
@@ -1494,7 +1571,7 @@
         html += `<div class="summary-section" style="margin:0 16px"><div class="summary-section-label">Recommended actions</div>`;
         for (const a of d.next_actions) {
           const prov = a.provisional ? `<span style="font-family:var(--mono);font-size:9px;color:var(--text2);border:1px solid var(--border);padding:1px 4px;border-radius:2px;margin-left:4px">TBD</span>` : '';
-          html += `<div class="action-item"><span class="action-priority ${a.priority}">${a.priority}</span><div class="action-text"><div class="action-main">${escHtml(a.action)}${prov}</div>${a.rationale?`<div class="action-sub">${escHtml(a.rationale)}</div>`:''}</div><div class="action-timeframe">${escHtml(a.timeframe||'')}</div></div>`;
+          html += `<div class="action-item"><span class="action-priority ${safeClassToken(a.priority, 'medium')}">${escHtml(a.priority || 'medium')}</span><div class="action-text"><div class="action-main">${escHtml(a.action)}${prov}</div>${a.rationale?`<div class="action-sub">${escHtml(a.rationale)}</div>`:''}</div><div class="action-timeframe">${escHtml(a.timeframe||'')}</div></div>`;
         }
         html += '</div>';
       }
@@ -1502,7 +1579,7 @@
         html += `<div class="summary-section" style="margin:12px 16px 0"><div class="summary-section-label">Timeline</div>`;
         for (const t of d.timeline) {
           const prov = t.provisional ? `<span style="font-family:var(--mono);font-size:9px;color:var(--text2);border:1px solid var(--border);padding:1px 4px;border-radius:2px;margin-left:4px">TBD</span>` : '';
-          html += `<div class="timeline-item"><span class="timeline-date">${escHtml(fmtDate(t.date||''))}</span><span class="timeline-event">${escHtml(t.event||'')}${prov}</span><span class="timeline-type ${t.type||'test'}">${translateType(t.type||'')}  </span></div>`;
+          html += `<div class="timeline-item"><span class="timeline-date">${escHtml(fmtDate(t.date||''))}</span><span class="timeline-event">${escHtml(t.event||'')}${prov}</span><span class="timeline-type ${safeClassToken(t.type, 'test')}">${escHtml(translateType(t.type||''))}</span></div>`;
         }
         html += '</div>';
       }

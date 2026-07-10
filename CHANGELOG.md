@@ -19,6 +19,15 @@ incremented when something user-visible or operationally meaningful changes.
   formatting is applied and `javascript:` links are neutralised.
 
 ### Added
+- **`added_at` ingestion stamps + accurate "new" counter.** Every item written to
+  the counted profile collections (biomarkers, imaging, documents, alerts,
+  symptoms, clinical judgments) now carries an `added_at` wall-clock timestamp set
+  at the moment it is recorded. The dashboard "Mark all read · N new" counter
+  (`_count_new`) keys on `added_at` first, falling back to the clinical date for
+  legacy items. Previously the counter compared each item's *clinical* date to the
+  acknowledgement watermark, so a back-dated item (e.g. an old document fed today)
+  could be silently missed from the "new" count. `trials_tracked` /
+  `literature_watched` already used `date_added` and are unaffected.
 - **Appointment extraction + guaranteed timeline events.** Intake now extracts
   scheduled/planned events (follow-up calls, appointments, scans, reviews) into a
   structured `appointments[]` field on the profile, and `generate_executive_summary`

@@ -40,6 +40,7 @@ except Exception as e:
 # Configure logging once Anthropic + dotenv are loaded.
 from agent.io import atomic_write_text  # noqa: E402
 from agent.logging_config import configure_logging  # noqa: E402
+from agent.schema import now_stamp  # noqa: E402
 
 configure_logging()
 log = __import__("logging").getLogger("netcare.app")
@@ -693,6 +694,7 @@ def api_judgments_add():
         "category": data.get("category", "context"),
         "source"  : data.get("source", "manual"),
         "date"    : datetime.date.today().isoformat(),
+        "added_at": now_stamp(),
     }
     profile.setdefault("clinical_judgments", []).insert(0, judgment)
     agent.save_profile(profile)
@@ -836,7 +838,12 @@ def _count_new(profile: dict) -> dict:
         ack = ""
 
     def _count(items, key):
-        return sum(1 for it in items if _is_after(it.get(key, "") or "", ack))
+        # Prefer added_at (ingestion time) so a back-dated item fed after the
+        # last acknowledgement still surfaces as new; fall back to the clinical
+        # date / date_added for legacy items recorded before added_at existed.
+        return sum(
+            1 for it in items if _is_after(it.get("added_at") or it.get(key, "") or "", ack)
+        )
 
     summary = profile.get("executive_summary") or {}
     summary_generated = summary.get("generated_at") or ""
@@ -903,6 +910,7 @@ def api_dismiss_action(idx):
                 "category": data.get("category", "context"),
                 "source"  : "feedback",
                 "date"    : datetime.date.today().isoformat(),
+                "added_at": now_stamp(),
             }
             profile.setdefault("clinical_judgments", []).insert(0, judgment)
         agent.save_profile(profile)

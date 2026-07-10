@@ -17,6 +17,8 @@ import datetime
 
 import requests
 
+from .schema import now_stamp
+
 
 def _fetch_trial_status(nct: str) -> dict | None:
     """Return {"status", "last_update"} for an NCT ID, or None if unavailable."""
@@ -79,6 +81,7 @@ def poll_tracked_trials(profile: dict) -> dict:
                     ),
                     "resolved": False,
                     "date": today,
+                    "added_at": now_stamp(),
                     "source": "trial_status_poll",
                 }
             )

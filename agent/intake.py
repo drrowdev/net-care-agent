@@ -10,6 +10,7 @@ from . import config
 from . import profile as profile_mod
 from .llm import client, first_text, render_prompt, strip_code_fences
 from .profile import build_patient_context
+from .schema import now_stamp
 
 INTAKE_SYSTEM_TEMPLATE = """\
 You are a medical data extraction agent. The record is for [[PATIENT_CONTEXT]].
@@ -121,6 +122,7 @@ def _persist_symptoms(profile: dict, reported: list, doc_date: str) -> None:
             {
                 "id": f"sym_ai_{doc_date.replace('-', '')}_{len(existing)}",
                 "date": doc_date,
+                "added_at": now_stamp(),
                 "symptom": name,
                 "severity": s.get("severity"),
                 "note": (s.get("note") or "").strip() or None,
@@ -315,6 +317,7 @@ def run_intake(text: str, profile: dict) -> tuple[dict, dict]:
                 ),
                 "resolved": False,
                 "date": doc_date,
+                "added_at": now_stamp(),
                 "source": "intake_extraction_failure",
             }
         )
@@ -327,6 +330,7 @@ def run_intake(text: str, profile: dict) -> tuple[dict, dict]:
             "summary": extracted.get("summary", ""),
             "key_findings": extracted.get("key_findings", []),
             "raw_text": text[:3000],
+            "added_at": now_stamp(),
         }
     )
 
@@ -348,10 +352,11 @@ def run_intake(text: str, profile: dict) -> tuple[dict, dict]:
         if triple in existing_triples:
             continue
         existing_triples.add(triple)
+        bm["added_at"] = now_stamp()
         profile["biomarkers"].append(bm)
 
     if extracted.get("imaging_findings"):
-        img = {**extracted["imaging_findings"], "date": doc_date}
+        img = {**extracted["imaging_findings"], "date": doc_date, "added_at": now_stamp()}
         profile["imaging"].append(img)
 
     if extracted.get("ki67_update") is not None:

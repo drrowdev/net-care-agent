@@ -19,6 +19,18 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+
+def now_stamp() -> str:
+    """Wall-clock ISO timestamp (seconds precision) for when an item was first
+    recorded in the profile.
+
+    Consumed by the dashboard "new since acknowledged" counter (``_count_new``
+    in app.py). Because it reflects *ingestion* time rather than an item's
+    clinical date, a back-dated document fed today still surfaces as new.
+    """
+    return datetime.datetime.now().isoformat(timespec="seconds")
+
+
 # ── enum-like literals ────────────────────────────────────────────────────────
 # These are *documented* sets; we don't enforce them strictly because real-world
 # data drifts and we'd rather accept a bad value than reject a valid profile.
@@ -103,6 +115,9 @@ class Biomarker(_Lenient):
     unit: str | None = None
     reference_range: str | None = None
     flag: BiomarkerFlag | None = None
+    added_at: str | None = Field(
+        None, description="Ingestion timestamp; drives the 'new since acknowledged' counter."
+    )
 
 
 class Imaging(_Lenient):
@@ -111,6 +126,9 @@ class Imaging(_Lenient):
     findings: str | None = None
     impression: str | None = None
     new_lesions: bool | None = None
+    added_at: str | None = Field(
+        None, description="Ingestion timestamp; drives the 'new since acknowledged' counter."
+    )
 
 
 class Document(_Lenient):
@@ -121,6 +139,9 @@ class Document(_Lenient):
     summary: str | None = Field(None, description="1–2 sentence intake-agent summary")
     key_findings: list[str] = Field(default_factory=list)
     raw_text: str | None = Field(None, description="First ~3000 chars of input")
+    added_at: str | None = Field(
+        None, description="Ingestion timestamp; drives the 'new since acknowledged' counter."
+    )
 
 
 class TrialTracked(_Lenient):
@@ -154,6 +175,9 @@ class Alert(_Lenient):
     message: str | None = None
     action_required: str | None = None
     resolved: bool = False
+    added_at: str | None = Field(
+        None, description="Ingestion timestamp; drives the 'new since acknowledged' counter."
+    )
 
 
 class TreatmentClassified(_Lenient):
@@ -173,6 +197,9 @@ class ClinicalJudgment(_Lenient):
     category: JudgmentCategory | None = None
     text: str | None = None
     source: JudgmentSource | None = None
+    added_at: str | None = Field(
+        None, description="Ingestion timestamp; drives the 'new since acknowledged' counter."
+    )
 
 
 class Symptom(_Lenient):
@@ -192,6 +219,9 @@ class Symptom(_Lenient):
         None, description="Optional link to a treatment name in current_treatments"
     )
     source: SymptomSource | None = None
+    added_at: str | None = Field(
+        None, description="Ingestion timestamp; drives the 'new since acknowledged' counter."
+    )
 
 
 class Question(_Lenient):

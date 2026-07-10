@@ -20,6 +20,13 @@ The job runs in the background:
    3. **Executive summary** is regenerated.
    4. Treatments are re-classified into active / planned / completed.
 
+Every feed receives a unique source ID and ingestion timestamp. The original
+bytes plus extracted text are written atomically as immutable protected
+artifacts; structured biomarkers, imaging, symptoms, appointments, and findings
+link back to exact verified quotes where available. The summary's **Evidence**
+links open only authenticated, no-cache source/span endpoints and never reveal a
+filesystem path.
+
 Reload the dashboard. New papers / trials / alerts appear in their tabs. The job
 status moves `running → done` in the activity log; press **Esc** or click the
 backdrop to dismiss the Feed popover at any time without submitting.
@@ -50,6 +57,10 @@ insight-hunting pass — not just a routine sweep:
    your tracked papers / trials / alerts — it is purely a briefing for you to
    take to the oncologist. Everything is decision-support only; your clinician
    reviews it before any action.
+5. Final synthesis is deterministically checked for every PMID/NCT reference and
+   receives a verification footer plus stop-reason/token metadata. Token or
+   iteration limits are explicitly marked. If synthesis fails or truncates, raw
+   per-model reports are preserved as the fallback.
 
 ## 3. Record a clinical judgment
 
@@ -66,6 +77,11 @@ respect it as a hard constraint:
 4. Save. The judgment is persisted; future orchestrator and exec-summary runs will
    read it before proposing actions.
 
+Judgments default to **active**. Editing lets you mark one **needs review** or
+**superseded**; API clients may also set `scope`, `review_after`, `valid_until`,
+and `supersedes`. Once review is due or validity expires, the note remains
+visible but is no longer a hard constraint until a clinician reactivates it.
+
 ## 4. Resolve / dismiss an alert
 
 1. UI → **Alerts** panel.
@@ -81,6 +97,21 @@ respect it as a hard constraint:
    (Treatment / Diagnostics / Symptoms / Trials / Monitoring / Other).
 3. You can mark questions as **asked** during or after the appointment.
 4. Manual questions can be added with **Add question** at any time.
+
+Regeneration preserves already-asked AI questions and all manual questions,
+while deduplicating newly generated questions by normalized text.
+
+## 5b. Record review feedback
+
+The executive summary shows confidence, rationale, profile/summary revisions,
+freshness, generation time, and evidence links. Use **Report something missed or
+incorrect** to record a prominent `missed` review item. This only appends
+structured feedback; it never edits patient facts or silently creates a clinical
+judgment. Corrected/incorrect/missed feedback on the current summary marks it
+stale for conservative review. `GET/POST /api/feedback` supports the full
+assessment set: `agreed|corrected|acted|helpful|incorrect|missed`.
+`PATCH /api/feedback/<id>` records later assessment, note, or outcome updates
+with a new `updated_at` timestamp.
 
 ## 5a. Log a symptom
 

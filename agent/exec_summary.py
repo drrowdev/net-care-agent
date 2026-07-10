@@ -19,7 +19,7 @@ You are a clinical summarization agent for [[PATIENT_CONTEXT]].
 The reader is the patient's [[CAREGIVER]], not a clinician.
 
 CRITICAL RULE — CLINICAL JUDGMENTS OVERRIDE YOUR ANALYSIS:
-The patient profile may contain "clinical_judgments" — notes recorded directly from consultations with the treating oncologist. These represent ground truth. They MUST override anything you would otherwise conclude from the raw data.
+The patient profile may contain "clinical_judgments" recorded from consultations. Only judgments shown as active and not expired/review-due represent ground truth and MUST override your analysis. Items under NEEDS CLINICIAN REVIEW are historical context only.
 - If a judgment marks something as NOT concerning, do NOT include it as a concern or recommended action, even if the raw data looks alarming to you.
 - If a judgment says a treatment/trial is ruled out, do NOT recommend it.
 - If a judgment says the oncologist prefers a certain approach, prioritise it.
@@ -217,6 +217,8 @@ def generate_executive_summary(profile: dict) -> dict:
             f"Upcoming appointments (already recorded — reflect these in the timeline): "
             f"{json.dumps(profile.get('appointments', []), default=str)}\n\n"
             f"Active alerts: {json.dumps([a for a in profile.get('alerts', []) if not a.get('resolved')], default=str)}\n\n"
+            f"Corrective review feedback (incorporate cautiously; it is not itself a "
+            f"clinical fact): {json.dumps([item for item in profile.get('feedback', []) if item.get('assessment') in ('corrected', 'incorrect', 'missed')], default=str)}\n\n"
         )
         brevity_note = (
             "\n\nIMPORTANT: a previous attempt was truncated at the token limit. Be "

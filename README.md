@@ -93,15 +93,17 @@ All patient state lives in a single JSON file at `${DATA_DIR}/patient_profile.js
   "profile_saved_at": "2026-07-10T16:52:03",
   "summary_stale": false,
   "patient": { ... },
-  "biomarkers":  [ {date, marker, value, unit, ref_low, ref_high}, ... ],
-  "imaging":     [ {date, modality, findings, impression}, ... ],
+  "biomarkers":  [ {date, marker, value, source_document_id, source_quote, evidence_status}, ... ],
+  "imaging":     [ {date, modality, findings, impression, source_document_id, source_quote}, ... ],
   "treatments":  [ {name, status, start_date, end_date, ...}, ... ],
-  "documents":   [ {date, type, summary, key_findings}, ... ],
+  "documents":   [ {date, type, summary, key_findings, source_document_id, raw_text}, ... ],
+  "source_documents": [ {id, ingested_at, source: {path, sha256, length}, text: {...}}, ... ],
   "trials":      [ {nct_id, title, status, ...}, ... ],
   "papers":      [ {pmid, title, journal, date}, ... ],
   "alerts":      [ {priority, action, created, resolved}, ... ],
-  "judgments":   [ {category, text, date, source}, ... ],
+  "judgments":   [ {category, text, scope, status, review_after, valid_until, supersedes}, ... ],
   "questions":   [ {id, text, category, priority, asked}, ... ],
+  "feedback":    [ {target, item_id, assessment, note, outcome, timestamps}, ... ],
   "exec_summary": { "summary_revision": 42, "stale": false, ... }
 }
 ```
@@ -115,12 +117,19 @@ clinical dates.
 A daily backup is written to `${DATA_DIR}/backups/profile_YYYYMMDD.json`
 (retention: 30 days).
 
+Fed source bytes and extracted text are immutable protected artifacts below
+`${DATA_DIR}/source_documents/<source_document_id>/`. The profile stores only a
+compact SHA-256/length/path index plus a legacy `raw_text` preview; it remains the
+structured authority. Hosted source/evidence retrieval requires Easy Auth and
+never exposes filesystem paths in API responses.
+
 ## Safety notes
 
 - All Claude calls run with adaptive thinking (Sonnet 5); structured-output
   calls parse the first `text` block (after any `thinking` block) and no
   longer set `temperature` (it must be unset when thinking is enabled).
-- Clinical judgments from the oncologist override AI recommendations as hard constraints.
+- Active, nonexpired, non-review-due clinical judgments override AI
+  recommendations. Superseded/expired/review-due items remain visible for review.
 - Trial and paper relevance is filtered before being persisted.
 - Treatment names are fuzzy-matched against synonyms (Somatuline = lanreotide etc.).
 - The patient profile is the only source of truth; no conversation state persists.

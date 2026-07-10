@@ -6,6 +6,7 @@ Data persisted to /home/data (Azure Files mount)
 """
 
 import datetime
+import io
 import json
 import os
 import sys
@@ -25,7 +26,7 @@ except ImportError:
 
 import argparse
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request, send_file, send_from_directory
 
 _ap = argparse.ArgumentParser(add_help=False)
 _ap.add_argument("--agent-dir", default=".", help="Directory containing net_agent.py")
@@ -42,6 +43,7 @@ except Exception as e:
 # Configure logging once Anthropic + dotenv are loaded.
 from agent.io import atomic_write_text  # noqa: E402
 from agent.logging_config import configure_logging  # noqa: E402
+from agent.provenance import resolve_source_artifact, validate_source_artifact  # noqa: E402
 from agent.schema import now_stamp  # noqa: E402
 
 configure_logging()
@@ -152,6 +154,12 @@ def _refresh_summary(profile: dict) -> str | None:
 
     generated["summary_revision"] = int(profile.get("profile_revision") or 0) + 1
     generated["generated_at_timestamp"] = now_stamp()
+    generated["feedback_ids_considered"] = [
+        item.get("id")
+        for item in profile.get("feedback", [])
+        if item.get("id") and item.get("assessment") in {"corrected", "incorrect", "missed"}
+    ]
+    generated["judgment_context_hash"] = agent.clinical_judgments_fingerprint(profile)
     generated["stale"] = False
     generated.pop("summary_error", None)
     profile["executive_summary"] = generated
@@ -160,7 +168,13 @@ def _refresh_summary(profile: dict) -> str | None:
 
 
 # ── background workers ────────────────────────────────────────────────────────
-def _run_feed_job(job_id: str, text: str):
+def _run_feed_job(
+    job_id: str,
+    text: str,
+    raw_bytes: bytes | None = None,
+    filename: str | None = None,
+    media_type: str = "text/plain",
+):
     # P6: serialize profile-mutating jobs so a concurrent feed+digest can't
     # silently lose one job's extracted data (last-writer-wins on the JSON file).
     try:
@@ -172,7 +186,33 @@ def _run_feed_job(job_id: str, text: str):
         ):
             _update_job(job_id, {"status": "running", "stage": "intake"})
             profile = agent.load_profile()
-            profile, extracted = agent.run_intake(text, profile)
+            if raw_bytes is None and filename is None:
+                profile, extracted = agent.run_intake(text, profile)
+            else:
+                profile, extracted = agent.run_intake(
+                    text,
+                    profile,
+                    raw_bytes=raw_bytes,
+                    filename=filename,
+                    media_type=media_type,
+                )
+            # Commit intake before research. A later orchestrator/model failure
+            # must not lose an already-extracted clinical document.
+            try:
+                agent.save_profile(profile)
+            except BaseException:
+                source_id = extracted.get("source_document_id")
+                source = next(
+                    (
+                        item
+                        for item in profile.get("source_documents", [])
+                        if item.get("id") == source_id
+                    ),
+                    None,
+                )
+                if source is not None:
+                    agent.remove_source_document(source)
+                raise
 
             _update_job(
                 job_id,
@@ -181,6 +221,8 @@ def _run_feed_job(job_id: str, text: str):
                     "document_type": extracted.get("document_type", "unknown"),
                     "summary": extracted.get("summary", ""),
                     "key_findings": extracted.get("key_findings", []),
+                    "source_document_id": extracted.get("source_document_id"),
+                    "ingested_at": extracted.get("ingested_at"),
                 },
             )
 
@@ -391,6 +433,72 @@ def _lazy_init():
         _load_jobs()
 
 
+def _source_auth_required(func):
+    """Require Easy Auth identity headers in hosted deployments; allow local dev."""
+
+    @wraps(func)
+    def wrapped(*args, **kwargs):
+        hosted_auth = os.environ.get("WEBSITE_AUTH_ENABLED", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        if hosted_auth and not (
+            request.headers.get("X-MS-CLIENT-PRINCIPAL")
+            or request.headers.get("X-MS-CLIENT-PRINCIPAL-ID")
+        ):
+            return jsonify({"error": "Authentication required"}), 401
+        return func(*args, **kwargs)
+
+    return wrapped
+
+
+def _source_by_id(profile: dict, source_id: str) -> dict | None:
+    return next(
+        (item for item in profile.get("source_documents", []) if item.get("id") == source_id),
+        None,
+    )
+
+
+def _public_source_metadata(source: dict) -> dict:
+    return {
+        "id": source.get("id"),
+        "ingested_at": source.get("ingested_at"),
+        "filename": source.get("filename"),
+        "media_type": source.get("media_type"),
+        "artifacts": {
+            name: {
+                "sha256": (source.get(name) or {}).get("sha256"),
+                "length": (source.get(name) or {}).get("length"),
+                "url": f"/api/sources/{source.get('id')}/{name}",
+            }
+            for name in ("source", "text")
+        },
+    }
+
+
+def _has_active_judgment_successor(
+    judgments: list[dict],
+    judgment_id: str,
+    *,
+    exclude_id: str | None = None,
+) -> bool:
+    """Return whether an active judgment directly or transitively supersedes an ID."""
+    by_id = {item.get("id"): item for item in judgments if item.get("id")}
+    for candidate in judgments:
+        if candidate.get("id") == exclude_id or (candidate.get("status") or "active") != "active":
+            continue
+        seen: set[str] = set()
+        prior_id = candidate.get("supersedes")
+        while prior_id and prior_id not in seen:
+            if prior_id == judgment_id:
+                return True
+            seen.add(prior_id)
+            prior = by_id.get(prior_id)
+            prior_id = prior.get("supersedes") if prior else None
+    return False
+
+
 @app.route("/api/health")
 def api_health():
     """Liveness/readiness probe — used by Azure App Service health check."""
@@ -545,8 +653,86 @@ def api_feed_file():
         "error": None,
     }
     _add_job(job)
-    threading.Thread(target=_run_feed_job, args=(job["id"], text), daemon=True).start()
+    threading.Thread(
+        target=_run_feed_job,
+        args=(job["id"], text, raw_bytes, f.filename, f.mimetype or "application/octet-stream"),
+        daemon=True,
+    ).start()
     return jsonify({"job_id": job["id"]})
+
+
+@app.route("/api/sources/<source_id>")
+@_source_auth_required
+def api_source_metadata(source_id):
+    profile = agent.load_profile()
+    source = _source_by_id(profile, source_id)
+    if source is None:
+        return jsonify({"error": "Source not found"}), 404
+    return jsonify(_public_source_metadata(source))
+
+
+@app.route("/api/sources/<source_id>/<artifact>")
+@_source_auth_required
+def api_source_artifact(source_id, artifact):
+    profile = agent.load_profile()
+    source = _source_by_id(profile, source_id)
+    if source is None:
+        return jsonify({"error": "Source not found"}), 404
+    try:
+        path = resolve_source_artifact(source, artifact)
+    except (ValueError, FileNotFoundError):
+        return jsonify({"error": "Source artifact unavailable"}), 404
+    if not path.is_file():
+        return jsonify({"error": "Source artifact unavailable"}), 404
+    try:
+        content = path.read_bytes()
+    except OSError:
+        return jsonify({"error": "Source artifact unavailable"}), 404
+    if not validate_source_artifact(source, artifact, content):
+        return jsonify({"error": "Source artifact integrity check failed"}), 409
+    response = send_file(
+        io.BytesIO(content),
+        as_attachment=artifact == "source",
+        download_name=source.get("filename") or f"{source_id}.bin",
+        mimetype="text/plain; charset=utf-8" if artifact == "text" else source.get("media_type"),
+        conditional=False,
+    )
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return response
+
+
+@app.route("/api/evidence/<source_id>")
+@_source_auth_required
+def api_evidence(source_id):
+    profile = agent.load_profile()
+    source = _source_by_id(profile, source_id)
+    if source is None:
+        return jsonify({"error": "Source not found"}), 404
+    try:
+        start = int(request.args.get("start", ""))
+        end = int(request.args.get("end", ""))
+    except ValueError:
+        return jsonify({"error": "start and end must be integers"}), 400
+    if start < 0 or end <= start or end - start > 10000:
+        return jsonify({"error": "Invalid evidence span"}), 400
+    try:
+        text_path = resolve_source_artifact(source, "text")
+        text_bytes = text_path.read_bytes()
+        if not validate_source_artifact(source, "text", text_bytes):
+            return jsonify({"error": "Evidence source integrity check failed"}), 409
+        text = text_bytes.decode("utf-8")
+    except (ValueError, FileNotFoundError, OSError, UnicodeError):
+        return jsonify({"error": "Evidence source unavailable"}), 404
+    if end > len(text):
+        return jsonify({"error": "Evidence span is outside the source"}), 416
+    return jsonify(
+        {
+            "source_document_id": source_id,
+            "start": start,
+            "end": end,
+            "quote": text[start:end],
+        }
+    )
 
 
 @app.route("/api/digest", methods=["POST"])
@@ -759,10 +945,26 @@ def api_questions_generate():
     appointment_type = data.get("appointment_type", "oncology follow-up")
     profile = agent.load_profile()
     new_questions = agent.generate_questions_for_profile(profile, appointment_type)
-    # Merge with existing — preserve manual questions, replace AI ones
+    # Preserve asked history and manual questions; refresh only current unanswered AI items.
     existing = profile.get("appointment_questions", [])
-    manual = [q for q in existing if q.get("source") == "manual"]
-    profile["appointment_questions"] = new_questions + manual
+    preserved = [q for q in existing if q.get("source") == "manual" or q.get("asked")]
+    used_ids = {q.get("id") for q in preserved if q.get("id")}
+    seen = {
+        " ".join((q.get("text") or "").split()).casefold()
+        for q in preserved
+        if (q.get("text") or "").strip()
+    }
+    merged = list(preserved)
+    for question in new_questions:
+        key = " ".join((question.get("text") or "").split()).casefold()
+        if key and key not in seen:
+            candidate = dict(question)
+            if not candidate.get("id") or candidate["id"] in used_ids:
+                candidate["id"] = f"q_{_new_id()}"
+            used_ids.add(candidate["id"])
+            merged.append(candidate)
+            seen.add(key)
+    profile["appointment_questions"] = merged
     agent.save_profile(profile, clinical_change=False)
     return jsonify(profile["appointment_questions"])
 
@@ -817,7 +1019,20 @@ def api_questions_delete(qid):
 @app.route("/api/judgments")
 def api_judgments():
     profile = agent.load_profile()
-    return jsonify(profile.get("clinical_judgments", []))
+    today = datetime.date.today().isoformat()
+    judgments = []
+    for stored in profile.get("clinical_judgments", []):
+        item = dict(stored)
+        status = item.get("status") or "active"
+        reasons = []
+        if item.get("valid_until") and item["valid_until"] < today:
+            reasons.append("expired")
+        if item.get("review_after") and item["review_after"] <= today:
+            reasons.append("review due")
+        item["effective_status"] = "needs_review" if reasons else status
+        item["review_reason"] = ", ".join(reasons) or None
+        judgments.append(item)
+    return jsonify(judgments)
 
 
 @app.route("/api/judgments/add", methods=["POST"])
@@ -828,14 +1043,50 @@ def api_judgments_add():
     if not text:
         return jsonify({"error": "No text"}), 400
     profile = agent.load_profile()
+    status = data.get("status") or "active"
+    if status not in {"active", "superseded", "needs_review"}:
+        return jsonify({"error": "Invalid judgment status"}), 400
+    for field in ("review_after", "valid_until"):
+        if data.get(field):
+            try:
+                datetime.date.fromisoformat(data[field])
+            except (TypeError, ValueError):
+                return jsonify({"error": f"{field} must be YYYY-MM-DD"}), 400
+    timestamp = now_stamp()
     judgment = {
-        "id": f"j_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}",
+        "id": f"j_{_new_id()}",
         "text": text,
         "category": data.get("category", "context"),
         "source": data.get("source", "manual"),
         "date": datetime.date.today().isoformat(),
-        "added_at": now_stamp(),
+        "added_at": timestamp,
+        "updated_at": timestamp,
+        "scope": (data.get("scope") or "").strip() or None,
+        "status": status,
+        "review_after": data.get("review_after") or None,
+        "valid_until": data.get("valid_until") or None,
+        "supersedes": data.get("supersedes") or None,
     }
+    if judgment["supersedes"]:
+        if status != "active":
+            return jsonify({"error": "A superseding judgment must be active"}), 400
+        prior = next(
+            (
+                item
+                for item in profile.get("clinical_judgments", [])
+                if item.get("id") == judgment["supersedes"]
+            ),
+            None,
+        )
+        if prior is None:
+            return jsonify({"error": "Superseded judgment not found"}), 400
+        if _has_active_judgment_successor(
+            profile.get("clinical_judgments", []),
+            judgment["supersedes"],
+        ):
+            return jsonify({"error": "Judgment already has an active successor"}), 409
+        prior["status"] = "superseded"
+        prior["updated_at"] = timestamp
     profile.setdefault("clinical_judgments", []).insert(0, judgment)
     agent.save_profile(profile)
     return jsonify(judgment)
@@ -847,17 +1098,63 @@ def api_judgments_edit(jid):
     data = request.get_json(force=True) or {}
     text = (data.get("text") or "").strip()
     category = data.get("category", "").strip()
-    if not text:
+    if "text" in data and not text:
         return jsonify({"error": "No text"}), 400
+    status = data.get("status")
+    if status is not None and status not in {"active", "superseded", "needs_review"}:
+        return jsonify({"error": "Invalid judgment status"}), 400
+    for field in ("review_after", "valid_until"):
+        if data.get(field):
+            try:
+                datetime.date.fromisoformat(data[field])
+            except (TypeError, ValueError):
+                return jsonify({"error": f"{field} must be YYYY-MM-DD"}), 400
     profile = agent.load_profile()
     for j in profile.get("clinical_judgments", []):
         if j.get("id") == jid:
-            j["text"] = text
+            supersedes = (data.get("supersedes") or "").strip() if "supersedes" in data else None
+            resulting_status = status if status is not None else j.get("status") or "active"
+            prior = None
+            if supersedes:
+                if supersedes == jid or resulting_status != "active":
+                    return jsonify({"error": "Invalid judgment supersession"}), 400
+                prior = next(
+                    (
+                        item
+                        for item in profile.get("clinical_judgments", [])
+                        if item.get("id") == supersedes
+                    ),
+                    None,
+                )
+                if prior is None:
+                    return jsonify({"error": "Superseded judgment not found"}), 400
+                if _has_active_judgment_successor(
+                    profile.get("clinical_judgments", []),
+                    supersedes,
+                    exclude_id=jid,
+                ):
+                    return jsonify({"error": "Judgment already has an active successor"}), 409
+            if resulting_status == "active" and _has_active_judgment_successor(
+                profile.get("clinical_judgments", []),
+                jid,
+            ):
+                return jsonify({"error": "Superseded judgment has an active successor"}), 409
+            if "text" in data:
+                j["text"] = text
             if category:
                 j["category"] = category
-            break
-    agent.save_profile(profile)
-    return jsonify({"ok": True})
+            for field in ("scope", "review_after", "valid_until", "supersedes"):
+                if field in data:
+                    j[field] = (data.get(field) or "").strip() or None
+            if status is not None:
+                j["status"] = status
+            j["updated_at"] = now_stamp()
+            if prior is not None:
+                prior["status"] = "superseded"
+                prior["updated_at"] = j["updated_at"]
+            agent.save_profile(profile)
+            return jsonify(j)
+    return jsonify({"error": "Not found"}), 404
 
 
 @app.route("/api/judgments/<jid>", methods=["DELETE"])
@@ -1051,21 +1348,101 @@ def api_dismiss_action(idx):
         dismissed = actions.pop(idx)
         summary["next_actions"] = actions
         profile["executive_summary"] = summary
-        # Optionally store feedback as a clinical judgment
+        # Feedback is review state, never a silent clinical judgment/fact mutation.
         feedback = (data.get("feedback") or "").strip()
         if feedback:
             action_text = dismissed.get("action", "")
-            judgment = {
-                "id": f"j_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}",
-                "text": f"Regarding '{action_text[:60]}': {feedback}",
-                "category": data.get("category", "context"),
-                "source": "feedback",
-                "date": datetime.date.today().isoformat(),
-                "added_at": now_stamp(),
+            timestamp = now_stamp()
+            entry = {
+                "id": f"fb_{_new_id()}",
+                "target": "summary_action",
+                "item_id": action_text[:200] or f"action-{idx}",
+                "assessment": "corrected",
+                "note": feedback,
+                "outcome": "dismissed",
+                "created_at": timestamp,
+                "updated_at": timestamp,
             }
-            profile.setdefault("clinical_judgments", []).insert(0, judgment)
-        agent.save_profile(profile, clinical_change=bool(feedback))
+            profile.setdefault("feedback", []).insert(0, entry)
+            _invalidate_summary_for_review(profile)
+        agent.save_profile(profile, clinical_change=False)
     return jsonify({"ok": True})
+
+
+def _invalidate_summary_for_review(profile: dict) -> None:
+    profile["summary_stale"] = True
+    if isinstance(profile.get("executive_summary"), dict):
+        profile["executive_summary"]["stale"] = True
+        profile["executive_summary"]["review_feedback_pending"] = True
+
+
+@app.route("/api/feedback")
+def api_feedback():
+    profile = agent.load_profile()
+    return jsonify(profile.get("feedback", []))
+
+
+@app.route("/api/feedback", methods=["POST"])
+@serialized_profile_mutation
+def api_feedback_add():
+    data = request.get_json(force=True) or {}
+    target = (data.get("target") or "").strip()
+    item_id = (data.get("item_id") or "").strip()
+    assessment = (data.get("assessment") or "").strip()
+    allowed = {"agreed", "corrected", "acted", "helpful", "incorrect", "missed"}
+    if not target or not item_id:
+        return jsonify({"error": "target and item_id are required"}), 400
+    if assessment not in allowed:
+        return jsonify({"error": "Invalid assessment"}), 400
+    timestamp = now_stamp()
+    entry = {
+        "id": f"fb_{_new_id()}",
+        "target": target[:100],
+        "item_id": item_id[:200],
+        "assessment": assessment,
+        "note": (data.get("note") or "").strip()[:4000] or None,
+        "outcome": (data.get("outcome") or "").strip()[:2000] or None,
+        "created_at": timestamp,
+        "updated_at": timestamp,
+    }
+    profile = agent.load_profile()
+    profile.setdefault("feedback", []).insert(0, entry)
+    invalidates = assessment in {"corrected", "incorrect", "missed"} and target.startswith(
+        "summary"
+    )
+    if invalidates:
+        _invalidate_summary_for_review(profile)
+    agent.save_profile(profile, clinical_change=False)
+    return jsonify({"feedback": entry, "summary_invalidated": invalidates}), 201
+
+
+@app.route("/api/feedback/<feedback_id>", methods=["PATCH"])
+@serialized_profile_mutation
+def api_feedback_edit(feedback_id):
+    data = request.get_json(force=True) or {}
+    allowed = {"agreed", "corrected", "acted", "helpful", "incorrect", "missed"}
+    if "assessment" in data and data["assessment"] not in allowed:
+        return jsonify({"error": "Invalid assessment"}), 400
+    profile = agent.load_profile()
+    entry = next(
+        (item for item in profile.get("feedback", []) if item.get("id") == feedback_id),
+        None,
+    )
+    if entry is None:
+        return jsonify({"error": "Not found"}), 404
+    for field, limit in (("note", 4000), ("outcome", 2000)):
+        if field in data:
+            entry[field] = (data.get(field) or "").strip()[:limit] or None
+    if "assessment" in data:
+        entry["assessment"] = data["assessment"]
+    entry["updated_at"] = now_stamp()
+    invalidates = entry.get("assessment") in {"corrected", "incorrect", "missed"} and entry.get(
+        "target", ""
+    ).startswith("summary")
+    if invalidates:
+        _invalidate_summary_for_review(profile)
+    agent.save_profile(profile, clinical_change=False)
+    return jsonify({"feedback": entry, "summary_invalidated": invalidates})
 
 
 @app.route("/api/summary")
@@ -1077,13 +1454,75 @@ def api_summary():
     response = dict(summary)
     response["profile_revision"] = profile.get("profile_revision")
     response["summary_revision"] = summary.get("summary_revision")
-    response["stale"] = bool(profile.get("summary_stale") or summary.get("stale"))
+    current_judgment_hash = agent.clinical_judgments_fingerprint(profile)
+    stored_judgment_hash = summary.get("judgment_context_hash")
+    judgment_context_changed = (
+        stored_judgment_hash != current_judgment_hash
+        if stored_judgment_hash is not None
+        else bool(profile.get("clinical_judgments"))
+    )
+    response["judgment_context_changed"] = judgment_context_changed
+    response["stale"] = bool(
+        profile.get("summary_stale") or summary.get("stale") or judgment_context_changed
+    )
     response["profile_updated_at"] = profile.get("profile_updated_at")
     response["recent_documents"] = sorted(
         profile.get("documents", []),
         key=lambda item: item.get("added_at") or item.get("date") or "",
         reverse=True,
     )[:5]
+    evidence_links = []
+    seen = set()
+    for item in (
+        profile.get("biomarkers", [])
+        + profile.get("imaging", [])
+        + profile.get("symptoms", [])
+        + profile.get("appointments", [])
+    ):
+        source_id = item.get("source_document_id")
+        if not source_id or source_id in seen:
+            continue
+        seen.add(source_id)
+        link = {
+            "source_document_id": source_id,
+            "label": item.get("marker")
+            or item.get("modality")
+            or item.get("symptom")
+            or item.get("description")
+            or "Source document",
+            "evidence_status": item.get("evidence_status") or "missing",
+            "source_url": f"/api/sources/{source_id}/text",
+        }
+        if (
+            item.get("evidence_status") == "verified"
+            and item.get("evidence_start") is not None
+            and item.get("evidence_end") is not None
+        ):
+            link["evidence_url"] = (
+                f"/api/evidence/{source_id}?start={item['evidence_start']}"
+                f"&end={item['evidence_end']}"
+            )
+        evidence_links.append(link)
+        if len(evidence_links) >= 8:
+            break
+    response["evidence_links"] = evidence_links
+    response["source_links"] = [
+        {
+            "source_document_id": doc.get("source_document_id"),
+            "label": doc.get("summary") or doc.get("type") or "Source document",
+            "url": f"/api/sources/{doc.get('source_document_id')}",
+        }
+        for doc in response["recent_documents"]
+        if doc.get("source_document_id")
+    ]
+    considered = set(summary.get("feedback_ids_considered") or [])
+    response["feedback_pending"] = sum(
+        1
+        for item in profile.get("feedback", [])
+        if item.get("id") not in considered
+        if item.get("assessment") in {"corrected", "incorrect", "missed"}
+        and item.get("target", "").startswith("summary")
+    )
     return jsonify(response)
 
 

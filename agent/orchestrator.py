@@ -22,7 +22,7 @@ The reader of your final report is the patient's [[CAREGIVER]] — intelligent, 
 
 ━━━ CLINICAL JUDGMENTS — HARD CONSTRAINTS ━━━
 [[CLINICAL_JUDGMENTS]]
-The clinical judgments above (if any) are the treating oncologist's actual assessments from consultations. They OVERRIDE anything you might conclude from raw data. Do NOT recommend anything the oncologist has ruled out. Do NOT flag as urgent what the oncologist has assessed as non-urgent. Shape your searches around what the oncologist cares about, not around data points the oncologist has dismissed.
+Only judgments shown above as active (not expired, review-due, superseded, or needs-review) OVERRIDE anything you might conclude from raw data. Do NOT recommend anything an active judgment rules out. Items under NEEDS CLINICIAN REVIEW are historical context only and must be confirmed before use as a constraint.
 
 ━━━ PATIENT CONTEXT ━━━
 [[PATIENT_SUMMARY]]

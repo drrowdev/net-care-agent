@@ -8,6 +8,24 @@ incremented when something user-visible or operationally meaningful changes.
 
 ## [Unreleased]
 
+### Added
+- **Evidence provenance and reviewability.** Every feed now receives a unique
+  source-document ID and ingestion timestamp; immutable original/extracted
+  artifacts are atomically stored with SHA-256 and length metadata. Intake
+  requires source quotes, validates them deterministically, stores exact spans
+  or explicit missing/invalid status, and exposes traversal-safe authenticated
+  no-cache source/evidence endpoints. Summary responses/UI now include confidence,
+  rationale, revisions, freshness, generated time, and evidence affordances.
+- **Clinical review state.** Judgments now support scope, active/superseded/
+  needs-review lifecycle, review/expiry dates, supersession, and update
+  timestamps. Structured feedback records target/item, assessment, notes,
+  outcomes, and timestamps without silently changing clinical facts. Asked AI
+  questions survive regeneration with deterministic deduplication.
+- **Deep-sweep verification metadata.** Final synthesized output receives
+  deterministic PMID/NCT verification and a footer; stop reasons, token limits,
+  and truncation are explicit, with raw reports retained on synthesis failure or
+  truncation. Deep-sweep remains read-only.
+
 ### Fixed
 - **Phase 1 correctness containment.** PDF uploads now preserve binary fidelity;
   all profile transactions serialize across threads and processes and use unique durable atomic-write

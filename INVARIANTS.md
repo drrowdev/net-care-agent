@@ -27,9 +27,16 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-03.
 - **intake** JSON object keys: `document_type, date, summary, biomarkers[],
   imaging_findings, treatment_changes[], ki67_update, sstr_status_update,
   sstr_score_update, symptoms_reported[], appointments[], key_findings[],
-  suggested_workflows[], workflow_rationale`. Biomarker items: `marker, value,
-  unit, reference_range, flag`. Appointment items: `date, description, type`
+  evidence[], suggested_workflows[], workflow_rationale`. Biomarker items:
+  `marker, value, unit, reference_range, flag, source_quote`. Imaging, symptom,
+  and appointment objects also require `source_quote`; `evidence[]` anchors
+  scalar updates, treatment changes, and key findings. Appointment items:
+  `date, description, type, source_quote`
   (persisted to `profile['appointments']` and merged into the summary timeline).
+  Every fed document gets a unique `source_document_id` and immutable source
+  artifact. Quotes are normalized only for matching, then stored as the exact
+  source slice with offsets and `evidence_status=verified|missing|invalid`;
+  unsupported model text is never persisted as a quote.
 - **`added_at` (ingestion timestamp).** Every item appended to the counted
   profile collections (`biomarkers, imaging, documents, alerts, symptoms,
   clinical_judgments`) is stamped with `added_at` (wall-clock, seconds) at the
@@ -66,6 +73,16 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-03.
   artifact only. Do not add a `save_profile` call to `agent/deep_sweep.py`;
   `tests/test_invariants.py` asserts its source contains none.
 - **`chat` never mutates.** Read-only Q&A.
+- Feedback writes are serialized review-state mutations. `missed`, `incorrect`,
+  and `corrected` feedback may mark the current summary stale, but feedback never
+  mutates clinical facts or becomes a clinical judgment implicitly.
+
+### Judgment lifecycle
+- Legacy judgments without `status` are `active`.
+- Only `status=active` judgments that are neither expired (`valid_until`) nor
+  review-due (`review_after`) are hard constraints.
+- `superseded`, `needs_review`, expired, and review-due judgments stay visible as
+  historical context explicitly requiring clinician review.
 
 ## 4. Single gunicorn worker is load-bearing
 Profile mutation protection (`agent/serialize.py`) is cross-process on the

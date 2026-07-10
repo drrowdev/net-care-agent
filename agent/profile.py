@@ -40,10 +40,14 @@ DEFAULT_PROFILE: dict = {
     "imaging": [],
     "appointments": [],
     "documents": [],
+    "source_documents": [],
     "trials_tracked": [],
     "literature_watched": [],
     "alerts": [],
     "symptoms": [],
+    "clinical_judgments": [],
+    "appointment_questions": [],
+    "feedback": [],
 }
 
 

@@ -28,9 +28,13 @@ def _print_and_save_report(report: str, tag: str) -> None:
 
 
 def cmd_feed(args) -> None:
+    raw_bytes = None
+    filename = None
     if args.file:
         path = Path(args.file)
-        text = path.read_text(encoding="utf-8", errors="replace")
+        raw_bytes = path.read_bytes()
+        text = raw_bytes.decode("utf-8", errors="replace")
+        filename = path.name
         print(f"📄  Reading {path.name} ({len(text):,} chars)")
     elif args.text:
         text = args.text
@@ -40,7 +44,13 @@ def cmd_feed(args) -> None:
 
     with serialized_mutation():
         profile = load_profile()
-        profile, extracted = run_intake(text, profile)
+        profile, extracted = run_intake(
+            text,
+            profile,
+            raw_bytes=raw_bytes,
+            filename=filename,
+            media_type="text/plain",
+        )
         report = run_orchestrator(profile, extracted)
         save_profile(profile)
     _print_and_save_report(report, "feed")

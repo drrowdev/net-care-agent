@@ -403,6 +403,22 @@
     } catch(e) { if (el) el.style.opacity = '1'; }
   }
 
+  async function reportMissedSummary() {
+    const note = prompt('What was missed or incorrect? This records review feedback only; it will not change clinical facts.');
+    if (!note || !note.trim()) return;
+    const r = await fetch('/api/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        target: 'summary',
+        item_id: 'current',
+        assessment: 'missed',
+        note: note.trim(),
+      }),
+    });
+    if (r.ok) await loadSummary();
+  }
+
   // ── Clinical Judgments ───────────────────────────────────────────────────
   async function loadJudgments() {
     try {
@@ -415,18 +431,23 @@
   function renderJudgments(judgments) {
     const catColor = { constraint:'var(--red)', preference:'var(--accent)', outcome:'var(--blue)', context:'var(--text2)' };
     const catLabel = { constraint:'Constraint', preference:'Preference', outcome:'Outcome', context:'Context' };
-    const html = judgments.length ? judgments.map(j => `
+    const html = judgments.length ? judgments.map(j => {
+      const effective = j.effective_status || j.status || 'active';
+      const lifecycle = effective !== 'active'
+        ? `<span style="font-size:9px;color:var(--amber);font-weight:600">NEEDS REVIEW${j.review_reason ? ` · ${escHtml(j.review_reason)}` : ''}</span>`
+        : '<span style="font-size:9px;color:var(--green)">ACTIVE</span>';
+      return `
       <div class="judgment-row" data-judgment-id="${escHtml(j.id)}" style="display:flex;align-items:flex-start;gap:8px;padding:8px 0;border-bottom:0.5px solid var(--border)">
         <span style="font-size:10px;font-weight:600;padding:2px 6px;border-radius:3px;background:var(--bg2);color:${catColor[j.category]||'var(--text2)'};flex-shrink:0;margin-top:1px">${escHtml(catLabel[j.category]||j.category||'Context')}</span>
         <div style="flex:1">
           <div class="judgment-text" style="font-size:12px;color:var(--text0);line-height:1.5">${escHtml(j.text)}</div>
-          <div style="font-size:10px;color:var(--text2);margin-top:2px">${escHtml(j.date||'')}</div>
+          <div style="font-size:10px;color:var(--text2);margin-top:2px">${escHtml(j.date||'')} · ${lifecycle}${j.scope ? ` · ${escHtml(j.scope)}` : ''}</div>
         </div>
         <div style="display:flex;gap:4px;flex-shrink:0">
-          <button data-category="${safeClassToken(j.category, 'context')}" onclick="startEditJudgment(this)" title="Edit" style="background:none;border:none;color:var(--text2);cursor:pointer;font-size:11px;padding:0 2px;opacity:0.4;line-height:1" onmouseenter="this.style.opacity='1';this.style.color='var(--blue)'" onmouseleave="this.style.opacity='0.4';this.style.color='var(--text2)'">✎</button>
+          <button data-category="${safeClassToken(j.category, 'context')}" data-status="${safeClassToken(j.status, 'active')}" onclick="startEditJudgment(this)" title="Edit" style="background:none;border:none;color:var(--text2);cursor:pointer;font-size:11px;padding:0 2px;opacity:0.4;line-height:1" onmouseenter="this.style.opacity='1';this.style.color='var(--blue)'" onmouseleave="this.style.opacity='0.4';this.style.color='var(--text2)'">✎</button>
           <button onclick="deleteJudgment(this.closest('.judgment-row').dataset.judgmentId)" title="Delete" style="background:none;border:none;color:var(--text2);cursor:pointer;font-size:12px;padding:0 2px;opacity:0.4;line-height:1" onmouseenter="this.style.opacity='1';this.style.color='var(--red)'" onmouseleave="this.style.opacity='0.4';this.style.color='var(--text2)'">✕</button>
         </div>
-      </div>`).join('')
+      </div>`;}).join('')
     : '<div style="font-size:12px;color:var(--text2);padding:12px 0;text-align:center">No clinical notes yet.<br>Add notes after appointments or dismiss actions with feedback.</div>';
 
     const desktop = document.getElementById('judgments-list');
@@ -440,6 +461,7 @@
     const textEl = row?.querySelector('.judgment-text');
     if (!row || !textEl) return;
     const currentCat = button.dataset.category || 'context';
+    const currentStatus = button.dataset.status || 'active';
 
     // Already editing?
     if (row.querySelector('.judgment-edit-area')) return;
@@ -455,6 +477,9 @@
       <textarea class="judgment-edit-text" style="font-size:12px;padding:6px 8px;border:0.5px solid var(--border2);border-radius:5px;background:var(--bg1);color:var(--text0);outline:none;font-family:var(--sans);line-height:1.5;resize:vertical;min-height:60px;width:100%">${escHtml(currentText)}</textarea>
       <div style="display:flex;gap:6px;align-items:center">
         <select class="judgment-edit-category" style="font-size:11px;padding:4px 6px;border:0.5px solid var(--border);border-radius:4px;background:var(--bg1);color:var(--text1);cursor:pointer">${catOptions}</select>
+        <select class="judgment-edit-status" style="font-size:11px;padding:4px 6px;border:0.5px solid var(--border);border-radius:4px;background:var(--bg1);color:var(--text1);cursor:pointer">
+          ${['active','needs_review','superseded'].map(s => `<option value="${s}"${s===currentStatus?' selected':''}>${s.replace('_',' ')}</option>`).join('')}
+        </select>
         <button onclick="saveEditJudgment(this)" style="font-size:11px;padding:4px 10px;border:0.5px solid var(--accent);border-radius:4px;background:var(--accent-dim);color:var(--accent);cursor:pointer;font-weight:500">Save</button>
         <button onclick="cancelEditJudgment(this)" style="font-size:11px;padding:4px 10px;border:0.5px solid var(--border);border-radius:4px;background:none;color:var(--text2);cursor:pointer">Cancel</button>
       </div>
@@ -478,13 +503,14 @@
     const jid = row?.dataset.judgmentId;
     const ta = row?.querySelector('.judgment-edit-text');
     const catEl = row?.querySelector('.judgment-edit-category');
+    const statusEl = row?.querySelector('.judgment-edit-status');
     const text = (ta?.value || '').trim();
     if (!jid || !text) return;
     try {
       await fetch(`/api/judgments/${encodeURIComponent(jid)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, category: catEl?.value || 'context' }),
+        body: JSON.stringify({ text, category: catEl?.value || 'context', status: statusEl?.value || 'active' }),
       });
       await loadJudgments();
     } catch(e) { console.error('Edit judgment error:', e); }
@@ -681,13 +707,16 @@
     // Revision fields are authoritative; dates support profiles created before revisions.
     const isStale = summaryIsStale(d);
     updated.innerHTML = d.generated_at
-      ? `Updated ${escHtml(fmtDate(d.generated_at))}${isStale ? ' <span style="color:var(--amber);font-size:10px">· new data available</span>' : ''}`
+      ? `Updated ${escHtml(d.generated_at_timestamp || d.generated_at)} · rev ${escHtml(d.summary_revision ?? '—')}/${escHtml(d.profile_revision ?? '—')}${isStale ? ' <span style="color:var(--amber);font-size:10px">· new data available</span>' : ''}`
       : '';
 
     let html = '';
 
     // Pills row
     html += `<div class="summary-pills">`;
+    if (d.status_confidence) {
+      html += `<span class="s-pill" title="${escHtml(d.status_rationale || '')}">CONFIDENCE: ${escHtml(d.status_confidence.toUpperCase())}</span>`;
+    }
     const prrtLabels = {
       eligible: 'PRRT: ELIGIBLE', likely_eligible: 'PRRT: LIKELY ELIGIBLE',
       pending_dotatate: 'PRRT: NEEDS DOTATATE', not_eligible: 'PRRT: NOT ELIGIBLE', unknown: 'PRRT: UNKNOWN'
@@ -701,6 +730,9 @@
       }
     }
     html += `</div>`;
+    if (d.status_rationale) {
+      html += `<div style="font-size:11px;color:var(--text2);margin:2px 0 10px">${escHtml(d.status_rationale)}</div>`;
+    }
 
     // Key concern
     if (d.key_concern) {
@@ -714,6 +746,16 @@
     if (d.summary) {
       html += `<div class="summary-narrative">${escHtml(d.summary)}</div>`;
     }
+
+    if ((d.evidence_links || []).length) {
+      html += `<div class="summary-section"><div class="summary-section-label">Evidence</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">${d.evidence_links.map(link => {
+          const url = link.evidence_url || link.source_url;
+          return `<a href="${escHtml(url)}" target="_blank" rel="noopener" class="btn-digest" style="text-decoration:none;font-size:10px">${escHtml(link.label)} · ${escHtml(link.evidence_status)}</a>`;
+        }).join('')}</div></div>`;
+    }
+
+    html += `<div style="margin:12px 0 2px"><button class="btn-digest" style="border-color:var(--amber);color:var(--amber)" onclick="reportMissedSummary()">⚑ Report something missed or incorrect</button>${d.feedback_pending ? ` <span style="font-size:10px;color:var(--amber)">${escHtml(d.feedback_pending)} review item(s) recorded</span>` : ''}</div>`;
 
     // Next actions
     if (d.next_actions && d.next_actions.length) {

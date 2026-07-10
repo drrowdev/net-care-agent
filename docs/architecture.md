@@ -20,6 +20,8 @@ the Azure Files mount at `/home/data/patient_profile.json`. There is one user
                 │     │                          │
                 │     ├─ /api/feed (background)  │
                 │     ├─ /api/summary            │
+                │     ├─ /api/sources + evidence │
+                │     ├─ /api/feedback           │
                 │     ├─ /api/chat               │
                 │     ├─ /api/health             │
                 │     └─ /api/{trials,papers,…}  │
@@ -41,6 +43,7 @@ the Azure Files mount at `/home/data/patient_profile.json`. There is one user
               │   jobs.json                     │
               │   backups/profile_YYYYMMDD.json │
               │   reports/report_*.txt          │
+              │   source_documents/<id>/        │
               └─────────────────────────────────┘
 ```
 
@@ -100,6 +103,9 @@ repeatedly for pre-appointment prep without polluting the tracked lists.
 | Irrelevant literature pollution | `agent.tools._is_relevant` rule-based filter before persistence |
 | Treatment duplicates | `agent.intake._treatment_similarity` synonym dedup (Somatuline = lanreotide) |
 | Oncologist disagreement with AI | `clinical_judgments` injected verbatim into orchestrator + exec summary system prompts as hard constraints |
+| Unsupported extraction evidence | Intake validates normalized model quotes against immutable source text, then stores the exact source span or explicit `missing`/`invalid` status |
+| Source traversal / browser caching | Auth-gated `/api/sources/<id>[/<artifact>]` and `/api/evidence/<id>` resolve only indexed paths below `DATA_DIR`, reject traversal, and return `no-store` |
+| Stale clinical judgment | Only active, nonexpired, non-review-due judgments constrain agents; all others are visibly framed as needing clinician review |
 | Storage account deletion | `AzureBackupProtectionLock` (CanNotDelete) on the resource group, auto-applied by Azure Backup |
 | Azure Files share deletion / corruption | (a) Recovery Services Vault daily backup, 30-day retention; (b) file-share soft-delete, 14 days |
 | Single-blob accidental overwrite | Blob versioning enabled on the storage account; blob + container soft-delete, 30 days |

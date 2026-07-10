@@ -51,6 +51,7 @@ AlertPriority = Literal["urgent", "high", "medium", "low"]
 TreatmentCategory = Literal["active", "planned", "completed"]
 JudgmentCategory = Literal["constraint", "preference", "outcome", "context"]
 JudgmentSource = Literal["manual", "ai"]
+JudgmentStatus = Literal["active", "superseded", "needs_review"]
 SymptomSource = Literal["manual", "ai"]
 QuestionCategory = Literal["Treatment", "Diagnostics", "Symptoms", "Trials", "Monitoring", "Other"]
 QuestionPriority = Literal["urgent", "high", "medium"]
@@ -62,6 +63,16 @@ class _Lenient(BaseModel):
     """Base for all profile sub-models: accept extras, validate by name."""
 
     model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+
+class _EvidenceFields(_Lenient):
+    """Provenance shared by facts extracted from a fed source document."""
+
+    source_document_id: str | None = None
+    source_quote: str | None = Field(None, description="Exact immutable source text span")
+    evidence_status: Literal["verified", "missing", "invalid"] | None = None
+    evidence_start: int | None = Field(None, ge=0)
+    evidence_end: int | None = Field(None, ge=0)
 
 
 # ── sub-models ────────────────────────────────────────────────────────────────
@@ -106,7 +117,7 @@ class Patient(_Lenient):
     )
 
 
-class Biomarker(_Lenient):
+class Biomarker(_EvidenceFields):
     """A single lab result row (CgA, NSE, 5-HIAA, creatinine, etc.)."""
 
     date: str | None = Field(None, description="YYYY-MM-DD")
@@ -120,7 +131,7 @@ class Biomarker(_Lenient):
     )
 
 
-class Imaging(_Lenient):
+class Imaging(_EvidenceFields):
     date: str | None = Field(None, description="YYYY-MM-DD")
     modality: ImagingModality | None = None
     findings: str | None = None
@@ -139,6 +150,11 @@ class Document(_Lenient):
     summary: str | None = Field(None, description="1–2 sentence intake-agent summary")
     key_findings: list[str] = Field(default_factory=list)
     raw_text: str | None = Field(None, description="First ~3000 chars of input")
+    source_document_id: str | None = None
+    evidence: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Anchored evidence for document-level findings not stored as structured rows",
+    )
     added_at: str | None = Field(
         None, description="Ingestion timestamp; drives the 'new since acknowledged' counter."
     )
@@ -197,12 +213,20 @@ class ClinicalJudgment(_Lenient):
     category: JudgmentCategory | None = None
     text: str | None = None
     source: JudgmentSource | None = None
+    scope: str | None = Field(None, description="Clinical topic or decision this judgment governs")
+    status: JudgmentStatus = "active"
+    review_after: str | None = Field(None, description="YYYY-MM-DD; review due on/after this date")
+    valid_until: str | None = Field(
+        None, description="YYYY-MM-DD; ceases to constrain after this date"
+    )
+    supersedes: str | None = Field(None, description="ID of the prior judgment this replaces")
+    updated_at: str | None = None
     added_at: str | None = Field(
         None, description="Ingestion timestamp; drives the 'new since acknowledged' counter."
     )
 
 
-class Symptom(_Lenient):
+class Symptom(_EvidenceFields):
     """Patient-reported symptom or side effect.
 
     Bridges the gap between objective biomarkers and the oncologist's
@@ -235,7 +259,7 @@ class Question(_Lenient):
     created_at: str | None = None
 
 
-class Appointment(_Lenient):
+class Appointment(_EvidenceFields):
     date: str | None = None
     time: str | None = None
     with_: str | None = Field(None, alias="with")
@@ -243,6 +267,33 @@ class Appointment(_Lenient):
     notes: str | None = None
     description: str | None = None
     type: str | None = None
+    added_at: str | None = None
+
+
+class SourceArtifact(_Lenient):
+    path: str
+    sha256: str
+    length: int = Field(ge=0)
+
+
+class SourceDocument(_Lenient):
+    id: str
+    ingested_at: str
+    filename: str | None = None
+    media_type: str | None = None
+    source: SourceArtifact
+    text: SourceArtifact
+
+
+class Feedback(_Lenient):
+    id: str
+    target: str
+    item_id: str
+    assessment: Literal["agreed", "corrected", "acted", "helpful", "incorrect", "missed"]
+    note: str | None = None
+    outcome: str | None = None
+    created_at: str
+    updated_at: str
 
 
 class ExecutiveSummary(_Lenient):
@@ -270,6 +321,7 @@ class PatientProfile(_Lenient):
     imaging: list[Imaging] = Field(default_factory=list)
     appointments: list[Appointment] = Field(default_factory=list)
     documents: list[Document] = Field(default_factory=list)
+    source_documents: list[SourceDocument] = Field(default_factory=list)
     trials_tracked: list[TrialTracked] = Field(default_factory=list)
     literature_watched: list[LiteratureWatched] = Field(default_factory=list)
     alerts: list[Alert] = Field(default_factory=list)
@@ -277,6 +329,8 @@ class PatientProfile(_Lenient):
     clinical_judgments: list[ClinicalJudgment] = Field(default_factory=list)
     symptoms: list[Symptom] = Field(default_factory=list)
     questions: list[Question] = Field(default_factory=list)
+    appointment_questions: list[Question] = Field(default_factory=list)
+    feedback: list[Feedback] = Field(default_factory=list)
     executive_summary: ExecutiveSummary | None = None
     acknowledged_at: str | None = Field(
         None,
@@ -350,6 +404,8 @@ def render_schema_markdown() -> str:
         ("symptoms[]", Symptom),
         ("questions[]", Question),
         ("appointments[]", Appointment),
+        ("source_documents[]", SourceDocument),
+        ("feedback[]", Feedback),
         ("executive_summary", ExecutiveSummary),
     ]
     for label, cls in submodels:

@@ -51,3 +51,31 @@ def atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> None
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+
+
+def atomic_write_bytes(path: Path, content: bytes) -> None:
+    """Write binary content atomically with the same durability guarantees."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        for attempt in range(5):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.02 * (attempt + 1))
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise

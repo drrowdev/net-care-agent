@@ -39,6 +39,7 @@ from .profile import (
     get_patient_summary,
 )
 from .tools import TOOLS, execute_tool
+from .verify import verification_note, verify_references
 
 MAX_ITERATIONS = 12
 MAX_TOKENS = 16000
@@ -92,8 +93,8 @@ reports produced by different AI models from the SAME patient record.
 
 ━━━ ACTUAL CLINICAL JUDGMENTS — HARD CONSTRAINTS ━━━
 [[CLINICAL_JUDGMENTS]]
-The judgments above come from the treating team. They override conclusions in
-the source reports. Never omit, contradict, or soften them during synthesis.
+Only judgments shown above as active and not expired/review-due override the
+source reports. Items under NEEDS CLINICIAN REVIEW are historical context only.
 
 Your job is to UNION them, not average them:
 - Merge findings the reports share into one clean statement (keep the specific
@@ -155,6 +156,8 @@ def _run_single_model(model: str, base_profile: dict) -> dict:
     t0 = time.time()
     iterations = 0
     error = None
+    stop_reason = None
+    truncated = False
 
     try:
         while iterations < MAX_ITERATIONS:
@@ -172,11 +175,20 @@ def _run_single_model(model: str, base_profile: dict) -> dict:
                 usage["input"] += getattr(u, "input_tokens", 0) or 0
                 usage["output"] += getattr(u, "output_tokens", 0) or 0
 
+            stop_reason = getattr(resp, "stop_reason", None)
             for block in resp.content:
                 if getattr(block, "type", None) == "text" and block.text.strip():
                     report_parts.append(block.text.strip())
 
-            if resp.stop_reason == "end_turn":
+            if stop_reason == "max_tokens":
+                truncated = True
+                error = f"response truncated at max_tokens={MAX_TOKENS}"
+                report_parts.append(
+                    f"⚠ Explicit truncation: {model} reached max_tokens={MAX_TOKENS}; "
+                    "this report may be incomplete."
+                )
+                break
+            if stop_reason == "end_turn":
                 break
 
             tool_results = []
@@ -198,6 +210,13 @@ def _run_single_model(model: str, base_profile: dict) -> dict:
     except Exception as e:  # noqa: BLE001 — one model failing must not kill the sweep
         error = f"{type(e).__name__}: {e}"
 
+    if iterations >= MAX_ITERATIONS and stop_reason != "end_turn" and not error:
+        truncated = True
+        error = f"agent loop stopped at MAX_ITERATIONS={MAX_ITERATIONS}"
+        report_parts.append(
+            f"⚠ Explicit truncation: {model} reached the {MAX_ITERATIONS}-iteration limit."
+        )
+
     return {
         "model": model,
         "report": "\n\n".join(report_parts),
@@ -208,6 +227,9 @@ def _run_single_model(model: str, base_profile: dict) -> dict:
         "iterations": iterations,
         "seconds": round(time.time() - t0, 1),
         "error": error,
+        "stop_reason": stop_reason,
+        "max_tokens": MAX_TOKENS,
+        "truncated": truncated,
     }
 
 
@@ -233,6 +255,8 @@ def _synthesise(reports: list[dict], synthesis_model: str, clinical_judgments: s
     usage = {"input": 0, "output": 0}
     error = None
     text = ""
+    stop_reason = None
+    truncated = False
     try:
         resp = client.messages.create(
             model=synthesis_model,
@@ -248,7 +272,12 @@ def _synthesise(reports: list[dict], synthesis_model: str, clinical_judgments: s
         if u is not None:
             usage["input"] += getattr(u, "input_tokens", 0) or 0
             usage["output"] += getattr(u, "output_tokens", 0) or 0
-        text = first_text(resp)
+        stop_reason = getattr(resp, "stop_reason", None)
+        if stop_reason == "max_tokens":
+            truncated = True
+            error = f"synthesis truncated at max_tokens={MAX_TOKENS}"
+        else:
+            text = first_text(resp)
     except Exception as e:  # noqa: BLE001
         error = f"{type(e).__name__}: {e}"
 
@@ -258,6 +287,9 @@ def _synthesise(reports: list[dict], synthesis_model: str, clinical_judgments: s
         "cost_usd": round(_cost(synthesis_model, usage), 4),
         "model": synthesis_model,
         "error": error,
+        "stop_reason": stop_reason,
+        "max_tokens": MAX_TOKENS,
+        "truncated": truncated,
     }
 
 
@@ -282,6 +314,19 @@ def _cost_footer(per_model: list[dict], synth: dict, total: float) -> str:
     )
     lines.append(f"| **Total** | | | **${total:.2f}** |")
     return "\n".join(lines)
+
+
+def _verification_footer(result: dict) -> str:
+    warning = verification_note(result)
+    if warning:
+        return warning
+    verified = result.get("verified") or []
+    detail = ", ".join(verified) if verified else "No PMID/NCT identifiers were present."
+    return (
+        "\n\n## Reference verification\n"
+        "Deterministic primary-registry verification completed. "
+        f"{detail}"
+    )
 
 
 def run_deep_sweep(
@@ -323,7 +368,23 @@ def run_deep_sweep(
             else "Deep-sweep produced no output (all models failed)."
         )
 
-    report_md = body + _cost_footer(per_model, synth, cost_total)
+    truncated = bool(synth.get("truncated") or any(r.get("truncated") for r in per_model))
+    if truncated:
+        body += (
+            "\n\n> ⚠ **Explicit truncation notice:** at least one model reached a "
+            "token or iteration limit. The briefing may be incomplete."
+        )
+        truncated_reports = [
+            f"### {item['model']}\n\n{item['report']}"
+            for item in per_model
+            if item.get("truncated") and item.get("report")
+        ]
+        if truncated_reports:
+            body += "\n\n## Raw truncated model reports\n\n" + "\n\n---\n\n".join(truncated_reports)
+    verification = verify_references(body)
+    report_md = (
+        body + _verification_footer(verification) + _cost_footer(per_model, synth, cost_total)
+    )
 
     return {
         "report": report_md,
@@ -331,4 +392,6 @@ def run_deep_sweep(
         "synthesis": {k: v for k, v in synth.items() if k != "report"},
         "cost_total": cost_total,
         "models": models,
+        "verification": verification,
+        "truncated": truncated,
     }

@@ -119,7 +119,8 @@ Gunicorn's 30-second graceful limit, so Gunicorn may terminate first. Neither is
 a durability guarantee.
 
 Flask exempts PHI-free `/api/health` and `/api/live`; every other `/api/*` route
-requires `WEBSITE_AUTH_ENABLED=true` and a valid Easy Auth principal in hosted mode.
+requires platform-enabled Easy Auth (which injects `WEBSITE_AUTH_ENABLED`) and a
+valid principal in hosted mode.
 Generic Azure hosting variables without explicit Easy Auth fail closed. Anonymous external probes
 also require corresponding App Service Easy Auth path exclusions.
 `AUTH_ALLOWED_PRINCIPAL_IDS`, when set, is an exact comma-separated allowlist.
@@ -145,7 +146,7 @@ only with exact `APP_ORIGIN` or canonical HTTPS `WEBSITE_HOSTNAME`.
 | Interrupted background job on restart | `_load_jobs` marks queued/running jobs `interrupted` with retry guidance; no traceback exposed.  Corrupt `jobs.json` quarantined; health reports `jobs_healthy=false`. |
 | Queue exhaustion / duplicate expensive work | Separate bounded feed/general executors; `429 Retry-After` before metadata creation; duplicate active digest/deep-sweep/summary returns `409`. |
 | Malicious or pathological PDF | `pdfplumber` runs only in `agent/pdf_extract_helper.py`, a child process with a 30-second hard timeout, page/text/output limits, minimal environment and DEVNULL streams; Linux adds CPU, address-space, file-size and FD limits. |
-| Slow upstream | Anthropic uses 5 s connect, 120 s read, 10 s write, and 5 s pool operation timeouts with no SDK retries by default (configured retries clamp to 0–2); these are not an outer deadline. PubMed uses 5/12 s and ClinicalTrials.gov 5/15 s connect/read limits with no application retry. |
+| Slow upstream | Anthropic uses bounded connect/read/write/pool phases plus a 180-second monotonic overall deadline and no SDK retries by default (configured retries clamp to 0–2). PubMed uses 5/12 s and ClinicalTrials.gov 5/15 s connect/read limits with no application retry. |
 | Half-written profile.json on crash | `agent.io.atomic_write_text` (tmp + `os.replace`) |
 | Accidental data loss | `agent.backups.rotating_snapshot` (last 20 pre-write snapshots) + `agent.backups.daily_backup` (30-day retention) with optional `.sha256` sidecar |
 | Anthropic API outage | Each agent has a JSON-decode fallback that returns "insufficient_data" rather than 500 |
@@ -157,7 +158,7 @@ only with exact `APP_ORIGIN` or canonical HTTPS `WEBSITE_HOSTNAME`.
 | Stale clinical judgment | Only active, nonexpired, non-review-due judgments constrain agents; all others are visibly framed as needing clinician review |
 | Storage account deletion | `AzureBackupProtectionLock` (CanNotDelete) on the resource group, auto-applied by Azure Backup |
 | Azure Files share deletion / corruption | (a) Recovery Services Vault daily backup, 30-day retention; (b) file-share soft-delete, 14 days |
-| Single-blob accidental overwrite | Blob versioning enabled on the storage account; blob + container soft-delete, 30 days |
+| Single-profile accidental overwrite | Cross-process serialized writes, rotating pre-save snapshots, daily Azure Files backup, and file-share soft delete |
 | Plaintext HTTP request leakage | App Service `httpsOnly: true` (auto-redirect to HTTPS); storage min TLS 1.2 |
 | Secret leakage / rotation pain | `ANTHROPIC_API_KEY` stored in Azure Key Vault (RBAC); webapp resolves it via system-assigned managed identity + `@Microsoft.KeyVault(SecretUri=…)` reference. Rotation = update vault secret + restart webapp |
 

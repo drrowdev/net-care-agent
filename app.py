@@ -1325,6 +1325,7 @@ def api_health():
             "newest_snapshot_age_seconds": snap_age,
             "newest_backup_age_seconds": backup_age,
             "jobs_healthy": _jobs_healthy,
+            "hosted_auth_detected": _easy_auth_enabled(),
             "profile_recovery_state": recovery_state.get("state", "none"),
             "profile_recovery_source": recovery_state.get("source"),
         }

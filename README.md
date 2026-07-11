@@ -1,6 +1,6 @@
 # NET/Care Research Agent
 
-A multi-agent AI system that continuously monitors clinical developments for a Grade 2
+A multi-agent AI system that performs on-demand clinical monitoring for a Grade 2
 metastatic neuroendocrine tumor (NET) patient. Operated by the patient's caregiver.
 
 The agent ingests clinical documents, extracts structured medical data, searches
@@ -14,7 +14,7 @@ learns from every consultation with the treating oncologist.
 
 | Layer       | Implementation                                              |
 |-------------|-------------------------------------------------------------|
-| LLM         | Anthropic Claude (Sonnet 5) with tool use                   |
+| LLM         | Anthropic Claude per-role tiering (Opus 4.8 / Sonnet 5; Fable 5 + Opus deep sweep) |
 | Backend     | Flask + gunicorn                                            |
 | Storage     | JSON file on Azure Files mount (`/home/data`)               |
 | Frontend    | Single-page vanilla JS UI (`static/index.html` + `app.js` + `styles.css`) |
@@ -97,8 +97,9 @@ Environment variables to set as Application Settings:
 - Retention: `JOB_RETENTION_DAYS=365`, `JOB_RETENTION_COUNT=200`,
   `REPORT_RETENTION_DAYS=30`, `REPORT_RETENTION_COUNT=200`,
   `SOURCE_ORPHAN_RETENTION_DAYS=7`, `SOURCE_ORPHAN_RETENTION_COUNT=20`
-- Auth: hosted APIs require `WEBSITE_AUTH_ENABLED=true`; generic Azure hosting
-  variables never make Easy Auth headers trusted. `APP_ORIGIN` (preferred) or
+- Auth: hosted APIs require App Service Easy Auth; the platform injects
+  `WEBSITE_AUTH_ENABLED` (do not add that protected setting manually). Generic
+  Azure hosting variables never make Easy Auth headers trusted. `APP_ORIGIN` (preferred) or
   `WEBSITE_HOSTNAME` supplies the canonical HTTPS browser origin.
   `AUTH_ALLOWED_PRINCIPAL_IDS` is an optional comma-separated exact principal-ID allowlist. Never set
   `ALLOW_LOCAL_AUTH_BYPASS` in hosted configuration.
@@ -202,7 +203,7 @@ directories still referenced by the profile are deliberately protected.
 ├── app.py                # Flask app: HTTP endpoints + background jobs + /api/health
 ├── net_agent.py          # Back-compat shim — re-exports the agent.* package
 ├── INVARIANTS.md         # Load-bearing rules & output contracts (read before editing)
-├── scripts/              # deploy.ps1 (test-gated deploy+rollback), eval_harness.py (P9)
+├── Scripts/              # deploy.ps1 (verified deploy+rollback), eval_harness.py
 ├── agent/                # Modular agent core
 │   ├── config.py         # paths + per-agent ANTHROPIC_MODEL_* env overrides
 │   ├── llm.py            # Anthropic client + JSON-fence stripper
@@ -231,7 +232,7 @@ directories still referenced by the profile are deliberately protected.
 ├── startup.sh            # gunicorn launcher (Azure App Service)
 ├── pyproject.toml        # Python deps + tooling config
 ├── .env.example          # Template for local secrets
-├── tests/                # pytest suite (45 tests, no network, no API key needed)
+├── tests/                # pytest suite (no network or API key needed)
 └── docs/                 # Architecture & schema docs
     ├── architecture.md
     ├── operating_manual.md

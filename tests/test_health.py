@@ -50,6 +50,7 @@ def test_health_includes_schema_version(client):
 
     body = client.get("/api/health").get_json()
     assert body["schema_version"] == CURRENT_SCHEMA_VERSION
+    assert isinstance(body["hosted_auth_detected"], bool)
 
 
 def test_health_profile_status_missing_when_no_profile(client):

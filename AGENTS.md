@@ -128,7 +128,7 @@ the managed identity lost its **Key Vault Secrets User** role on the vault.
 ## Tests, lint, format
 
 ```powershell
-pytest                           # 45 tests, no network, no API key
+pytest                           # no network, no API key
 ruff check agent tests           # CI runs this
 ruff format agent tests          # auto-format
 pre-commit install               # one-time

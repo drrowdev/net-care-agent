@@ -4,8 +4,8 @@
 repo. Read this **first** — it bundles everything you need to be productive on
 day one without re-discovering it from chat history.
 
-**Snapshot date:** 2026-05-13. **Repo HEAD at handoff:** `f940163` on `main`
-(plus the doc commit that introduces this file).
+**Snapshot date:** 2026-07-11. The code and current branch history are
+authoritative; do not rely on a hard-coded historical HEAD.
 
 > If anything here disagrees with the code, **the code wins**. Then update
 > this file in the same PR.
@@ -16,8 +16,9 @@ day one without re-discovering it from chat history.
 
 A single-tenant clinical research assistant for one neuroendocrine tumour
 (NET) patient. The caregiver feeds it clinical documents (lab reports,
-imaging, oncology notes); intake/orchestrator/exec-summary agents (all
-Claude Sonnet 5) parse them, search PubMed and ClinicalTrials.gov v2 for
+imaging, oncology notes); Opus 4.8 intake/orchestrator/exec-summary agents parse
+them, Sonnet 5 handles questions/classification, and the Fable 5 + Opus 4.8 deep
+sweep searches PubMed and ClinicalTrials.gov v2 for
 relevant developments, and produce a JSON executive summary plus a
 caregiver-language appointment-question list. Everything lives in **one
 JSON file** on Azure Files. There is no database, no scheduler, no MSAL,
@@ -102,7 +103,7 @@ net-care-agent/
 │   └── styles.css        # All styles (incl. .feed-popover, unified main scroll)
 │
 ├── templates/            # (very small, mostly empty — present for Flask convention)
-├── tests/                # 45 tests, no network, no API key required
+├── tests/                # pytest suite, no network or API key required
 └── docs/                 # See section 3
 ```
 
@@ -128,10 +129,9 @@ net-care-agent/
    Oryx runs from `output.tar.zst`, NOT loose wwwroot files. Don't waste
    time cleaning wwwroot unless something is genuinely broken.
 
-5. **Sonnet 4.6 produces longer JSON than Sonnet 4.0.** All `max_tokens`
-   limits in `agent/*.py` were raised in v0.6.0 to 4000–8000 to fit the
-   richer responses. If you ever swap models again, eyeball the limits and
-   the new `stop_reason == "max_tokens"` guard in `exec_summary.py`.
+5. **Model/prompt changes require the evaluation gate.** Run the private
+   clinician-reviewed golden set through `Scripts/eval_harness.py` and require
+   zero critical regressions before changing tiering, prompts, or token limits.
 
 ## 6. Doing things — the boring runbooks
 
@@ -152,7 +152,7 @@ ignores this bypass.
 ### 6.2 Run the tests
 
 ```powershell
-pytest                            # 45 tests, ~2-3s, no network, no key
+pytest                            # no network, no key
 ruff check agent tests
 ruff format agent tests           # auto-format
 ```
@@ -250,7 +250,7 @@ Recovery Services Vault listed in your operator runbook.
 |---|---|
 | Resource group deletion | `AzureBackupProtectionLock` (CanNotDelete) |
 | Azure Files share deletion | (a) Recovery Services Vault daily backup, 30d retention; (b) file-share soft-delete, 14d |
-| Single-blob overwrite | Blob versioning enabled; blob + container soft-delete, 30d |
+| Single-profile overwrite | Rotating pre-save snapshots plus daily Azure Files backup |
 | Profile mid-write crash | `atomic_write_text` (tmp + rename) |
 | Daily accidental edit | `agent.backups.daily_backup` snapshot, 30d retention, lives on Azure Files (so covered by both backup layers above) |
 | Anthropic API outage | Per-agent JSON-decode fallback returning `insufficient_data` |
@@ -302,7 +302,7 @@ Older history (Phase 0–6) is summarised in `CHANGELOG.md` v0.1.0–v0.5.0.
 
 Nothing in flight. The state at handoff is:
 
-- ✅ All 45 tests pass
+- ✅ Full pytest, Ruff, security hooks, and the clinical evaluation gate are the release gates
 - ✅ Production app healthy on Sonnet 4.6
 - ✅ Secrets in Key Vault, storage hardened, RG locked
 - ✅ Working tree clean, `main` pushed to GitHub

@@ -4,7 +4,8 @@ Day-to-day workflows for the caregiver. All actions happen in the web UI at the
 deployed URL or `http://localhost:8000` for local development.
 
 Flask exempts the PHI-free `/api/health` and `/api/live` probes; all other
-hosted APIs require `WEBSITE_AUTH_ENABLED=true` and App Service Easy Auth.
+hosted APIs require App Service Easy Auth; its protected runtime environment
+injects `WEBSITE_AUTH_ENABLED`.
 Generic hosting variables without that explicit setting fail closed. Anonymous external probing also
 requires App Service Easy Auth path exclusions. Local APIs are protected unless
 `ALLOW_LOCAL_AUTH_BYPASS=1` is explicitly set in the local environment (as in
@@ -198,7 +199,7 @@ a new treatment string. Leave a field blank to keep the current value.
 .venv\Scripts\Activate.ps1
 Copy-Item .env.example .env                       # includes explicit local auth bypass
 .\Scripts\run_local.ps1                           # starts Flask on :8000
-pytest -q                                         # 45 tests, no network
+pytest -q                                         # no network
 python Scripts\seed_test_profile.py               # populate a fake profile
 ```
 
@@ -218,8 +219,8 @@ If `patient_profile.json` has invalid JSON or an unusable structural shape,
 `load_profile` automatically:
 
 1. Writes a forensic copy to `/home/data/quarantine/patient_profile_<ts>_<hash8>.json`.
-2. Searches for the **newest valid pre-save snapshot**, then the **newest valid
-   daily backup**.
+2. Searches all valid pre-save snapshots and daily backups and chooses the
+   **globally newest valid candidate** (source type is only a tie-breaker).
 3. Atomically restores the best candidate to `patient_profile.json`.
 4. Applies any pending migrations and returns the recovered data.
 

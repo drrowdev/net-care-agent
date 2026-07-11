@@ -39,7 +39,8 @@ For transparency, here is what the project already does to reduce risk:
 - Atomic profile writes (`tmp + os.replace`) — no half-written JSON on
   crash.
 - Flask exempts only PHI-free health/liveness; all other hosted APIs require
-  `WEBSITE_AUTH_ENABLED=true` and a valid Azure App Service Easy Auth principal.
+  platform-enabled Azure App Service Easy Auth (which injects the protected
+  `WEBSITE_AUTH_ENABLED` runtime value) and a valid principal.
   An Azure-hosted app without that explicit setting fails closed. External anonymous probing also
   requires matching App Service Easy Auth path exclusions; repository code
   alone cannot bypass the platform gate. An optional exact principal-ID allowlist can

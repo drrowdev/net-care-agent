@@ -156,7 +156,7 @@ prompt. Preserve every injection point when editing a template.
 ## 7. Deploy
 Manual, via `Scripts/deploy.ps1`. It refuses to package unless
 pytest/ruff/gitleaks pass, records commit + SHA-256, polls asynchronous Kudu
-completion, the authenticated SCM application process list, and `/api/health`
+completion and `/api/health`
 critical fields plus the exact packaged commit, then promotes that exact
 package to `.deploy/last-known-good.*`. A dirty working tree is rejected so the
 recorded commit identifies the package. Rollback

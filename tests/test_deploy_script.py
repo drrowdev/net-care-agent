@@ -44,12 +44,10 @@ def test_upload_requires_http_success_and_async_kudu_terminal_success():
     assert "deployment timed out" in poll
 
 
-def test_health_is_authenticated_scm_readiness_and_never_accepts_401():
+def test_health_verifies_exact_running_release_and_never_accepts_401():
     health = _function("Wait-VerifiedHealth")
-    assert '"$scmBase/api/processes"' in health
-    assert "-Headers (Get-AuthHeaders)" in health
-    assert 'Assert-HttpSuccess $response "Authenticated SCM readiness check"' in health
-    assert "gunicorn|startup" in health
+    assert "/api/processes" not in health
+    assert "Send-KuduPackage already required authenticated terminal Kudu status" in health
     assert "azurewebsites.net/api/health" in health
     assert 'Assert-HttpSuccess $health "Application health check"' in health
     assert '$healthBody.status -notin @("ok", "degraded")' in health

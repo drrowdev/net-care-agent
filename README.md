@@ -114,7 +114,7 @@ the setuptools build requirement are exactly pinned from local installed metadat
 direct development requirements are exact in `pyproject.toml`. `.deployment` is included in the release archive
 and declares Oryx build-on-deploy.
 `Scripts/deploy.ps1` gates packages on pytest, ruff, and gitleaks; verifies
-SHA-256; polls asynchronous Kudu, the authenticated SCM process list, and
+SHA-256; polls authenticated asynchronous Kudu to terminal success and then
 the public PHI-free application health endpoint; and
 promotes the hash/package to `.deploy/current-verified.*` only after success,
 first preserving the former current package as `.deploy/previous-known-good.*`.

@@ -1271,6 +1271,20 @@ def api_health():
     # ── backup / snapshot ages ────────────────────────────────────────────────
     snap_age = agent_backups.newest_file_age_seconds(DATA_DIR / "snapshots", "profile_*.json")
     backup_age = agent_backups.newest_file_age_seconds(DATA_DIR / "backups", "profile_*.json")
+    try:
+        profile_age = max(0.0, time.time() - agent.PROFILE_PATH.stat().st_mtime)
+    except OSError:
+        profile_age = None
+    # Age alone is not a failure: an unchanged eight-day-old profile with an
+    # eight-day-old backup is protected. Degrade only when the newest backup
+    # materially lags the current profile (or is missing).
+    backup_out_of_date = profile_status == "ok" and (
+        backup_age is None
+        or (
+            profile_age is not None
+            and backup_age > profile_age + 300
+        )
+    )
 
     # ── recovery state ────────────────────────────────────────────────────────
     recovery_state = get_recovery_state()
@@ -1291,9 +1305,7 @@ def api_health():
         or profile_status == "missing"
         or interrupted_job_count > 0
         or stale_job_count > 0
-        or (
-            backup_age is not None and backup_age > 48 * 3600  # >2 days old → conservative degraded
-        )
+        or backup_out_of_date
     )
 
     if error_conditions:
@@ -1324,6 +1336,8 @@ def api_health():
             "feed_queued_count": feed_queued,
             "newest_snapshot_age_seconds": snap_age,
             "newest_backup_age_seconds": backup_age,
+            "profile_age_seconds": profile_age,
+            "backup_out_of_date": backup_out_of_date,
             "jobs_healthy": _jobs_healthy,
             "hosted_auth_detected": _easy_auth_enabled(),
             "profile_recovery_state": recovery_state.get("state", "none"),

@@ -96,7 +96,8 @@ incremented when something user-visible or operationally meaningful changes.
   `stale_job_count`, `interrupted_job_count`, `newest_snapshot_age_seconds`,
   `newest_backup_age_seconds`, `jobs_healthy`.  No PHI, paths, or secrets in
   response.  Returns 503 when data dir is not writable or profile is
-  corrupt/unreadable.  Returns 200 degraded when backups are stale (>48 h) or
+  corrupt/unreadable. Returns 200 degraded when the newest backup lags the
+  current profile, or
   jobs were interrupted.
 
 - **Liveness route `/api/live`.**  Returns `{"alive": true}` 200 unconditionally.

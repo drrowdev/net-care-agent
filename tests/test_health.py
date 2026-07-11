@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 
 import pytest
 
@@ -207,6 +209,34 @@ def test_health_includes_backup_ages(client):
     body = client.get("/api/health").get_json()
     assert "newest_snapshot_age_seconds" in body
     assert "newest_backup_age_seconds" in body
+    assert "profile_age_seconds" in body
+    assert "backup_out_of_date" in body
+
+
+def test_old_but_current_backup_does_not_degrade_health(agent, client, monkeypatch):
+    from agent import backups
+
+    agent.save_profile({"patient": {"diagnosis": "NET"}})
+    old = time.time() - 8 * 24 * 3600
+    os.utime(agent.PROFILE_PATH, (old, old))
+    monkeypatch.setattr(backups, "newest_file_age_seconds", lambda *_args: 8 * 24 * 3600)
+
+    body = client.get("/api/health").get_json()
+
+    assert body["backup_out_of_date"] is False
+    assert body["status"] == "ok"
+
+
+def test_backup_lagging_current_profile_degrades_health(agent, client, monkeypatch):
+    from agent import backups
+
+    agent.save_profile({"patient": {"diagnosis": "NET"}})
+    monkeypatch.setattr(backups, "newest_file_age_seconds", lambda *_args: 3600)
+
+    body = client.get("/api/health").get_json()
+
+    assert body["backup_out_of_date"] is True
+    assert body["status"] == "degraded"
 
 
 def test_health_jobs_healthy_true_normally(client):

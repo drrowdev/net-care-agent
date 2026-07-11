@@ -286,11 +286,13 @@ lightweight liveness probe that always returns 200 regardless of profile state.
 | `feed_queued_count` | int | Queued feed jobs |
 | `newest_snapshot_age_seconds` | float\|null | Seconds since last snapshot |
 | `newest_backup_age_seconds` | float\|null | Seconds since last daily backup |
+| `profile_age_seconds` | float\|null | Seconds since the current profile write |
+| `backup_out_of_date` | bool | Newest backup materially predates the current profile |
 | `jobs_healthy` | bool | False if jobs.json was quarantined |
 
 **HTTP status codes:**
 - `200 status=ok`: everything normal
-- `200 status=degraded`: minor issues (interrupted jobs, stale backup)
+- `200 status=degraded`: minor issues (interrupted jobs, backup behind profile)
 - `503 status=error`: storage not writable, or profile corrupt with no recovery
 
 Configure `/api/health` as the App Service health probe — Azure will recycle

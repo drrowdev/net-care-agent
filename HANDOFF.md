@@ -171,8 +171,8 @@ pwsh Scripts/deploy.ps1 -App <app-service> -Rollback
 
 Do not hand-build or synchronously post a zip. The script requires
 pytest/ruff/gitleaks, builds with Python `zipfile`, records HEAD + SHA-256, polls
-asynchronous Kudu completion (900-second default), the authenticated SCM
-application process list, and `/api/health` critical fields plus the exact
+authenticated asynchronous Kudu completion (900-second default), and
+`/api/health` critical fields plus the exact
 packaged commit (300 seconds), and only then promotes
 `.deploy/last-known-good.*`. Dirty working trees are rejected so
 HEAD and SHA identify the package. Rollback verifies that SHA before redeploying

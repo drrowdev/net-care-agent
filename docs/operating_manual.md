@@ -374,7 +374,7 @@ which declares Oryx build-on-deploy.
 Use only `Scripts/deploy.ps1`: it refuses to package unless pytest, ruff, and
 gitleaks pass and the working tree is clean, verifies the release SHA-256,
 records the current HEAD, polls asynchronous Kudu (900 seconds default), checks
-the authenticated SCM application process list and `/api/health` critical fields
+authenticated terminal Kudu status and `/api/health` critical fields
 for the exact packaged commit (300 seconds), and promotes
 `.deploy/current-verified.*` only after success, preserving the former current
 package as `.deploy/previous-known-good.*`. A usable `degraded` response is

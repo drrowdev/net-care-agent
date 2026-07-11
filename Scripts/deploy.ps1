@@ -106,22 +106,11 @@ function Send-KuduPackage {
 
 function Wait-VerifiedHealth {
     $deadline = [DateTimeOffset]::UtcNow.AddSeconds($HealthTimeoutSeconds)
-    $scmHealthUri = "$scmBase/api/processes"
     $appHealthUri = "https://$App.azurewebsites.net/api/health"
     $lastError = "No readiness response received."
 
     while ([DateTimeOffset]::UtcNow -lt $deadline) {
         try {
-            $response = Invoke-WebRequest -Uri $scmHealthUri -Method GET `
-                -Headers (Get-AuthHeaders) -TimeoutSec 60 -UseBasicParsing
-            Assert-HttpSuccess $response "Authenticated SCM readiness check"
-            $processes = @($response.Content | ConvertFrom-Json)
-            $appProcesses = @($processes | Where-Object {
-                "$($_.name) $($_.command_line)" -match "gunicorn|startup\.sh"
-            })
-            if ($appProcesses.Count -eq 0) {
-                throw "Authenticated SCM readiness check found no application process."
-            }
             $health = Invoke-WebRequest -Uri $appHealthUri -Method GET `
                 -TimeoutSec 60 -UseBasicParsing
             Assert-HttpSuccess $health "Application health check"
@@ -134,7 +123,10 @@ function Wait-VerifiedHealth {
             if ($healthBody.release_commit -ne $commit) {
                 throw "Application health belongs to release '$($healthBody.release_commit)', not '$commit'."
             }
-            Write-Host "Authenticated SCM readiness and application health passed." `
+            # Send-KuduPackage already required authenticated terminal Kudu status.
+            # The exact release_commit proves this response came from the new app
+            # process; Kudu process enumeration is unsupported on Linux stacks.
+            Write-Host "Authenticated Kudu deployment and exact application health passed." `
                 -ForegroundColor Green
             return
         }

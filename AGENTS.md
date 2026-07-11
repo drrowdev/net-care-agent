@@ -67,7 +67,7 @@ know it was considered.
   (skip `__pycache__`, `.pytest_cache`, `*.pyc`).
 - Use `Scripts/deploy.ps1`, not a hand-built upload. It gates on
   pytest/ruff/gitleaks, verifies SHA-256, records HEAD, polls asynchronous Kudu
-  and the authenticated SCM application process list plus `/api/health`
+  and authenticated terminal Kudu status plus `/api/health`
   critical fields and exact packaged commit, and promotes
   `.deploy/last-known-good.*` only after success. A dirty working tree is
   rejected. `-Rollback`

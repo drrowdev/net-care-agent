@@ -179,7 +179,7 @@ requirements are also exact. The archive includes `.deployment`, which declares
 `SCM_DO_BUILD_DURING_DEPLOYMENT=true` for Kudu/Oryx builds.
 `Scripts/deploy.ps1` requires a clean working tree plus pytest, ruff, and
 gitleaks; builds and verifies a commit/SHA-256-addressed release; polls Kudu for
-up to 900 seconds, then the authenticated SCM application process list and
+up to 900 seconds, then
 `/api/health` critical fields and exact release commit for up to 300 seconds; and only then
 preserves `.deploy/previous-known-good.*` and updates `.deploy/current-verified.*`.
 Candidate deployment/readiness failure automatically redeploys and health-checks

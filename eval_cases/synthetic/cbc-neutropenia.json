@@ -1,0 +1,80 @@
+{
+  "schema_version": "2.0.0",
+  "id": "cbc-neutropenia",
+  "text": "CBC 2026-04-03: ANC 0.7 x10^9/L (1.5-7.5), platelets 82 x10^9/L (150-400). Urgent oncology review requested.",
+  "expected": {
+    "document_type": "lab_result",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [
+      {
+        "marker": "ANC",
+        "value": "0.7",
+        "unit": "x10^9/L",
+        "date": "2026-04-03",
+        "reference_range": "1.5-7.5",
+        "source_quote": "ANC 0.7 x10^9/L (1.5-7.5)"
+      },
+      {
+        "marker": "platelets",
+        "value": "82",
+        "unit": "x10^9/L",
+        "date": "2026-04-03",
+        "reference_range": "150-400",
+        "source_quote": "platelets 82 x10^9/L (150-400)"
+      }
+    ],
+    "treatment_changes": [],
+    "imaging_facts": [],
+    "symptoms": [],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "ANC was 0.7 x10^9/L (1.5-7.5) and platelets were 82 x10^9/L (150-400)",
+        "date": "2026-04-03",
+        "source_quote": "ANC 0.7 x10^9/L (1.5-7.5), platelets 82 x10^9/L (150-400)"
+      },
+      {
+        "finding": "Urgent oncology review was requested",
+        "date": "2026-04-03",
+        "source_quote": "Urgent oncology review requested"
+      }
+    ],
+    "critical_events": [
+      {
+        "event": "urgent oncology review for cytopenias",
+        "date": "2026-04-03",
+        "source_quote": "Urgent oncology review requested",
+        "critical": true
+      }
+    ],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "ANC 0.7 x10^9/L (1.5-7.5), platelets 82 x10^9/L (150-400)"
+      },
+      {
+        "field": "key_findings",
+        "quote": "Urgent oncology review requested"
+      },
+      {
+        "field": "biomarkers",
+        "quote": "ANC 0.7 x10^9/L (1.5-7.5)"
+      },
+      {
+        "field": "biomarkers",
+        "quote": "platelets 82 x10^9/L (150-400)"
+      },
+      {
+        "field": "critical_events",
+        "quote": "Urgent oncology review requested"
+      }
+    ],
+    "must_not_infer": []
+  },
+  "tags": [
+    "cbc",
+    "urgent"
+  ]
+}

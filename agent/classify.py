@@ -6,7 +6,7 @@ import datetime
 import json
 
 from . import config
-from .llm import client, first_text, render_prompt, strip_code_fences
+from .llm import client, first_text, is_timeout_error, render_prompt, strip_code_fences
 from .profile import build_patient_context
 
 TREATMENT_CLASSIFIER_SYSTEM_TEMPLATE = """\
@@ -69,7 +69,7 @@ def classify_treatments(profile: dict) -> list:
         reverse=True,
     )[:5]
     doc_context = "\n\n".join(
-        f"[{d.get('date','')} {d.get('type','')}]: {d.get('summary','')}" for d in recent_docs
+        f"[{d.get('date', '')} {d.get('type', '')}]: {d.get('summary', '')}" for d in recent_docs
     )
 
     try:
@@ -108,8 +108,9 @@ def classify_treatments(profile: dict) -> list:
 
         return classified
 
-    except Exception as e:
-        print(f"  ⚠  Treatment classification failed: {e}")
+    except Exception as exc:
+        if is_timeout_error(exc):
+            raise
         return [
             {"text": t, "category": "active", "label": t[:60], "date": None} for t in treatments
         ]

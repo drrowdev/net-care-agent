@@ -1,0 +1,46 @@
+{
+  "schema_version": "2.0.0",
+  "id": "date-order-ambiguity",
+  "text": "Report signed 2026-05-12. The scan performed 2026-05-06 showed stable hepatic disease.",
+  "expected": {
+    "document_type": "imaging_report",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [],
+    "treatment_changes": [],
+    "imaging_facts": [
+      {
+        "finding": "stable hepatic disease",
+        "date": "2026-05-06",
+        "status": "stable",
+        "source_quote": "scan performed 2026-05-06 showed stable hepatic disease"
+      }
+    ],
+    "symptoms": [],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "The scan performed 2026-05-06 showed stable hepatic disease",
+        "date": "2026-05-06",
+        "source_quote": "scan performed 2026-05-06 showed stable hepatic disease"
+      }
+    ],
+    "critical_events": [],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "scan performed 2026-05-06 showed stable hepatic disease"
+      },
+      {
+        "field": "imaging_facts",
+        "quote": "scan performed 2026-05-06 showed stable hepatic disease"
+      }
+    ],
+    "must_not_infer": []
+  },
+  "tags": [
+    "back-dated",
+    "dates"
+  ]
+}

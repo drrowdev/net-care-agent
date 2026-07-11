@@ -1,0 +1,61 @@
+{
+  "schema_version": "2.0.0",
+  "id": "ocr-decimal-comma",
+  "text": "L4B 05-05-2026: Hb 10,4 g/dL [12,0-16,0]; Plt 145 x10^9/L [150-400].",
+  "expected": {
+    "document_type": "lab_result",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [
+      {
+        "marker": "Hb",
+        "value": "10.4",
+        "unit": "g/dL",
+        "date": "2026-05-05",
+        "reference_range": "12.0-16.0",
+        "source_quote": "Hb 10,4 g/dL [12,0-16,0]"
+      },
+      {
+        "marker": "Plt",
+        "value": "145",
+        "unit": "x10^9/L",
+        "date": "2026-05-05",
+        "reference_range": "150-400",
+        "source_quote": "Plt 145 x10^9/L [150-400]"
+      }
+    ],
+    "treatment_changes": [],
+    "imaging_facts": [],
+    "symptoms": [],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "Hemoglobin was 10.4 g/dL (12.0-16.0) and platelets were 145 x10^9/L (150-400)",
+        "date": "2026-05-05",
+        "source_quote": "Hb 10,4 g/dL [12,0-16,0]; Plt 145 x10^9/L [150-400]"
+      }
+    ],
+    "critical_events": [],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "Hb 10,4 g/dL [12,0-16,0]; Plt 145 x10^9/L [150-400]"
+      },
+      {
+        "field": "biomarkers",
+        "quote": "Hb 10,4 g/dL [12,0-16,0]"
+      },
+      {
+        "field": "biomarkers",
+        "quote": "Plt 145 x10^9/L [150-400]"
+      }
+    ],
+    "must_not_infer": []
+  },
+  "tags": [
+    "ocr",
+    "cbc",
+    "decimal-comma"
+  ]
+}

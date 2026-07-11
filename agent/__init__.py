@@ -27,15 +27,25 @@ from .config import (
 from .deep_sweep import run_deep_sweep
 from .exec_summary import generate_executive_summary
 from .intake import _treatment_similarity, run_intake
-from .judgments import get_clinical_judgments_context
+from .judgments import clinical_judgments_fingerprint, get_clinical_judgments_context
 
 # LLM client (used by app.py for the legacy direct-client chat call site)
 from .llm import client, first_text, render_prompt, strip_code_fences
 from .orchestrator import run_orchestrator
 
 # Profile
-from .profile import DEFAULT_PROFILE, get_patient_summary, load_profile, save_profile
+from .profile import (
+    DEFAULT_PROFILE,
+    CorruptProfileError,
+    IOProfileError,
+    ProfileLoadError,
+    get_patient_summary,
+    load_profile,
+    save_profile,
+)
+from .provenance import anchor_source_quote, preserve_source_document, remove_source_document
 from .questions import generate_appointment_questions, generate_questions_for_profile
+from .recovery import get_recovery_state
 from .serialize import mutating_lock, serialized_mutation
 
 # Tools (registry + dispatcher + relevance + individual tool fns)
@@ -72,6 +82,13 @@ __all__ = [
     "load_profile",
     "save_profile",
     "get_patient_summary",
+    "CorruptProfileError",
+    "IOProfileError",
+    "ProfileLoadError",
+    "anchor_source_quote",
+    "preserve_source_document",
+    "remove_source_document",
+    "get_recovery_state",
     "mutating_lock",
     "serialized_mutation",
     # tools
@@ -83,6 +100,7 @@ __all__ = [
     "analyze_biomarker_trends",
     # judgments
     "get_clinical_judgments_context",
+    "clinical_judgments_fingerprint",
     # agents
     "run_intake",
     "_treatment_similarity",

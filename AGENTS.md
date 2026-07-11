@@ -65,6 +65,17 @@ know it was considered.
 - Always include in the deploy zip:
   `app.py net_agent.py requirements.txt startup.sh agent/ static/ templates/`
   (skip `__pycache__`, `.pytest_cache`, `*.pyc`).
+- Use `Scripts/deploy.ps1`, not a hand-built upload. It gates on
+  pytest/ruff/gitleaks, verifies SHA-256, records HEAD, polls asynchronous Kudu
+  and the authenticated SCM application process list plus `/api/health`
+  critical fields and exact packaged commit, and promotes
+  `.deploy/last-known-good.*` only after success. A dirty working tree is
+  rejected. `-Rollback`
+  verifies and redeploys that exact package.
+- Keep `.deployment` (`SCM_DO_BUILD_DURING_DEPLOYMENT=true`) and exact runtime,
+  dev, and setuptools build pins. The script includes `.deployment`, ensuring
+  Oryx build-on-deploy is active.
+  One Gunicorn worker is load-bearing because queues/execution are in-process.
 
 ## Secrets
 
@@ -102,9 +113,11 @@ the managed identity lost its **Key Vault Secrets User** role on the vault.
   `app.py`, `staticindex.html`) are leftovers from earlier deploys and are
   ignored at runtime — Oryx runs from `output.tar.zst`. Don't waste time
   trying to clean them unless it's actually causing a problem.
-- **Easy Auth returns 401 on `curl`.** That's expected for the deployed
-  site. To smoke-test the app, check `/api/health` from a signed-in browser
-  or temporarily disable Easy Auth in App Service settings (then re-enable).
+- **Easy Auth returns 401 on unauthenticated API `curl`.** Flask exempts
+  PHI-free `/api/health` and `/api/live`, but App Service path exclusions are
+  also required for anonymous external probes. Do not disable Easy Auth to
+  smoke-test. Local APIs require explicit
+  `ALLOW_LOCAL_AUTH_BYPASS=1`, and hosted mode ignores it.
 - **No scheduler.** Daily digest + ntfy were intentionally removed in
   v0.4.0. Don't reintroduce them without a strong reason — the user
   prefers manual `↻ Run digest` triggered from the header.
@@ -115,7 +128,7 @@ the managed identity lost its **Key Vault Secrets User** role on the vault.
 ## Tests, lint, format
 
 ```powershell
-pytest                           # 45 tests, no network, no API key
+pytest                           # no network, no API key
 ruff check agent tests           # CI runs this
 ruff format agent tests          # auto-format
 pre-commit install               # one-time

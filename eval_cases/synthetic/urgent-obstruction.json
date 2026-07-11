@@ -1,0 +1,57 @@
+{
+  "schema_version": "2.0.0",
+  "id": "urgent-obstruction",
+  "text": "CT 2026-04-07: new high-grade small bowel obstruction with transition point at mesenteric mass. Immediate surgical assessment advised.",
+  "expected": {
+    "document_type": "imaging_report",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [],
+    "treatment_changes": [],
+    "imaging_facts": [
+      {
+        "finding": "high-grade small bowel obstruction at mesenteric mass",
+        "date": "2026-04-07",
+        "status": "new",
+        "source_quote": "new high-grade small bowel obstruction with transition point at mesenteric mass"
+      }
+    ],
+    "symptoms": [],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "CT showed a new high-grade small bowel obstruction at the mesenteric mass, and immediate surgical assessment was advised",
+        "date": "2026-04-07",
+        "source_quote": "new high-grade small bowel obstruction with transition point at mesenteric mass. Immediate surgical assessment advised"
+      }
+    ],
+    "critical_events": [
+      {
+        "event": "new high-grade small bowel obstruction with transition point at mesenteric mass. Immediate surgical assessment advised",
+        "date": "2026-04-07",
+        "source_quote": "new high-grade small bowel obstruction with transition point at mesenteric mass. Immediate surgical assessment advised",
+        "critical": true
+      }
+    ],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "new high-grade small bowel obstruction with transition point at mesenteric mass. Immediate surgical assessment advised"
+      },
+      {
+        "field": "imaging_facts",
+        "quote": "new high-grade small bowel obstruction with transition point at mesenteric mass"
+      },
+      {
+        "field": "critical_events",
+        "quote": "new high-grade small bowel obstruction with transition point at mesenteric mass. Immediate surgical assessment advised"
+      }
+    ],
+    "must_not_infer": []
+  },
+  "tags": [
+    "urgent",
+    "critical"
+  ]
+}

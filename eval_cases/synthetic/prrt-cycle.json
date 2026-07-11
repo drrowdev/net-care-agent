@@ -1,0 +1,35 @@
+{
+  "schema_version": "2.0.0",
+  "id": "prrt-cycle",
+  "text": "Nuclear medicine record: Lutetium-177 DOTATATE cycle 2 administered 2026-04-24 with amino-acid renal protection.",
+  "expected": {
+    "document_type": "doctor_note",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [],
+    "treatment_changes": [],
+    "imaging_facts": [],
+    "symptoms": [],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "Lutetium-177 DOTATATE cycle 2 was administered with amino-acid renal protection",
+        "date": "2026-04-24",
+        "source_quote": "Lutetium-177 DOTATATE cycle 2 administered 2026-04-24 with amino-acid renal protection"
+      }
+    ],
+    "critical_events": [],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "Lutetium-177 DOTATATE cycle 2 administered 2026-04-24 with amino-acid renal protection"
+      }
+    ],
+    "must_not_infer": []
+  },
+  "tags": [
+    "prrt",
+    "treatment"
+  ]
+}

@@ -1,0 +1,48 @@
+{
+  "schema_version": "2.0.0",
+  "id": "appointment-cancelled",
+  "text": "Scheduling update 2026-04-29: MRI planned for 2026-05-02 was cancelled; replacement MRI booked 2026-05-09.",
+  "expected": {
+    "document_type": "appointment_summary",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [],
+    "treatment_changes": [],
+    "imaging_facts": [],
+    "symptoms": [],
+    "appointments": [
+      {
+        "date": "2026-05-09",
+        "description": "replacement MRI",
+        "type": "scan",
+        "source_quote": "replacement MRI booked 2026-05-09"
+      }
+    ],
+    "key_findings": [
+      {
+        "finding": "The MRI planned for 2026-05-02 was cancelled and a replacement MRI was booked for 2026-05-09",
+        "date": "2026-05-09",
+        "source_quote": "MRI planned for 2026-05-02 was cancelled; replacement MRI booked 2026-05-09"
+      }
+    ],
+    "critical_events": [],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "MRI planned for 2026-05-02 was cancelled; replacement MRI booked 2026-05-09"
+      },
+      {
+        "field": "appointments",
+        "quote": "replacement MRI booked 2026-05-09"
+      }
+    ],
+    "must_not_infer": [
+      "MRI appointment 2026-05-02"
+    ]
+  },
+  "tags": [
+    "appointment",
+    "conflicting-dates"
+  ]
+}

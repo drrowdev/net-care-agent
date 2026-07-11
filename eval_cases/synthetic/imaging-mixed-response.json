@@ -1,0 +1,48 @@
+{
+  "schema_version": "2.0.0",
+  "id": "imaging-mixed-response",
+  "text": "CT 2026-05-01: dominant liver lesion decreased to 2.0 cm, while mesenteric node increased to 1.8 cm; overall mixed response.",
+  "expected": {
+    "document_type": "imaging_report",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [],
+    "treatment_changes": [],
+    "imaging_facts": [
+      {
+        "finding": "dominant liver lesion decreased to 2.0 cm, while mesenteric node increased to 1.8 cm; overall mixed response",
+        "date": "2026-05-01",
+        "status": "mixed",
+        "source_quote": "dominant liver lesion decreased to 2.0 cm, while mesenteric node increased to 1.8 cm; overall mixed response"
+      }
+    ],
+    "symptoms": [],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "The dominant liver lesion decreased to 2.0 cm while the mesenteric node increased to 1.8 cm, an overall mixed response",
+        "date": "2026-05-01",
+        "source_quote": "dominant liver lesion decreased to 2.0 cm, while mesenteric node increased to 1.8 cm; overall mixed response"
+      }
+    ],
+    "critical_events": [],
+    "source_quotes": [
+      {
+        "field": "imaging_facts",
+        "quote": "dominant liver lesion decreased to 2.0 cm, while mesenteric node increased to 1.8 cm; overall mixed response"
+      },
+      {
+        "field": "key_findings",
+        "quote": "dominant liver lesion decreased to 2.0 cm, while mesenteric node increased to 1.8 cm; overall mixed response"
+      }
+    ],
+    "must_not_infer": [
+      "overall progression"
+    ]
+  },
+  "tags": [
+    "imaging",
+    "ambiguity"
+  ]
+}

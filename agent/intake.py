@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import datetime
 import json
 import re
@@ -10,6 +11,12 @@ from . import config
 from . import profile as profile_mod
 from .llm import client, first_text, render_prompt, strip_code_fences
 from .profile import build_patient_context
+from .provenance import (
+    anchor_source_quote,
+    attach_evidence,
+    preserve_source_document,
+    remove_source_document,
+)
 from .schema import now_stamp
 
 INTAKE_SYSTEM_TEMPLATE = """\
@@ -24,13 +31,15 @@ SCHEMA (omit keys that have no data; never add keys):
   "summary": "1-2 sentence summary of the key clinical message",
   "biomarkers": [
     {"marker": "name", "value": number_or_null, "unit": "string",
-     "reference_range": "string_or_null", "flag": "high|low|normal"}
+     "reference_range": "string_or_null", "flag": "high|low|normal",
+     "source_quote": "verbatim source span proving this entire row"}
   ],
   "imaging_findings": {
     "modality": "CT|MRI|PET-CT|ultrasound|other",
     "findings": "detailed findings",
     "impression": "radiologist conclusion",
-    "new_lesions": true|false|null
+    "new_lesions": true|false|null,
+    "source_quote": "verbatim source span proving these findings"
   },
   "treatment_changes": ["list any treatment starts, stops, or dose changes"],
   "ki67_update": number_or_null,
@@ -38,18 +47,25 @@ SCHEMA (omit keys that have no data; never add keys):
   "sstr_score_update": number_or_null,
   "symptoms_reported": [
     {"symptom": "name", "severity": 1-5_or_null, "note": "string_or_null",
-     "related_treatment": "treatment_name_or_null"}
+     "related_treatment": "treatment_name_or_null",
+     "source_quote": "verbatim source span proving this symptom"}
   ],
   "appointments": [
-    {"date": "YYYY-MM-DD", "description": "what the event is", "type": "call|appointment|scan|review|infusion|other"}
+    {"date": "YYYY-MM-DD", "description": "what the event is", "type": "call|appointment|scan|review|infusion|other",
+     "source_quote": "verbatim source span proving this appointment"}
   ],
   "key_findings": ["3-5 most clinically important findings"],
+  "evidence": [
+    {"field": "key_findings|treatment_changes|ki67_update|sstr_status_update|sstr_score_update",
+     "item_index": 0_or_null, "source_quote": "verbatim source span proving the value"}
+  ],
   "suggested_workflows": ["pubmed_search", "trial_search", "biomarker_analysis", "appointment_prep"],
   "workflow_rationale": "brief explanation of why these workflows are recommended"
 }
 
 EXTRACTION RULES
 - Ground every field in the document text. Never infer, estimate, or fabricate a value, date, unit, or flag. If OCR damage makes a value unreadable, omit that entry rather than guess.
+- EVIDENCE CONTRACT: every biomarker, imaging_findings object, symptom, and appointment MUST include source_quote copied verbatim from the input. Also include one evidence[] row for every key_finding, treatment_change, and scalar update. Quotes are validated deterministically; unsupported quotes are discarded and the persisted fact is explicitly marked evidence_status="invalid" (or "missing" when absent). Never paraphrase inside source_quote.
 - date: the CLINICAL date — specimen collection date, scan date, or visit date. Not the print, report-issued, or fax date. null if no clinical date is determinable.
 - biomarkers: serum/blood/urine lab values only (e.g. CgA, NSE, 5-HIAA, liver enzymes, kidney function, CBC, hemoglobin, radiation dose metrics). Do NOT include Ki-67 or MIB-1 here — use ki67_update instead. Fix obvious OCR unit artifacts (e.g. "ug/L" for "µg/L") but never convert units.
 - flag: use the document's own flag if printed; otherwise derive from the stated reference range; if neither exists, omit the flag field — do not assume "normal".
@@ -102,7 +118,13 @@ def _treatment_similarity(a: str, b: str) -> float:
     return len(intersection) / len(union)
 
 
-def _persist_symptoms(profile: dict, reported: list, doc_date: str) -> None:
+def _persist_symptoms(
+    profile: dict,
+    reported: list,
+    doc_date: str,
+    text: str = "",
+    source_document_id: str | None = None,
+) -> None:
     """Append AI-extracted symptoms to profile["symptoms"], deduping against
     same-day same-name entries so re-feeding a document doesn't double-log."""
     profile.setdefault("symptoms", [])
@@ -118,21 +140,31 @@ def _persist_symptoms(profile: dict, reported: list, doc_date: str) -> None:
         )
         if dup:
             continue
-        existing.append(
-            {
-                "id": f"sym_ai_{doc_date.replace('-', '')}_{len(existing)}",
-                "date": doc_date,
-                "added_at": now_stamp(),
-                "symptom": name,
-                "severity": s.get("severity"),
-                "note": (s.get("note") or "").strip() or None,
-                "related_treatment": (s.get("related_treatment") or "").strip() or None,
-                "source": "ai",
-            }
-        )
+        item = {
+            "id": f"sym_ai_{doc_date.replace('-', '')}_{len(existing)}",
+            "date": doc_date,
+            "added_at": now_stamp(),
+            "symptom": name,
+            "severity": s.get("severity"),
+            "note": (s.get("note") or "").strip() or None,
+            "related_treatment": (s.get("related_treatment") or "").strip() or None,
+            "source": "ai",
+            "source_quote": s.get("source_quote"),
+        }
+        if source_document_id:
+            item = attach_evidence(item, text, source_document_id)
+        else:
+            item.pop("source_quote", None)
+        existing.append(item)
 
 
-def _persist_appointments(profile: dict, appointments: list, doc_date: str) -> None:
+def _persist_appointments(
+    profile: dict,
+    appointments: list,
+    doc_date: str,
+    text: str = "",
+    source_document_id: str | None = None,
+) -> None:
     """Append AI-extracted appointments to profile["appointments"], deduping by
     (date, description) so re-feeding a document doesn't double-log. Only entries
     with a concrete date are kept; the dashboard timeline merge surfaces upcoming
@@ -154,15 +186,20 @@ def _persist_appointments(profile: dict, appointments: list, doc_date: str) -> N
         )
         if dup:
             continue
-        existing.append(
-            {
-                "date": date,
-                "description": desc,
-                "type": (a.get("type") or "").strip().lower() or "appointment",
-                "source": "ai",
-                "recorded_from_date": doc_date or None,
-            }
-        )
+        item = {
+            "date": date,
+            "description": desc,
+            "type": (a.get("type") or "").strip().lower() or "appointment",
+            "source": "ai",
+            "recorded_from_date": doc_date or None,
+            "added_at": now_stamp(),
+            "source_quote": a.get("source_quote"),
+        }
+        if source_document_id:
+            item = attach_evidence(item, text, source_document_id)
+        else:
+            item.pop("source_quote", None)
+        existing.append(item)
 
 
 def _extract_json(text: str, system_prompt: str) -> tuple[dict, bool]:
@@ -186,7 +223,6 @@ def _extract_json(text: str, system_prompt: str) -> tuple[dict, bool]:
     try:
         return json.loads(raw), False
     except json.JSONDecodeError as err:
-        print("  ⚠  Intake JSON parse failed — attempting one repair retry")
         repair = client.messages.create(
             model=config.MODEL_INTAKE,
             max_tokens=12000,
@@ -208,7 +244,6 @@ def _extract_json(text: str, system_prompt: str) -> tuple[dict, bool]:
         try:
             return json.loads(raw2), False
         except json.JSONDecodeError:
-            print("  ⚠  Repair retry also failed — storing unstructured + raising alert")
             return (
                 {
                     "document_type": "other",
@@ -260,17 +295,18 @@ def _verify_intake(text: str, extracted: dict) -> list:
     if not isinstance(candidates, list):
         return []
 
-    norm_text = text.lower()
     added: list = []
     for c in candidates:
         if not isinstance(c, dict):
             continue
-        quote = (c.get("source_quote") or "").strip().lower()
-        if not quote or quote not in norm_text:
+        quote = c.get("source_quote")
+        anchored = anchor_source_quote(text, quote)
+        if anchored["evidence_status"] != "verified":
             continue  # unanchored / hallucinated — discard programmatically
         field = c.get("field")
         item = c.get("item")
         if field == "biomarkers" and isinstance(item, dict) and item.get("marker"):
+            item["source_quote"] = anchored["source_quote"]
             extracted.setdefault("biomarkers", []).append(item)
             added.append({"field": field, "item": item})
         elif field == "treatment_changes" and isinstance(item, str) and item.strip():
@@ -279,22 +315,37 @@ def _verify_intake(text: str, extracted: dict) -> list:
     return added
 
 
-def run_intake(text: str, profile: dict) -> tuple[dict, dict]:
+def _run_intake_impl(
+    text: str,
+    profile: dict,
+    *,
+    raw_bytes: bytes | None = None,
+    filename: str | None = None,
+    media_type: str = "text/plain",
+) -> tuple[dict, dict]:
     """Classify and extract structured data from free-form text."""
-    print("\n⚙  Running intake agent ...")
 
+    source_document = preserve_source_document(
+        text,
+        raw_bytes=raw_bytes,
+        filename=filename,
+        media_type=media_type,
+    )
+    source_document_id = source_document["id"]
+    profile.setdefault("source_documents", []).append(source_document)
     system_prompt = render_prompt(
         INTAKE_SYSTEM_TEMPLATE,
         PATIENT_CONTEXT=build_patient_context(profile),
     )
     extracted, extraction_failed = _extract_json(text, system_prompt)
+    extracted["source_document_id"] = source_document_id
+    extracted["ingested_at"] = source_document["ingested_at"]
 
     # P1: optional quote-anchored verification pass (off unless INTAKE_VERIFY set).
     if config.INTAKE_VERIFY and not extraction_failed:
         added = _verify_intake(text, extracted)
         if added:
             extracted["verification_added"] = added
-            print(f"  ✓  Verification pass added {len(added)} source-anchored item(s)")
 
     today = datetime.date.today().isoformat()
     doc_date = extracted.get("date") or today
@@ -319,9 +370,47 @@ def run_intake(text: str, profile: dict) -> tuple[dict, dict]:
                 "date": doc_date,
                 "added_at": now_stamp(),
                 "source": "intake_extraction_failure",
+                "source_document_id": source_document_id,
             }
         )
         extracted["extraction_failed"] = True
+
+    evidence_candidates: dict[tuple[str, int | None], dict] = {}
+    for candidate in extracted.get("evidence") or []:
+        if not isinstance(candidate, dict):
+            continue
+        field = candidate.get("field")
+        index = candidate.get("item_index")
+        if not isinstance(index, int):
+            index = None
+        evidence_candidates[(field, index)] = candidate
+
+    expected_evidence: list[tuple[str, int | None]] = []
+    expected_evidence.extend(
+        ("key_findings", index) for index, _ in enumerate(extracted.get("key_findings") or [])
+    )
+    expected_evidence.extend(
+        ("treatment_changes", index)
+        for index, _ in enumerate(extracted.get("treatment_changes") or [])
+    )
+    expected_evidence.extend(
+        (field, None)
+        for field in ("ki67_update", "sstr_status_update", "sstr_score_update")
+        if extracted.get(field) is not None
+    )
+    document_evidence = []
+    for field, index in expected_evidence:
+        candidate = evidence_candidates.get((field, index))
+        if index is None:
+            candidate = candidate or evidence_candidates.get((field, None))
+        anchored = anchor_source_quote(text, candidate.get("source_quote") if candidate else None)
+        document_evidence.append(
+            {
+                "field": field,
+                "item_index": index,
+                **anchored,
+            }
+        )
 
     profile["documents"].append(
         {
@@ -330,7 +419,9 @@ def run_intake(text: str, profile: dict) -> tuple[dict, dict]:
             "summary": extracted.get("summary", ""),
             "key_findings": extracted.get("key_findings", []),
             "raw_text": text[:3000],
-            "added_at": now_stamp(),
+            "added_at": source_document["ingested_at"],
+            "source_document_id": source_document_id,
+            "evidence": document_evidence,
         }
     )
 
@@ -353,11 +444,11 @@ def run_intake(text: str, profile: dict) -> tuple[dict, dict]:
             continue
         existing_triples.add(triple)
         bm["added_at"] = now_stamp()
-        profile["biomarkers"].append(bm)
+        profile["biomarkers"].append(attach_evidence(bm, text, source_document_id))
 
     if extracted.get("imaging_findings"):
         img = {**extracted["imaging_findings"], "date": doc_date, "added_at": now_stamp()}
-        profile["imaging"].append(img)
+        profile["imaging"].append(attach_evidence(img, text, source_document_id))
 
     if extracted.get("ki67_update") is not None:
         profile["patient"]["ki67_percent"] = extracted["ki67_update"]
@@ -368,8 +459,20 @@ def run_intake(text: str, profile: dict) -> tuple[dict, dict]:
     if extracted.get("sstr_score_update") is not None:
         profile["patient"]["sstr_score"] = extracted["sstr_score_update"]
 
-    _persist_symptoms(profile, extracted.get("symptoms_reported") or [], doc_date)
-    _persist_appointments(profile, extracted.get("appointments") or [], doc_date)
+    _persist_symptoms(
+        profile,
+        extracted.get("symptoms_reported") or [],
+        doc_date,
+        text,
+        source_document_id,
+    )
+    _persist_appointments(
+        profile,
+        extracted.get("appointments") or [],
+        doc_date,
+        text,
+        source_document_id,
+    )
 
     for tx in extracted.get("treatment_changes", []):
         tx_lower = tx.lower().strip()
@@ -383,17 +486,37 @@ def run_intake(text: str, profile: dict) -> tuple[dict, dict]:
         if not is_duplicate:
             existing.append(tx)
 
-    print(f"  ✓  Type    : {extracted.get('document_type','?')}")
-    print(f"     Date    : {doc_date}")
-    print(f"     Summary : {extracted.get('summary','')[:100]}")
-    if extracted.get("key_findings"):
-        print("     Findings:")
-        for f in extracted["key_findings"]:
-            print(f"       • {f}")
-    if extracted.get("workflow_rationale"):
-        print(f"     Workflows: {extracted.get('workflow_rationale','')}")
-
     return profile, extracted
+
+
+def run_intake(
+    text: str,
+    profile: dict,
+    *,
+    raw_bytes: bytes | None = None,
+    filename: str | None = None,
+    media_type: str = "text/plain",
+) -> tuple[dict, dict]:
+    """Run intake atomically with respect to newly-created evidence artifacts."""
+    before = copy.deepcopy(profile)
+    existing_ids = {
+        item.get("id") for item in profile.get("source_documents", []) if isinstance(item, dict)
+    }
+    try:
+        return _run_intake_impl(
+            text,
+            profile,
+            raw_bytes=raw_bytes,
+            filename=filename,
+            media_type=media_type,
+        )
+    except BaseException:
+        for source in profile.get("source_documents", []):
+            if isinstance(source, dict) and source.get("id") not in existing_ids:
+                remove_source_document(source)
+        profile.clear()
+        profile.update(before)
+        raise
 
 
 # Keep get_patient_summary discoverable from this module too (some legacy callers).

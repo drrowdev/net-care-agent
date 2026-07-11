@@ -220,7 +220,7 @@ def execute_tool(name: str, inputs: dict, profile: dict) -> dict:
     if name == "search_pubmed":
         result = search_pubmed(inputs["query"], inputs.get("max_results", 6))
         existing_pmids = {p["pmid"] for p in profile.get("literature_watched", [])}
-        today = datetime.date.today().isoformat()
+        added_at = now_stamp()
         saved = 0
         for article in result.get("results", []):
             if not article.get("pmid") or article["pmid"] in existing_pmids:
@@ -236,14 +236,12 @@ def execute_tool(name: str, inputs: dict, profile: dict) -> dict:
                     "date": article.get("date", ""),
                     "url": article.get("url", ""),
                     "query": inputs["query"],
-                    "date_added": today,
+                    "date_added": added_at,
                     "relevance_notes": "",
                 }
             )
             existing_pmids.add(article["pmid"])
             saved += 1
-        if saved:
-            print(f"   → Saved {saved} new relevant papers")
         return result
 
     elif name == "search_clinical_trials":
@@ -254,12 +252,18 @@ def execute_tool(name: str, inputs: dict, profile: dict) -> dict:
             inputs.get("country"),
         )
         existing_ncts = {t["nct_id"] for t in profile.get("trials_tracked", [])}
-        today = datetime.date.today().isoformat()
+        added_at = now_stamp()
         saved = 0
+        omitted: list[dict] = []
         for trial in result.get("trials", []):
-            if not trial.get("nct_id") or trial["nct_id"] in existing_ncts:
+            if not trial.get("nct_id"):
+                omitted.append({"nct_id": "", "reason": "missing_nct_id"})
+                continue
+            if trial["nct_id"] in existing_ncts:
+                omitted.append({"nct_id": trial["nct_id"], "reason": "already_tracked"})
                 continue
             if not _is_relevant(trial, "trial"):
+                omitted.append({"nct_id": trial["nct_id"], "reason": "not_net_relevant"})
                 continue
             profile.setdefault("trials_tracked", []).append(
                 {
@@ -267,18 +271,28 @@ def execute_tool(name: str, inputs: dict, profile: dict) -> dict:
                     "title": trial.get("title", ""),
                     "status": trial.get("status", ""),
                     "phase": trial.get("phase", ""),
+                    "phases": trial.get("phases", []),
                     "countries": trial.get("countries", []),
                     "url": trial.get("url", ""),
-                    "brief_summary": trial.get("brief_summary", "")[:300],
-                    "eligibility_excerpt": trial.get("eligibility_excerpt", "")[:300],
-                    "date_added": today,
+                    "brief_summary": trial.get("brief_summary", ""),
+                    "eligibility_excerpt": trial.get("eligibility_excerpt", ""),
+                    "registry_last_update": trial.get("registry_last_update", ""),
+                    "date_added": added_at,
                     "eligibility_notes": "",
                 }
             )
             existing_ncts.add(trial["nct_id"])
             saved += 1
-        if saved:
-            print(f"   → Saved {saved} new relevant trials")
+        result["persistence_manifest"] = {
+            "saved": saved,
+            "omitted": omitted,
+            "notice": (
+                f"{len(omitted)} returned trial(s) were not newly tracked; reasons "
+                "are listed explicitly."
+                if omitted
+                else ""
+            ),
+        }
         return result
 
     elif name == "analyze_biomarker_trends":

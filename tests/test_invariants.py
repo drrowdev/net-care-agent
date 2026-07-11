@@ -63,6 +63,5 @@ def test_intake_schema_keys_present(agent):
 def test_feed_and_digest_jobs_acquire_mutating_lock():
     """INVARIANTS §3/§4: mutating background jobs run under the single slot."""
     src = (REPO / "app.py").read_text(encoding="utf-8")
-    # crude but effective: both job bodies reference the mutating lock
-    assert src.count("mutating_lock.acquire()") >= 2
-    assert "mutating_lock.release()" in src
+    assert src.count("with agent.serialized_mutation(") >= 2
+    assert "@serialized_profile_mutation" in src

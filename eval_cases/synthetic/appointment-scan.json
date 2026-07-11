@@ -1,0 +1,46 @@
+{
+  "schema_version": "2.0.0",
+  "id": "appointment-scan",
+  "text": "Scheduling notice: DOTATATE PET/CT booked for 2026-05-07; fasting instructions attached.",
+  "expected": {
+    "document_type": "appointment_summary",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [],
+    "treatment_changes": [],
+    "imaging_facts": [],
+    "symptoms": [],
+    "appointments": [
+      {
+        "date": "2026-05-07",
+        "description": "DOTATATE PET/CT",
+        "type": "scan",
+        "source_quote": "DOTATATE PET/CT booked for 2026-05-07"
+      }
+    ],
+    "key_findings": [
+      {
+        "finding": "DOTATATE PET/CT is booked for 2026-05-07",
+        "date": "2026-05-07",
+        "source_quote": "DOTATATE PET/CT booked for 2026-05-07"
+      }
+    ],
+    "critical_events": [],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "DOTATATE PET/CT booked for 2026-05-07"
+      },
+      {
+        "field": "appointments",
+        "quote": "DOTATATE PET/CT booked for 2026-05-07"
+      }
+    ],
+    "must_not_infer": []
+  },
+  "tags": [
+    "appointment",
+    "imaging"
+  ]
+}

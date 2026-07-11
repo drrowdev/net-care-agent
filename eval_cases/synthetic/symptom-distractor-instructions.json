@@ -1,0 +1,57 @@
+{
+  "schema_version": "2.0.0",
+  "id": "symptom-distractor-instructions",
+  "text": "Education sheet says call if fever or severe diarrhea occurs. At visit 2026-04-28, patient denies fever and diarrhea.",
+  "expected": {
+    "document_type": "doctor_note",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [],
+    "treatment_changes": [],
+    "imaging_facts": [],
+    "symptoms": [
+      {
+        "symptom": "fever",
+        "status": "absent",
+        "date": "2026-04-28",
+        "source_quote": "patient denies fever and diarrhea"
+      },
+      {
+        "symptom": "diarrhea",
+        "status": "absent",
+        "date": "2026-04-28",
+        "source_quote": "patient denies fever and diarrhea"
+      }
+    ],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "At the visit, the patient denied fever and diarrhea",
+        "date": "2026-04-28",
+        "source_quote": "At visit 2026-04-28, patient denies fever and diarrhea"
+      }
+    ],
+    "critical_events": [],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "At visit 2026-04-28, patient denies fever and diarrhea"
+      },
+      {
+        "field": "symptoms",
+        "quote": "patient denies fever and diarrhea"
+      },
+      {
+        "field": "symptoms",
+        "quote": "patient denies fever and diarrhea"
+      }
+    ],
+    "must_not_infer": []
+  },
+  "tags": [
+    "symptoms",
+    "distractor",
+    "negation"
+  ]
+}

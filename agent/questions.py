@@ -7,7 +7,7 @@ import json
 
 from . import config
 from .judgments import CLINICAL_JUDGMENTS_OVERRIDE, get_clinical_judgments_context
-from .llm import client, first_text, strip_code_fences
+from .llm import client, first_text, is_timeout_error, strip_code_fences
 from .profile import (
     build_patient_context,
     get_output_language,
@@ -21,6 +21,8 @@ def generate_appointment_questions(appointment_type: str, focus_areas: list, pro
     Used by the orchestrator's tool dispatcher; the rich language-aware version
     below is used by the dedicated `/api/questions/generate` endpoint.
     """
+    judgments = get_clinical_judgments_context(profile)
+    judgment_block = f"\n\n{CLINICAL_JUDGMENTS_OVERRIDE}\n{judgments}" if judgments else ""
     resp = client.messages.create(
         model=config.MODEL_QUESTIONS,
         max_tokens=12000,
@@ -28,7 +30,7 @@ def generate_appointment_questions(appointment_type: str, focus_areas: list, pro
         system=(
             "You are a specialist medical research assistant helping a caregiver "
             "prepare for a cancer consultation. Generate specific, informed questions "
-            "based on the patient's current profile. Be concise but thorough."
+            "based on the patient's current profile. Be concise but thorough." + judgment_block
         ),
         messages=[
             {
@@ -123,6 +125,9 @@ def _build_questions_system_prompt(profile: dict) -> str:
         "ones. Order matters less than correct priority values — the UI groups and "
         "sorts.\n\n"
         + CLINICAL_JUDGMENTS_OVERRIDE
+        + "\n"
+        + get_clinical_judgments_context(profile)
+        + "\n"
         + "- You MAY ask a clarifying question where a judgment is ambiguous, "
         "conditional, or time-limited (e.g. what result would change the plan).\n"
     )
@@ -165,7 +170,7 @@ def generate_questions_for_profile(
         today = datetime.date.today().isoformat()
         return [
             {
-                "id": f"q_{i}_{today.replace('-','')}",
+                "id": f"q_{i}_{today.replace('-', '')}",
                 "text": q.get("text", ""),
                 "category": q.get("category", "Other"),
                 "priority": q.get("priority", "medium"),
@@ -177,6 +182,7 @@ def generate_questions_for_profile(
             for i, q in enumerate(questions)
             if q.get("text")
         ]
-    except Exception as e:
-        print(f"  ⚠  Question generation failed: {e}")
+    except Exception as exc:
+        if is_timeout_error(exc):
+            raise
         return []

@@ -1,0 +1,38 @@
+{
+  "schema_version": "2.0.0",
+  "id": "ambiguous-dose",
+  "text": "Phone note 2026-04-10: discussed possibly increasing lanreotide; no dose decision was made. Continue current regimen pending review.",
+  "expected": {
+    "document_type": "doctor_note",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [],
+    "treatment_changes": [],
+    "imaging_facts": [],
+    "symptoms": [],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "A possible lanreotide increase was discussed, but no dose decision was made; the current regimen continues pending review",
+        "date": "2026-04-10",
+        "source_quote": "discussed possibly increasing lanreotide; no dose decision was made. Continue current regimen pending review"
+      }
+    ],
+    "critical_events": [],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "discussed possibly increasing lanreotide; no dose decision was made. Continue current regimen pending review"
+      }
+    ],
+    "must_not_infer": [
+      "lanreotide dose increased",
+      "lanreotide 120 mg"
+    ]
+  },
+  "tags": [
+    "ambiguity",
+    "must-not-infer"
+  ]
+}

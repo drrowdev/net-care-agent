@@ -1,0 +1,41 @@
+{
+  "schema_version": "2.0.0",
+  "id": "distractor-family-history",
+  "text": "Consult 2026-04-09: mother had thyroid cancer. Patient has no thyroid mass and no diagnosis of thyroid cancer. NET follow-up only.",
+  "expected": {
+    "document_type": "doctor_note",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [],
+    "treatment_changes": [],
+    "imaging_facts": [],
+    "symptoms": [],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "The patient's mother had thyroid cancer, but the patient has no thyroid mass or thyroid cancer diagnosis",
+        "date": "2026-04-09",
+        "source_quote": "mother had thyroid cancer. Patient has no thyroid mass and no diagnosis of thyroid cancer"
+      }
+    ],
+    "critical_events": [],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "mother had thyroid cancer. Patient has no thyroid mass and no diagnosis of thyroid cancer"
+      }
+    ],
+    "must_not_infer": [
+      {
+        "statement": "patient thyroid cancer",
+        "critical": true
+      },
+      "thyroid mass"
+    ]
+  },
+  "tags": [
+    "distractor",
+    "negation"
+  ]
+}

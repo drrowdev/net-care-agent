@@ -7,9 +7,11 @@ prunes anything older than BACKUP_RETENTION_DAYS (default 30).
 from __future__ import annotations
 
 import datetime
+import hashlib
 import logging
 import os
 import shutil
+import time
 from pathlib import Path
 
 from . import config
@@ -30,12 +32,23 @@ def _snapshot_dir() -> Path:
     return config.DATA_DIR / "snapshots"
 
 
+def _write_sidecar_hash(path: Path, content_bytes: bytes) -> None:
+    """Write a ``.sha256`` sidecar alongside *path* (best-effort)."""
+    sidecar = path.with_suffix(path.suffix + ".sha256")
+    try:
+        digest = hashlib.sha256(content_bytes).hexdigest()
+        sidecar.write_text(digest + "\n", encoding="ascii")
+    except OSError as exc:
+        log.warning("sidecar_hash_write_failed path=%s error=%s", path.name, exc)
+
+
 def rotating_snapshot(profile_path: Path | None = None) -> Path | None:
     """Copy the CURRENT profile file to a rotating snapshot, keeping the last N.
 
     Call this BEFORE overwriting the profile so the snapshot captures the
-    pre-write state. Returns the snapshot path, or None if there is nothing to
-    snapshot yet. Never raises — snapshotting must not block a save.
+    pre-write state. Also writes an optional ``.sha256`` sidecar for integrity
+    validation during recovery. Returns the snapshot path, or None if there is
+    nothing to snapshot yet. Never raises — snapshotting must not block a save.
     """
     src = Path(profile_path) if profile_path else config.PROFILE_PATH
     if not src.exists():
@@ -46,6 +59,11 @@ def rotating_snapshot(profile_path: Path | None = None) -> Path | None:
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         target = sdir / f"profile_{ts}.json"
         shutil.copy2(src, target)
+        # Best-effort sidecar hash for recovery validation.
+        try:
+            _write_sidecar_hash(target, target.read_bytes())
+        except OSError:
+            pass
     except Exception as e:
         log.warning("rotating_snapshot_failed: %s", e)
         return None
@@ -55,6 +73,12 @@ def rotating_snapshot(profile_path: Path | None = None) -> Path | None:
     for old in snaps[:-PRESAVE_SNAPSHOT_COUNT] if len(snaps) > PRESAVE_SNAPSHOT_COUNT else []:
         try:
             old.unlink()
+        except OSError:
+            pass
+        # Also prune the sidecar if it exists.
+        sidecar = old.with_suffix(old.suffix + ".sha256")
+        try:
+            sidecar.unlink(missing_ok=True)
         except OSError:
             pass
     return target
@@ -108,3 +132,22 @@ def _prune_old(bdir: Path, retention_days: int) -> None:
                 log.info("daily_backup_pruned", extra={"path": str(f)})
             except OSError:
                 pass
+
+
+def newest_file_age_seconds(directory: Path, pattern: str) -> float | None:
+    """Return seconds since the newest file matching ``pattern`` was modified.
+
+    Returns ``None`` when the directory does not exist or no matching files are
+    found.  Used by ``/api/health`` to report backup freshness without exposing
+    filesystem paths.
+    """
+    if not directory.exists():
+        return None
+    files = sorted(directory.glob(pattern), reverse=True)
+    if not files:
+        return None
+    try:
+        mtime = files[0].stat().st_mtime
+        return time.time() - mtime
+    except OSError:
+        return None

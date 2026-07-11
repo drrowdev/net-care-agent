@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import threading
 
 
 def test_atomic_write_replaces_target(tmp_path):
@@ -67,3 +68,48 @@ def test_save_profile_uses_atomic_write(agent, tmp_path):
     # Round-trip works
     loaded = agent.load_profile()
     assert loaded["patient"]["sstr_status"] == "positive"
+
+
+def test_atomic_write_uses_unique_sibling_temps(tmp_path, monkeypatch):
+    from agent import io
+
+    target = tmp_path / "shared.json"
+    real_replace = io.os.replace
+    sources = []
+    errors = []
+    barrier = threading.Barrier(2)
+    first_calls = set()
+    first_calls_lock = threading.Lock()
+
+    def delayed_replace(source, destination):
+        sources.append(source)
+        ident = threading.get_ident()
+        with first_calls_lock:
+            first_for_thread = ident not in first_calls
+            first_calls.add(ident)
+        if first_for_thread:
+            barrier.wait(timeout=3)
+        real_replace(source, destination)
+
+    monkeypatch.setattr(io.os, "replace", delayed_replace)
+
+    def write(content):
+        try:
+            io.atomic_write_text(target, content)
+        except BaseException as exc:  # surface thread failures in the test process
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=write, args=('{"writer": 1}',)),
+        threading.Thread(target=write, args=('{"writer": 2}',)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert errors == []
+    assert len(sources) >= 2
+    assert sources[0] != sources[1]
+    assert all(source.parent == target.parent for source in sources)
+    assert not list(tmp_path.glob("*.tmp"))

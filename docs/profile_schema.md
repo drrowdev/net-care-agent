@@ -10,11 +10,17 @@ All sub-models accept **extra** fields (forward-compat) and treat every document
 
 ```jsonc
 {
+  'schema_version': int,
+  'profile_revision': int,
+  'profile_updated_at': str | None,
+  'profile_saved_at': str | None,
+  'summary_stale': bool,
   'patient': Patient,
   'biomarkers': list[Biomarker],
   'imaging': list[Imaging],
   'appointments': list[Appointment],
   'documents': list[Document],
+  'source_documents': list[SourceDocument],
   'trials_tracked': list[TrialTracked],
   'literature_watched': list[LiteratureWatched],
   'alerts': list[Alert],
@@ -22,6 +28,8 @@ All sub-models accept **extra** fields (forward-compat) and treat every document
   'clinical_judgments': list[ClinicalJudgment],
   'symptoms': list[Symptom],
   'questions': list[Question],
+  'appointment_questions': list[Question],
+  'feedback': list[Feedback],
   'executive_summary': ExecutiveSummary | None,
   'acknowledged_at': str | None,
 }
@@ -56,6 +64,11 @@ A single lab result row (CgA, NSE, 5-HIAA, creatinine, etc.).
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `source_document_id` | `str \| None` |  |
+| `source_quote` | `str \| None` | Exact immutable source text span |
+| `evidence_status` | `'verified' \| 'missing' \| 'invalid' \| null` |  |
+| `evidence_start` | `int \| None` |  |
+| `evidence_end` | `int \| None` |  |
 | `date` | `str \| None` | YYYY-MM-DD |
 | `marker` | `str \| None` |  |
 | `value` | `Any` | number or string |
@@ -68,6 +81,11 @@ A single lab result row (CgA, NSE, 5-HIAA, creatinine, etc.).
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `source_document_id` | `str \| None` |  |
+| `source_quote` | `str \| None` | Exact immutable source text span |
+| `evidence_status` | `'verified' \| 'missing' \| 'invalid' \| null` |  |
+| `evidence_start` | `int \| None` |  |
+| `evidence_end` | `int \| None` |  |
 | `date` | `str \| None` | YYYY-MM-DD |
 | `modality` | `'CT' \| 'MRI' \| 'PET-CT' \| 'ultrasound' \| 'other' \| null` |  |
 | `findings` | `str \| None` |  |
@@ -86,6 +104,8 @@ Every fed document, kept for audit and downstream re-analysis.
 | `summary` | `str \| None` | 1–2 sentence intake-agent summary |
 | `key_findings` | `list[str]` |  |
 | `raw_text` | `str \| None` | First ~3000 chars of input |
+| `source_document_id` | `str \| None` |  |
+| `evidence` | `list[Any]]` | Anchored evidence for document-level findings not stored as structured rows |
 | `added_at` | `str \| None` | Ingestion timestamp; drives the 'new since acknowledged' counter. |
 
 ## `trials_tracked[]`
@@ -150,6 +170,12 @@ Hard constraints captured from oncologist consultations.
 | `category` | `'constraint' \| 'preference' \| 'outcome' \| 'context' \| null` |  |
 | `text` | `str \| None` |  |
 | `source` | `'manual' \| 'ai' \| null` |  |
+| `scope` | `str \| None` | Clinical topic or decision this judgment governs |
+| `status` | `'active' \| 'superseded' \| 'needs_review'` |  |
+| `review_after` | `str \| None` | YYYY-MM-DD; review due on/after this date |
+| `valid_until` | `str \| None` | YYYY-MM-DD; ceases to constrain after this date |
+| `supersedes` | `str \| None` | ID of the prior judgment this replaces |
+| `updated_at` | `str \| None` |  |
 | `added_at` | `str \| None` | Ingestion timestamp; drives the 'new since acknowledged' counter. |
 
 ## `symptoms[]`
@@ -162,6 +188,11 @@ Patient-reported symptom or side effect.
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `source_document_id` | `str \| None` |  |
+| `source_quote` | `str \| None` | Exact immutable source text span |
+| `evidence_status` | `'verified' \| 'missing' \| 'invalid' \| null` |  |
+| `evidence_start` | `int \| None` |  |
+| `evidence_end` | `int \| None` |  |
 | `id` | `str \| None` |  |
 | `date` | `str \| None` | YYYY-MM-DD |
 | `symptom` | `str \| None` |  |
@@ -188,6 +219,11 @@ Patient-reported symptom or side effect.
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `source_document_id` | `str \| None` |  |
+| `source_quote` | `str \| None` | Exact immutable source text span |
+| `evidence_status` | `'verified' \| 'missing' \| 'invalid' \| null` |  |
+| `evidence_start` | `int \| None` |  |
+| `evidence_end` | `int \| None` |  |
 | `date` | `str \| None` |  |
 | `time` | `str \| None` |  |
 | `with` | `str \| None` |  |
@@ -195,6 +231,31 @@ Patient-reported symptom or side effect.
 | `notes` | `str \| None` |  |
 | `description` | `str \| None` |  |
 | `type` | `str \| None` |  |
+| `added_at` | `str \| None` |  |
+
+## `source_documents[]`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `str` |  |
+| `ingested_at` | `str` |  |
+| `filename` | `str \| None` |  |
+| `media_type` | `str \| None` |  |
+| `source` | `SourceArtifact` |  |
+| `text` | `SourceArtifact` |  |
+
+## `feedback[]`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `str` |  |
+| `target` | `str` |  |
+| `item_id` | `str` |  |
+| `assessment` | `'agreed' \| 'corrected' \| 'acted' \| 'helpful' \| 'incorrect' \| 'missed'` |  |
+| `note` | `str \| None` |  |
+| `outcome` | `str \| None` |  |
+| `created_at` | `str` |  |
+| `updated_at` | `str` |  |
 
 ## `executive_summary`
 
@@ -203,6 +264,10 @@ Most recent JSON output of agent.exec_summary.generate_executive_summary.
 | Field | Type | Description |
 |-------|------|-------------|
 | `generated_at` | `str \| None` |  |
+| `generated_at_timestamp` | `str \| None` |  |
+| `summary_revision` | `int \| None` |  |
+| `stale` | `bool` |  |
+| `summary_error` | `str \| None` |  |
 | `model` | `str \| None` |  |
 | `summary` | `Any` |  |
 

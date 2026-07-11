@@ -1,0 +1,47 @@
+{
+  "schema_version": "2.0.0",
+  "id": "five-hiaa-urine",
+  "text": "24-hour urine collected 2026-04-14: 5-HIAA 16.4 mg/24 h (reference 0.0-14.9).",
+  "expected": {
+    "document_type": "lab_result",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [
+      {
+        "marker": "5-HIAA",
+        "value": "16.4",
+        "unit": "mg/24 h",
+        "date": "2026-04-14",
+        "reference_range": "0.0-14.9",
+        "source_quote": "5-HIAA 16.4 mg/24 h (reference 0.0-14.9)"
+      }
+    ],
+    "treatment_changes": [],
+    "imaging_facts": [],
+    "symptoms": [],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "24-hour urine 5-HIAA was 16.4 mg/24 h (reference 0.0-14.9)",
+        "date": "2026-04-14",
+        "source_quote": "5-HIAA 16.4 mg/24 h (reference 0.0-14.9)"
+      }
+    ],
+    "critical_events": [],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "5-HIAA 16.4 mg/24 h (reference 0.0-14.9)"
+      },
+      {
+        "field": "biomarkers",
+        "quote": "5-HIAA 16.4 mg/24 h (reference 0.0-14.9)"
+      }
+    ],
+    "must_not_infer": []
+  },
+  "tags": [
+    "biomarker"
+  ]
+}

@@ -12,12 +12,16 @@ already embedded in the orchestrator and exec-summary prompts.
 
 from __future__ import annotations
 
+import datetime
+import hashlib
+
 # One canonical override block, reused across agents so the safety framing is
 # identical everywhere. Decision-support only: the oncologist reviews all output.
 CLINICAL_JUDGMENTS_OVERRIDE = (
-    "━━━ CLINICAL JUDGMENTS ARE HARD CONSTRAINTS ━━━\n"
+    "━━━ ACTIVE CLINICAL JUDGMENTS ARE HARD CONSTRAINTS ━━━\n"
     "The record may include clinical judgments recorded directly from "
-    "consultations with the treating oncologist. They are ground truth and "
+    "consultations with the treating oncologist. Only items shown as active and "
+    "not expired/review-due are ground truth and "
     "OVERRIDE anything you would otherwise conclude from the raw data:\n"
     "- If a judgment marks something as NOT concerning, do not raise it as a "
     "concern or an action.\n"
@@ -26,7 +30,8 @@ CLINICAL_JUDGMENTS_OVERRIDE = (
     "- If a judgment states a preference or constraint (e.g. renal limits, "
     "timing), respect it.\n"
     "- Synthesise the oncologist's judgment WITH the data — never second-guess "
-    "the oncologist on the basis of data alone.\n"
+    "the oncologist on the basis of data alone. Items under NEEDS CLINICIAN REVIEW "
+    "are historical context, not hard constraints.\n"
 )
 
 
@@ -42,8 +47,16 @@ def get_clinical_judgments_context(profile: dict) -> str:
         "",
     ]
 
+    today = datetime.date.today().isoformat()
     by_cat: dict[str, list] = {}
+    needs_review: list[dict] = []
     for j in sorted(judgments, key=lambda x: x.get("date", ""), reverse=True):
+        status = j.get("status") or "active"
+        expired = bool(j.get("valid_until") and j["valid_until"] < today)
+        review_due = bool(j.get("review_after") and j["review_after"] <= today)
+        if status != "active" or expired or review_due:
+            needs_review.append(j)
+            continue
         cat = j.get("category", "context")
         by_cat.setdefault(cat, []).append(j)
 
@@ -58,7 +71,31 @@ def get_clinical_judgments_context(profile: dict) -> str:
         if items:
             lines.append(cat_labels[cat])
             for j in items:
-                lines.append(f"  [{j.get('date', '')}] {j.get('text', '')}")
+                scope = f" ({j['scope']})" if j.get("scope") else ""
+                lines.append(f"  [{j.get('date', '')}]{scope} {j.get('text', '')}")
             lines.append("")
 
+    if needs_review:
+        lines.extend(
+            [
+                "⚠ NEEDS CLINICIAN REVIEW — NOT ACTIVE HARD CONSTRAINTS",
+                "The following expired, review-due, superseded, or explicitly review-needed "
+                "items are historical context only. Do not treat them as active constraints:",
+            ]
+        )
+        for j in needs_review:
+            reasons = [j.get("status") or "active"]
+            if j.get("valid_until") and j["valid_until"] < today:
+                reasons.append(f"expired {j['valid_until']}")
+            if j.get("review_after") and j["review_after"] <= today:
+                reasons.append(f"review due {j['review_after']}")
+            lines.append(f"  [{j.get('date', '')}; {', '.join(reasons)}] {j.get('text', '')}")
+        lines.append("")
+
     return "\n".join(lines)
+
+
+def clinical_judgments_fingerprint(profile: dict) -> str:
+    """Hash the effective active/review judgment context for summary freshness."""
+    context = get_clinical_judgments_context(profile)
+    return hashlib.sha256(context.encode("utf-8")).hexdigest()

@@ -46,6 +46,7 @@ Thumbs.db
 
 # Azure
 .azure/
+.deploy/
 
 Scratchpad-data/
 venv311/

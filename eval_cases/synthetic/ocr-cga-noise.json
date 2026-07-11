@@ -1,0 +1,48 @@
+{
+  "schema_version": "2.0.0",
+  "id": "ocr-cga-noise",
+  "text": "L4B R3P0RT 2026-01-08: Chr0m0granin A (CgA) 248 ng/mL [ref 0-100], flagged H.",
+  "expected": {
+    "document_type": "lab_result",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [
+      {
+        "marker": "CgA",
+        "value": "248",
+        "unit": "ng/mL",
+        "date": "2026-01-08",
+        "reference_range": "0-100",
+        "source_quote": "Chr0m0granin A (CgA) 248 ng/mL [ref 0-100]"
+      }
+    ],
+    "treatment_changes": [],
+    "imaging_facts": [],
+    "symptoms": [],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "CgA was 248 ng/mL (reference 0-100), flagged high",
+        "date": "2026-01-08",
+        "source_quote": "Chr0m0granin A (CgA) 248 ng/mL [ref 0-100], flagged H"
+      }
+    ],
+    "critical_events": [],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "Chr0m0granin A (CgA) 248 ng/mL [ref 0-100], flagged H"
+      },
+      {
+        "field": "biomarkers",
+        "quote": "Chr0m0granin A (CgA) 248 ng/mL [ref 0-100]"
+      }
+    ],
+    "must_not_infer": []
+  },
+  "tags": [
+    "ocr",
+    "biomarker"
+  ]
+}

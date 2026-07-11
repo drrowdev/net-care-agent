@@ -1,0 +1,63 @@
+{
+  "schema_version": "2.0.0",
+  "id": "sstr-dotatate-positive",
+  "text": "68Ga-DOTATATE PET/CT 2026-02-20: intense somatostatin receptor uptake in hepatic lesions, Krenning score 4.",
+  "expected": {
+    "document_type": "imaging_report",
+    "ki67_update": null,
+    "sstr_status_update": "positive",
+    "sstr_score_update": 4,
+    "biomarkers": [],
+    "treatment_changes": [],
+    "imaging_facts": [
+      {
+        "finding": "intense somatostatin receptor uptake in hepatic lesions",
+        "date": "2026-02-20",
+        "status": "positive",
+        "source_quote": "intense somatostatin receptor uptake in hepatic lesions"
+      }
+    ],
+    "symptoms": [],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "There was intense somatostatin receptor uptake in hepatic lesions",
+        "date": "2026-02-20",
+        "source_quote": "intense somatostatin receptor uptake in hepatic lesions"
+      },
+      {
+        "finding": "Krenning score 4",
+        "date": "2026-02-20",
+        "source_quote": "Krenning score 4"
+      }
+    ],
+    "critical_events": [],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "intense somatostatin receptor uptake in hepatic lesions"
+      },
+      {
+        "field": "imaging_facts",
+        "quote": "intense somatostatin receptor uptake in hepatic lesions"
+      },
+      {
+        "field": "key_findings",
+        "quote": "Krenning score 4"
+      },
+      {
+        "field": "sstr_status_update",
+        "quote": "intense somatostatin receptor uptake in hepatic lesions"
+      },
+      {
+        "field": "sstr_score_update",
+        "quote": "Krenning score 4"
+      }
+    ],
+    "must_not_infer": []
+  },
+  "tags": [
+    "sstr",
+    "imaging"
+  ]
+}

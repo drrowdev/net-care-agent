@@ -19,6 +19,68 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# Collection keys that must be lists (or None/missing → coercible to []).
+# Used by structural_check and the coercion step in load_profile.
+_COLLECTION_KEYS: tuple[str, ...] = (
+    "biomarkers",
+    "imaging",
+    "appointments",
+    "documents",
+    "source_documents",
+    "trials_tracked",
+    "literature_watched",
+    "alerts",
+    "treatments_classified",
+    "clinical_judgments",
+    "symptoms",
+    "questions",
+    "appointment_questions",
+    "feedback",
+)
+
+
+def structural_check(data: object) -> bool:
+    """Return True if *data* is structurally usable as a patient profile.
+
+    A profile is structurally valid when:
+
+    - It is a ``dict``.
+    - The ``patient`` key, if present, is either ``None`` or a ``dict``.
+    - Each collection key, if present, is either ``None`` or a ``list``.
+
+    ``None`` values are *safely coercible* (``None → {}`` / ``None → []``) and
+    pass this check.  Type mismatches (e.g. ``patient = 42``) return ``False``
+    and trigger quarantine in ``load_profile``.
+
+    This check is intentionally permissive on missing keys — they are filled in
+    by migrations and Pydantic defaults.  It only rejects data that cannot be
+    safely coerced into a usable profile shape.
+    """
+    if not isinstance(data, dict):
+        return False
+    patient = data.get("patient")
+    if patient is not None and not isinstance(patient, dict):
+        return False
+    for key in _COLLECTION_KEYS:
+        val = data.get(key)
+        if val is not None and not isinstance(val, list):
+            return False
+    return True
+
+
+def clinically_empty_profile(data: object) -> bool:
+    """Return True when a profile-shaped dict contains no patient/clinical data."""
+    if not isinstance(data, dict) or not data:
+        return True
+    patient = data.get("patient")
+    if isinstance(patient, dict) and any(
+        value not in (None, "", [], {}) for value in patient.values()
+    ):
+        return False
+    if any(isinstance(data.get(key), list) and bool(data[key]) for key in _COLLECTION_KEYS):
+        return False
+    return not bool(data.get("executive_summary"))
+
 
 def now_stamp() -> str:
     """Wall-clock ISO timestamp (seconds precision) for when an item was first
@@ -51,6 +113,7 @@ AlertPriority = Literal["urgent", "high", "medium", "low"]
 TreatmentCategory = Literal["active", "planned", "completed"]
 JudgmentCategory = Literal["constraint", "preference", "outcome", "context"]
 JudgmentSource = Literal["manual", "ai"]
+JudgmentStatus = Literal["active", "superseded", "needs_review"]
 SymptomSource = Literal["manual", "ai"]
 QuestionCategory = Literal["Treatment", "Diagnostics", "Symptoms", "Trials", "Monitoring", "Other"]
 QuestionPriority = Literal["urgent", "high", "medium"]
@@ -62,6 +125,16 @@ class _Lenient(BaseModel):
     """Base for all profile sub-models: accept extras, validate by name."""
 
     model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+
+class _EvidenceFields(_Lenient):
+    """Provenance shared by facts extracted from a fed source document."""
+
+    source_document_id: str | None = None
+    source_quote: str | None = Field(None, description="Exact immutable source text span")
+    evidence_status: Literal["verified", "missing", "invalid"] | None = None
+    evidence_start: int | None = Field(None, ge=0)
+    evidence_end: int | None = Field(None, ge=0)
 
 
 # ── sub-models ────────────────────────────────────────────────────────────────
@@ -106,7 +179,7 @@ class Patient(_Lenient):
     )
 
 
-class Biomarker(_Lenient):
+class Biomarker(_EvidenceFields):
     """A single lab result row (CgA, NSE, 5-HIAA, creatinine, etc.)."""
 
     date: str | None = Field(None, description="YYYY-MM-DD")
@@ -120,7 +193,7 @@ class Biomarker(_Lenient):
     )
 
 
-class Imaging(_Lenient):
+class Imaging(_EvidenceFields):
     date: str | None = Field(None, description="YYYY-MM-DD")
     modality: ImagingModality | None = None
     findings: str | None = None
@@ -139,6 +212,11 @@ class Document(_Lenient):
     summary: str | None = Field(None, description="1–2 sentence intake-agent summary")
     key_findings: list[str] = Field(default_factory=list)
     raw_text: str | None = Field(None, description="First ~3000 chars of input")
+    source_document_id: str | None = None
+    evidence: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Anchored evidence for document-level findings not stored as structured rows",
+    )
     added_at: str | None = Field(
         None, description="Ingestion timestamp; drives the 'new since acknowledged' counter."
     )
@@ -197,12 +275,20 @@ class ClinicalJudgment(_Lenient):
     category: JudgmentCategory | None = None
     text: str | None = None
     source: JudgmentSource | None = None
+    scope: str | None = Field(None, description="Clinical topic or decision this judgment governs")
+    status: JudgmentStatus = "active"
+    review_after: str | None = Field(None, description="YYYY-MM-DD; review due on/after this date")
+    valid_until: str | None = Field(
+        None, description="YYYY-MM-DD; ceases to constrain after this date"
+    )
+    supersedes: str | None = Field(None, description="ID of the prior judgment this replaces")
+    updated_at: str | None = None
     added_at: str | None = Field(
         None, description="Ingestion timestamp; drives the 'new since acknowledged' counter."
     )
 
 
-class Symptom(_Lenient):
+class Symptom(_EvidenceFields):
     """Patient-reported symptom or side effect.
 
     Bridges the gap between objective biomarkers and the oncologist's
@@ -235,7 +321,7 @@ class Question(_Lenient):
     created_at: str | None = None
 
 
-class Appointment(_Lenient):
+class Appointment(_EvidenceFields):
     date: str | None = None
     time: str | None = None
     with_: str | None = Field(None, alias="with")
@@ -243,12 +329,43 @@ class Appointment(_Lenient):
     notes: str | None = None
     description: str | None = None
     type: str | None = None
+    added_at: str | None = None
+
+
+class SourceArtifact(_Lenient):
+    path: str
+    sha256: str
+    length: int = Field(ge=0)
+
+
+class SourceDocument(_Lenient):
+    id: str
+    ingested_at: str
+    filename: str | None = None
+    media_type: str | None = None
+    source: SourceArtifact
+    text: SourceArtifact
+
+
+class Feedback(_Lenient):
+    id: str
+    target: str
+    item_id: str
+    assessment: Literal["agreed", "corrected", "acted", "helpful", "incorrect", "missed"]
+    note: str | None = None
+    outcome: str | None = None
+    created_at: str
+    updated_at: str
 
 
 class ExecutiveSummary(_Lenient):
     """Most recent JSON output of agent.exec_summary.generate_executive_summary."""
 
     generated_at: str | None = None
+    generated_at_timestamp: str | None = None
+    summary_revision: int | None = None
+    stale: bool = True
+    summary_error: str | None = None
     model: str | None = None
     summary: Any = None  # free-form structure varies by run
 
@@ -257,11 +374,20 @@ class ExecutiveSummary(_Lenient):
 class PatientProfile(_Lenient):
     """The complete patient profile. Lives at ${DATA_DIR}/patient_profile.json."""
 
+    schema_version: int = Field(
+        default=1,
+        description="Profile schema version. Incremented when a structural migration runs.",
+    )
+    profile_revision: int = 0
+    profile_updated_at: str | None = None
+    profile_saved_at: str | None = None
+    summary_stale: bool = True
     patient: Patient = Field(default_factory=Patient)
     biomarkers: list[Biomarker] = Field(default_factory=list)
     imaging: list[Imaging] = Field(default_factory=list)
     appointments: list[Appointment] = Field(default_factory=list)
     documents: list[Document] = Field(default_factory=list)
+    source_documents: list[SourceDocument] = Field(default_factory=list)
     trials_tracked: list[TrialTracked] = Field(default_factory=list)
     literature_watched: list[LiteratureWatched] = Field(default_factory=list)
     alerts: list[Alert] = Field(default_factory=list)
@@ -269,6 +395,8 @@ class PatientProfile(_Lenient):
     clinical_judgments: list[ClinicalJudgment] = Field(default_factory=list)
     symptoms: list[Symptom] = Field(default_factory=list)
     questions: list[Question] = Field(default_factory=list)
+    appointment_questions: list[Question] = Field(default_factory=list)
+    feedback: list[Feedback] = Field(default_factory=list)
     executive_summary: ExecutiveSummary | None = None
     acknowledged_at: str | None = Field(
         None,
@@ -296,7 +424,7 @@ def normalize_profile(data: dict) -> dict:
     try:
         model = PatientProfile.model_validate(data)
     except Exception as e:
-        log.warning("profile validation failed; returning raw dict: %s", e)
+        log.warning("profile validation failed type=%s", type(e).__name__)
         return data
     return model.model_dump(by_alias=True, exclude_none=False)
 
@@ -342,6 +470,8 @@ def render_schema_markdown() -> str:
         ("symptoms[]", Symptom),
         ("questions[]", Question),
         ("appointments[]", Appointment),
+        ("source_documents[]", SourceDocument),
+        ("feedback[]", Feedback),
         ("executive_summary", ExecutiveSummary),
     ]
     for label, cls in submodels:
@@ -433,8 +563,10 @@ __all__ = [
     "Symptom",
     "TrialTracked",
     "TreatmentClassified",
+    "_COLLECTION_KEYS",
     "normalize_profile",
     "render_schema_markdown",
+    "structural_check",
     "validate_profile",
 ]
 

@@ -1,0 +1,56 @@
+{
+  "schema_version": "2.0.0",
+  "id": "symptom-improved",
+  "text": "Symptom diary 2026-04-27: abdominal pain improved from 7/10 to 2/10; nausea absent.",
+  "expected": {
+    "document_type": "doctor_note",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [],
+    "treatment_changes": [],
+    "imaging_facts": [],
+    "symptoms": [
+      {
+        "symptom": "abdominal pain improved to 2/10",
+        "status": "present",
+        "date": "2026-04-27",
+        "source_quote": "abdominal pain improved from 7/10 to 2/10"
+      },
+      {
+        "symptom": "nausea",
+        "status": "absent",
+        "date": "2026-04-27",
+        "source_quote": "nausea absent"
+      }
+    ],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "Abdominal pain improved from 7/10 to 2/10 and nausea was absent",
+        "date": "2026-04-27",
+        "source_quote": "abdominal pain improved from 7/10 to 2/10; nausea absent"
+      }
+    ],
+    "critical_events": [],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "abdominal pain improved from 7/10 to 2/10; nausea absent"
+      },
+      {
+        "field": "symptoms",
+        "quote": "abdominal pain improved from 7/10 to 2/10"
+      },
+      {
+        "field": "symptoms",
+        "quote": "nausea absent"
+      }
+    ],
+    "must_not_infer": []
+  },
+  "tags": [
+    "symptoms",
+    "negation"
+  ]
+}

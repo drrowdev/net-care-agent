@@ -1,0 +1,45 @@
+{
+  "schema_version": "2.0.0",
+  "id": "treatment-restarted",
+  "text": "Visit 2026-04-23: counts recovered; restart capecitabine at 750 mg/m2 twice daily on days 1-14.",
+  "expected": {
+    "document_type": "doctor_note",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [],
+    "treatment_changes": [
+      {
+        "treatment": "capecitabine 750 mg/m2 twice daily days 1-14",
+        "state": "started",
+        "date": "2026-04-23",
+        "source_quote": "restart capecitabine at 750 mg/m2 twice daily on days 1-14"
+      }
+    ],
+    "imaging_facts": [],
+    "symptoms": [],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "After count recovery, capecitabine was restarted at 750 mg/m2 twice daily on days 1-14",
+        "date": "2026-04-23",
+        "source_quote": "counts recovered; restart capecitabine at 750 mg/m2 twice daily on days 1-14"
+      }
+    ],
+    "critical_events": [],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "counts recovered; restart capecitabine at 750 mg/m2 twice daily on days 1-14"
+      },
+      {
+        "field": "treatment_changes",
+        "quote": "restart capecitabine at 750 mg/m2 twice daily on days 1-14"
+      }
+    ],
+    "must_not_infer": []
+  },
+  "tags": [
+    "treatment"
+  ]
+}

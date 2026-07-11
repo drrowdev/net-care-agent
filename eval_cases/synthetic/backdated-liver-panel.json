@@ -1,0 +1,60 @@
+{
+  "schema_version": "2.0.0",
+  "id": "backdated-liver-panel",
+  "text": "Entered 2026-06-01. Specimen collected 2025-11-14: ALT 72 U/L (reference 7-56); AST 61 U/L (10-40).",
+  "expected": {
+    "document_type": "lab_result",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [
+      {
+        "marker": "ALT",
+        "value": "72",
+        "unit": "U/L",
+        "date": "2025-11-14",
+        "reference_range": "7-56",
+        "source_quote": "ALT 72 U/L (reference 7-56)"
+      },
+      {
+        "marker": "AST",
+        "value": "61",
+        "unit": "U/L",
+        "date": "2025-11-14",
+        "reference_range": "10-40",
+        "source_quote": "AST 61 U/L (10-40)"
+      }
+    ],
+    "treatment_changes": [],
+    "imaging_facts": [],
+    "symptoms": [],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "ALT was 72 U/L (reference 7-56) and AST was 61 U/L (10-40)",
+        "date": "2025-11-14",
+        "source_quote": "ALT 72 U/L (reference 7-56); AST 61 U/L (10-40)"
+      }
+    ],
+    "critical_events": [],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "ALT 72 U/L (reference 7-56); AST 61 U/L (10-40)"
+      },
+      {
+        "field": "biomarkers",
+        "quote": "ALT 72 U/L (reference 7-56)"
+      },
+      {
+        "field": "biomarkers",
+        "quote": "AST 61 U/L (10-40)"
+      }
+    ],
+    "must_not_infer": []
+  },
+  "tags": [
+    "back-dated",
+    "hepatic"
+  ]
+}

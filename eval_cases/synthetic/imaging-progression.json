@@ -1,0 +1,57 @@
+{
+  "schema_version": "2.0.0",
+  "id": "imaging-progression",
+  "text": "CT abdomen 2026-03-15: target liver lesion increased from 2.1 cm to 3.0 cm since 2025-12-10, consistent with progression.",
+  "expected": {
+    "document_type": "imaging_report",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [],
+    "treatment_changes": [],
+    "imaging_facts": [
+      {
+        "finding": "target liver lesion increased from 2.1 cm to 3.0 cm",
+        "date": "2026-03-15",
+        "status": "progressing",
+        "source_quote": "target liver lesion increased from 2.1 cm to 3.0 cm"
+      }
+    ],
+    "symptoms": [],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "The target liver lesion increased from 2.1 cm to 3.0 cm since 2025-12-10, consistent with progression",
+        "date": "2026-03-15",
+        "source_quote": "target liver lesion increased from 2.1 cm to 3.0 cm since 2025-12-10, consistent with progression"
+      }
+    ],
+    "critical_events": [
+      {
+        "event": "target liver lesion increased from 2.1 cm to 3.0 cm since 2025-12-10, consistent with progression",
+        "date": "2026-03-15",
+        "source_quote": "target liver lesion increased from 2.1 cm to 3.0 cm since 2025-12-10, consistent with progression",
+        "critical": true
+      }
+    ],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "target liver lesion increased from 2.1 cm to 3.0 cm since 2025-12-10, consistent with progression"
+      },
+      {
+        "field": "imaging_facts",
+        "quote": "target liver lesion increased from 2.1 cm to 3.0 cm"
+      },
+      {
+        "field": "critical_events",
+        "quote": "target liver lesion increased from 2.1 cm to 3.0 cm since 2025-12-10, consistent with progression"
+      }
+    ],
+    "must_not_infer": []
+  },
+  "tags": [
+    "progression",
+    "imaging"
+  ]
+}

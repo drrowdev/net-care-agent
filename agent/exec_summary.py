@@ -7,7 +7,7 @@ import json
 
 from . import config
 from .judgments import get_clinical_judgments_context
-from .llm import client, first_text, render_prompt, strip_code_fences
+from .llm import client, first_text, is_timeout_error, render_prompt, strip_code_fences
 from .profile import (
     build_patient_context,
     get_caregiver_relationship,
@@ -19,7 +19,7 @@ You are a clinical summarization agent for [[PATIENT_CONTEXT]].
 The reader is the patient's [[CAREGIVER]], not a clinician.
 
 CRITICAL RULE — CLINICAL JUDGMENTS OVERRIDE YOUR ANALYSIS:
-The patient profile may contain "clinical_judgments" — notes recorded directly from consultations with the treating oncologist. These represent ground truth. They MUST override anything you would otherwise conclude from the raw data.
+The patient profile may contain "clinical_judgments" recorded from consultations. Only judgments shown as active and not expired/review-due represent ground truth and MUST override your analysis. Items under NEEDS CLINICIAN REVIEW are historical context only.
 - If a judgment marks something as NOT concerning, do NOT include it as a concern or recommended action, even if the raw data looks alarming to you.
 - If a judgment says a treatment/trial is ruled out, do NOT recommend it.
 - If a judgment says the oncologist prefers a certain approach, prioritise it.
@@ -93,6 +93,46 @@ _APPT_TYPE_MAP = {
     "other": "milestone",
 }
 
+_TRIAL_STATUS_PRIORITY = {
+    "RECRUITING": 0,
+    "NOT_YET_RECRUITING": 1,
+    "ENROLLING_BY_INVITATION": 2,
+    "ACTIVE_NOT_RECRUITING": 3,
+}
+_SUMMARY_TRIAL_LIMIT = 20
+
+
+def _tracked_trials_context(profile: dict) -> dict:
+    """Select current tracked trials deterministically and disclose omissions."""
+    tracked = profile.get("trials_tracked", []) or []
+    # Python's sort is stable: order by freshness first, then group by the
+    # clinically useful access status without losing freshness within a group.
+    ordered = sorted(
+        tracked,
+        key=lambda trial: (
+            trial.get("registry_last_update") or trial.get("date_added") or "",
+            trial.get("nct_id") or "",
+        ),
+        reverse=True,
+    )
+    ordered.sort(
+        key=lambda trial: _TRIAL_STATUS_PRIORITY.get(
+            (trial.get("status") or "").upper(),
+            9,
+        )
+    )
+    selected = ordered[:_SUMMARY_TRIAL_LIMIT]
+    return {
+        "tracked_total": len(tracked),
+        "included": len(selected),
+        "omitted": max(0, len(tracked) - len(selected)),
+        "selection_rule": (
+            "Recruiting/current-access statuses first, then latest registry/date-added "
+            "within each status; complete stored eligibility retained."
+        ),
+        "trials": selected,
+    }
+
 
 def _merge_upcoming_appointments(summary: dict, profile: dict) -> dict:
     """Guarantee upcoming structured appointments appear on the timeline.
@@ -131,10 +171,10 @@ def _merge_upcoming_appointments(summary: dict, profile: dict) -> dict:
                     "provisional": True,
                 }
             )
-        timeline.sort(key=lambda t: (t.get("date") or "9999-99-99"))
+        timeline.sort(key=lambda t: t.get("date") or "9999-99-99")
         summary["timeline"] = timeline[:12]  # keep bounded, nearest-first
-    except Exception as e:  # never let timeline merge break summary delivery
-        print(f"  ⚠  appointment timeline merge skipped: {e}")
+    except Exception:  # never let timeline merge break summary delivery
+        pass
     return summary
 
 
@@ -162,20 +202,23 @@ def generate_executive_summary(profile: dict) -> dict:
         user_content = (
             f"Generate an executive summary based on this patient profile.\n\n"
             f"{timeframe_guide}\n\n"
-            f"{'='*60}\n"
+            f"{'=' * 60}\n"
             f"STEP 1 — READ CLINICAL JUDGMENTS FIRST (these override your analysis):\n"
             f"{get_clinical_judgments_context(profile)}\n\n"
-            f"{'='*60}\n"
+            f"{'=' * 60}\n"
             f"STEP 2 — Patient profile and raw data:\n\n"
             f"{get_patient_summary(profile)}\n\n"
             f"Full biomarker history ({len(profile.get('biomarkers', []))} entries):\n"
             f"{json.dumps(profile.get('biomarkers', []), default=str)}\n\n"
             f"Full imaging history ({len(profile.get('imaging', []))} entries):\n"
             f"{json.dumps(profile.get('imaging', []), default=str)}\n\n"
-            f"Tracked trials: {json.dumps(profile.get('trials_tracked', [])[:5], default=str)}\n\n"
+            f"Tracked trials and inclusion manifest: "
+            f"{json.dumps(_tracked_trials_context(profile), default=str)}\n\n"
             f"Upcoming appointments (already recorded — reflect these in the timeline): "
             f"{json.dumps(profile.get('appointments', []), default=str)}\n\n"
             f"Active alerts: {json.dumps([a for a in profile.get('alerts', []) if not a.get('resolved')], default=str)}\n\n"
+            f"Corrective review feedback (incorporate cautiously; it is not itself a "
+            f"clinical fact): {json.dumps([item for item in profile.get('feedback', []) if item.get('assessment') in ('corrected', 'incorrect', 'missed')], default=str)}\n\n"
         )
         brevity_note = (
             "\n\nIMPORTANT: a previous attempt was truncated at the token limit. Be "
@@ -208,13 +251,21 @@ def generate_executive_summary(profile: dict) -> dict:
         summary["generated_at"] = datetime.date.today().isoformat()
         return _merge_upcoming_appointments(summary, profile)
     except Exception as e:
+        if is_timeout_error(e):
+            raise
+        safe_summary = (
+            "Summary generation was truncated at max_tokens."
+            if "max_tokens" in str(e)
+            else "Summary generation failed."
+        )
         return _merge_upcoming_appointments(
             {
+                "generation_failed": True,
                 "overall_status": "insufficient_data",
                 "status_confidence": "low",
                 "status_rationale": "Could not generate summary — check profile data",
                 "key_concern": "Summary generation failed",
-                "summary": f"Error: {str(e)}",
+                "summary": safe_summary,
                 "prrt_status": "unknown",
                 "prrt_rationale": "",
                 "cga_trend": "insufficient_data",

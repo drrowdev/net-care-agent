@@ -39,8 +39,20 @@ def test_mixed_same_date_and_clean_dates(agent):
 
 def test_clean_series_unaffected_no_caveats(agent):
     readings = [
-        {"marker": "CgA", "value": 100, "date": "2026-01-01"},
-        {"marker": "CgA", "value": 200, "date": "2026-02-01"},
+        {
+            "marker": "CgA",
+            "value": 100,
+            "unit": "ng/mL",
+            "reference_range": "0-100",
+            "date": "2026-01-01",
+        },
+        {
+            "marker": "CgA",
+            "value": 200,
+            "unit": "ng/mL",
+            "reference_range": "0-100",
+            "date": "2026-02-01",
+        },
     ]
     result = agent.analyze_biomarker_trends("CgA", _prof(readings))
     assert result["trend"] == "increasing"

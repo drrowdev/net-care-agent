@@ -32,8 +32,6 @@ class _JsonFormatter(logging.Formatter):
                     payload[k] = v
                 except (TypeError, ValueError):
                     payload[k] = str(v)
-        if record.exc_info:
-            payload["exc"] = self.formatException(record.exc_info)
         return json.dumps(payload, default=str)
 
 

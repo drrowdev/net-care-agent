@@ -1,0 +1,67 @@
+{
+  "schema_version": "2.0.0",
+  "id": "critical-cholangitis",
+  "text": "Note 2026-05-10: fever 39.1 C, jaundice, and suspected ascending cholangitis; transfer to emergency department now.",
+  "expected": {
+    "document_type": "doctor_note",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [],
+    "treatment_changes": [],
+    "imaging_facts": [],
+    "symptoms": [
+      {
+        "symptom": "fever 39.1 C",
+        "status": "present",
+        "date": "2026-05-10",
+        "source_quote": "fever 39.1 C"
+      },
+      {
+        "symptom": "jaundice",
+        "status": "present",
+        "date": "2026-05-10",
+        "source_quote": "jaundice"
+      }
+    ],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "Fever 39.1 C and jaundice prompted suspected ascending cholangitis and immediate transfer to the emergency department",
+        "date": "2026-05-10",
+        "source_quote": "fever 39.1 C, jaundice, and suspected ascending cholangitis; transfer to emergency department now"
+      }
+    ],
+    "critical_events": [
+      {
+        "event": "suspected ascending cholangitis; transfer to emergency department now",
+        "date": "2026-05-10",
+        "source_quote": "suspected ascending cholangitis; transfer to emergency department now",
+        "critical": true
+      }
+    ],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "fever 39.1 C, jaundice, and suspected ascending cholangitis; transfer to emergency department now"
+      },
+      {
+        "field": "symptoms",
+        "quote": "fever 39.1 C"
+      },
+      {
+        "field": "symptoms",
+        "quote": "jaundice"
+      },
+      {
+        "field": "critical_events",
+        "quote": "suspected ascending cholangitis; transfer to emergency department now"
+      }
+    ],
+    "must_not_infer": []
+  },
+  "tags": [
+    "critical",
+    "symptoms"
+  ]
+}

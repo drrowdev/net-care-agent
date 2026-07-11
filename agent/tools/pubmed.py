@@ -17,7 +17,7 @@ def search_pubmed(query: str, max_results: int = 6) -> dict:
                 "retmode": "json",
                 "sort": "relevance",
             },
-            timeout=12,
+            timeout=(5, 12),
         )
         sr.raise_for_status()
         ids = sr.json().get("esearchresult", {}).get("idlist", [])
@@ -27,7 +27,7 @@ def search_pubmed(query: str, max_results: int = 6) -> dict:
         fr = requests.get(
             f"{base}/esummary.fcgi",
             params={"db": "pubmed", "id": ",".join(ids), "retmode": "json"},
-            timeout=12,
+            timeout=(5, 12),
         )
         fr.raise_for_status()
         raw = fr.json().get("result", {})
@@ -51,5 +51,5 @@ def search_pubmed(query: str, max_results: int = 6) -> dict:
             )
         return {"results": articles, "query": query, "count": len(articles)}
 
-    except requests.RequestException as e:
-        return {"error": str(e), "results": [], "query": query}
+    except requests.RequestException:
+        return {"error": "PubMed request unavailable", "results": [], "query": query}

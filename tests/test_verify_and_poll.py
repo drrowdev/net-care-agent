@@ -125,3 +125,53 @@ def test_poll_network_error_does_not_clobber_status(agent):
     assert result["changed"] == []
     assert profile["trials_tracked"][0]["status"] == "RECRUITING"  # unchanged
     assert profile["alerts"] == []
+
+
+@responses.activate
+def test_poll_refreshes_registry_fields_preserves_history_and_alerts_eligibility(agent):
+    responses.add(
+        responses.GET,
+        "https://clinicaltrials.gov/api/v2/studies/NCT05477576",
+        json={
+            "protocolSection": {
+                "identificationModule": {"briefTitle": "Updated NET trial title"},
+                "statusModule": {
+                    "overallStatus": "RECRUITING",
+                    "lastUpdatePostDateStruct": {"date": "2026-07-09"},
+                },
+                "designModule": {"phases": ["PHASE1", "PHASE2"]},
+                "eligibilityModule": {
+                    "eligibilityCriteria": "NET required. Prior PRRT is not allowed."
+                },
+            }
+        },
+    )
+    responses.add(
+        responses.GET,
+        "https://clinicaltrials.gov/api/v2/studies/NCT05387603",
+        json={"protocolSection": {"statusModule": {"overallStatus": "RECRUITING"}}},
+    )
+    profile = _trial_profile()
+    trial = profile["trials_tracked"][0]
+    trial.update(
+        {
+            "title": "Old title",
+            "phase": "PHASE1",
+            "phases": ["PHASE1"],
+            "eligibility_excerpt": "NET required. Prior PRRT is allowed.",
+            "registry_last_update": "2026-01-01",
+        }
+    )
+
+    result = agent.poll_tracked_trials(profile)
+
+    assert result["changed"][0]["material_eligibility_change"] is True
+    assert trial["title"] == "Updated NET trial title"
+    assert trial["phase"] == "PHASE1 / PHASE2"
+    assert trial["eligibility_excerpt"].endswith("not allowed.")
+    assert trial["registry_last_update"] == "2026-07-09"
+    history = trial["registry_history"][0]
+    assert history["before"]["title"] == "Old title"
+    assert history["after"]["title"] == "Updated NET trial title"
+    assert history["before"]["eligibility_excerpt"].endswith("is allowed.")
+    assert any("material eligibility change" in alert["message"] for alert in profile["alerts"])

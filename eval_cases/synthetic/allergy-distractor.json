@@ -1,0 +1,46 @@
+{
+  "schema_version": "2.0.0",
+  "id": "allergy-distractor",
+  "text": "Medication list includes octreotide. Allergy list: penicillin causes rash. On 2026-05-08 continue octreotide LAR 30 mg monthly.",
+  "expected": {
+    "document_type": "doctor_note",
+    "ki67_update": null,
+    "sstr_status_update": null,
+    "sstr_score_update": null,
+    "biomarkers": [],
+    "treatment_changes": [],
+    "imaging_facts": [],
+    "symptoms": [],
+    "appointments": [],
+    "key_findings": [
+      {
+        "finding": "Penicillin causes rash",
+        "date": "2026-05-08",
+        "source_quote": "penicillin causes rash"
+      },
+      {
+        "finding": "Continue octreotide LAR 30 mg monthly",
+        "date": "2026-05-08",
+        "source_quote": "continue octreotide LAR 30 mg monthly"
+      }
+    ],
+    "critical_events": [],
+    "source_quotes": [
+      {
+        "field": "key_findings",
+        "quote": "penicillin causes rash"
+      },
+      {
+        "field": "key_findings",
+        "quote": "continue octreotide LAR 30 mg monthly"
+      }
+    ],
+    "must_not_infer": [
+      "octreotide allergy"
+    ]
+  },
+  "tags": [
+    "treatment",
+    "distractor"
+  ]
+}

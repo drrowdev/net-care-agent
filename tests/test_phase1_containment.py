@@ -5,7 +5,7 @@ import inspect
 import io
 import sys
 import threading
-import types
+import time
 
 import pytest
 
@@ -112,7 +112,7 @@ def test_summary_failure_preserves_mutations_and_marks_existing_summary_stale(
     saved = agent.load_profile()
     assert saved["documents"][-1]["summary"] == "Back-dated note"
     assert saved["executive_summary"]["summary"] == "Fresh summary"
-    assert saved["executive_summary"]["summary_error"] == "Error: model unavailable"
+    assert saved["executive_summary"]["summary_error"] == "Summary generation failed."
     assert saved["summary_stale"] is True
 
 
@@ -135,44 +135,24 @@ def test_backdated_mutation_invalidates_prior_summary(agent):
 
 def test_pdf_file_endpoint_extracts_and_enqueues_text(app_mod, client, monkeypatch):
     captured = {}
+    completed = threading.Event()
 
-    class Page:
-        def extract_text(self):
-            return "Extracted PDF clinical text"
+    def capture(job_id, *args):
+        captured["job_id"] = job_id
+        captured["args"] = args
+        completed.set()
 
-    class Pdf:
-        pages = [Page()]
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return None
-
-    monkeypatch.setitem(
-        sys.modules, "pdfplumber", types.SimpleNamespace(open=lambda _stream: Pdf())
-    )
-    monkeypatch.setattr(app_mod, "_add_job", lambda job: captured.setdefault("job", job))
-
-    class ImmediateThread:
-        def __init__(self, target, args, daemon):
-            captured["target"] = target
-            captured["args"] = args
-
-        def start(self):
-            return None
-
-    monkeypatch.setattr(app_mod.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(app_mod, "_run_feed_job", capture)
     response = client.post(
         "/api/feed-file",
         data={"file": (io.BytesIO(b"%PDF-minimal"), "report.pdf")},
         content_type="multipart/form-data",
     )
 
-    assert response.status_code == 200
-    assert captured["target"] is app_mod._run_feed_job
-    assert captured["args"][1] == "Extracted PDF clinical text"
-    assert captured["job"]["input_preview"].startswith("[File: report.pdf]")
+    assert response.status_code == 202
+    assert completed.wait(1)
+    assert captured["args"][1] == "job-upload"
+    assert captured["args"][2] == "report.pdf"
 
 
 def test_profile_route_waits_for_background_transaction_without_lost_update(
@@ -324,23 +304,10 @@ def test_first_profile_creation_is_serialized(agent):
 
 
 def test_pdf_page_limit_is_enforced(app_mod, client, monkeypatch):
-    class Page:
-        def extract_text(self):
-            return "text"
-
-    class Pdf:
-        pages = [Page() for _ in range(app_mod.MAX_PDF_PAGES + 1)]
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return None
-
-    monkeypatch.setitem(
-        sys.modules,
-        "pdfplumber",
-        types.SimpleNamespace(open=lambda _stream: Pdf()),
+    monkeypatch.setattr(
+        app_mod,
+        "extract_pdf_subprocess",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("pdf_invalid")),
     )
 
     response = client.post(
@@ -349,8 +316,15 @@ def test_pdf_page_limit_is_enforced(app_mod, client, monkeypatch):
         content_type="multipart/form-data",
     )
 
-    assert response.status_code == 413
-    assert "page processing limit" in response.get_json()["error"]
+    assert response.status_code == 202
+    job_id = response.get_json()["job_id"]
+    deadline = time.time() + 2
+    while time.time() < deadline:
+        detail = client.get(f"/api/jobs/{job_id}").get_json()
+        if detail["status"] == "error":
+            break
+        time.sleep(0.01)
+    assert detail["error_code"] == "pdf_invalid"
 
 
 def test_summary_trial_context_prefers_current_and_discloses_omissions(agent):

@@ -34,6 +34,36 @@ def test_feed_paths_share_json_error_and_task_selection_handling():
     assert "data.job_id || data.task_id" in APP_JS
 
 
+def test_duplicate_job_submissions_reattach_to_returned_job_id():
+    helper = _function_source("readJobSubmission", "waitForJob")
+    assert "response.status === 409" in helper
+    assert "data.job_id" in helper
+    for name, next_name in (
+        ("generateSummary", "renderSummary"),
+        ("runDigest", "runDeepSweep"),
+        ("runDeepSweep", "startPolling"),
+        ("generateQuestions", "addQuestion"),
+    ):
+        source = _function_source(name, next_name)
+        assert "readJobSubmission(r)" in source
+    assert "activateSubmittedTask(d)" in _function_source("runDigest", "runDeepSweep")
+    assert "activateSubmittedTask(d)" in _function_source("runDeepSweep", "startPolling")
+
+
+def test_interrupted_jobs_are_terminal_and_show_retry_guidance():
+    waiter = _function_source("waitForJob", "relativeTime")
+    assert "job.status === 'interrupted'" in waiter
+    assert "job.retry_guidance || job.error" in waiter
+    task_ui = _function_source("renderTasks", "updateHeaderStatus")
+    detail_ui = _function_source("selectTask", "formatReport")
+    assert "t.status === 'interrupted'" in task_ui
+    assert "t.retry_guidance" in task_ui
+    assert "task.status === 'interrupted'" in detail_ui
+    assert "task.retry_guidance" in detail_ui
+    polling = _function_source("startPolling", "toggleQuestions")
+    assert "t.status === 'interrupted'" in polling
+
+
 def test_summary_revisions_are_authoritative_with_legacy_date_fallback():
     source = _function_source("summaryIsStale", "renderSummary")
     stale_flag = source.index("typeof d.stale === 'boolean'")

@@ -36,12 +36,14 @@ pip install -e ".[dev]"
 Copy-Item .env.example .env
 # edit .env and set ANTHROPIC_API_KEY
 
-# 3. Run
+# 3. Run (.env.example explicitly sets ALLOW_LOCAL_AUTH_BYPASS=1)
 .\Scripts\run_local.ps1
 # or:  python app.py --port 8000
 ```
 
-Open http://localhost:8000.
+Open http://localhost:8000. Local APIs are denied by default unless
+`ALLOW_LOCAL_AUTH_BYPASS=1` is explicitly set (the local `.env.example` does
+this). Hosted deployments ignore that bypass.
 
 ## Tests
 
@@ -81,6 +83,46 @@ Environment variables to set as Application Settings:
 - `ANTHROPIC_DEEPSWEEP_MODELS` / `ANTHROPIC_DEEPSWEEP_SYNTHESIS` — models used by
   the on-demand ensemble deep-sweep (default `claude-fable-5,claude-opus-4-8`
   synthesised by `claude-opus-4-8`)
+- `JOB_WORKERS=2`, `JOB_QUEUE_SIZE=6` — bounded general in-process executor
+- `FEED_WORKERS=1`, `FEED_QUEUE_SIZE=2` — independent upload executor; worker
+  and queue settings are clamped to 1–4 and 0–50
+- `RETRY_AFTER_SECONDS=10` — response hint when either queue is full
+- PDF containment: `PDF_PARSE_TIMEOUT_SECONDS=30`, `MAX_PDF_PAGES=100`,
+  `MAX_EXTRACTED_TEXT_CHARS=1000000`, `PDF_MAX_MEMORY_MB=384`
+- Anthropic: `ANTHROPIC_CONNECT_TIMEOUT_SECONDS=5`,
+  `ANTHROPIC_READ_TIMEOUT_SECONDS=120`,
+  `ANTHROPIC_OVERALL_TIMEOUT_SECONDS=180`, `ANTHROPIC_MAX_RETRIES=0`
+  (retries clamped to 0–2). Connect/read/write/pool phases are bounded by the
+  overall monotonic deadline, including streamed response bodies.
+- Retention: `JOB_RETENTION_DAYS=365`, `JOB_RETENTION_COUNT=200`,
+  `REPORT_RETENTION_DAYS=30`, `REPORT_RETENTION_COUNT=200`,
+  `SOURCE_ORPHAN_RETENTION_DAYS=7`, `SOURCE_ORPHAN_RETENTION_COUNT=20`
+- Auth: hosted APIs require `WEBSITE_AUTH_ENABLED=true`; generic Azure hosting
+  variables never make Easy Auth headers trusted. `APP_ORIGIN` (preferred) or
+  `WEBSITE_HOSTNAME` supplies the canonical HTTPS browser origin.
+  `AUTH_ALLOWED_PRINCIPAL_IDS` is an optional comma-separated exact principal-ID allowlist. Never set
+  `ALLOW_LOCAL_AUTH_BYPASS` in hosted configuration.
+
+`startup.sh` uses exactly one Gunicorn worker, a 300-second worker timeout, and
+a 30-second graceful timeout. **One worker is load-bearing:** profile writes are
+cross-process locked, but job admission, queues, and execution are in-process.
+Do not scale workers/instances until jobs move to a durable distributed queue.
+
+The complete production runtime dependency closure in `requirements.txt` and
+the setuptools build requirement are exactly pinned from local installed metadata;
+direct development requirements are exact in `pyproject.toml`. `.deployment` is included in the release archive
+and declares Oryx build-on-deploy.
+`Scripts/deploy.ps1` gates packages on pytest, ruff, and gitleaks; verifies
+SHA-256; polls asynchronous Kudu, the authenticated SCM process list, and
+the public PHI-free application health endpoint; and
+promotes the hash/package to `.deploy/current-verified.*` only after success,
+first preserving the former current package as `.deploy/previous-known-good.*`.
+The script refuses a dirty working tree so the recorded HEAD identifies the
+package. Promotion requires `/api/health` to identify the packaged commit and
+report healthy critical storage/job fields; a usable `degraded` response is
+accepted for noncritical interrupted history. `-Rollback` fails when no distinct
+previous package exists, verifies its hash and embedded commit, redeploys it,
+then repeats both readiness checks.
 
 ## Profile schema
 
@@ -130,6 +172,14 @@ compact SHA-256/length/path index plus a legacy `raw_text` preview; it remains t
 structured authority. Hosted source/evidence retrieval requires Easy Auth and
 never exposes filesystem paths in API responses.
 
+New job records contain PHI-safe allowlisted metadata and generic errors.
+Legacy retained job records are not rewritten. Report and structured
+result bodies live in separate artifacts and are read only from
+`GET /api/jobs/<id>`; they are not embedded in `jobs.json` or the job-list
+response. Retention pruning runs at startup/job admission and is best-effort:
+age/count limits do not securely erase backups/provider copies, and source
+directories still referenced by the profile are deliberately protected.
+
 ## Safety notes
 
 - All Claude calls run with adaptive thinking (Sonnet 5); structured-output
@@ -160,6 +210,8 @@ never exposes filesystem paths in API responses.
 │   ├── io.py             # atomic_write_text helper
 │   ├── backups.py        # daily snapshot + 30-day retention
 │   ├── logging_config.py # text/JSON log formatter
+│   ├── job_runtime.py    # bounded executors, safe artifacts + PDF subprocess
+│   ├── pdf_extract_helper.py # child-only pdfplumber entry point
 │   ├── judgments.py      # clinical-judgment context formatter
 │   ├── intake.py         # extract structured medical data from text
 │   ├── orchestrator.py   # agentic loop driving the tools
@@ -200,7 +252,8 @@ sequenceDiagram
     participant J as patient_profile.json
 
     U->>API: POST text or PDF
-    API->>W: enqueue job
+    API->>W: bounded enqueue; 202 + job_id
+    U->>API: poll GET /api/jobs/<id>
     W->>I: run_intake(text, profile)
     I-->>W: structured extract (biomarkers, treatments, ...)
     W->>J: save_profile (atomic + daily backup)
@@ -210,12 +263,22 @@ sequenceDiagram
         T-->>O: results (filtered by NET relevance)
         O->>J: persist new papers/trials/alerts
     end
-    O-->>W: report text
+    O-->>W: report artifact (not embedded in job metadata)
     W->>E: generate_executive_summary
     E-->>W: JSON summary
     W->>J: save_profile
+    U->>API: GET /api/jobs/<id> → report/result on demand
     U->>API: GET /api/summary → JSON
 ```
+
+Feed, digest, deep-sweep, chat, question generation, and manual summary
+generation are asynchronous. The SPA polls every 1.5 seconds when awaiting a
+specific result and every 3 seconds for the activity/status views. Queue
+saturation returns `429 Retry-After` before a job is persisted; duplicate
+active digest/deep-sweep/summary runs return `409`. A process restart cannot
+resume in-process work: queued/running records become `interrupted` and the
+caregiver must re-submit. Graceful shutdown is bounded, not a durability
+guarantee.
 
 The orchestrator's behaviour is shaped by **clinical_judgments** captured from
 oncologist consultations. These act as hard constraints: anything the oncologist
@@ -228,12 +291,12 @@ The most common loops:
 
 | Action | Where | What happens |
 |---|---|---|
-| Add a clinical document | Header → **📄 Feed** button → popover (paste text or upload file) | Intake → orchestrator → exec summary refreshed |
+| Add a clinical document | Header → **📄 Feed** button → popover (paste text or upload file) | Queued on the independent feed executor; PDF parsing is child-only, then intake → orchestrator → exec summary |
 | Run a research-only sweep | Header → **↻ Run digest** | Orchestrator runs without new input; new trials/papers added |
 | Record an oncologist's judgment | UI → "Judgments" tab → Add | Becomes a hard constraint for future runs |
 | Resolve / dismiss an alert | UI → Alert card → Resolve | Marked resolved, persisted in profile |
-| Generate appointment questions | UI → "Questions" tab → Generate | Question list (language via `patient.language`) tailored to current profile |
-| Chat with the record | Header → **✦ Ask Claude** | `/api/chat` grounds Claude in the full profile |
+| Generate appointment questions | UI → "Questions" tab → Generate | Async result is polled, then the question list is rendered |
+| Chat with the record | Header → **✦ Ask Claude** | Async result grounded in the full profile; chat remains stateless |
 | Open a trial | Exec summary → "Best matched trial" chip | Opens `clinicaltrials.gov/study/<NCT_ID>` in a new tab |
 
 ## Keeping docs current

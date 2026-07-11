@@ -37,6 +37,8 @@ _CONFTEST_DATA_DIR = Path(
     )
 )
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key-not-used")
+os.environ.setdefault("ALLOW_LOCAL_AUTH_BYPASS", "1")
+os.environ.setdefault("LEGACY_SYNC_JOB_RESPONSES", "1")
 
 
 @pytest.fixture(scope="session", autouse=True)

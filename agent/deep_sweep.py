@@ -32,7 +32,7 @@ import time
 from . import config
 from . import orchestrator as orch
 from .judgments import get_clinical_judgments_context
-from .llm import cached_system, cached_tools, client, first_text, render_prompt
+from .llm import cached_system, cached_tools, client, first_text, is_timeout_error, render_prompt
 from .profile import (
     build_patient_context,
     get_caregiver_relationship,
@@ -208,7 +208,9 @@ def _run_single_model(model: str, base_profile: dict) -> dict:
             messages.append({"role": "assistant", "content": resp.content})
             messages.append({"role": "user", "content": tool_results})
     except Exception as e:  # noqa: BLE001 — one model failing must not kill the sweep
-        error = f"{type(e).__name__}: {e}"
+        if is_timeout_error(e):
+            raise
+        error = type(e).__name__
 
     if iterations >= MAX_ITERATIONS and stop_reason != "end_turn" and not error:
         truncated = True
@@ -279,7 +281,9 @@ def _synthesise(reports: list[dict], synthesis_model: str, clinical_judgments: s
         else:
             text = first_text(resp)
     except Exception as e:  # noqa: BLE001
-        error = f"{type(e).__name__}: {e}"
+        if is_timeout_error(e):
+            raise
+        error = type(e).__name__
 
     return {
         "report": text,

@@ -424,7 +424,7 @@ def normalize_profile(data: dict) -> dict:
     try:
         model = PatientProfile.model_validate(data)
     except Exception as e:
-        log.warning("profile validation failed; returning raw dict: %s", e)
+        log.warning("profile validation failed type=%s", type(e).__name__)
         return data
     return model.model_dump(by_alias=True, exclude_none=False)
 

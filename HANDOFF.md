@@ -84,6 +84,8 @@ net-care-agent/
 │   ├── io.py             # atomic_write_text (tmp + os.replace)
 │   ├── backups.py        # Daily JSON snapshot + 30-day retention
 │   ├── logging_config.py # text/JSON log formatter
+│   ├── job_runtime.py    # Bounded executors, safe artifacts, PDF subprocess
+│   ├── pdf_extract_helper.py # Child-only pdfplumber entry point
 │   ├── judgments.py      # Renders clinical_judgments into the system prompt
 │   ├── intake.py         # Document → structured JSON (single Claude call)
 │   ├── orchestrator.py   # The only agentic loop; max 12 tool-use iterations
@@ -111,11 +113,11 @@ net-care-agent/
    `wwwroot/` in a broken state with `agent/` missing. Symptom: gunicorn
    crashes with `ModuleNotFoundError: No module named 'agent'`.
 
-2. **Easy Auth returns HTTP 401 to unauthenticated `curl` against the deployed
-   site.** That's not a bug — it means the app is healthy and the auth gate is
-   working. To smoke-test, hit `/api/health` from a signed-in browser, or
-   temporarily disable Easy Auth in App Service settings (and re-enable when
-   done).
+2. **Hosted APIs require a valid Easy Auth principal.** Flask exempts PHI-free
+   `/api/health` and `/api/live`, but anonymous external probes also need Easy
+   Auth path exclusions configured in App Service. Do not disable Easy Auth for
+   a smoke test. Local API access requires explicit
+   `ALLOW_LOCAL_AUTH_BYPASS=1`.
 
 3. **Repo-local `git config user.name` has been wrong before.** Always run
    `git config user.name` before your first commit. Confirm it matches the
@@ -139,12 +141,13 @@ net-care-agent/
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -e ".[dev]"
-Copy-Item .env.example .env       # then set ANTHROPIC_API_KEY
+Copy-Item .env.example .env       # sets local bypass; then set ANTHROPIC_API_KEY
 .\Scripts\run_local.ps1           # or:  python app.py --port 8000
 ```
 
-Open http://localhost:8000. Local dev is unauthenticated; Easy Auth only
-runs on the deployed site.
+Open http://localhost:8000. `.env.example` explicitly sets
+`ALLOW_LOCAL_AUTH_BYPASS=1`; without it, local API calls are denied. Hosted mode
+ignores this bypass.
 
 ### 6.2 Run the tests
 
@@ -161,32 +164,20 @@ ruff format agent tests           # auto-format
 > private operator runbook — they're never committed to this repo.
 
 ```powershell
-# Build zip (Python, not Compress-Archive!)
-python -c "import zipfile,os; \
-  incl=['app.py','net_agent.py','requirements.txt','startup.sh']; \
-  dirs=['agent','static','templates']; \
-  z=zipfile.ZipFile('deploy.zip','w',zipfile.ZIP_DEFLATED); \
-  [z.write(f) for f in incl if os.path.exists(f)]; \
-  [z.write(os.path.join(r,f)) for d in dirs for r,_,fs in os.walk(d) \
-    if '__pycache__' not in r and '.pytest_cache' not in r \
-    for f in fs if not f.endswith('.pyc')]; \
-  z.close(); print('built deploy.zip')"
-
-# Push via Kudu zipdeploy
-$tok = az account get-access-token --resource https://management.azure.com --query accessToken -o tsv
-Invoke-WebRequest -Uri "https://<app-service>.scm.azurewebsites.net/api/zipdeploy?isAsync=false" `
-  -Method POST -Headers @{Authorization="Bearer $tok"} `
-  -InFile deploy.zip -ContentType "application/zip" -TimeoutSec 600 `
-  -SkipHttpErrorCheck -UseBasicParsing
-Remove-Item deploy.zip
-
-# Verify
-(Invoke-WebRequest "https://<app-service>.azurewebsites.net/api/health" `
-  -SkipHttpErrorCheck -UseBasicParsing).StatusCode    # 200 = ok
+pwsh Scripts/deploy.ps1 -App <app-service>
+# Verified rollback:
+pwsh Scripts/deploy.ps1 -App <app-service> -Rollback
 ```
 
-Oryx will rebuild `output.tar.zst` from your zip; the runtime executes from
-the tarball.
+Do not hand-build or synchronously post a zip. The script requires
+pytest/ruff/gitleaks, builds with Python `zipfile`, records HEAD + SHA-256, polls
+asynchronous Kudu completion (900-second default), the authenticated SCM
+application process list, and `/api/health` critical fields plus the exact
+packaged commit (300 seconds), and only then promotes
+`.deploy/last-known-good.*`. Dirty working trees are rejected so
+HEAD and SHA identify the package. Rollback verifies that SHA before redeploying
+and repeating both checks. The archive includes `.deployment`, which declares
+Oryx build-on-deploy. The runtime executes `output.tar.zst`.
 
 ### 6.4 Rotate the Anthropic API key
 
@@ -211,8 +202,8 @@ managed identity lost its **Key Vault Secrets User** role on the vault.
 ### 6.5 Restore the patient profile from a backup
 
 In-app daily snapshots: `/home/data/backups/profile_YYYYMMDD.json` (last 30
-days). Just copy one over `/home/data/patient_profile.json` (the runtime
-loader is tolerant — restart isn't required, but doesn't hurt).
+days). Restore with the validation-checked `agent.recovery` API documented in
+`docs/operating_manual.md §9`; never overwrite the profile with raw `cp`.
 
 If `/home/data` itself is gone: restore the Azure Files share from the
 Recovery Services Vault listed in your operator runbook.
@@ -223,6 +214,10 @@ Recovery Services Vault listed in your operator runbook.
   no database, no Redis, no per-session state. Don't add hidden caches.
 - **`agent.io.atomic_write_text`** wraps every profile write (tmp file +
   `os.replace`) so a crash mid-write never corrupts the JSON.
+- **One Gunicorn worker is load-bearing.** Feed/general queues and execution are
+  bounded but in-process. Restarted queued/running jobs become `interrupted` and
+  must be re-submitted; reports/results are separate on-demand artifacts, not
+  embedded in `jobs.json`.
 - **The orchestrator is the only agentic loop.** Max 12 iterations of
   tool-use. Other agents (intake, exec-summary, questions, classify, chat)
   are single-turn, run with adaptive thinking, and return JSON.

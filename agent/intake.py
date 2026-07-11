@@ -223,7 +223,6 @@ def _extract_json(text: str, system_prompt: str) -> tuple[dict, bool]:
     try:
         return json.loads(raw), False
     except json.JSONDecodeError as err:
-        print("  ⚠  Intake JSON parse failed — attempting one repair retry")
         repair = client.messages.create(
             model=config.MODEL_INTAKE,
             max_tokens=12000,
@@ -245,7 +244,6 @@ def _extract_json(text: str, system_prompt: str) -> tuple[dict, bool]:
         try:
             return json.loads(raw2), False
         except json.JSONDecodeError:
-            print("  ⚠  Repair retry also failed — storing unstructured + raising alert")
             return (
                 {
                     "document_type": "other",
@@ -326,7 +324,6 @@ def _run_intake_impl(
     media_type: str = "text/plain",
 ) -> tuple[dict, dict]:
     """Classify and extract structured data from free-form text."""
-    print("\n⚙  Running intake agent ...")
 
     source_document = preserve_source_document(
         text,
@@ -349,7 +346,6 @@ def _run_intake_impl(
         added = _verify_intake(text, extracted)
         if added:
             extracted["verification_added"] = added
-            print(f"  ✓  Verification pass added {len(added)} source-anchored item(s)")
 
     today = datetime.date.today().isoformat()
     doc_date = extracted.get("date") or today
@@ -489,16 +485,6 @@ def _run_intake_impl(
         )
         if not is_duplicate:
             existing.append(tx)
-
-    print(f"  ✓  Type    : {extracted.get('document_type', '?')}")
-    print(f"     Date    : {doc_date}")
-    print(f"     Summary : {extracted.get('summary', '')[:100]}")
-    if extracted.get("key_findings"):
-        print("     Findings:")
-        for f in extracted["key_findings"]:
-            print(f"       • {f}")
-    if extracted.get("workflow_rationale"):
-        print(f"     Workflows: {extracted.get('workflow_rationale', '')}")
 
     return profile, extracted
 

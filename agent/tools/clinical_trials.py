@@ -87,7 +87,7 @@ def search_clinical_trials(
         response = requests.get(
             "https://clinicaltrials.gov/api/v2/studies",
             params=params,
-            timeout=15,
+            timeout=(5, 15),
         )
         response.raise_for_status()
         data = response.json()
@@ -129,5 +129,5 @@ def search_clinical_trials(
             "selection_manifest": manifest,
             "omission_notice": omission_notice,
         }
-    except (requests.RequestException, ValueError) as exc:
-        return {"error": str(exc), "trials": []}
+    except (requests.RequestException, ValueError):
+        return {"error": "ClinicalTrials.gov request unavailable", "trials": []}

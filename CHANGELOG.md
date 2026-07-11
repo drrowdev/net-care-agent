@@ -9,6 +9,60 @@ incremented when something user-visible or operationally meaningful changes.
 ## [Unreleased]
 
 ### Added
+- **Operational and security hardening.** Gunicorn is deliberately pinned to one
+  worker because job state and execution are in-process. Feed work now has an
+  independent bounded executor (`FEED_WORKERS=1`, `FEED_QUEUE_SIZE=2`) so uploads
+  cannot be starved by the bounded general executor (`JOB_WORKERS=2`,
+  `JOB_QUEUE_SIZE=6`); configured workers/queues are clamped to 1–4/0–50. Full
+  queues return `429` with `Retry-After` (default 10 seconds), admission happens
+  before durable job creation (no ghost job), and duplicate active digest,
+  deep-sweep, and summary runs return `409`.
+- **Durable asynchronous job contract.** Feed, digest, deep-sweep, chat,
+  appointment-question generation, and manual summary generation return `202`
+  plus a job ID. The SPA polls job status and obtains reports/results only from
+  the individual job endpoint; reports and result payloads are artifacts, not
+  embedded in `jobs.json`. Restarted queued/running work is marked
+  `interrupted` with re-submit guidance. Shutdown is best-effort (30-second
+  Gunicorn graceful limit; worker joins are bounded), not durable execution.
+- **Contained PDF extraction.** `pdfplumber` now imports only in
+  `agent/pdf_extract_helper.py`, a child interpreter with a 30-second hard
+  timeout, 100-page/1,000,000-character defaults, isolated standard streams and
+  environment, output validation, and Linux CPU/address-space/file-size/file-
+  descriptor limits (`PDF_MAX_MEMORY_MB=384`). Windows retains the hard
+  subprocess timeout and output limits but cannot apply Unix `setrlimit`.
+- **PHI-safe job/artifact lifecycle.** Newly written jobs use an allowlisted
+  metadata schema and generic errors; job-runner logs expose job IDs, safe
+  codes/types, and retry guidance rather than document text, prompts, or
+  traceback. Legacy retained job records are not rewritten.
+  Reports/results are loaded on demand through traversal-safe roots. Job,
+  report, and unreferenced-source retention now have age/count settings; source
+  directories indexed by the profile remain protected. Retention is
+  best-effort pruning, not guaranteed secure deletion, and does not remove
+  backup/provider copies.
+- **API authorization boundary.** Flask exempts only `/api/health` and
+  `/api/live`; every other `/api/*` route requires a valid App Service Easy Auth
+  principal when hosted. App Service must also configure those two probe paths
+  as anonymous if they need to be externally public.
+  `AUTH_ALLOWED_PRINCIPAL_IDS` optionally applies an exact
+  comma-separated allowlist. Local API access is denied unless
+  `ALLOW_LOCAL_AUTH_BYPASS=1` is explicitly set. State-changing requests also
+  require same-origin `Origin` when present. Health exposes PHI-free aggregate
+  active/queued/feed counts only.
+- **Bounded upstream calls and gated deployment.** Anthropic defaults to
+  5-second connect, 120-second read, 10-second write, 5-second pool, and
+  150-second HTTPX default timeout plus one SDK retry (clamped to 0–2); retries
+  can make wall-clock duration longer.
+  PubMed/ClinicalTrials.gov calls use explicit 5-second
+  connect and 12/15-second read limits and no application retry. Runtime/dev
+  dependencies and the setuptools build requirement are exactly pinned. The
+  release includes `.deployment`, enabling Oryx build-on-deploy against those
+  pinned requirements. Deployment rejects dirty trees, gates on pytest, ruff,
+  and gitleaks, polls the exact asynchronous Kudu deployment, verifies package
+  SHA-256, and checks the authenticated SCM application process plus PHI-free
+  `/api/health` critical fields and packaged commit. Only then is the package
+  promoted to `last-known-good`; arbitrary 401 responses never pass. Rollback
+  verifies and redeploys that exact package and repeats both readiness checks.
+
 - **Profile schema versioning and deterministic migrations.**  A new
   `schema_version` field (integer, current value 1) appears at the top level of
   every profile.  `agent/migrations.py` provides append-only, idempotent

@@ -7,7 +7,7 @@ import json
 
 from . import config
 from .judgments import get_clinical_judgments_context
-from .llm import client, first_text, render_prompt, strip_code_fences
+from .llm import client, first_text, is_timeout_error, render_prompt, strip_code_fences
 from .profile import (
     build_patient_context,
     get_caregiver_relationship,
@@ -173,8 +173,8 @@ def _merge_upcoming_appointments(summary: dict, profile: dict) -> dict:
             )
         timeline.sort(key=lambda t: t.get("date") or "9999-99-99")
         summary["timeline"] = timeline[:12]  # keep bounded, nearest-first
-    except Exception as e:  # never let timeline merge break summary delivery
-        print(f"  ⚠  appointment timeline merge skipped: {e}")
+    except Exception:  # never let timeline merge break summary delivery
+        pass
     return summary
 
 
@@ -251,6 +251,13 @@ def generate_executive_summary(profile: dict) -> dict:
         summary["generated_at"] = datetime.date.today().isoformat()
         return _merge_upcoming_appointments(summary, profile)
     except Exception as e:
+        if is_timeout_error(e):
+            raise
+        safe_summary = (
+            "Summary generation was truncated at max_tokens."
+            if "max_tokens" in str(e)
+            else "Summary generation failed."
+        )
         return _merge_upcoming_appointments(
             {
                 "generation_failed": True,
@@ -258,7 +265,7 @@ def generate_executive_summary(profile: dict) -> dict:
                 "status_confidence": "low",
                 "status_rationale": "Could not generate summary — check profile data",
                 "key_concern": "Summary generation failed",
-                "summary": f"Error: {str(e)}",
+                "summary": safe_summary,
                 "prrt_status": "unknown",
                 "prrt_rationale": "",
                 "cga_trend": "insufficient_data",

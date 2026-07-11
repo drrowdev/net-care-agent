@@ -3,7 +3,7 @@
 **Read this before changing code — especially if you are a smaller/cheaper AI
 session.** These are the rules that, if broken, silently corrupt a caregiver's
 clinical tool. CI enforces some of them (`tests/test_invariants.py`); the rest
-are on you. Nothing here may be routed around. Last verified: 2026-07-03.
+are on you. Nothing here may be routed around. Last verified: 2026-07-11.
 
 ## 1. The six non-negotiables
 1. **Decision-support only.** Never diagnose, prescribe, or position the tool as
@@ -103,22 +103,67 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-03.
 
 ## 4. Single gunicorn worker is load-bearing
 Profile mutation protection (`agent/serialize.py`) is cross-process on the
-shared data mount. The jobs list and daemon-thread execution model (`_jobs_lock`)
-remain in-process and assume ONE worker. Do NOT scale gunicorn or autoscale
-without moving job state/execution to a durable queue and adding distributed
-coordination.
+shared data mount, but job admission, executor capacity, the jobs list, and
+daemon-thread execution remain in-process and assume **exactly one Gunicorn
+worker**. `startup.sh` therefore uses `--workers 1`. Do NOT scale workers or
+instances/autoscale without moving execution and admission to a durable
+distributed queue and adding distributed coordination.
 
-## 5. Prompt templating
+- Feed has an independent executor (`FEED_WORKERS=1`, `FEED_QUEUE_SIZE=2`);
+  general work uses `JOB_WORKERS=2`, `JOB_QUEUE_SIZE=6`. Values are clamped to
+  1–4 workers and 0–50 queued items. Capacity means active + queued.
+- Saturation must return `429` and `Retry-After` before `_add_job`; failed
+  preparation removes metadata before releasing execution. Preserve this
+  no-ghost-job ordering.
+- Keep `unique_active=True` for digest, deep-sweep, and summary. A duplicate
+  active run returns `409`.
+- Jobs are not durable work. Restart changes queued/running records to
+  `interrupted`; users must re-submit. Gunicorn has a 30-second graceful limit
+  and executor shutdown joins are bounded to five seconds per thread.
+- New job records are PHI-safe allowlisted metadata with generic errors.
+  Reports/results remain separate artifacts and are expanded only by
+  `GET /api/jobs/<id>`, never embedded in `jobs.json` or the job list. Existing
+  legacy records are not rewritten; do not weaken their retention protection.
+
+## 5. Authentication, containment, and retention
+- Flask exempts `/api/health` and `/api/live`; all other hosted `/api/*` routes
+  require a valid Easy Auth principal. Anonymous external probes additionally
+  require App Service Easy Auth path exclusions. `AUTH_ALLOWED_PRINCIPAL_IDS`,
+  when nonempty, is an exact principal-ID allowlist. Hosted mode never honors
+  local bypass.
+- Local API access requires explicit `ALLOW_LOCAL_AUTH_BYPASS=1`; do not restore
+  implicit unauthenticated local access. State-changing methods reject a
+  mismatched `Origin`.
+- `/api/health` is Flask-auth-exempt by design and must remain
+  PHI/path/secret-free. Executor fields are aggregate counts only.
+- `pdfplumber` stays child-only in `agent/pdf_extract_helper.py`. Preserve the
+  subprocess hard timeout, page/text/output limits, minimal environment,
+  DEVNULL streams, and Linux resource limits.
+- Job errors and job-runner logs must not contain input text, model output,
+  traceback, prompts, or PHI. Keep all operational logs access-controlled;
+  lower-level storage/recovery `OSError` logs may contain filesystem paths.
+- Retention removes only completed expired/excess jobs and their indexed
+  reports/results, unindexed old/excess reports, and unreferenced source
+  directories. Profile-referenced sources are protected. Pruning is
+  best-effort and does not imply secure deletion or deletion from backups.
+
+## 6. Prompt templating
 System prompts that embed JSON schemas use `agent.llm.render_prompt` with
 `[[SENTINEL]]` placeholders (NOT `str.format`, which would need brace-doubling).
 `tests/test_prompt_rendering.py` fails if any placeholder leaks into a live
 prompt. Preserve every injection point when editing a template.
 
-## 6. Deploy
-Manual, via `scripts/deploy.ps1` (test-gated: refuses to build the zip unless
-pytest/ruff/gitleaks pass; retains the previous zip as `deploy.prev.zip` for a
-one-command rollback). B1 plan has no staging slot — a bad deploy hits
-production, so use the script. See `AGENTS.md → Deploy`.
+## 7. Deploy
+Manual, via `Scripts/deploy.ps1`. It refuses to package unless
+pytest/ruff/gitleaks pass, records commit + SHA-256, polls asynchronous Kudu
+completion, the authenticated SCM application process list, and `/api/health`
+critical fields plus the exact packaged commit, then promotes that exact
+package to `.deploy/last-known-good.*`. A dirty working tree is rejected so the
+recorded commit identifies the package. Rollback
+verifies the recorded SHA before redeploying and repeating that check.
+Oryx build-on-deploy is required; the release archive includes `.deployment`,
+which declares it. Runtime/dev and build dependencies stay exactly pinned. See
+`AGENTS.md → Deploy`.
 
 ## Provenance and maintenance
 - Contract lists here mirror the prompt templates in `agent/*.py`. If you change

@@ -29,7 +29,7 @@ def check_pmid_exists(pmid: str) -> bool | None:
         r = requests.get(
             "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi",
             params={"db": "pubmed", "id": pmid, "retmode": "json"},
-            timeout=12,
+            timeout=(5, 12),
         )
         r.raise_for_status()
         result = r.json().get("result", {})
@@ -49,7 +49,7 @@ def check_nct_exists(nct: str) -> bool | None:
         r = requests.get(
             f"https://clinicaltrials.gov/api/v2/studies/{nct.upper()}",
             params={"format": "json"},
-            timeout=12,
+            timeout=(5, 12),
         )
         if r.status_code == 404:
             return False

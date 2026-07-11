@@ -52,6 +52,33 @@
     return data;
   }
 
+  async function readJobSubmission(response) {
+    let data;
+    try {
+      data = await response.json();
+    } catch (_) {
+      throw new Error(`Invalid JSON response (${response.status})`);
+    }
+    if (response.ok || (response.status === 409 && data && data.job_id)) return data;
+    throw new Error(data && typeof data.error === 'string'
+      ? data.error
+      : `Request failed (${response.status})`);
+  }
+
+  async function waitForJob(jobId, timeoutMs = 900000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`);
+      const job = await readJsonResponse(response);
+      if (job.status === 'done') return job;
+      if (job.status === 'error' || job.status === 'interrupted') {
+        throw new Error(job.retry_guidance || job.error || 'The job did not complete.');
+      }
+      await new Promise(resolve => setTimeout(resolve, 1500));
+    }
+    throw new Error('The job is still running. Check the task log for progress.');
+  }
+
   function relativeTime(iso) {
     if (!iso) return '';
     // Ensure UTC interpretation by appending Z if missing
@@ -66,8 +93,10 @@
   }
 
   function duration(t) {
-    if (!t.started || !t.finished) return '';
-    const d = Math.round((new Date(t.finished) - new Date(t.started)) / 1000);
+    const started = t.started_at || t.started;
+    const finished = t.finished_at || t.finished;
+    if (!started || !finished) return '';
+    const d = Math.round((new Date(finished) - new Date(started)) / 1000);
     return d < 60 ? `${d}s` : `${Math.floor(d/60)}m ${d%60}s`;
   }
 
@@ -347,8 +376,9 @@
     if (btn) { btn.disabled = true; btn.textContent = '⊙ Generating…'; }
     try {
       const r = await fetch('/api/summary/generate', { method: 'POST' });
-      const d = await r.json();
-      // Response now contains {summary, treatments_classified}
+      const submitted = await readJobSubmission(r);
+      const completed = await waitForJob(submitted.job_id);
+      const d = completed.result || {};
       const summary = d.summary || d;
       renderSummary(summary);
       // Reload full status to refresh treatments sidebar
@@ -1113,6 +1143,7 @@
           <span class="status-badge ${safeClassToken(t.status, 'unknown')}">${escHtml(translateStatus(t.status))}</span>
           ${t.status === 'done' && duration(t) ? `<span class="task-duration">${escHtml(duration(t))}</span>` : ''}
           ${t.status === 'error' ? `<span class="task-duration" style="color:var(--red)">${escHtml((t.error||'').slice(0,60))}</span>` : ''}
+          ${t.status === 'interrupted' ? `<span class="task-duration" style="color:var(--amber)">${escHtml((t.retry_guidance||t.error||'Interrupted').slice(0,60))}</span>` : ''}
         </div>
       </div>`).join('');
 
@@ -1157,8 +1188,13 @@
     const tasks = await r.json();
     renderTasks(tasks);
 
-    const task = tasks.find(t => t.id === id);
+    let task = tasks.find(t => t.id === id);
     if (!task) return;
+    if (task.status === 'done' || task.status === 'error' || task.status === 'interrupted') {
+      try {
+        task = await readJsonResponse(await fetch(`/api/jobs/${encodeURIComponent(id)}`));
+      } catch (_) {}
+    }
 
     const panel = document.getElementById('panel-body');
     const copyBtn = document.getElementById('copy-btn');
@@ -1187,6 +1223,13 @@
       return;
     }
 
+    if (task.status === 'interrupted') {
+      panel.innerHTML = `<div class="report-text" style="color:var(--amber)">Interrupted:\n\n${escHtml(task.retry_guidance || task.error || 'Re-submit this request to retry.')}</div>`;
+      copyBtn.classList.remove('visible');
+      currentReportText = '';
+      return;
+    }
+
     // Show key findings chips if present
     let html = '';
     if (task.key_findings && task.key_findings.length) {
@@ -1194,21 +1237,15 @@
         `<span class="finding-chip">${escHtml(f)}</span>`).join('')}</div>`;
     }
 
-    // Use inline report field first, fall back to report_file fetch
+    // Job details hydrate report artifacts on demand.
     if (task.report) {
       currentReportText = task.report;
       html += `<div class="report-text">${formatReport(task.report)}</div>`;
       copyBtn.classList.add('visible');
-    } else if (task.report_file) {
-      try {
-        const rr = await fetch(`/api/report/${encodeURIComponent(task.report_file)}`);
-        const text = await rr.text();
-        currentReportText = text;
-        html += `<div class="report-text">${formatReport(text)}</div>`;
-        copyBtn.classList.add('visible');
-      } catch(e) {
-        html += `<div class="report-text" style="color:var(--text2)">Report file not found.</div>`;
-      }
+    } else if (task.result) {
+      currentReportText = JSON.stringify(task.result, null, 2);
+      html += `<div class="report-text">${formatReport(currentReportText)}</div>`;
+      copyBtn.classList.add('visible');
     } else {
       html += `<div class="report-text" style="color:var(--text2)">No report generated.</div>`;
     }
@@ -1378,12 +1415,8 @@
     btn.disabled = true;
     try {
       const r = await fetch('/api/digest', { method: 'POST' });
-      const d = await r.json();
-      if (d.job_id) {
-        selectedTaskId = d.job_id;
-        await loadTasks();
-        selectTask(d.job_id);
-      }
+      const d = await readJobSubmission(r);
+      await activateSubmittedTask(d);
     } finally {
       btn.disabled = false;
     }
@@ -1397,12 +1430,8 @@
     btn.disabled = true;
     try {
       const r = await fetch('/api/deep-sweep', { method: 'POST' });
-      const d = await r.json();
-      if (d.job_id) {
-        selectedTaskId = d.job_id;
-        await loadTasks();
-        selectTask(d.job_id);
-      }
+      const d = await readJobSubmission(r);
+      await activateSubmittedTask(d);
     } finally {
       btn.disabled = false;
     }
@@ -1418,7 +1447,7 @@
       if (selectedTaskId) {
         const r = await fetch(`/api/jobs/${selectedTaskId}`);
         const t = await r.json();
-        if (t.status === 'done' || t.status === 'error') {
+        if (t.status === 'done' || t.status === 'error' || t.status === 'interrupted') {
           const panel = document.getElementById('panel-body');
           if (panel.querySelector('.report-empty')) {
             selectTask(selectedTaskId);
@@ -1504,8 +1533,9 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ appointment_type: apptType }),
       });
-      const qs = await r.json();
-      renderQuestions(qs);
+      const submitted = await readJobSubmission(r);
+      const completed = await waitForJob(submitted.job_id);
+      renderQuestions((completed.result || {}).questions || []);
     } catch(e) { console.error('Generate questions error:', e); }
     finally {
       if (btn) { btn.disabled = false; btn.textContent = isMob ? '↻' : '↻ Luo'; }
@@ -1820,10 +1850,13 @@
       });
       const data = await r.json();
       if (data.error) throw new Error(data.error);
+      const completed = await waitForJob(data.job_id);
+      const reply = (completed.result || {}).reply;
+      if (!reply) throw new Error('No response was produced.');
 
       thinkingDiv.querySelector('.chat-bubble').classList.remove('thinking');
-      updateLastMsg(thinkingDiv, data.reply);
-      chatHistory.push({ role: 'assistant', content: data.reply });
+      updateLastMsg(thinkingDiv, reply);
+      chatHistory.push({ role: 'assistant', content: reply });
     } catch(e) {
       thinkingDiv.querySelector('.chat-bubble').classList.remove('thinking');
       updateLastMsg(thinkingDiv, `Error: ${e.message}`);

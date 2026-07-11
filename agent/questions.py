@@ -7,7 +7,7 @@ import json
 
 from . import config
 from .judgments import CLINICAL_JUDGMENTS_OVERRIDE, get_clinical_judgments_context
-from .llm import client, first_text, strip_code_fences
+from .llm import client, first_text, is_timeout_error, strip_code_fences
 from .profile import (
     build_patient_context,
     get_output_language,
@@ -182,6 +182,7 @@ def generate_questions_for_profile(
             for i, q in enumerate(questions)
             if q.get("text")
         ]
-    except Exception as e:
-        print(f"  ⚠  Question generation failed: {e}")
+    except Exception as exc:
+        if is_timeout_error(exc):
+            raise
         return []

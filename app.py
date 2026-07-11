@@ -5,15 +5,17 @@ Deployed on Azure App Service (swedencentral)
 Data persisted to /home/data (Azure Files mount)
 """
 
+import atexit
+import base64
 import datetime
 import hashlib
 import io
 import json
 import os
+import shutil
 import sys
 import threading
 import time
-import traceback
 from functools import wraps
 from pathlib import Path
 
@@ -38,12 +40,20 @@ sys.path.insert(0, str(Path(_args.agent_dir).resolve()))
 
 try:
     import net_agent as agent
-except Exception as e:
-    print(f"ERROR: Could not import net_agent.py — {type(e).__name__}: {e}")
+except Exception as exc:
+    print(f"ERROR: Could not import net_agent.py — {type(exc).__name__}")
     sys.exit(1)
 
 # Configure logging once Anthropic + dotenv are loaded.
 from agent.io import atomic_write_bytes, atomic_write_text  # noqa: E402
+from agent.job_runtime import (  # noqa: E402
+    BoundedExecutor,
+    SaturatedError,
+    extract_pdf_subprocess,
+    prune_orphan_sources,
+    safe_artifact_path,
+    write_json_artifact,
+)
 from agent.logging_config import configure_logging  # noqa: E402
 from agent.provenance import resolve_source_artifact, validate_source_artifact  # noqa: E402
 from agent.schema import now_stamp  # noqa: E402
@@ -58,6 +68,10 @@ try:
     APP_VERSION = _pkg_version("net-care-agent")
 except Exception:
     APP_VERSION = "0.0.0+unknown"
+try:
+    RELEASE_COMMIT = Path("RELEASE_COMMIT").read_text(encoding="ascii").strip()
+except OSError:
+    RELEASE_COMMIT = "development"
 
 app = Flask(__name__, static_folder="static", template_folder="static")
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
@@ -66,6 +80,7 @@ MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES + 1024 * 1024
 MAX_PDF_PAGES = int(os.environ.get("MAX_PDF_PAGES", "100"))
 MAX_EXTRACTED_TEXT_CHARS = int(os.environ.get("MAX_EXTRACTED_TEXT_CHARS", "1000000"))
+PDF_PARSE_TIMEOUT_SECONDS = int(os.environ.get("PDF_PARSE_TIMEOUT_SECONDS", "30"))
 
 # ── persistent storage ───────────────────────────────────────────────────────
 # Default to /home/data (Azure Files mount on App Service).
@@ -79,6 +94,66 @@ _jobs: list[dict] = []
 _jobs_lock = threading.Lock()
 _initialized = False
 _jobs_healthy: bool = True  # set False when jobs.json is quarantined on load
+_admission_lock = threading.Lock()
+_executor_lock = threading.Lock()
+_job_executor: BoundedExecutor | None = None
+_feed_executor: BoundedExecutor | None = None
+
+_JOB_FIELDS = {
+    "id",
+    "type",
+    "status",
+    "stage",
+    "created_at",
+    "started_at",
+    "finished_at",
+    "report_file",
+    "result_file",
+    "source_document_id",
+    "retry_guidance",
+    "error_code",
+    "error",
+}
+_ACTIVE_STATUSES = {"queued", "running"}
+_SAFE_JOB_ERRORS = {
+    "job_failed": "The job failed. Please retry.",
+    "upstream_timeout": "The AI service timed out. Please retry.",
+    "pdf_timeout": "PDF processing timed out.",
+    "pdf_invalid": "PDF could not be processed within safety limits.",
+    "pdf_text_limit": "PDF could not be processed within safety limits.",
+}
+_INTERRUPTED_GUIDANCE = (
+    "This job was interrupted by a server restart. Re-submit the same request to retry."
+)
+
+
+def _get_executor(feed: bool = False) -> BoundedExecutor:
+    global _job_executor, _feed_executor
+    with _executor_lock:
+        if feed:
+            if _feed_executor is None:
+                _feed_executor = BoundedExecutor(
+                    workers=int(os.environ.get("FEED_WORKERS", "1")),
+                    queue_size=int(os.environ.get("FEED_QUEUE_SIZE", "2")),
+                    name="feed-job",
+                )
+            return _feed_executor
+        if _job_executor is None:
+            _job_executor = BoundedExecutor(
+                workers=int(os.environ.get("JOB_WORKERS", "2")),
+                queue_size=int(os.environ.get("JOB_QUEUE_SIZE", "6")),
+                name="job",
+            )
+        return _job_executor
+
+
+def _shutdown_executors() -> None:
+    for executor in (_feed_executor, _job_executor):
+        if executor is not None:
+            executor.shutdown(wait=True)
+
+
+atexit.register(_shutdown_executors)
 
 
 def _ensure_data_dir():
@@ -113,23 +188,27 @@ def _load_jobs() -> bool:
     try:
         raw = JOBS_PATH.read_bytes()
     except OSError as exc:
-        log.warning("jobs_read_failed: %s", exc)
+        log.warning("jobs_read_failed type=%s", type(exc).__name__)
         with _jobs_lock:
             _jobs_healthy = False
         return False
 
     try:
         loaded = json.loads(raw)
-    except json.JSONDecodeError as exc:
+    except json.JSONDecodeError:
         with _jobs_lock:
-            _quarantine_jobs(raw_bytes=raw, reason=f"json_decode_error: {exc}")
+            if not _quarantine_jobs(raw_bytes=raw, reason="json_decode_error"):
+                _jobs_healthy = False
+                return False
             _jobs = []
             _jobs_healthy = False
         return True
 
     if not isinstance(loaded, list):
         with _jobs_lock:
-            _quarantine_jobs(raw_bytes=raw, reason="not_a_list")
+            if not _quarantine_jobs(raw_bytes=raw, reason="not_a_list"):
+                _jobs_healthy = False
+                return False
             _jobs = []
             _jobs_healthy = False
         return True
@@ -141,43 +220,43 @@ def _load_jobs() -> bool:
         for item in loaded
     ):
         with _jobs_lock:
-            _quarantine_jobs(raw_bytes=raw, reason="invalid_job_entry")
+            if not _quarantine_jobs(raw_bytes=raw, reason="invalid_job_entry"):
+                _jobs_healthy = False
+                return False
             _jobs = []
             _jobs_healthy = False
         return True
 
     with _jobs_lock:
-        _jobs = loaded
+        _jobs = [_clean_job(item) for item in loaded]
         _jobs_healthy = True
 
         # Reconcile: any job that was queued or running when the process last
         # died is now interrupted.  Persist once, expose retry guidance, no
         # traceback.
         now_str = datetime.datetime.now().isoformat(timespec="seconds")
-        needs_save = False
+        needs_save = _jobs != loaded
         for j in _jobs:
             if j.get("status") in ("queued", "running"):
                 j["status"] = "interrupted"
                 j["finished_at"] = j.get("finished_at") or now_str
                 j["stage"] = "interrupted"
-                j["retry_guidance"] = (
-                    "This job was interrupted by a server restart.  "
-                    "Re-submit the same request to retry."
-                )
-                j.pop("traceback", None)  # never surface traceback in interrupted record
+                j["error_code"] = "job_interrupted"
+                j["error"] = "The job was interrupted by a server restart."
+                j["retry_guidance"] = _INTERRUPTED_GUIDANCE
                 needs_save = True
 
         if needs_save:
             try:
                 _save_jobs()
             except Exception as exc:
-                log.warning("jobs_reconcile_save_failed: %s", exc)
+                log.warning("jobs_reconcile_save_failed type=%s", type(exc).__name__)
                 _jobs_healthy = False
                 return False
     return True
 
 
-def _quarantine_jobs(*, raw_bytes: bytes, reason: str) -> None:
+def _quarantine_jobs(*, raw_bytes: bytes, reason: str) -> bool:
     """Move corrupt jobs.json to the quarantine directory (best-effort).
 
     Logs only the quarantine filename and a hash prefix — no job data or paths.
@@ -193,19 +272,40 @@ def _quarantine_jobs(*, raw_bytes: bytes, reason: str) -> None:
         atomic_write_bytes(qpath, raw_bytes)
         JOBS_PATH.unlink(missing_ok=True)
         log.warning("jobs_quarantined reason=%s file=%s hash_prefix=%s", reason, qpath.name, h)
+        return True
     except OSError as exc:
-        log.error("jobs_quarantine_failed reason=%s error=%s", reason, exc)
+        log.error("jobs_quarantine_failed reason=%s type=%s", reason, type(exc).__name__)
+        return False
 
 
 def _save_jobs():
     _ensure_data_dir()
-    atomic_write_text(JOBS_PATH, json.dumps(_jobs, indent=2, default=str))
+    atomic_write_text(JOBS_PATH, json.dumps(_jobs, separators=(",", ":"), default=str))
+
+
+def _clean_job(job: dict) -> dict:
+    clean = {key: value for key, value in job.items() if key in _JOB_FIELDS}
+    status = clean.get("status")
+    if status == "error":
+        code = clean.get("error_code")
+        if code not in _SAFE_JOB_ERRORS:
+            code = "job_failed"
+        clean["error_code"] = code
+        clean["error"] = _SAFE_JOB_ERRORS[code]
+    elif status == "interrupted":
+        clean["error_code"] = "job_interrupted"
+        clean["error"] = "The job was interrupted by a server restart."
+        clean["retry_guidance"] = _INTERRUPTED_GUIDANCE
+    else:
+        clean.pop("error_code", None)
+        clean.pop("retry_guidance", None)
+        clean["error"] = None
+    return clean
 
 
 def _add_job(job: dict):
     with _jobs_lock:
-        _jobs.insert(0, job)
-        _jobs[:] = _jobs[:200]
+        _jobs.insert(0, _clean_job(job))
         _save_jobs()
 
 
@@ -213,9 +313,261 @@ def _update_job(job_id: str, updates: dict):
     with _jobs_lock:
         for j in _jobs:
             if j["id"] == job_id:
-                j.update(updates)
+                j.update({key: value for key, value in updates.items() if key in _JOB_FIELDS})
+                cleaned = _clean_job(j)
+                j.clear()
+                j.update(cleaned)
                 break
         _save_jobs()
+
+
+def _safe_error_code(exc: BaseException) -> tuple[str, str]:
+    code = str(exc) if str(exc) in {"pdf_timeout", "pdf_invalid", "pdf_text_limit"} else ""
+    if code == "pdf_timeout":
+        return code, "PDF processing timed out."
+    if code in {"pdf_invalid", "pdf_text_limit"}:
+        return code, "PDF could not be processed within safety limits."
+    if "timeout" in type(exc).__name__.lower():
+        return "upstream_timeout", "The AI service timed out. Please retry."
+    return "job_failed", "The job failed. Please retry."
+
+
+def _fail_job(job_id: str, exc: BaseException) -> None:
+    code, message = _safe_error_code(exc)
+    log.warning("job_failed id=%s code=%s type=%s", job_id, code, type(exc).__name__)
+    _update_job(
+        job_id,
+        {
+            "status": "error",
+            "stage": "error",
+            "error_code": code,
+            "error": message,
+            "finished_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        },
+    )
+
+
+def _submit_job(
+    job_type: str,
+    target,
+    *args,
+    feed: bool = False,
+    unique_active: bool = False,
+    prepare=None,
+) -> tuple[dict | None, tuple | None]:
+    """Atomically admit bounded work before creating durable job metadata."""
+    _prune_retention()
+    executor = _get_executor(feed)
+    gate = threading.Event()
+    cancelled = threading.Event()
+    job = {
+        "id": _new_id(),
+        "type": job_type,
+        "status": "queued",
+        "stage": "queued",
+        "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "finished_at": None,
+        "error": None,
+    }
+
+    def run_after_persist() -> None:
+        gate.wait()
+        if not cancelled.is_set():
+            target(job["id"], *args)
+
+    with _admission_lock:
+        if unique_active:
+            with _jobs_lock:
+                existing = next(
+                    (
+                        item
+                        for item in _jobs
+                        if item.get("type") == job_type and item.get("status") in _ACTIVE_STATUSES
+                    ),
+                    None,
+                )
+            if existing:
+                return None, (
+                    jsonify({"error": "An active job of this type already exists.", "job_id": existing["id"]}),
+                    409,
+                )
+        try:
+            executor.submit(run_after_persist)
+        except SaturatedError:
+            response = jsonify({"error": "Job queue is full. Please retry shortly."})
+            response.headers["Retry-After"] = os.environ.get("RETRY_AFTER_SECONDS", "10")
+            return None, (response, 429)
+        try:
+            _add_job(job)
+            if prepare is not None:
+                prepare(job)
+        except BaseException:
+            cancelled.set()
+            try:
+                with _jobs_lock:
+                    _jobs[:] = [item for item in _jobs if item.get("id") != job["id"]]
+                    _save_jobs()
+            finally:
+                gate.set()
+            raise
+        gate.set()
+    return job, None
+
+
+def _artifact_ref(path: Path) -> str:
+    return path.resolve().relative_to(DATA_DIR.resolve()).as_posix()
+
+
+def _write_job_result(job_id: str, value: object) -> str:
+    path = DATA_DIR / "job_results" / f"{job_id}.json"
+    write_json_artifact(path, value)
+    return _artifact_ref(path)
+
+
+def _job_response(job: dict, *, include_artifacts: bool = False) -> dict:
+    response = dict(job)
+    if not include_artifacts:
+        return response
+    report_ref = job.get("report_file")
+    if report_ref:
+        try:
+            response["report"] = safe_artifact_path(DATA_DIR, report_ref, {"reports"}).read_text(
+                encoding="utf-8"
+            )
+        except (OSError, ValueError):
+            response["artifact_unavailable"] = True
+    result_ref = job.get("result_file")
+    if result_ref:
+        try:
+            response["result"] = json.loads(
+                safe_artifact_path(DATA_DIR, result_ref, {"job_results"}).read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError, json.JSONDecodeError):
+            response["artifact_unavailable"] = True
+    return response
+
+
+def _legacy_sync_result(job_id: str):
+    """Compatibility response used only when explicitly enabled."""
+    if os.environ.get("LEGACY_SYNC_JOB_RESPONSES", "").lower() not in {"1", "true", "yes"}:
+        return None
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        with _jobs_lock:
+            job = next((item for item in _jobs if item.get("id") == job_id), None)
+            snapshot = dict(job) if job else None
+        if snapshot and snapshot.get("status") == "done":
+            return _job_response(snapshot, include_artifacts=True).get("result")
+        if snapshot and snapshot.get("status") in {"error", "interrupted"}:
+            return {"error": snapshot.get("error") or "The job failed."}
+        time.sleep(0.01)
+    return {"error": "The job is still running.", "job_id": job_id}
+
+
+def _prune_retention() -> None:
+    """Prune job metadata and report/result artifacts, but never source evidence."""
+    now = time.time()
+    job_days = max(1, int(os.environ.get("JOB_RETENTION_DAYS", "365")))
+    job_count = max(1, int(os.environ.get("JOB_RETENTION_COUNT", "200")))
+    removed: list[dict] = []
+    with _jobs_lock:
+        kept = []
+        for index, job in enumerate(_jobs):
+            try:
+                age = now - datetime.datetime.fromisoformat(job.get("created_at", "")).timestamp()
+            except (TypeError, ValueError):
+                age = job_days * 86400 + 1
+            if job.get("status") not in _ACTIVE_STATUSES and (
+                index >= job_count or age > job_days * 86400
+            ):
+                removed.append(job)
+            else:
+                kept.append(job)
+        if removed:
+            _jobs[:] = kept
+            _save_jobs()
+    for job in removed:
+        for field, roots in (("report_file", {"reports"}), ("result_file", {"job_results"})):
+            if job.get(field):
+                try:
+                    safe_artifact_path(DATA_DIR, job[field], roots).unlink(missing_ok=True)
+                except (OSError, ValueError):
+                    pass
+
+    def prune_artifacts(field: str, root_name: str, age_days: int, max_count: int) -> None:
+        root = DATA_DIR / root_name
+        refs_to_delete: list[str] = []
+        changed = False
+        with _jobs_lock:
+            referenced = [job for job in _jobs if job.get(field)]
+            for index, job in enumerate(referenced):
+                try:
+                    age = now - datetime.datetime.fromisoformat(
+                        job.get("created_at", "")
+                    ).timestamp()
+                except (TypeError, ValueError):
+                    age = age_days * 86400 + 1
+                if index >= max_count or age > age_days * 86400:
+                    refs_to_delete.append(job.pop(field))
+                    changed = True
+            if changed:
+                _save_jobs()
+            indexed = {job.get(field) for job in _jobs if job.get(field)}
+        for reference in refs_to_delete:
+            try:
+                safe_artifact_path(DATA_DIR, reference, {root_name}).unlink(missing_ok=True)
+            except (OSError, ValueError):
+                pass
+        if not root.is_dir():
+            return
+        try:
+            files = sorted(
+                (path for path in root.iterdir() if path.is_file()),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+        except OSError:
+            return
+        unindexed = [path for path in files if _artifact_ref(path) not in indexed]
+        cutoff = now - age_days * 86400
+        for index, path in enumerate(unindexed):
+            try:
+                if index >= max_count or path.stat().st_mtime < cutoff:
+                    path.unlink()
+            except OSError:
+                pass
+
+    prune_artifacts(
+        "report_file",
+        "reports",
+        max(1, int(os.environ.get("REPORT_RETENTION_DAYS", "30"))),
+        max(1, int(os.environ.get("REPORT_RETENTION_COUNT", "200"))),
+    )
+    prune_artifacts("result_file", "job_results", job_days, job_count)
+
+
+def _prune_source_retention() -> None:
+    """Prune orphan evidence while the caller holds the profile mutation lock."""
+    try:
+        profile = json.loads(agent.PROFILE_PATH.read_bytes())
+    except (OSError, ValueError, json.JSONDecodeError):
+        return
+    protected_ids = {
+        source.get("id")
+        for source in profile.get("source_documents", [])
+        if isinstance(source, dict) and source.get("id")
+    }
+    prune_orphan_sources(
+        DATA_DIR,
+        protected_ids,
+        age_days=int(os.environ.get("SOURCE_ORPHAN_RETENTION_DAYS", "7")),
+        max_count=int(os.environ.get("SOURCE_ORPHAN_RETENTION_COUNT", "20")),
+    )
+
+
+def _prune_sources_safely() -> None:
+    with agent.serialized_mutation():
+        _prune_source_retention()
 
 
 def _new_id() -> str:
@@ -240,10 +592,11 @@ def _refresh_summary(profile: dict) -> str | None:
     generated = agent.generate_executive_summary(profile)
     failure = generated.get("generation_failed") if isinstance(generated, dict) else True
     if failure:
+        generated_message = generated.get("summary", "") if isinstance(generated, dict) else ""
         message = (
-            generated.get("summary", "Summary generation failed")
-            if isinstance(generated, dict)
-            else "Summary generation failed"
+            "Summary generation was truncated at max_tokens."
+            if "max_tokens" in generated_message.lower() or "truncated" in generated_message.lower()
+            else "Summary generation failed."
         )
         existing = profile.get("executive_summary")
         if isinstance(existing, dict):
@@ -274,14 +627,37 @@ def _refresh_summary(profile: dict) -> str | None:
 # ── background workers ────────────────────────────────────────────────────────
 def _run_feed_job(
     job_id: str,
-    text: str,
-    raw_bytes: bytes | None = None,
+    text: str | None,
+    upload_ref: str | None = None,
     filename: str | None = None,
     media_type: str = "text/plain",
 ):
     # P6: serialize profile-mutating jobs so a concurrent feed+digest can't
     # silently lose one job's extracted data (last-writer-wins on the JSON file).
     try:
+        raw_bytes = None
+        upload_dir = None
+        if upload_ref == "job-upload":
+            upload_ref = f"uploads/{job_id}/input.bin"
+        if upload_ref:
+            upload_path = safe_artifact_path(DATA_DIR, upload_ref, {"uploads"})
+            upload_dir = upload_path.parent
+            raw_bytes = upload_path.read_bytes()
+            if (filename or "").lower().endswith(".pdf"):
+                extracted_path = upload_dir / "extracted.txt"
+                text = extract_pdf_subprocess(
+                    upload_path,
+                    extracted_path,
+                    timeout_seconds=PDF_PARSE_TIMEOUT_SECONDS,
+                    max_pages=MAX_PDF_PAGES,
+                    max_chars=MAX_EXTRACTED_TEXT_CHARS,
+                )
+            else:
+                text = raw_bytes.decode("utf-8", errors="replace")
+                if len(text) > MAX_EXTRACTED_TEXT_CHARS:
+                    raise RuntimeError("pdf_text_limit")
+        if not text or not text.strip():
+            raise RuntimeError("pdf_invalid")
         with agent.serialized_mutation(
             lambda: _update_job(
                 job_id,
@@ -336,6 +712,7 @@ def _run_feed_job(
             _update_job(job_id, {"stage": "refreshing summary"})
             summary_error = _refresh_summary(profile)
             agent.save_profile(profile)
+            _prune_source_retention()
 
             reports_dir = DATA_DIR / "reports"
             reports_dir.mkdir(parents=True, exist_ok=True)
@@ -343,30 +720,29 @@ def _run_feed_job(
             rpath = reports_dir / f"report_feed_{stamp}.txt"
             if summary_error:
                 report += f"\n\n## Summary refresh warning\n{summary_error}"
-            rpath.write_text(report, encoding="utf-8")
+            atomic_write_text(rpath, report)
 
             _update_job(
                 job_id,
                 {
                     "status": "done",
                     "stage": "done_with_warnings" if summary_error else "done",
-                    "report": report,
-                    "report_file": str(rpath),
+                    "report_file": _artifact_ref(rpath),
                     "summary_error": summary_error,
                     "finished_at": datetime.datetime.now().isoformat(),
                 },
             )
 
-    except Exception as e:
-        _update_job(
-            job_id,
-            {
-                "status": "error",
-                "stage": "error",
-                "error": str(e),
-                "traceback": traceback.format_exc(),
-            },
-        )
+    except Exception as exc:
+        _fail_job(job_id, exc)
+    finally:
+        if upload_ref == "job-upload":
+            upload_ref = f"uploads/{job_id}/input.bin"
+        if upload_ref:
+            try:
+                shutil.rmtree(safe_artifact_path(DATA_DIR, upload_ref, {"uploads"}).parent)
+            except (OSError, ValueError):
+                pass
 
 
 def _run_digest_job(job_id: str):
@@ -386,8 +762,8 @@ def _run_digest_job(job_id: str):
                 poll = agent.poll_tracked_trials(profile)
                 if poll["changed"]:
                     _update_job(job_id, {"stage": f"trial updates: {len(poll['changed'])}"})
-            except Exception as e:
-                print(f"trial poll skipped: {e}")
+            except Exception as exc:
+                log.warning("trial_poll_skipped type=%s", type(exc).__name__)
             extracted = {
                 "document_type": "scheduled_digest",
                 "summary": "Manual research digest",
@@ -411,30 +787,21 @@ def _run_digest_job(job_id: str):
             rpath = reports_dir / f"report_digest_{stamp}.txt"
             if summary_error:
                 report += f"\n\n## Summary refresh warning\n{summary_error}"
-            rpath.write_text(report, encoding="utf-8")
+            atomic_write_text(rpath, report)
 
             _update_job(
                 job_id,
                 {
                     "status": "done",
                     "stage": "done_with_warnings" if summary_error else "done",
-                    "report": report,
-                    "report_file": str(rpath),
+                    "report_file": _artifact_ref(rpath),
                     "summary_error": summary_error,
                     "finished_at": datetime.datetime.now().isoformat(),
                 },
             )
 
-    except Exception as e:
-        _update_job(
-            job_id,
-            {
-                "status": "error",
-                "stage": "error",
-                "error": str(e),
-                "traceback": traceback.format_exc(),
-            },
-        )
+    except Exception as exc:
+        _fail_job(job_id, exc)
 
 
 def _run_deepsweep_job(job_id: str):
@@ -454,30 +821,109 @@ def _run_deepsweep_job(job_id: str):
         reports_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         rpath = reports_dir / f"report_deepsweep_{stamp}.md"
-        rpath.write_text(report, encoding="utf-8")
+        atomic_write_text(rpath, report)
 
         _update_job(
             job_id,
             {
                 "status": "done",
                 "stage": "done",
-                "report": report,
-                "report_file": str(rpath),
+                "report_file": _artifact_ref(rpath),
                 "cost_total": result.get("cost_total"),
                 "finished_at": datetime.datetime.now().isoformat(),
             },
         )
 
-    except Exception as e:
+    except Exception as exc:
+        _fail_job(job_id, exc)
+
+
+def _run_questions_job(job_id: str, appointment_type: str) -> None:
+    try:
+        _update_job(job_id, {"status": "running", "stage": "generating", "started_at": now_stamp()})
+        with agent.serialized_mutation():
+            profile = agent.load_profile()
+            new_questions = agent.generate_questions_for_profile(profile, appointment_type)
+            existing = profile.get("appointment_questions", [])
+            preserved = [q for q in existing if q.get("source") == "manual" or q.get("asked")]
+            used_ids = {q.get("id") for q in preserved if q.get("id")}
+            seen = {
+                " ".join((q.get("text") or "").split()).casefold()
+                for q in preserved
+                if (q.get("text") or "").strip()
+            }
+            merged = list(preserved)
+            for question in new_questions:
+                key = " ".join((question.get("text") or "").split()).casefold()
+                if key and key not in seen:
+                    candidate = dict(question)
+                    if not candidate.get("id") or candidate["id"] in used_ids:
+                        candidate["id"] = f"q_{_new_id()}"
+                    used_ids.add(candidate["id"])
+                    merged.append(candidate)
+                    seen.add(key)
+            profile["appointment_questions"] = merged
+            agent.save_profile(profile, clinical_change=False)
+        result_ref = _write_job_result(job_id, {"questions": merged})
         _update_job(
             job_id,
             {
-                "status": "error",
-                "stage": "error",
-                "error": str(e),
-                "traceback": traceback.format_exc(),
+                "status": "done",
+                "stage": "done",
+                "result_file": result_ref,
+                "finished_at": now_stamp(),
             },
         )
+    except Exception as exc:
+        _fail_job(job_id, exc)
+
+
+def _run_summary_job(job_id: str) -> None:
+    try:
+        _update_job(job_id, {"status": "running", "stage": "generating", "started_at": now_stamp()})
+        with agent.serialized_mutation():
+            profile = agent.load_profile()
+            classified_txs = agent.classify_treatments(profile)
+            profile["treatments_classified"] = classified_txs
+            summary_error = _refresh_summary(profile)
+            agent.save_profile(profile)
+            result = {
+                "summary": profile["executive_summary"],
+                "treatments_classified": classified_txs,
+                "summary_error": summary_error,
+                "profile_revision": profile["profile_revision"],
+            }
+        result_ref = _write_job_result(job_id, result)
+        _update_job(
+            job_id,
+            {
+                "status": "done",
+                "stage": "done",
+                "result_file": result_ref,
+                "finished_at": now_stamp(),
+            },
+        )
+    except Exception as exc:
+        _fail_job(job_id, exc)
+
+
+def _run_chat_job(job_id: str, user_message: str, history: list) -> None:
+    try:
+        _update_job(job_id, {"status": "running", "stage": "answering", "started_at": now_stamp()})
+        profile = agent.load_profile()
+        reply = agent.handle_chat(profile, user_message, history)
+        result_ref = _write_job_result(job_id, {"reply": reply})
+        _update_job(
+            job_id,
+            {
+                "status": "done",
+                "stage": "done",
+                "result_file": result_ref,
+                "finished_at": now_stamp(),
+            },
+        )
+    except Exception as exc:
+        _fail_job(job_id, exc)
 
 
 # ── API routes ────────────────────────────────────────────────────────────────
@@ -546,6 +992,9 @@ def _lazy_init():
     if not _initialized:
         loaded = _load_jobs()
         _initialized = loaded
+        if loaded:
+            _prune_retention()
+            _prune_sources_safely()
         if not loaded and request.path not in {"/api/live", "/api/health"}:
             return jsonify(
                 {
@@ -555,21 +1004,128 @@ def _lazy_init():
             ), 503
 
 
+def _easy_auth_enabled() -> bool:
+    return os.environ.get("WEBSITE_AUTH_ENABLED", "").strip().lower() == "true"
+
+
+def _is_hosted() -> bool:
+    return _easy_auth_enabled() or any(
+        os.environ.get(name)
+        for name in ("WEBSITE_INSTANCE_ID", "WEBSITE_SITE_NAME", "WEBSITE_HOSTNAME")
+    )
+
+
+def _principal_id() -> str | None:
+    stable = (request.headers.get("X-MS-CLIENT-PRINCIPAL-ID") or "").strip()
+    encoded = (request.headers.get("X-MS-CLIENT-PRINCIPAL") or "").strip()
+    if encoded:
+        try:
+            decoded = base64.b64decode(encoded, validate=True)
+            principal = json.loads(decoded)
+            if not isinstance(principal, dict):
+                return None
+            claims = principal.get("claims")
+            if claims is not None and not isinstance(claims, list):
+                return None
+            ids = [
+                claim.get("val")
+                for claim in (claims or [])
+                if isinstance(claim, dict)
+                and claim.get("typ", "").lower()
+                in {
+                    "http://schemas.microsoft.com/identity/claims/objectidentifier",
+                    "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier",
+                    "oid",
+                    "sub",
+                }
+            ]
+            stable = stable or str(principal.get("userId") or next(iter(ids), "")).strip()
+            if not stable and not principal.get("userDetails"):
+                return None
+        except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
+            return stable or None
+        return stable or str(principal.get("userDetails")).strip()
+    return stable or None
+
+
+def _trusted_hosted_origin() -> str | None:
+    from urllib.parse import urlsplit
+
+    configured = (os.environ.get("APP_ORIGIN") or "").strip()
+    if configured:
+        parts = urlsplit(configured)
+        if (
+            parts.scheme.lower() == "https"
+            and parts.netloc
+            and not parts.username
+            and not parts.password
+            and parts.path in {"", "/"}
+            and not parts.query
+            and not parts.fragment
+        ):
+            return f"https://{parts.netloc.lower()}"
+        return None
+    hostname = (os.environ.get("WEBSITE_HOSTNAME") or "").strip().lower()
+    if hostname and "/" not in hostname and "@" not in hostname:
+        return f"https://{hostname}"
+    return None
+
+
+def _origin_is_same(*, hosted: bool) -> bool:
+    from urllib.parse import urlsplit
+
+    origin = request.headers.get("Origin")
+    if not origin:
+        return not hosted
+    expected = _trusted_hosted_origin() if hosted else request.host_url
+    if not expected:
+        return False
+    actual_parts = urlsplit(origin)
+    expected_parts = urlsplit(expected)
+    return (
+        actual_parts.scheme.lower(),
+        actual_parts.netloc.lower(),
+    ) == (
+        expected_parts.scheme.lower(),
+        expected_parts.netloc.lower(),
+    )
+
+
+@app.before_request
+def _protect_api():
+    if not request.path.startswith("/api/") or request.path in {"/api/live", "/api/health"}:
+        return None
+    local_bypass = os.environ.get("ALLOW_LOCAL_AUTH_BYPASS", "").lower() in {"1", "true", "yes"}
+    hosted = _is_hosted()
+    if hosted:
+        if not _easy_auth_enabled():
+            return jsonify({"error": "Hosted authentication is not enabled."}), 503
+        principal_id = _principal_id()
+        if principal_id is None:
+            return jsonify({"error": "Authentication required."}), 401
+    elif not local_bypass:
+        return jsonify({"error": "Authentication required."}), 401
+    else:
+        principal_id = None
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not _origin_is_same(
+        hosted=hosted
+    ):
+        return jsonify({"error": "Cross-origin request denied."}), 403
+    allowlist = {
+        item.strip()
+        for item in os.environ.get("AUTH_ALLOWED_PRINCIPAL_IDS", "").split(",")
+        if item.strip()
+    }
+    if hosted and allowlist and principal_id not in allowlist:
+        return jsonify({"error": "Access denied."}), 403
+    return None
+
+
 def _source_auth_required(func):
-    """Require Easy Auth identity headers in hosted deployments; allow local dev."""
+    """Compatibility decorator; global API protection performs authentication."""
 
     @wraps(func)
     def wrapped(*args, **kwargs):
-        hosted_auth = os.environ.get("WEBSITE_AUTH_ENABLED", "").lower() in (
-            "1",
-            "true",
-            "yes",
-        )
-        if hosted_auth and not (
-            request.headers.get("X-MS-CLIENT-PRINCIPAL")
-            or request.headers.get("X-MS-CLIENT-PRINCIPAL-ID")
-        ):
-            return jsonify({"error": "Authentication required"}), 401
         return func(*args, **kwargs)
 
     return wrapped
@@ -709,6 +1265,9 @@ def api_health():
                 except (ValueError, TypeError):
                     stale_job_count += 1
 
+    job_active, job_queued = _get_executor().counts()
+    feed_active, feed_queued = _get_executor(feed=True).counts()
+
     # ── backup / snapshot ages ────────────────────────────────────────────────
     snap_age = agent_backups.newest_file_age_seconds(DATA_DIR / "snapshots", "profile_*.json")
     backup_age = agent_backups.newest_file_age_seconds(DATA_DIR / "backups", "profile_*.json")
@@ -751,6 +1310,7 @@ def api_health():
         {
             "status": overall,
             "version": APP_VERSION,
+            "release_commit": RELEASE_COMMIT,
             "schema_version": CURRENT_SCHEMA_VERSION,
             "data_dir_writable": data_dir_writable,
             "profile_status": profile_status,
@@ -758,6 +1318,10 @@ def api_health():
             "profile_loaded": profile_status == "ok",
             "stale_job_count": stale_job_count,
             "interrupted_job_count": interrupted_job_count,
+            "active_job_count": job_active + feed_active,
+            "queued_job_count": job_queued + feed_queued,
+            "feed_active_count": feed_active,
+            "feed_queued_count": feed_queued,
             "newest_snapshot_age_seconds": snap_age,
             "newest_backup_age_seconds": backup_age,
             "jobs_healthy": _jobs_healthy,
@@ -803,23 +1367,10 @@ def api_feed():
     if not text:
         return jsonify({"error": "No text provided"}), 400
 
-    job = {
-        "id": _new_id(),
-        "type": "feed",
-        "status": "queued",
-        "stage": "queued",
-        "created_at": datetime.datetime.now().isoformat(),
-        "finished_at": None,
-        "input_preview": text[:300],
-        "document_type": None,
-        "summary": None,
-        "key_findings": [],
-        "report": None,
-        "error": None,
-    }
-    _add_job(job)
-    threading.Thread(target=_run_feed_job, args=(job["id"], text), daemon=True).start()
-    return jsonify({"job_id": job["id"]})
+    job, rejection = _submit_job("feed", _run_feed_job, text, feed=True)
+    if rejection:
+        return rejection
+    return jsonify({"job_id": job["id"]}), 202
 
 
 @app.route("/api/feed-file", methods=["POST"])
@@ -831,71 +1382,25 @@ def api_feed_file():
     raw_bytes = f.read(MAX_UPLOAD_BYTES + 1)
     if len(raw_bytes) > MAX_UPLOAD_BYTES:
         return jsonify({"error": "File exceeds the 20 MB upload limit"}), 413
-    try:
-        if (f.filename or "").lower().endswith(".pdf"):
-            import io
+    filename = Path(f.filename or "upload.bin").name[:255]
+    media_type = f.mimetype or "application/octet-stream"
 
-            import pdfplumber
+    def persist_upload(job: dict) -> None:
+        atomic_write_bytes(DATA_DIR / "uploads" / job["id"] / "input.bin", raw_bytes)
 
-            with pdfplumber.open(io.BytesIO(raw_bytes)) as pdf:
-                if len(pdf.pages) > MAX_PDF_PAGES:
-                    return jsonify(
-                        {"error": f"PDF exceeds the {MAX_PDF_PAGES}-page processing limit"}
-                    ), 413
-                chunks: list[str] = []
-                total_chars = 0
-                for page in pdf.pages:
-                    chunk = page.extract_text() or ""
-                    total_chars += len(chunk)
-                    if total_chars > MAX_EXTRACTED_TEXT_CHARS:
-                        return jsonify(
-                            {
-                                "error": (
-                                    "Extracted text exceeds the "
-                                    f"{MAX_EXTRACTED_TEXT_CHARS:,}-character processing limit"
-                                )
-                            }
-                        ), 413
-                    chunks.append(chunk)
-                text = "\n\n".join(chunks)
-        else:
-            text = raw_bytes.decode("utf-8", errors="replace")
-            if len(text) > MAX_EXTRACTED_TEXT_CHARS:
-                return jsonify(
-                    {
-                        "error": (
-                            "Text exceeds the "
-                            f"{MAX_EXTRACTED_TEXT_CHARS:,}-character processing limit"
-                        )
-                    }
-                ), 413
-    except Exception as exc:
-        return jsonify({"error": f"Could not read uploaded file: {exc}"}), 400
-
-    if not text.strip():
-        return jsonify({"error": "File appears to be empty or unreadable"}), 400
-
-    job = {
-        "id": _new_id(),
-        "type": "feed",
-        "status": "queued",
-        "stage": "queued",
-        "created_at": datetime.datetime.now().isoformat(),
-        "finished_at": None,
-        "input_preview": f"[File: {f.filename}] " + text[:260],
-        "document_type": None,
-        "summary": None,
-        "key_findings": [],
-        "report": None,
-        "error": None,
-    }
-    _add_job(job)
-    threading.Thread(
-        target=_run_feed_job,
-        args=(job["id"], text, raw_bytes, f.filename, f.mimetype or "application/octet-stream"),
-        daemon=True,
-    ).start()
-    return jsonify({"job_id": job["id"]})
+    job, rejection = _submit_job(
+        "feed",
+        _run_feed_job,
+        None,
+        "job-upload",
+        filename,
+        media_type,
+        feed=True,
+        prepare=persist_upload,
+    )
+    if rejection:
+        return rejection
+    return jsonify({"job_id": job["id"]}), 202
 
 
 @app.route("/api/sources/<source_id>")
@@ -974,23 +1479,10 @@ def api_evidence(source_id):
 
 @app.route("/api/digest", methods=["POST"])
 def api_digest():
-    job = {
-        "id": _new_id(),
-        "type": "digest",
-        "status": "queued",
-        "stage": "queued",
-        "created_at": datetime.datetime.now().isoformat(),
-        "finished_at": None,
-        "input_preview": "Research digest — full literature + trial sweep",
-        "document_type": "digest",
-        "summary": None,
-        "key_findings": [],
-        "report": None,
-        "error": None,
-    }
-    _add_job(job)
-    threading.Thread(target=_run_digest_job, args=(job["id"],), daemon=True).start()
-    return jsonify({"job_id": job["id"]})
+    job, rejection = _submit_job("digest", _run_digest_job, unique_active=True)
+    if rejection:
+        return rejection
+    return jsonify({"job_id": job["id"]}), 202
 
 
 @app.route("/api/deep-sweep", methods=["POST"])
@@ -999,29 +1491,16 @@ def api_deep_sweep():
 
     Read-only: the job does not write findings back to the profile.
     """
-    job = {
-        "id": _new_id(),
-        "type": "deep-sweep",
-        "status": "queued",
-        "stage": "queued",
-        "created_at": datetime.datetime.now().isoformat(),
-        "finished_at": None,
-        "input_preview": "Ensemble deep-sweep — multi-model, unioned findings",
-        "document_type": "deep-sweep",
-        "summary": None,
-        "key_findings": [],
-        "report": None,
-        "error": None,
-    }
-    _add_job(job)
-    threading.Thread(target=_run_deepsweep_job, args=(job["id"],), daemon=True).start()
-    return jsonify({"job_id": job["id"]})
+    job, rejection = _submit_job("deep-sweep", _run_deepsweep_job, unique_active=True)
+    if rejection:
+        return rejection
+    return jsonify({"job_id": job["id"]}), 202
 
 
 @app.route("/api/jobs")
 def api_jobs():
     with _jobs_lock:
-        return jsonify(list(_jobs))
+        return jsonify([_job_response(job) for job in _jobs])
 
 
 @app.route("/api/jobs/<job_id>")
@@ -1029,7 +1508,7 @@ def api_job(job_id):
     with _jobs_lock:
         for j in _jobs:
             if j["id"] == job_id:
-                return jsonify(j)
+                return jsonify(_job_response(j, include_artifacts=True))
     return jsonify({"error": "Not found"}), 404
 
 
@@ -1176,34 +1655,20 @@ def api_questions():
 
 
 @app.route("/api/questions/generate", methods=["POST"])
-@serialized_profile_mutation
 def api_questions_generate():
     data = request.get_json(force=True) or {}
-    appointment_type = data.get("appointment_type", "oncology follow-up")
-    profile = agent.load_profile()
-    new_questions = agent.generate_questions_for_profile(profile, appointment_type)
-    # Preserve asked history and manual questions; refresh only current unanswered AI items.
-    existing = profile.get("appointment_questions", [])
-    preserved = [q for q in existing if q.get("source") == "manual" or q.get("asked")]
-    used_ids = {q.get("id") for q in preserved if q.get("id")}
-    seen = {
-        " ".join((q.get("text") or "").split()).casefold()
-        for q in preserved
-        if (q.get("text") or "").strip()
-    }
-    merged = list(preserved)
-    for question in new_questions:
-        key = " ".join((question.get("text") or "").split()).casefold()
-        if key and key not in seen:
-            candidate = dict(question)
-            if not candidate.get("id") or candidate["id"] in used_ids:
-                candidate["id"] = f"q_{_new_id()}"
-            used_ids.add(candidate["id"])
-            merged.append(candidate)
-            seen.add(key)
-    profile["appointment_questions"] = merged
-    agent.save_profile(profile, clinical_change=False)
-    return jsonify(profile["appointment_questions"])
+    appointment_type = str(data.get("appointment_type") or "oncology follow-up")[:200]
+    job, rejection = _submit_job(
+        "questions", _run_questions_job, appointment_type, unique_active=True
+    )
+    if rejection:
+        return rejection
+    legacy = _legacy_sync_result(job["id"])
+    if legacy is not None:
+        if legacy.get("error"):
+            return jsonify(legacy), 500
+        return jsonify(legacy.get("questions", []))
+    return jsonify({"job_id": job["id"]}), 202
 
 
 @app.route("/api/questions/add", methods=["POST"])
@@ -1764,23 +2229,15 @@ def api_summary():
 
 
 @app.route("/api/summary/generate", methods=["POST"])
-@serialized_profile_mutation
 def api_summary_generate():
-    """Generate executive summary and classify treatments on demand."""
-    profile = agent.load_profile()
-    classified_txs = agent.classify_treatments(profile)
-    profile["treatments_classified"] = classified_txs
-    summary_error = _refresh_summary(profile)
-    agent.save_profile(profile)
-    summary = profile["executive_summary"]
-    return jsonify(
-        {
-            "summary": summary,
-            "treatments_classified": classified_txs,
-            "summary_error": summary_error,
-            "profile_revision": profile["profile_revision"],
-        }
-    )
+    """Queue executive summary generation and treatment classification."""
+    job, rejection = _submit_job("summary", _run_summary_job, unique_active=True)
+    if rejection:
+        return rejection
+    legacy = _legacy_sync_result(job["id"])
+    if legacy is not None:
+        return jsonify(legacy), 500 if legacy.get("error") else 200
+    return jsonify({"job_id": job["id"]}), 202
 
 
 @app.route("/api/chat", methods=["POST"])
@@ -1792,12 +2249,16 @@ def api_chat():
     if not user_message:
         return jsonify({"error": "No message"}), 400
 
-    profile = agent.load_profile()
-    try:
-        reply = agent.handle_chat(profile, user_message, history)
-        return jsonify({"reply": reply})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    if not isinstance(history, list):
+        return jsonify({"error": "Invalid history"}), 400
+    history = history[-20:]
+    job, rejection = _submit_job("chat", _run_chat_job, user_message[:10000], history)
+    if rejection:
+        return rejection
+    legacy = _legacy_sync_result(job["id"])
+    if legacy is not None:
+        return jsonify(legacy), 500 if legacy.get("error") else 200
+    return jsonify({"job_id": job["id"]}), 202
 
 
 @app.route("/")

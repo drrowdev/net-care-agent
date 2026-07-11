@@ -16,7 +16,7 @@ def _fetch_trial_status(nct: str) -> dict | None:
         response = requests.get(
             f"https://clinicaltrials.gov/api/v2/studies/{nct.upper()}",
             params={"format": "json"},
-            timeout=12,
+            timeout=(5, 12),
         )
         if response.status_code == 404:
             return None
@@ -195,6 +195,4 @@ def poll_tracked_trials(profile: dict) -> dict:
             }
         )
 
-    if changed:
-        print(f"   → Trial poll: {len(changed)} refresh(es) across {len(tracked)} tracked")
     return {"checked": len(tracked), "changed": changed}

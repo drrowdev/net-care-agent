@@ -82,7 +82,6 @@ def _region_filter_instruction(profile: dict) -> str:
 
 def run_orchestrator(profile: dict, extracted: dict) -> str:
     """Agentic loop: reads profile, executes workflows via tool use, returns report."""
-    print("\n⚙  Running orchestrator (agentic loop) ...")
 
     system = render_prompt(
         ORCHESTRATOR_SYSTEM_TEMPLATE,
@@ -140,7 +139,6 @@ def run_orchestrator(profile: dict, extracted: dict) -> str:
         tool_results = []
         for block in resp.content:
             if getattr(block, "type", None) == "tool_use":
-                print(f"   → {block.name}({json.dumps(block.input)[:70]}…)")
                 result = execute_tool(block.name, block.input, profile)
                 tool_results.append(
                     {
@@ -158,7 +156,6 @@ def run_orchestrator(profile: dict, extracted: dict) -> str:
 
     combined = "\n\n".join(report_parts).strip()
     if len(combined) < 300:
-        print("  ⚙  Requesting explicit final synthesis...")
         messages.append(
             {
                 "role": "user",
@@ -187,12 +184,11 @@ def run_orchestrator(profile: dict, extracted: dict) -> str:
             if hasattr(block, "text") and block.text.strip():
                 report_parts.append(block.text.strip())
 
-    print(f"  ✓  Orchestrator finished ({iteration} iteration(s))")
     report = "\n\n".join(report_parts)
     # P3: deterministic backstop — flag any cited PMID/NCT that does not resolve
     # in its primary registry (guards against fabricated citations).
     try:
         report += verification_note(verify_references(report))
-    except Exception as e:  # verification must never break report delivery
-        print(f"  ⚠  Reference verification skipped: {e}")
+    except Exception:  # verification must never break report delivery
+        pass
     return report

@@ -337,7 +337,6 @@ def load_profile() -> dict:
             )
         profile = json.loads(json.dumps(DEFAULT_PROFILE))  # deep copy
         save_profile(profile)
-        print(f"✓  Created new patient profile at {path}")
         return profile
 
 
@@ -381,7 +380,7 @@ def save_profile(profile: dict, *, clinical_change: bool = True) -> None:
         try:
             validate_profile(profile)
         except Exception as e:
-            log.warning("save_profile: validation issues (writing anyway): %s", e)
+            log.warning("save_profile: validation issues type=%s", type(e).__name__)
 
         # P12: pre-write snapshot so any single bad save is recoverable to the
         # immediately-prior state (never blocks the save on failure).

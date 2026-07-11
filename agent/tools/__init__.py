@@ -242,8 +242,6 @@ def execute_tool(name: str, inputs: dict, profile: dict) -> dict:
             )
             existing_pmids.add(article["pmid"])
             saved += 1
-        if saved:
-            print(f"   → Saved {saved} new relevant papers")
         return result
 
     elif name == "search_clinical_trials":
@@ -285,8 +283,6 @@ def execute_tool(name: str, inputs: dict, profile: dict) -> dict:
             )
             existing_ncts.add(trial["nct_id"])
             saved += 1
-        if saved:
-            print(f"   → Saved {saved} new relevant trials")
         result["persistence_manifest"] = {
             "saved": saved,
             "omitted": omitted,

@@ -4,26 +4,27 @@ version = "0.1.0"
 description = "NET/Care Research Agent — multi-agent AI system for monitoring NET cancer treatment options"
 requires-python = ">=3.11,<3.12"
 dependencies = [
-    "anthropic>=0.115",
-    "flask>=3.0",
-    "gunicorn>=22.0",
-    "requests>=2.32",
-    "pdfplumber>=0.11",
-    "python-dotenv>=1.0",
-    "pydantic>=2.7",
+    "anthropic==0.115.0",
+    "flask==3.1.3",
+    "gunicorn==25.3.0",
+    "httpx==0.28.1",
+    "pdfplumber==0.11.9",
+    "pydantic==2.13.3",
+    "python-dotenv==1.2.2",
+    "requests==2.33.1",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0",
-    "pytest-mock>=3.14",
-    "responses>=0.25",
-    "freezegun>=1.5",
-    "ruff>=0.7",
+    "pytest==9.0.3",
+    "pytest-mock==3.15.1",
+    "responses==0.26.0",
+    "freezegun==1.5.5",
+    "ruff==0.15.12",
 ]
 
 [build-system]
-requires = ["setuptools>=75.0"]
+requires = ["setuptools==65.5.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]

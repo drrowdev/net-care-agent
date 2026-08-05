@@ -1,128 +1,212 @@
-"""Tests for the /api/changes delta view (R9).
-
-These exercise the Flask app via Flask's test_client. Mirrors the
-pattern used by tests/test_ui_split.py.
-"""
+"""Tests for exact latest-batch research additions."""
 
 from __future__ import annotations
 
 import importlib
 import json
+from types import SimpleNamespace
 
 import pytest
 
 
 @pytest.fixture
-def client(monkeypatch, tmp_path):
+def app_module(monkeypatch, tmp_path):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-used")
-    # Point agent.load_profile at this test's temp file.
     import agent.config as cfg
 
-    profile_path = tmp_path / "patient_profile.json"
-    monkeypatch.setattr(cfg, "PROFILE_PATH", profile_path)
-    # Force a fresh import so the env override takes effect
+    monkeypatch.setattr(cfg, "PROFILE_PATH", tmp_path / "patient_profile.json")
     import app as app_mod
 
     importlib.reload(app_mod)
     app_mod.app.config["TESTING"] = True
-    with app_mod.app.test_client() as c:
-        yield c
+    return app_mod
+
+
+@pytest.fixture
+def client(app_module):
+    with app_module.app.test_client() as test_client:
+        yield test_client
 
 
 def _seed_profile(tmp_path, **overrides):
-    """Write a profile JSON to the temp data dir."""
-    base = {
+    profile = {
         "patient": {"diagnosis": "neuroendocrine tumor"},
-        "biomarkers": [],
-        "imaging": [],
-        "documents": [],
         "trials_tracked": [],
         "literature_watched": [],
-        "alerts": [],
-        "clinical_judgments": [],
-        "symptoms": [],
-        "questions": [],
     }
-    base.update(overrides)
-    (tmp_path / "patient_profile.json").write_text(json.dumps(base))
+    profile.update(overrides)
+    (tmp_path / "patient_profile.json").write_text(json.dumps(profile), encoding="utf-8")
+    return profile
 
 
-def test_changes_with_no_ack_returns_all_items_as_new(client, tmp_path):
-    _seed_profile(
-        tmp_path,
-        biomarkers=[{"marker": "CgA", "value": 100, "date": "2026-05-01"}],
-        symptoms=[{"id": "s1", "symptom": "nausea", "date": "2026-05-02"}],
-    )
-    r = client.get("/api/changes")
-    assert r.status_code == 200
-    body = r.get_json()
-    assert body["acknowledged_at"] is None
-    assert body["new"]["biomarkers"] == 1
-    assert body["new"]["symptoms"] == 1
-    assert body["new"]["total_new"] == 2
-
-
-def test_acknowledge_resets_counts_to_zero(client, tmp_path):
-    _seed_profile(
-        tmp_path,
-        biomarkers=[{"marker": "CgA", "value": 100, "date": "2026-05-01"}],
-    )
-    # First, confirm we see 1 new biomarker.
-    pre = client.get("/api/changes").get_json()
-    assert pre["new"]["biomarkers"] == 1
-    # Acknowledge.
-    r = client.post("/api/changes/acknowledge")
-    assert r.status_code == 200
-    body = r.get_json()
-    assert body["acknowledged_at"] is not None
-    assert body["new"]["biomarkers"] == 0
-    assert body["new"]["total_new"] == 0
-
-
-def test_new_item_after_ack_increments_count(client, tmp_path):
-    _seed_profile(tmp_path)
-    # Ack with no items first.
-    client.post("/api/changes/acknowledge")
-    pre_ack = client.get("/api/changes").get_json()["acknowledged_at"]
-    # Now write a biomarker dated AFTER the ack.
-    later = "9999-01-01"  # comfortably after any conceivable ack timestamp
-    profile_path = tmp_path / "patient_profile.json"
-    p = json.loads(profile_path.read_text())
-    p["biomarkers"] = [{"marker": "CgA", "value": 1, "date": later}]
-    profile_path.write_text(json.dumps(p))
-    # Re-read
-    body = client.get("/api/changes").get_json()
-    assert body["acknowledged_at"] == pre_ack
-    assert body["new"]["biomarkers"] == 1
-    assert body["new"]["total_new"] == 1
-
-
-def test_executive_summary_flagged_when_generated_after_ack(client, tmp_path):
-    _seed_profile(tmp_path)
-    # Ack first.
-    client.post("/api/changes/acknowledge")
-    profile_path = tmp_path / "patient_profile.json"
-    p = json.loads(profile_path.read_text())
-    p["executive_summary"] = {
-        "overall_status": "stable",
-        "generated_at": "9999-12-31",  # future date guarantees > ack
-    }
-    profile_path.write_text(json.dumps(p))
-    body = client.get("/api/changes").get_json()
-    assert body["new"]["executive_summary"] is True
-    assert body["new"]["total_new"] == 1
-
-
-def test_old_items_before_ack_are_not_counted(client, tmp_path):
-    _seed_profile(
-        tmp_path,
-        biomarkers=[
-            {"marker": "CgA", "value": 100, "date": "2020-01-01"},  # old
-            {"marker": "CgA", "value": 110, "date": "9999-01-01"},  # future
+def test_latest_research_update_records_only_net_new_ids(app_module):
+    profile = {
+        "trials_tracked": [
+            {"nct_id": "NCT00000001"},
+            {"nct_id": "NCT00000002"},
         ],
+        "literature_watched": [
+            {"pmid": "10000001"},
+            {"pmid": "10000002"},
+        ],
+    }
+
+    update = app_module.agent.record_latest_research_update(
+        profile,
+        job_id="digest-1",
+        trigger="digest",
+        previous_trial_ids={"NCT00000001"},
+        previous_paper_ids={"10000001"},
+        record_empty=True,
     )
-    client.post("/api/changes/acknowledge")
-    body = client.get("/api/changes").get_json()
-    # Only the future-dated one is "new"
-    assert body["new"]["biomarkers"] == 1
+
+    assert update["trial_ids"] == ["NCT00000002"]
+    assert update["paper_ids"] == ["10000002"]
+    assert profile["latest_research_update"] == update
+
+
+def test_empty_feed_discovery_keeps_previous_research_batch(app_module):
+    previous = {
+        "job_id": "digest-1",
+        "trigger": "digest",
+        "completed_at": "2026-08-05T10:00:00",
+        "trial_ids": ["NCT00000002"],
+        "paper_ids": [],
+    }
+    profile = {
+        "trials_tracked": [{"nct_id": "NCT00000002"}],
+        "literature_watched": [],
+        "latest_research_update": previous,
+    }
+
+    update = app_module.agent.record_latest_research_update(
+        profile,
+        job_id="feed-1",
+        trigger="feed",
+        previous_trial_ids={"NCT00000002"},
+        previous_paper_ids=set(),
+        record_empty=False,
+    )
+
+    assert update is None
+    assert profile["latest_research_update"] == previous
+
+
+def test_status_filters_latest_batch_to_items_still_tracked(client, tmp_path):
+    _seed_profile(
+        tmp_path,
+        trials_tracked=[
+            {"nct_id": "NCT00000001"},
+            {"nct_id": "NCT00000002"},
+            {"nct_id": "not-an-nct"},
+        ],
+        literature_watched=[
+            {"pmid": "10000002"},
+            {"pmid": "not-a-pmid"},
+        ],
+        latest_research_update={
+            "job_id": "digest-1",
+            "trigger": "digest",
+            "completed_at": "2026-08-05T10:00:00",
+            "trial_ids": ["NCT00000002", "NCT00000003", "not-an-nct"],
+            "paper_ids": ["10000002", "10000003", "not-a-pmid"],
+        },
+    )
+
+    response = client.get("/api/status")
+
+    assert response.status_code == 200
+    update = response.get_json()["latest_research_update"]
+    assert update["trial_ids"] == ["NCT00000002"]
+    assert update["paper_ids"] == ["10000002"]
+    assert update["trial_count"] == 1
+    assert update["paper_count"] == 1
+    assert update["total_count"] == 2
+
+
+def test_digest_records_zero_when_nothing_new_is_found(app_module, monkeypatch, tmp_path):
+    _seed_profile(
+        tmp_path,
+        trials_tracked=[{"nct_id": "NCT00000001"}],
+        literature_watched=[{"pmid": "10000001"}],
+        latest_research_update={
+            "job_id": "digest-old",
+            "trigger": "digest",
+            "completed_at": "2026-08-04T10:00:00",
+            "trial_ids": ["NCT00000001"],
+            "paper_ids": ["10000001"],
+        },
+    )
+    monkeypatch.setattr(app_module, "_update_job", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(app_module.agent, "poll_tracked_trials", lambda _profile: {"changed": []})
+    monkeypatch.setattr(app_module.agent, "run_orchestrator", lambda *_args: "report")
+    monkeypatch.setattr(app_module.agent, "classify_treatments", lambda _profile: [])
+    monkeypatch.setattr(app_module, "_refresh_summary", lambda _profile: None)
+
+    app_module._run_digest_job("digest-new")
+
+    stored = json.loads((tmp_path / "patient_profile.json").read_text(encoding="utf-8"))
+    update = stored["latest_research_update"]
+    assert update["job_id"] == "digest-new"
+    assert update["trial_ids"] == []
+    assert update["paper_ids"] == []
+
+
+def test_cached_review_routes_are_inert_and_do_not_write_profile(client, tmp_path):
+    original = _seed_profile(
+        tmp_path,
+        acknowledged_at="2026-08-05T09:00:00",
+        trials_tracked=[{"nct_id": "NCT00000001"}],
+    )
+
+    read_response = client.get("/api/changes")
+    acknowledge_response = client.post("/api/changes/acknowledge")
+
+    assert read_response.status_code == 200
+    assert acknowledge_response.status_code == 200
+    assert read_response.get_json()["new"]["total_new"] == 0
+    assert acknowledge_response.get_json()["acknowledged_at"] is None
+    stored = json.loads((tmp_path / "patient_profile.json").read_text(encoding="utf-8"))
+    assert stored == original
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_trigger"),
+    [("feed", "feed"), ("digest", "digest")],
+)
+def test_cli_research_runs_record_the_latest_batch(
+    app_module, monkeypatch, tmp_path, command, expected_trigger
+):
+    from agent import cli
+
+    _seed_profile(
+        tmp_path,
+        trials_tracked=[{"nct_id": "NCT00000001"}],
+        literature_watched=[{"pmid": "10000001"}],
+    )
+
+    def add_research(profile, _extracted):
+        profile["trials_tracked"].append({"nct_id": "NCT00000002"})
+        profile["literature_watched"].append({"pmid": "10000002"})
+        return "report"
+
+    monkeypatch.setattr(cli, "run_orchestrator", add_research)
+    monkeypatch.setattr(cli, "_print_and_save_report", lambda *_args: None)
+
+    if command == "feed":
+        monkeypatch.setattr(
+            cli,
+            "run_intake",
+            lambda _text, profile, **_kwargs: (profile, {"document_type": "note"}),
+        )
+        cli.cmd_feed(SimpleNamespace(file=None, text="clinical note"))
+    else:
+        cli.cmd_digest(SimpleNamespace())
+
+    stored = json.loads((tmp_path / "patient_profile.json").read_text(encoding="utf-8"))
+    update = stored["latest_research_update"]
+    assert update["trigger"] == expected_trigger
+    assert update["job_id"].startswith(f"cli-{command}-")
+    assert update["trial_ids"] == ["NCT00000002"]
+    assert update["paper_ids"] == ["10000002"]

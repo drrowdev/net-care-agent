@@ -31,7 +31,7 @@ All sub-models accept **extra** fields (forward-compat) and treat every document
   'appointment_questions': list[Question],
   'feedback': list[Feedback],
   'executive_summary': ExecutiveSummary | None,
-  'acknowledged_at': str | None,
+  'latest_research_update': ResearchUpdate | None,
 }
 ```
 
@@ -75,7 +75,7 @@ A single lab result row (CgA, NSE, 5-HIAA, creatinine, etc.).
 | `unit` | `str \| None` |  |
 | `reference_range` | `str \| None` |  |
 | `flag` | `'high' \| 'low' \| 'normal' \| null` |  |
-| `added_at` | `str \| None` | Ingestion timestamp; drives the 'new since acknowledged' counter. |
+| `added_at` | `str \| None` | Timestamp when the item first entered the patient profile. |
 
 ## `imaging[]`
 
@@ -91,7 +91,7 @@ A single lab result row (CgA, NSE, 5-HIAA, creatinine, etc.).
 | `findings` | `str \| None` |  |
 | `impression` | `str \| None` |  |
 | `new_lesions` | `bool \| None` |  |
-| `added_at` | `str \| None` | Ingestion timestamp; drives the 'new since acknowledged' counter. |
+| `added_at` | `str \| None` | Timestamp when the item first entered the patient profile. |
 
 ## `documents[]`
 
@@ -106,7 +106,7 @@ Every fed document, kept for audit and downstream re-analysis.
 | `raw_text` | `str \| None` | First ~3000 chars of input |
 | `source_document_id` | `str \| None` |  |
 | `evidence` | `list[Any]]` | Anchored evidence for document-level findings not stored as structured rows |
-| `added_at` | `str \| None` | Ingestion timestamp; drives the 'new since acknowledged' counter. |
+| `added_at` | `str \| None` | Timestamp when the item first entered the patient profile. |
 
 ## `trials_tracked[]`
 
@@ -120,7 +120,7 @@ Every fed document, kept for audit and downstream re-analysis.
 | `url` | `str \| None` |  |
 | `brief_summary` | `str \| None` |  |
 | `eligibility_excerpt` | `str \| None` |  |
-| `date_added` | `str \| None` |  |
+| `date_added` | `str \| None` | Timestamp when the trial was first tracked |
 | `eligibility_notes` | `str \| None` |  |
 
 ## `literature_watched[]`
@@ -134,7 +134,7 @@ Every fed document, kept for audit and downstream re-analysis.
 | `date` | `str \| None` |  |
 | `url` | `str \| None` |  |
 | `query` | `str \| None` |  |
-| `date_added` | `str \| None` |  |
+| `date_added` | `str \| None` | Timestamp when the paper was first tracked |
 | `relevance_notes` | `str \| None` |  |
 
 ## `alerts[]`
@@ -146,7 +146,7 @@ Every fed document, kept for audit and downstream re-analysis.
 | `message` | `str \| None` |  |
 | `action_required` | `str \| None` |  |
 | `resolved` | `bool` |  |
-| `added_at` | `str \| None` | Ingestion timestamp; drives the 'new since acknowledged' counter. |
+| `added_at` | `str \| None` | Timestamp when the item first entered the patient profile. |
 
 ## `treatments_classified[]`
 
@@ -176,7 +176,7 @@ Hard constraints captured from oncologist consultations.
 | `valid_until` | `str \| None` | YYYY-MM-DD; ceases to constrain after this date |
 | `supersedes` | `str \| None` | ID of the prior judgment this replaces |
 | `updated_at` | `str \| None` |  |
-| `added_at` | `str \| None` | Ingestion timestamp; drives the 'new since acknowledged' counter. |
+| `added_at` | `str \| None` | Timestamp when the item first entered the patient profile. |
 
 ## `symptoms[]`
 
@@ -200,7 +200,7 @@ Patient-reported symptom or side effect.
 | `note` | `str \| None` |  |
 | `related_treatment` | `str \| None` | Optional link to a treatment name in current_treatments |
 | `source` | `'manual' \| 'ai' \| null` |  |
-| `added_at` | `str \| None` | Ingestion timestamp; drives the 'new since acknowledged' counter. |
+| `added_at` | `str \| None` | Timestamp when the item first entered the patient profile. |
 
 ## `questions[]`
 
@@ -270,6 +270,18 @@ Most recent JSON output of agent.exec_summary.generate_executive_summary.
 | `summary_error` | `str \| None` |  |
 | `model` | `str \| None` |  |
 | `summary` | `Any` |  |
+
+## `latest_research_update`
+
+Exact net-new research records added by the latest discovery batch.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `job_id` | `str \| None` | Run identifier that produced this batch |
+| `trigger` | `str \| None` | Discovery source: digest or feed |
+| `completed_at` | `str \| None` | ISO timestamp when the batch was recorded |
+| `trial_ids` | `list[str]` | Canonical NCT IDs newly added by this batch |
+| `paper_ids` | `list[str]` | Canonical numeric PubMed IDs newly added by this batch |
 
 ## Notes
 

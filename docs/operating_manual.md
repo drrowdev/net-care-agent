@@ -16,8 +16,8 @@ requires App Service Easy Auth path exclusions. Local APIs are protected unless
 The desktop and phone layouts use the same four views, so every workflow is
 available at every screen size:
 
-- **Today** — assessment freshness, key concern, next actions, and unread-change
-  review.
+- **Today** — assessment freshness, key concern, next actions, and the latest
+  net-new trials and research papers.
 - **Patient** — profile snapshot, treatments, biomarkers, alerts, and symptoms.
 - **Questions** — appointment questions and clinical notes from the treating
   team.
@@ -57,11 +57,13 @@ filesystem path.
 
 The server returns `202` with a job ID. The UI polls active work every three
 seconds and loads the
-report only from that individual job after completion. New papers / trials /
-alerts appear in their tabs. The job status moves `queued → running → done` in
-the activity list; press **Esc** or click the backdrop to dismiss the document
-dialog at any time without submitting. Idle polling backs off to 30 seconds
-(60 seconds while the browser tab is hidden).
+report only from that individual job after completion. If the analysis discovers
+research that was not already tracked, **Today** identifies the exact new trials
+and papers and highlights them in their tracked lists. Alerts appear under
+**Patient**. The job status moves `queued → running → done` in the activity list;
+press **Esc** or click the backdrop to dismiss the document dialog at any time
+without submitting. Idle polling backs off to 30 seconds (60 seconds while the
+browser tab is hidden).
 
 Feed has its own bounded queue (one active + two queued by default), independent
 of other AI work. If full, the API returns `429` with `Retry-After` (10 seconds
@@ -79,6 +81,10 @@ Use this when no new document has arrived but you want a fresh literature/trial 
 
 Only one digest may be active; a duplicate request returns `409`. The report is
 not embedded in job history—it is loaded on demand when the activity item opens.
+At completion, **Today** reports the net-new trial and paper counts for that
+digest. Clicking a count opens the complete tracked list with those exact records
+sorted first and labelled **New**. A digest that finds only already-tracked
+research explicitly reports that it found nothing new.
 
 ## 2b. Run an ensemble deep-sweep (pre-appointment deep prep)
 
@@ -185,16 +191,18 @@ All downstream agents read the recent-symptoms block in the patient
 summary, so a fresh digest will surface side-effect-management
 literature if the orchestrator decides the symptoms warrant it.
 
-## 5c. Review new information
+## 5c. See newly discovered research
 
-When the header shows a green new-item count, click it (or use **Review changes**
-on **Today**) to open the review panel. It groups unread items by biomarkers,
-imaging, documents, trials, papers, alerts, symptoms, clinical notes, and
-assessment refreshes.
+**Today** shows the exact trials and papers added by the latest research
+discovery batch. A routine digest always replaces this snapshot, including with
+zero results. Document processing replaces it only when that run actually adds a
+trial or paper, so an unrelated fed document does not erase the most recent
+research additions.
 
-Click **Mark reviewed** only after checking the relevant views. This updates the
-unread timestamp and clears the count; it does not delete, edit, or otherwise
-acknowledge the underlying clinical data.
+Click **new trials** or **new papers** to open the complete tracked list. Records
+from the latest batch appear first with a green **New** label. No review,
+acknowledgement, or clearing action is required; manually entered and
+document-derived clinical information does not create a generic unread count.
 
 ## 6. Chat with the record
 

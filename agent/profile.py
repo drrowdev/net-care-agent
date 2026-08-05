@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from .schema import (
     _COLLECTION_KEYS,
     clinically_empty_profile,
     normalize_profile,
+    now_stamp,
     structural_check,
     validate_profile,
 )
@@ -83,6 +85,14 @@ DEFAULT_PROFILE: dict = {
     "clinical_judgments": [],
     "appointment_questions": [],
     "feedback": [],
+    "latest_research_update": None,
+}
+
+_NCT_ID_RE = re.compile(r"NCT\d{8}")
+_PMID_RE = re.compile(r"\d{1,9}")
+_RESEARCH_COLLECTIONS = {
+    "trial": ("trials_tracked", "nct_id", _NCT_ID_RE),
+    "paper": ("literature_watched", "pmid", _PMID_RE),
 }
 
 
@@ -99,6 +109,118 @@ def _coerce_none_fields(data: dict) -> dict:
         if data.get(key) is None:
             data[key] = []
     return data
+
+
+def _canonical_research_id(value: object, kind: str) -> str | None:
+    try:
+        pattern = _RESEARCH_COLLECTIONS[kind][2]
+    except KeyError as exc:
+        raise ValueError(f"Unknown research kind: {kind}") from exc
+    candidate = str(value) if value is not None else ""
+    return candidate if pattern.fullmatch(candidate) else None
+
+
+def get_research_ids(profile: dict, kind: str) -> list[str]:
+    """Return unique, canonical tracked research IDs in profile order."""
+    try:
+        collection, id_field, _ = _RESEARCH_COLLECTIONS[kind]
+    except KeyError as exc:
+        raise ValueError(f"Unknown research kind: {kind}") from exc
+
+    values = profile.get(collection)
+    if not isinstance(values, list):
+        return []
+
+    seen = set()
+    ids = []
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        item_id = _canonical_research_id(item.get(id_field), kind)
+        if item_id is None or item_id in seen:
+            continue
+        seen.add(item_id)
+        ids.append(item_id)
+    return ids
+
+
+def record_latest_research_update(
+    profile: dict,
+    *,
+    job_id: str,
+    trigger: str,
+    previous_trial_ids: set[str],
+    previous_paper_ids: set[str],
+    record_empty: bool,
+) -> dict | None:
+    """Record the exact canonical IDs added by one feed or digest run."""
+    previous_trials = {
+        item_id
+        for value in previous_trial_ids
+        if (item_id := _canonical_research_id(value, "trial")) is not None
+    }
+    previous_papers = {
+        item_id
+        for value in previous_paper_ids
+        if (item_id := _canonical_research_id(value, "paper")) is not None
+    }
+    trial_ids = [
+        item_id for item_id in get_research_ids(profile, "trial") if item_id not in previous_trials
+    ]
+    paper_ids = [
+        item_id for item_id in get_research_ids(profile, "paper") if item_id not in previous_papers
+    ]
+    if not record_empty and not trial_ids and not paper_ids:
+        return None
+
+    update = {
+        "job_id": job_id,
+        "trigger": trigger,
+        "completed_at": now_stamp(),
+        "trial_ids": trial_ids,
+        "paper_ids": paper_ids,
+    }
+    profile["latest_research_update"] = update
+    return update
+
+
+def public_latest_research_update(profile: dict) -> dict | None:
+    """Return a sanitized latest batch containing only still-tracked IDs."""
+    stored = profile.get("latest_research_update")
+    if not isinstance(stored, dict):
+        return None
+
+    current = {
+        "trial": set(get_research_ids(profile, "trial")),
+        "paper": set(get_research_ids(profile, "paper")),
+    }
+
+    def _available_ids(field: str, kind: str) -> list[str]:
+        values = stored.get(field)
+        if not isinstance(values, list):
+            return []
+        seen = set()
+        available = []
+        for value in values:
+            item_id = _canonical_research_id(value, kind)
+            if item_id is None or item_id not in current[kind] or item_id in seen:
+                continue
+            seen.add(item_id)
+            available.append(item_id)
+        return available
+
+    trial_ids = _available_ids("trial_ids", "trial")
+    paper_ids = _available_ids("paper_ids", "paper")
+    return {
+        "job_id": stored.get("job_id"),
+        "trigger": stored.get("trigger"),
+        "completed_at": stored.get("completed_at"),
+        "trial_ids": trial_ids,
+        "paper_ids": paper_ids,
+        "trial_count": len(trial_ids),
+        "paper_count": len(paper_ids),
+        "total_count": len(trial_ids) + len(paper_ids),
+    }
 
 
 def _persist_migration_metadata(path: Path) -> dict:
@@ -349,9 +471,8 @@ def save_profile(profile: dict, *, clinical_change: bool = True) -> None:
     ``sstr_score``) are still permitted with a log warning, preserving forward
     compatibility.
 
-    ``clinical_change=False`` is reserved for bookkeeping-only writes such as
-    acknowledging the unread counter.  Those writes must not invalidate an
-    otherwise current clinical summary.
+    ``clinical_change=False`` is reserved for bookkeeping-only writes. Those
+    writes must not invalidate an otherwise current clinical summary.
     """
     if not structural_check(profile):
         raise ValueError(

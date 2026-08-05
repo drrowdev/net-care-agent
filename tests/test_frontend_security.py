@@ -74,6 +74,7 @@ def test_idle_polling_backs_off_and_hidden_pages_poll_less_often():
     assert "if (hasActiveJobs || hadActiveJobs)" not in polling
     assert "if (selectedTaskId && hasActiveJobs)" not in polling
     assert "tasks.find(task => task.id === selectedTaskId)" in polling
+    assert "activeView === 'today' && !document.hidden" in polling
     submission = _function_source("activateSubmittedTask", "showFeedError")
     assert "hadActiveJobs = true" in submission
     assert "startPolling()" in submission
@@ -113,9 +114,33 @@ def test_load_failures_distinguish_auth_offline_and_retry_states():
         "loadQuestions()",
         "loadJudgments()",
         "loadSymptoms()",
-        "loadChanges()",
     ):
         assert loader in retry
+
+
+def test_latest_research_update_labels_only_exact_batch_records():
+    sidebar = _function_source("renderSidebar", "toggleSummary")
+    assert "d.latest_research_update" in sidebar
+    assert "latestResearchUpdate?.trial_count" in sidebar
+    assert "latestResearchUpdate?.paper_count" in sidebar
+
+    modal = _function_source("renderModal", "loadTasks")
+    assert "latestResearchUpdate[updateField].map(String)" in modal
+    assert "newIds.has(String" in modal
+    assert "new-research-badge" in modal
+    assert "orderedItems" in modal
+    assert "/api/changes" not in APP_JS
+
+
+def test_latest_research_update_refreshes_after_missed_job_transitions():
+    switch_view = _function_source("switchView", "refreshAfterVisibilityRestore")
+    assert "name === 'today'" in switch_view
+    assert "loadStatus()" in switch_view
+    visibility = _function_source("refreshAfterVisibilityRestore", "relativeTime")
+    assert "if (document.hidden) return" in visibility
+    assert "loadTasks()" in visibility
+    assert "loadStatus()" in visibility
+    assert "visibilitychange" in visibility
 
 
 def test_summary_revisions_are_authoritative_with_legacy_date_fallback():

@@ -148,7 +148,11 @@ All patient state lives in a single JSON file at `${DATA_DIR}/patient_profile.js
   "judgments":   [ {category, text, scope, status, review_after, valid_until, supersedes}, ... ],
   "questions":   [ {id, text, category, priority, asked}, ... ],
   "feedback":    [ {target, item_id, assessment, note, outcome, timestamps}, ... ],
-  "exec_summary": { "summary_revision": 42, "stale": false, ... }
+  "exec_summary": { "summary_revision": 42, "stale": false, ... },
+  "latest_research_update": {
+    "job_id": "abc123", "trigger": "digest", "completed_at": "...",
+    "trial_ids": ["NCT..."], "paper_ids": ["PMID..."]
+  }
 }
 ```
 
@@ -159,10 +163,9 @@ If a corrupt profile is detected, the app automatically recovers the newest vali
 pre-save snapshot or daily backup before applying migrations.
 
 Every clinical-content save advances `profile_revision`; bookkeeping-only saves
-(for example acknowledging unread items or marking a question asked) update
-`profile_saved_at` without invalidating the summary. Summary freshness compares
-the clinical revision with `executive_summary.summary_revision`, independent of
-clinical dates.
+(for example marking a question asked) update `profile_saved_at` without
+invalidating the summary. Summary freshness compares the clinical revision with
+`executive_summary.summary_revision`, independent of clinical dates.
 
 A daily backup is written to `${DATA_DIR}/backups/profile_YYYYMMDD.json`
 (retention: 30 days).
@@ -227,7 +230,7 @@ directories still referenced by the profile are deliberately protected.
 │   └── tools/            # PubMed, ClinicalTrials.gov, biomarker trends + dispatcher
 ├── static/                 # Responsive caregiver workspace
 │   ├── index.html          # Shared Today/Patient/Questions/Activity shell + dialogs
-│   ├── app.js              # API state, rendering, jobs, review, feed, and chat flows
+│   ├── app.js              # API state, research additions, jobs, feed, and chat flows
 │   └── styles.css          # Green/amber responsive design and fixed mobile navigation
 ├── startup.sh            # gunicorn launcher (Azure App Service)
 ├── pyproject.toml        # Python deps + tooling config
@@ -264,6 +267,7 @@ sequenceDiagram
         T-->>O: results (filtered by NET relevance)
         O->>J: persist new papers/trials/alerts
     end
+    W->>J: record exact net-new trial/paper IDs for this discovery batch
     O-->>W: report artifact (not embedded in job metadata)
     W->>E: generate_executive_summary
     E-->>W: JSON summary
@@ -294,7 +298,7 @@ The most common loops:
 | Action | Where | What happens |
 |---|---|---|
 | Review current priorities | **Today** | Shows assessment freshness, the key concern, and task-oriented next actions before supporting detail |
-| Review new information | Header count or **Today** → **Review changes** | Shows per-category counts; **Mark reviewed** clears only the unread marker |
+| See newly discovered research | **Today** → **Latest research additions** | Shows the exact net-new trials and papers from the latest digest or document analysis; opening either list highlights those records |
 | Add a clinical document | Header → **Add document** → paste text or upload file | Queued on the independent feed executor; PDF parsing is child-only, then intake → orchestrator → exec summary |
 | Run a research-only sweep | **Activity** → **Run digest** | Orchestrator runs without new input; new trials/papers added |
 | Record an oncologist's judgment | **Questions** → **Clinical notes** | Becomes a hard constraint for future runs |

@@ -86,9 +86,8 @@ def now_stamp() -> str:
     """Wall-clock ISO timestamp (seconds precision) for when an item was first
     recorded in the profile.
 
-    Consumed by the dashboard "new since acknowledged" counter (``_count_new``
-    in app.py). Because it reflects *ingestion* time rather than an item's
-    clinical date, a back-dated document fed today still surfaces as new.
+    Because it reflects *ingestion* time rather than an item's clinical date,
+    it preserves when a back-dated document or finding entered the record.
     """
     return datetime.datetime.now().isoformat(timespec="seconds")
 
@@ -189,7 +188,7 @@ class Biomarker(_EvidenceFields):
     reference_range: str | None = None
     flag: BiomarkerFlag | None = None
     added_at: str | None = Field(
-        None, description="Ingestion timestamp; drives the 'new since acknowledged' counter."
+        None, description="Timestamp when the item first entered the patient profile."
     )
 
 
@@ -200,7 +199,7 @@ class Imaging(_EvidenceFields):
     impression: str | None = None
     new_lesions: bool | None = None
     added_at: str | None = Field(
-        None, description="Ingestion timestamp; drives the 'new since acknowledged' counter."
+        None, description="Timestamp when the item first entered the patient profile."
     )
 
 
@@ -218,7 +217,7 @@ class Document(_Lenient):
         description="Anchored evidence for document-level findings not stored as structured rows",
     )
     added_at: str | None = Field(
-        None, description="Ingestion timestamp; drives the 'new since acknowledged' counter."
+        None, description="Timestamp when the item first entered the patient profile."
     )
 
 
@@ -231,7 +230,7 @@ class TrialTracked(_Lenient):
     url: str | None = None
     brief_summary: str | None = None
     eligibility_excerpt: str | None = None
-    date_added: str | None = None
+    date_added: str | None = Field(None, description="Timestamp when the trial was first tracked")
     eligibility_notes: str | None = ""
 
 
@@ -243,7 +242,7 @@ class LiteratureWatched(_Lenient):
     date: str | None = None
     url: str | None = None
     query: str | None = None
-    date_added: str | None = None
+    date_added: str | None = Field(None, description="Timestamp when the paper was first tracked")
     relevance_notes: str | None = ""
 
 
@@ -254,7 +253,7 @@ class Alert(_Lenient):
     action_required: str | None = None
     resolved: bool = False
     added_at: str | None = Field(
-        None, description="Ingestion timestamp; drives the 'new since acknowledged' counter."
+        None, description="Timestamp when the item first entered the patient profile."
     )
 
 
@@ -284,7 +283,7 @@ class ClinicalJudgment(_Lenient):
     supersedes: str | None = Field(None, description="ID of the prior judgment this replaces")
     updated_at: str | None = None
     added_at: str | None = Field(
-        None, description="Ingestion timestamp; drives the 'new since acknowledged' counter."
+        None, description="Timestamp when the item first entered the patient profile."
     )
 
 
@@ -306,7 +305,7 @@ class Symptom(_EvidenceFields):
     )
     source: SymptomSource | None = None
     added_at: str | None = Field(
-        None, description="Ingestion timestamp; drives the 'new since acknowledged' counter."
+        None, description="Timestamp when the item first entered the patient profile."
     )
 
 
@@ -370,6 +369,20 @@ class ExecutiveSummary(_Lenient):
     summary: Any = None  # free-form structure varies by run
 
 
+class ResearchUpdate(_Lenient):
+    """Exact net-new research records added by the latest discovery batch."""
+
+    job_id: str | None = Field(None, description="Run identifier that produced this batch")
+    trigger: str | None = Field(None, description="Discovery source: digest or feed")
+    completed_at: str | None = Field(None, description="ISO timestamp when the batch was recorded")
+    trial_ids: list[str] = Field(
+        default_factory=list, description="Canonical NCT IDs newly added by this batch"
+    )
+    paper_ids: list[str] = Field(
+        default_factory=list, description="Canonical numeric PubMed IDs newly added by this batch"
+    )
+
+
 # ── top-level model ───────────────────────────────────────────────────────────
 class PatientProfile(_Lenient):
     """The complete patient profile. Lives at ${DATA_DIR}/patient_profile.json."""
@@ -398,11 +411,7 @@ class PatientProfile(_Lenient):
     appointment_questions: list[Question] = Field(default_factory=list)
     feedback: list[Feedback] = Field(default_factory=list)
     executive_summary: ExecutiveSummary | None = None
-    acknowledged_at: str | None = Field(
-        None,
-        description="ISO timestamp of the last user 'mark all read' action; "
-        "items dated after this are 'new since last login' for the delta view.",
-    )
+    latest_research_update: ResearchUpdate | None = None
 
 
 # ── public helpers ────────────────────────────────────────────────────────────
@@ -473,6 +482,7 @@ def render_schema_markdown() -> str:
         ("source_documents[]", SourceDocument),
         ("feedback[]", Feedback),
         ("executive_summary", ExecutiveSummary),
+        ("latest_research_update", ResearchUpdate),
     ]
     for label, cls in submodels:
         lines = [f"## `{label}`\n"]
@@ -560,6 +570,7 @@ __all__ = [
     "Patient",
     "PatientProfile",
     "Question",
+    "ResearchUpdate",
     "Symptom",
     "TrialTracked",
     "TreatmentClassified",

@@ -21,6 +21,7 @@ the Azure Files mount at `/home/data/patient_profile.json`. There is one user
                 │     ├─ /api/feed (feed queue)  │
                 │     ├─ /api/jobs (polling)     │
                 │     ├─ /api/summary + feedback │
+                │     ├─ /api/status + research  │
                 │     ├─ /api/sources + evidence │
                 │     ├─ /api/feedback           │
                 │     ├─ /api/chat (general q.)  │
@@ -111,6 +112,16 @@ PHI-safe metadata for new records; report/result bodies are separate files below
 traversal-safe roots. New job errors and job-runner logs use safe codes/types
 rather than input, model output, or traceback. Legacy records are not rewritten,
 and protected lower-level storage/recovery logs may include OS error paths.
+
+Web and CLI research runs share one canonical NCT/PMID diff. Each digest stores
+the exact additions in `latest_research_update`; a feed run replaces that
+snapshot only when it adds research. `GET /api/status` rejects malformed IDs,
+filters the stored IDs against records that still exist, and returns counts plus
+identifiers. The SPA refreshes that status on **Today**, after visibility
+restoration, and while relevant work is active, then labels the matching tracked
+trials and papers **New**. The retired
+`/api/changes` routes return an inert zero-count payload temporarily so cached
+pre-release tabs stop showing the removed review control without writing state.
 
 Action dismissal posts the assessment revision and expected action text to
 `POST /api/summary/dismiss-action/<idx>`. Flask returns `409` without mutating

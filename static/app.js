@@ -3,7 +3,7 @@
   let pollingInterval = null;
   let currentReportText = '';
   let activeView = 'today';
-  let lastChanges = null;
+  let latestResearchUpdate = null;
   let lastDialogTrigger = null;
   let hadActiveJobs = false;
   let pendingSummary = null;
@@ -164,7 +164,6 @@
       loadQuestions(),
       loadJudgments(),
       loadSymptoms(),
-      loadChanges(),
     ]);
   }
 
@@ -192,8 +191,8 @@
     } else if (name === 'activity') {
       loadTasks();
     } else if (name === 'today') {
+      loadStatus();
       loadSummary();
-      loadChanges();
     }
     if (window.location.hash !== `#${name}`) {
       history.replaceState(null, '', `#${name}`);
@@ -204,6 +203,15 @@
 
   window.addEventListener('online', retryInitialLoad);
   window.addEventListener('offline', renderAppState);
+
+  function refreshAfterVisibilityRestore() {
+    if (document.hidden) return;
+    const refreshes = [loadTasks(), loadStatus()];
+    if (activeView === 'today') refreshes.push(loadSummary());
+    Promise.allSettled(refreshes);
+  }
+
+  document.addEventListener('visibilitychange', refreshAfterVisibilityRestore);
 
   function relativeTime(iso) {
     if (!iso) return '';
@@ -278,11 +286,45 @@
     }
   }
 
+  function renderLatestResearchUpdate(update) {
+    const card = document.getElementById('research-update-card');
+    if (!card) return;
+    if (!update) {
+      card.hidden = true;
+      return;
+    }
+
+    const trialCount = Number(update.trial_count) || 0;
+    const paperCount = Number(update.paper_count) || 0;
+    const total = trialCount + paperCount;
+    const source = update.trigger === 'digest' ? 'Latest digest' : 'Latest document analysis';
+    const when = update.completed_at ? ` · completed ${relativeTime(update.completed_at)}` : '';
+    document.getElementById('research-update-title').textContent = total
+      ? 'Latest research additions'
+      : 'No new trials or papers';
+    document.getElementById('research-update-detail').textContent = total
+      ? `${trialCount} trial${trialCount === 1 ? '' : 's'} and ${paperCount} paper${paperCount === 1 ? '' : 's'} were not previously tracked. ${source}${when}.`
+      : `${source}${when} found no research that was not already tracked.`;
+
+    const trialsButton = document.getElementById('research-update-trials');
+    const papersButton = document.getElementById('research-update-papers');
+    trialsButton.hidden = trialCount === 0;
+    papersButton.hidden = paperCount === 0;
+    trialsButton.textContent = `${trialCount} new trial${trialCount === 1 ? '' : 's'}`;
+    papersButton.textContent = `${paperCount} new paper${paperCount === 1 ? '' : 's'}`;
+    card.classList.toggle('empty', total === 0);
+    card.hidden = false;
+  }
+
   function renderSidebar(d) {
     const p = d.patient || {};
+    latestResearchUpdate = d.latest_research_update || null;
+    renderLatestResearchUpdate(latestResearchUpdate);
     document.getElementById('patient-dx').textContent = p.diagnosis || 'No diagnosis recorded';
 
     const sstrClass = p.sstr_status === 'positive' ? 'positive' : p.sstr_status === 'negative' ? 'negative' : 'unknown';
+    const newTrials = Number(latestResearchUpdate?.trial_count) || 0;
+    const newPapers = Number(latestResearchUpdate?.paper_count) || 0;
     document.getElementById('patient-meta').innerHTML = `
       <div class="meta-row">
         <span class="meta-label">Age / Sex</span>
@@ -298,11 +340,11 @@
       </div>
       <div class="meta-row">
         <span class="meta-label">Trials</span>
-        <button class="meta-val clickable" onclick="openModal('trials')">${escHtml((d.stats && d.stats.trials_tracked != null) ? d.stats.trials_tracked : 0)}</button>
+        <button class="meta-val clickable" onclick="openModal('trials')">${escHtml((d.stats && d.stats.trials_tracked != null) ? d.stats.trials_tracked : 0)}${newTrials ? ` <span class="meta-new-count">${escHtml(newTrials)} new</span>` : ''}</button>
       </div>
       <div class="meta-row">
         <span class="meta-label">Papers</span>
-        <button class="meta-val clickable" onclick="openModal('papers')">${escHtml((d.stats && d.stats.literature_watched != null) ? d.stats.literature_watched : 0)}</button>
+        <button class="meta-val clickable" onclick="openModal('papers')">${escHtml((d.stats && d.stats.literature_watched != null) ? d.stats.literature_watched : 0)}${newPapers ? ` <span class="meta-new-count">${escHtml(newPapers)} new</span>` : ''}</button>
       </div>
     `;
 
@@ -523,7 +565,7 @@
       const r = await fetch('/api/summary/generate', { method: 'POST' });
       const submitted = await readJobSubmission(r);
       await waitForJob(submitted.job_id);
-      await Promise.all([loadSummary(), loadStatus(), loadChanges()]);
+      await Promise.all([loadSummary(), loadStatus()]);
     } catch(e) {
       reportLoadError('summary', e);
     } finally {
@@ -812,111 +854,6 @@
     }
   }
 
-  // ── "Since last login" delta indicator ───────────────────────────────────
-  async function loadChanges() {
-    try {
-      const r = await fetch('/api/changes');
-      const d = await readJsonResponse(r);
-      lastChanges = d;
-      renderChangesBadge(d);
-      reportLoadSuccess('changes');
-      return d;
-    } catch (e) {
-      reportLoadError('changes', e);
-      return null;
-    }
-  }
-
-  function renderChangesBadge(d) {
-    const btn = document.getElementById('btn-changes');
-    const count = document.getElementById('changes-count');
-    const card = document.getElementById('changes-card');
-    if (!btn || !count) return;
-    const total = (d && d.new && d.new.total_new) || 0;
-    if (total > 0) {
-      count.textContent = total;
-      btn.hidden = false;
-      btn.title = _changesBreakdown(d.new);
-      if (card) {
-        card.hidden = false;
-        document.getElementById('changes-card-title').textContent =
-          `${total} update${total === 1 ? '' : 's'} since your last review`;
-        document.getElementById('changes-card-detail').textContent = _changesBreakdown(d.new);
-      }
-    } else {
-      btn.hidden = true;
-      if (card) card.hidden = true;
-    }
-    renderChangesPanel(d);
-  }
-
-  function _changesBreakdown(n) {
-    const parts = [];
-    if (n.biomarkers) parts.push(`${n.biomarkers} biomarker${n.biomarkers === 1 ? '' : 's'}`);
-    if (n.imaging) parts.push(`${n.imaging} imaging`);
-    if (n.documents) parts.push(`${n.documents} document${n.documents === 1 ? '' : 's'}`);
-    if (n.trials) parts.push(`${n.trials} trial${n.trials === 1 ? '' : 's'}`);
-    if (n.papers) parts.push(`${n.papers} paper${n.papers === 1 ? '' : 's'}`);
-    if (n.alerts) parts.push(`${n.alerts} alert${n.alerts === 1 ? '' : 's'}`);
-    if (n.symptoms) parts.push(`${n.symptoms} symptom${n.symptoms === 1 ? '' : 's'}`);
-    if (n.judgments) parts.push(`${n.judgments} judgment${n.judgments === 1 ? '' : 's'}`);
-    if (n.executive_summary) parts.push('exec summary refreshed');
-    return parts.length ? parts.join(', ') : 'No unreviewed changes';
-  }
-
-  function renderChangesPanel(d) {
-    const body = document.getElementById('changes-body');
-    if (!body) return;
-    const changes = d?.new || {};
-    const rows = [
-      ['Biomarkers', 'New laboratory values', changes.biomarkers, 'B'],
-      ['Imaging', 'New or updated imaging findings', changes.imaging, 'I'],
-      ['Documents', 'New clinical source documents', changes.documents, 'D'],
-      ['Trials', 'New tracked clinical trials', changes.trials, 'T'],
-      ['Research papers', 'New tracked literature', changes.papers, 'P'],
-      ['Alerts', 'New items needing review', changes.alerts, '!'],
-      ['Symptoms', 'New symptom entries', changes.symptoms, 'S'],
-      ['Clinical notes', 'New clinician guidance', changes.judgments, 'N'],
-      ['Assessment', 'Executive summary refreshed', changes.executive_summary ? 1 : 0, 'A'],
-    ].filter(row => Number(row[2]) > 0);
-
-    body.innerHTML = rows.length
-      ? `<div class="changes-list">${rows.map(([label, detail, count, icon]) => `
-          <div class="change-row">
-            <span class="change-icon" aria-hidden="true">${icon}</span>
-            <span class="change-copy"><strong>${label}</strong><small>${detail}</small></span>
-            <span class="change-count">${escHtml(count)}</span>
-          </div>`).join('')}</div>`
-      : '<div class="modal-empty">You are up to date. There are no unreviewed changes.</div>';
-    const ack = document.getElementById('acknowledge-changes-button');
-    if (ack) ack.disabled = rows.length === 0;
-  }
-
-  function openChangesPanel() {
-    lastDialogTrigger = document.activeElement;
-    const overlay = document.getElementById('changes-overlay');
-    overlay.classList.add('open');
-    renderChangesPanel(lastChanges);
-    overlay.querySelector('.icon-button')?.focus();
-  }
-
-  function closeChangesPanel(event) {
-    const overlay = document.getElementById('changes-overlay');
-    if (event && event.target !== overlay) return;
-    overlay.classList.remove('open');
-    restoreDialogFocus();
-  }
-
-  async function acknowledgeChanges() {
-    try {
-      await readJsonResponse(await fetch('/api/changes/acknowledge', { method: 'POST' }));
-      await loadChanges();
-      closeChangesPanel();
-    } catch (e) {
-      reportLoadError('changes', e);
-    }
-  }
-
   async function loadSummary() {
     try {
       const r = await fetch('/api/summary');
@@ -1152,7 +1089,7 @@
     const overlay = document.getElementById('modal-overlay');
     overlay.classList.add('open');
     document.getElementById('modal-title').textContent =
-      type === 'trials' ? 'Clinical Trials' : 'Research Papers';
+      type === 'trials' ? 'Clinical trials' : 'Research papers';
     document.getElementById('modal-body').innerHTML =
       '<div class="modal-empty">Loading…</div>';
 
@@ -1181,12 +1118,30 @@
       return;
     }
 
+    const idField = type === 'trials' ? 'nct_id' : 'pmid';
+    const updateField = type === 'trials' ? 'trial_ids' : 'paper_ids';
+    const newIds = new Set(
+      Array.isArray(latestResearchUpdate?.[updateField])
+        ? latestResearchUpdate[updateField].map(String)
+        : []
+    );
+    const orderedItems = [...items].sort(
+      (a, b) => Number(newIds.has(String(b[idField] || ''))) - Number(newIds.has(String(a[idField] || '')))
+    );
+    const newCount = orderedItems.filter(item => newIds.has(String(item[idField] || ''))).length;
+    document.getElementById('modal-title').textContent =
+      `${type === 'trials' ? 'Clinical trials' : 'Research papers'}${newCount ? ` · ${newCount} new` : ''}`;
+
     if (type === 'trials') {
-      body.innerHTML = items.map(t => {
+      body.innerHTML = orderedItems.map(t => {
         const url = safeExternalUrl(t.url);
+        const isNew = newIds.has(String(t.nct_id || ''));
         return `
-        <div class="modal-item">
-          <div class="modal-item-title">${escHtml(t.title || 'Untitled')}</div>
+        <div class="modal-item${isNew ? ' new-research' : ''}">
+          <div class="modal-item-heading">
+            <div class="modal-item-title">${escHtml(t.title || 'Untitled')}</div>
+            ${isNew ? '<span class="new-research-badge">New</span>' : ''}
+          </div>
           <div class="modal-item-meta">
             <span class="modal-item-id">${escHtml(t.nct_id || '')}</span>
             <span class="modal-tag ${(t.status||'').toLowerCase() === 'recruiting' ? 'recruiting' : ''}">${escHtml(t.status || '—')}</span>
@@ -1200,11 +1155,15 @@
         </div>`;
       }).join('');
     } else {
-      body.innerHTML = items.map(p => {
+      body.innerHTML = orderedItems.map(p => {
         const url = safeExternalUrl(p.url);
+        const isNew = newIds.has(String(p.pmid || ''));
         return `
-        <div class="modal-item">
-          <div class="modal-item-title">${escHtml(p.title || 'Untitled')}</div>
+        <div class="modal-item${isNew ? ' new-research' : ''}">
+          <div class="modal-item-heading">
+            <div class="modal-item-title">${escHtml(p.title || 'Untitled')}</div>
+            ${isNew ? '<span class="new-research-badge">New</span>' : ''}
+          </div>
           <div class="modal-item-meta">
             <span class="modal-item-id">PMID ${escHtml(p.pmid || '')}</span>
             <span class="modal-item-sub">${escHtml(p.journal || '')}${p.date ? ' · ' + escHtml(p.date) : ''}</span>
@@ -1447,10 +1406,6 @@
       toggleFeedPopover(false);
       return;
     }
-    if (document.getElementById('changes-overlay')?.classList.contains('open')) {
-      closeChangesPanel();
-      return;
-    }
     if (document.getElementById('modal-overlay')?.classList.contains('open')) {
       closeModal();
       return;
@@ -1607,11 +1562,13 @@
       const tasks = await loadTasks();
       const hasActiveJobs = tasks.some(t => t.status === 'running' || t.status === 'queued');
 
-      if (hasActiveJobs) {
-        await Promise.allSettled([loadStatus(), loadChanges()]);
+      if (hasActiveJobs || (activeView === 'today' && !document.hidden)) {
+        await loadStatus();
       }
       if (hadActiveJobs && !hasActiveJobs) {
-        await Promise.allSettled([loadStatus(), loadChanges(), loadSummary()]);
+        const refreshes = [loadSummary()];
+        if (activeView !== 'today') refreshes.push(loadStatus());
+        await Promise.allSettled(refreshes);
       }
 
       // If selected task just completed, auto-load its report and refresh summary.
@@ -1983,7 +1940,6 @@
   loadQuestions();
   loadJudgments();
   loadSymptoms();
-  loadChanges();
   startPolling();
   const requestedView = window.location.hash.replace('#', '');
   if (['today', 'patient', 'questions', 'activity'].includes(requestedView) && requestedView !== 'today') {

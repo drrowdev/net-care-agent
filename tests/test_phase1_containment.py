@@ -212,47 +212,7 @@ def test_csp_inline_script_exception_is_limited_to_legacy_static_handlers(app_mo
     assert "TODO: remove script unsafe-inline" in inspect.getsource(app_mod._add_cache_headers)
 
 
-def test_acknowledging_changes_does_not_stale_current_summary(client, agent):
-    profile = agent.load_profile()
-    profile["executive_summary"] = {
-        **_successful_summary(),
-        "summary_revision": int(profile.get("profile_revision") or 0) + 1,
-        "stale": False,
-    }
-    profile["summary_stale"] = False
-    agent.save_profile(profile)
-    revision = profile["profile_revision"]
-
-    response = client.post("/api/changes/acknowledge")
-
-    assert response.status_code == 200
-    saved = agent.load_profile()
-    assert saved["profile_revision"] == revision
-    assert saved["summary_stale"] is False
-    assert saved["executive_summary"]["stale"] is False
-
-
-def test_same_day_summary_timestamp_counts_as_new(app_mod):
-    profile = {
-        "acknowledged_at": "2026-07-10T09:00:00",
-        "executive_summary": {
-            "generated_at": "2026-07-10",
-            "generated_at_timestamp": "2026-07-10T10:00:00",
-        },
-    }
-
-    counts = app_mod._count_new(profile)
-
-    assert counts["executive_summary"] is True
-    assert counts["total_new"] == 1
-
-
-def test_same_day_research_items_use_timestamp_and_count_as_new(
-    app_mod,
-    agent,
-    empty_profile,
-    monkeypatch,
-):
+def test_research_items_receive_precise_discovery_timestamp(agent, empty_profile, monkeypatch):
     from agent import tools
 
     monkeypatch.setattr(
@@ -274,9 +234,6 @@ def test_same_day_research_items_use_timestamp_and_count_as_new(
     tools.execute_tool("search_pubmed", {"query": "NET PRRT"}, empty_profile)
     added = empty_profile["literature_watched"][0]["date_added"]
     assert "T" in added
-
-    empty_profile["acknowledged_at"] = added[:10] + "T00:00:00"
-    assert app_mod._count_new(empty_profile)["papers"] == 1
 
 
 def test_first_profile_creation_is_serialized(agent):

@@ -11,19 +11,36 @@ requires App Service Easy Auth path exclusions. Local APIs are protected unless
 `ALLOW_LOCAL_AUTH_BYPASS=1` is explicitly set in the local environment (as in
 `.env.example`). Do not set that bypass in hosted configuration.
 
+## Interface map
+
+The desktop and phone layouts use the same four views, so every workflow is
+available at every screen size:
+
+- **Today** — assessment freshness, key concern, next actions, and unread-change
+  review.
+- **Patient** — profile snapshot, treatments, biomarkers, alerts, and symptoms.
+- **Questions** — appointment questions and clinical notes from the treating
+  team.
+- **Activity** — digest/deep-sweep controls, processing status, and reports.
+
+If an API request is unauthorized, forbidden, offline, or otherwise fails, the
+page shows an explicit error and retry action instead of replacing the patient
+record with empty states. The phone layout keeps these same views in a fixed
+bottom navigation bar.
+
 ## 1. Feed a clinical document
 
 When you receive new lab results, an imaging report, or a doctor's note:
 
-1. In the header, click **📄 Feed**. A popover opens anchored under the button.
+1. In the header, click **Add document**. An accessible dialog opens.
 2. Either:
    - Stay on the **Paste text** tab and paste into the textarea, or
    - Switch to **Upload file** and drop / pick a `.txt` / `.pdf`. PDF extraction
      runs `pdfplumber` only in a contained child process, never in the web
      worker: 30-second hard timeout, 100-page and 1,000,000-character defaults,
      validated output, and Linux resource limits.
-3. Click **→ Process** (or just hit the upload). The popover auto-closes and the
-   job appears in the activity log below the executive summary.
+3. Click **Process document** (or select the upload). The dialog auto-closes and
+   the **Activity** view opens with the submitted job selected.
 
 The job runs in the background:
    1. **Intake** parses the text and updates biomarkers / imaging / treatments.
@@ -38,11 +55,13 @@ link back to exact verified quotes where available. The summary's **Evidence**
 links open only authenticated, no-cache source/span endpoints and never reveal a
 filesystem path.
 
-The server returns `202` with a job ID. The UI polls its status and loads the
+The server returns `202` with a job ID. The UI polls active work every three
+seconds and loads the
 report only from that individual job after completion. New papers / trials /
 alerts appear in their tabs. The job status moves `queued → running → done` in
-the activity log; press **Esc** or click the
-backdrop to dismiss the Feed popover at any time without submitting.
+the activity list; press **Esc** or click the backdrop to dismiss the document
+dialog at any time without submitting. Idle polling backs off to 30 seconds
+(60 seconds while the browser tab is hidden).
 
 Feed has its own bounded queue (one active + two queued by default), independent
 of other AI work. If full, the API returns `429` with `Retry-After` (10 seconds
@@ -53,7 +72,7 @@ by default) and creates no job record; retry after that delay.
 Use this when no new document has arrived but you want a fresh literature/trial sweep
 (e.g. once a week):
 
-1. UI → **Generate Digest** button.
+1. UI → **Activity** → **Run digest**.
 2. Orchestrator runs without new input; existing biomarker trends are re-analysed,
    new papers / trials added.
 3. The text report is saved to `/home/data/reports/report_digest_*.txt`.
@@ -66,7 +85,7 @@ not embedded in job history—it is loaded on demand when the activity item open
 Use this before an oncology appointment when you want the most thorough,
 insight-hunting pass — not just a routine sweep:
 
-1. UI → header **⁂ Deep sweep** button, then confirm the prompt.
+1. UI → **Activity** → **Run deep sweep**, then confirm the prompt.
 2. It runs two premium models (default **Fable 5 + Opus 4.8**) with the routine
    "skip what's already tracked" rules relaxed, then a synthesis pass **unions**
    their findings into one briefing with a **Cross-Cutting Insights** and a
@@ -89,14 +108,14 @@ Only one deep-sweep may be active; a duplicate returns `409`.
 After every consultation, capture the oncologist's actual position so future AI runs
 respect it as a hard constraint:
 
-1. UI → **Judgments** tab → **Add Judgment**.
+1. UI → **Questions** → **Clinical notes**.
 2. Pick the category:
    - `constraint` — rules out a treatment / trial / approach
    - `preference` — what the oncologist favours
    - `outcome` — past response or side effect
    - `context` — clinical background
 3. Write the judgment in plain English (e.g. *"Hilar lymph node assessed as non-urgent — re-image in 3 months"*).
-4. Save. The judgment is persisted; future orchestrator and exec-summary runs will
+4. Click **Add note**. The judgment is persisted; future orchestrator and exec-summary runs will
    read it before proposing actions.
 
 Judgments default to **active**. Editing lets you mark one **needs review** or
@@ -106,13 +125,13 @@ visible but is no longer a hard constraint until a clinician reactivates it.
 
 ## 4. Resolve / dismiss an alert
 
-1. UI → **Alerts** panel.
-2. Click **Resolve** on the card.
+1. UI → **Patient** → **Active alerts**.
+2. Click **Mark resolved** on the card.
 3. The alert is marked `resolved=true` in the profile but kept for audit.
 
 ## 5. Generate appointment questions
 
-1. UI → **Questions** tab → **Generate**.
+1. UI → **Questions** → **Generate questions**.
 2. Claude reads the current profile + clinical judgments and returns 10–15
    ranked questions in the language configured by `patient.language`
    (defaults to English), grouped by category
@@ -128,8 +147,9 @@ while deduplicating newly generated questions by normalized text.
 
 ## 5b. Record review feedback
 
-The executive summary shows confidence, rationale, profile/summary revisions,
-freshness, generation time, and evidence links. Use **Report something missed or
+The **Today** view shows confidence, rationale, profile/summary revisions,
+freshness, generation time, and evidence links. A prominent warning appears
+when newer patient data needs assessment. Use **Report something missed or
 incorrect** to record a prominent `missed` review item. This only appends
 structured feedback; it never edits patient facts or silently creates a clinical
 judgment. Corrected/incorrect/missed feedback on the current summary marks it
@@ -138,16 +158,21 @@ assessment set: `agreed|corrected|acted|helpful|incorrect|missed`.
 `PATCH /api/feedback/<id>` records later assessment, note, or outcome updates
 with a new `updated_at` timestamp.
 
+Removing a recommended action sends its assessment revision and expected action
+text. If a background run updates the assessment while the feedback editor is
+open, submission is disabled and the server rejects any stale request with
+`409`; close the editor, review the updated action, and reopen it.
+
 ## 5a. Log a symptom
 
-In the sidebar (below **Active alerts**) there is a **Symptoms** block.
+Open **Patient** and use the **Symptoms** card.
 Use it to record any patient-reported symptom or side effect — nausea
 after lanreotide, persistent fatigue, mild diarrhea, etc.
 
 1. Type the symptom name (e.g. *nausea*).
 2. Pick a severity 1–5 (1 = mild, 5 = severe).
 3. Optionally add a short note.
-4. Click **+**. The entry is saved with `source="manual"` and today's date.
+4. Click **Log symptom**. The entry is saved with `source="manual"` and today's date.
 
 When the intake agent processes a doctor's note that mentions a
 patient-reported symptom (e.g. *"patient reports grade-2 diarrhea since
@@ -160,9 +185,20 @@ All downstream agents read the recent-symptoms block in the patient
 summary, so a fresh digest will surface side-effect-management
 literature if the orchestrator decides the symptoms warrant it.
 
+## 5c. Review new information
+
+When the header shows a green new-item count, click it (or use **Review changes**
+on **Today**) to open the review panel. It groups unread items by biomarkers,
+imaging, documents, trials, papers, alerts, symptoms, clinical notes, and
+assessment refreshes.
+
+Click **Mark reviewed** only after checking the relevant views. This updates the
+unread timestamp and clears the count; it does not delete, edit, or otherwise
+acknowledge the underlying clinical data.
+
 ## 6. Chat with the record
 
-UI → **✦ Ask Claude** in the header. Free-form conversation grounded in the
+Header → **✦ Ask Claude**. Free-form conversation grounded in the
 **full** patient record:
 - Every biomarker reading (no recency cap)
 - Every imaging study (no recency cap)

@@ -64,6 +64,60 @@ def test_interrupted_jobs_are_terminal_and_show_retry_guidance():
     assert "t.status === 'interrupted'" in polling
 
 
+def test_idle_polling_backs_off_and_hidden_pages_poll_less_often():
+    polling = _function_source("startPolling", "toggleQuestions")
+    assert "hasActiveJobs ? 3000 : 30000" in polling
+    assert "document.hidden ? 60000" in polling
+    assert "setTimeout(poll" in polling
+    assert "setInterval" not in polling
+    assert "hadActiveJobs && !hasActiveJobs" in polling
+    assert "if (hasActiveJobs || hadActiveJobs)" not in polling
+    assert "if (selectedTaskId && hasActiveJobs)" not in polling
+    assert "tasks.find(task => task.id === selectedTaskId)" in polling
+    submission = _function_source("activateSubmittedTask", "showFeedError")
+    assert "hadActiveJobs = true" in submission
+    assert "startPolling()" in submission
+
+
+def test_summary_refresh_preserves_open_action_feedback():
+    loader = _function_source("loadSummary", "renderPendingSummary")
+    assert "document.querySelector('.action-feedback')" in loader
+    assert "pendingSummary = d" in loader
+    pending = _function_source("renderPendingSummary", "summaryIsStale")
+    assert "renderSummary(summary)" in pending
+    dismiss = _function_source("quickDismiss", "reportMissedSummary")
+    assert "expected_action: el?.dataset.actionText" in dismiss
+    assert "summary_revision: el?.dataset.summaryRevision || null" in dismiss
+
+
+def test_escape_closes_only_the_topmost_open_surface():
+    assert APP_JS.count("document.addEventListener('keydown'") == 1
+    handler_start = APP_JS.index("document.addEventListener('keydown'")
+    handler_end = APP_JS.index("function switchTab", handler_start)
+    handler = APP_JS[handler_start:handler_end]
+    assert "modal-overlay" in handler
+    assert handler.count("return;") >= 4
+
+
+def test_load_failures_distinguish_auth_offline_and_retry_states():
+    state = _function_source("renderAppState", "retryInitialLoad")
+    assert "error?.status === 401" in state
+    assert "error?.status === 403" in state
+    assert "navigator.onLine === false" in state
+    assert "Patient data has not been removed" in state
+    retry = _function_source("retryInitialLoad", "switchView")
+    for loader in (
+        "loadStatus()",
+        "loadTasks()",
+        "loadSummary()",
+        "loadQuestions()",
+        "loadJudgments()",
+        "loadSymptoms()",
+        "loadChanges()",
+    ):
+        assert loader in retry
+
+
 def test_summary_revisions_are_authoritative_with_legacy_date_fallback():
     source = _function_source("summaryIsStale", "renderSummary")
     stale_flag = source.index("typeof d.stale === 'boolean'")
@@ -104,8 +158,8 @@ def test_malicious_stored_display_fields_are_escaped():
         "escHtml(s.date || '')",
         "escHtml(task.stage || 'processing')",
         "escHtml(translateCategory(q.category||'Other'))",
-        "escHtml(nodeEl.dataset.event)",
-        "escHtml(nodeEl.dataset.date)",
+        "escHtml(item.event || '')",
+        'datetime="${escHtml(date)}"',
     )
     for expression in escaped_expressions:
         assert expression in APP_JS

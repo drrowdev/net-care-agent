@@ -9,6 +9,20 @@ incremented when something user-visible or operationally meaningful changes.
 ## [Unreleased]
 
 ### Added
+- **Today-first responsive caregiver workspace.** Replaced the duplicated
+  desktop/mobile surfaces with shared **Today**, **Patient**, **Questions**, and
+  **Activity** views while retaining the warm green/amber visual identity.
+  Assessment freshness and newer source data are now prominent, recommended
+  actions are task cards, unread counts open a category review before
+  acknowledgement, and every workflow remains available on phones through fixed
+  bottom navigation. API failures now distinguish sign-in, allowlist, offline,
+  and retry states instead of looking like an empty patient record. Activity
+  polling stays at three seconds only while work is active, backing off to 30
+  seconds when idle and 60 seconds while hidden. Controls use semantic buttons,
+  labelled dialogs, visible focus treatment, larger touch targets, and
+  consistent English labels. Action dismissal now carries the assessment
+  revision and expected action text; stale feedback is disabled in the UI and
+  rejected with `409` before it can dismiss a different recommendation.
 - **Operational and security hardening.** Gunicorn is deliberately pinned to one
   worker because job state and execution are in-process. Feed work now has an
   independent bounded executor (`FEED_WORKERS=1`, `FEED_QUEUE_SIZE=2`) so uploads

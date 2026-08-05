@@ -2,6 +2,12 @@
   let selectedTaskId = null;
   let pollingInterval = null;
   let currentReportText = '';
+  let activeView = 'today';
+  let lastChanges = null;
+  let lastDialogTrigger = null;
+  let hadActiveJobs = false;
+  let pendingSummary = null;
+  const failedLoads = new Map();
 
   // ── UI label localization ───────────────────────────────────────────────
   // Returns input as-is by default (English). To add a locale, replace the
@@ -41,13 +47,18 @@
     try {
       data = await response.json();
     } catch (_) {
-      throw new Error(`Invalid JSON response (${response.status})`);
+      const error = new Error(`The server returned an invalid response (${response.status}).`);
+      error.status = response.status;
+      throw error;
     }
     if (!response.ok) {
       const message = data && typeof data.error === 'string'
         ? data.error
         : `Request failed (${response.status})`;
-      throw new Error(message);
+      const error = new Error(message);
+      error.status = response.status;
+      error.retryAfter = response.headers.get('Retry-After');
+      throw error;
     }
     return data;
   }
@@ -57,12 +68,22 @@
     try {
       data = await response.json();
     } catch (_) {
-      throw new Error(`Invalid JSON response (${response.status})`);
+      const error = new Error(`The server returned an invalid response (${response.status}).`);
+      error.status = response.status;
+      throw error;
     }
     if (response.ok || (response.status === 409 && data && data.job_id)) return data;
-    throw new Error(data && typeof data.error === 'string'
+    const error = new Error(data && typeof data.error === 'string'
       ? data.error
       : `Request failed (${response.status})`);
+    error.status = response.status;
+    error.retryAfter = response.headers.get('Retry-After');
+    throw error;
+  }
+
+  async function requireOk(response) {
+    if (!response.ok) await readJsonResponse(response);
+    return response;
   }
 
   async function waitForJob(jobId, timeoutMs = 900000) {
@@ -78,6 +99,111 @@
     }
     throw new Error('The job is still running. Check the task log for progress.');
   }
+
+  function reportLoadSuccess(scope) {
+    failedLoads.delete(scope);
+    renderAppState();
+  }
+
+  function reportLoadError(scope, error) {
+    failedLoads.set(scope, error);
+    renderAppState();
+  }
+
+  function restoreDialogFocus() {
+    const target = lastDialogTrigger;
+    lastDialogTrigger = null;
+    if (target?.isConnected && !target.hidden && target.offsetParent !== null) {
+      target.focus();
+      return;
+    }
+    document.getElementById(`nav-${activeView}`)?.focus();
+  }
+
+  function renderAppState() {
+    const banner = document.getElementById('app-state-banner');
+    if (!banner) return;
+    if (!failedLoads.size && navigator.onLine !== false) {
+      banner.hidden = true;
+      banner.classList.remove('offline');
+      return;
+    }
+
+    const errors = [...failedLoads.values()];
+    const error = errors.find(item => item?.status === 403)
+      || errors.find(item => item?.status === 401)
+      || errors[0];
+    const offline = navigator.onLine === false || error instanceof TypeError;
+    let title = 'Patient data could not be loaded';
+    let message = error?.message || 'Check your connection and try again.';
+
+    if (error?.status === 401) {
+      title = 'Sign-in required';
+      message = 'Your session has expired or is not authenticated. Sign in again, then retry.';
+    } else if (error?.status === 403) {
+      title = 'Access to this patient record is denied';
+      message = 'You are signed in, but this account is not on the patient record allowlist.';
+    } else if (offline) {
+      title = 'Connection lost';
+      message = 'The page cannot reach NET/Care. Patient data has not been removed; reconnect and retry.';
+    }
+
+    document.getElementById('app-state-title').textContent = title;
+    document.getElementById('app-state-message').textContent = message;
+    banner.classList.toggle('offline', offline);
+    banner.hidden = false;
+  }
+
+  async function retryInitialLoad() {
+    failedLoads.clear();
+    renderAppState();
+    await Promise.allSettled([
+      loadStatus(),
+      loadTasks(),
+      loadSummary(),
+      loadQuestions(),
+      loadJudgments(),
+      loadSymptoms(),
+      loadChanges(),
+    ]);
+  }
+
+  function switchView(name, trigger) {
+    const next = document.getElementById(`view-${name}`);
+    if (!next) return;
+    activeView = name;
+    document.querySelectorAll('.app-view').forEach(view => {
+      const selected = view === next;
+      view.hidden = !selected;
+      view.classList.toggle('active', selected);
+    });
+    document.querySelectorAll('.view-nav-button').forEach(button => {
+      const selected = button.id === `nav-${name}`;
+      button.classList.toggle('active', selected);
+      if (selected) button.setAttribute('aria-current', 'page');
+      else button.removeAttribute('aria-current');
+    });
+    if (name === 'questions') {
+      loadQuestions();
+      loadJudgments();
+    } else if (name === 'patient') {
+      loadStatus();
+      loadSymptoms();
+    } else if (name === 'activity') {
+      loadTasks();
+    } else if (name === 'today') {
+      loadSummary();
+      loadChanges();
+    }
+    if (window.location.hash !== `#${name}`) {
+      history.replaceState(null, '', `#${name}`);
+    }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    if (!trigger) document.getElementById(`nav-${name}`)?.focus();
+  }
+
+  window.addEventListener('online', retryInitialLoad);
+  window.addEventListener('offline', renderAppState);
 
   function relativeTime(iso) {
     if (!iso) return '';
@@ -142,13 +268,18 @@
   async function loadStatus() {
     try {
       const r = await fetch('/api/status');
-      const d = await r.json();
+      const d = await readJsonResponse(r);
       renderSidebar(d);
-    } catch(e) { console.error('Status error:', e); }
+      reportLoadSuccess('status');
+      return d;
+    } catch(e) {
+      reportLoadError('status', e);
+      return null;
+    }
   }
 
   function renderSidebar(d) {
-    const p = d.patient;
+    const p = d.patient || {};
     document.getElementById('patient-dx').textContent = p.diagnosis || 'No diagnosis recorded';
 
     const sstrClass = p.sstr_status === 'positive' ? 'positive' : p.sstr_status === 'negative' ? 'negative' : 'unknown';
@@ -167,11 +298,11 @@
       </div>
       <div class="meta-row">
         <span class="meta-label">Trials</span>
-        <span class="meta-val clickable" onclick="openModal('trials')">${escHtml((d.stats && d.stats.trials_tracked != null) ? d.stats.trials_tracked : 0)}</span>
+        <button class="meta-val clickable" onclick="openModal('trials')">${escHtml((d.stats && d.stats.trials_tracked != null) ? d.stats.trials_tracked : 0)}</button>
       </div>
       <div class="meta-row">
         <span class="meta-label">Papers</span>
-        <span class="meta-val clickable" onclick="openModal('papers')">${escHtml((d.stats && d.stats.literature_watched != null) ? d.stats.literature_watched : 0)}</span>
+        <button class="meta-val clickable" onclick="openModal('papers')">${escHtml((d.stats && d.stats.literature_watched != null) ? d.stats.literature_watched : 0)}</button>
       </div>
     `;
 
@@ -202,7 +333,7 @@
                      : t.category === 'planned' ? 'var(--amber)' : 'var(--text2)';
       const textStyle = t.category === 'completed' ? ' style="color:var(--text2)"' : '';
       const completeBtn = t.category !== 'completed'
-        ? `<button class="tx-action-btn complete" title="Mark as completed" onclick="markTreatment(${idx},'completed')">✓</button>` : '';
+        ? `<button class="tx-action-btn complete" aria-label="Mark ${escHtml(t.label || t.text)} as completed" title="Mark as completed" onclick="markTreatment(${idx},'completed')">✓</button>` : '';
       return `
         <div class="tx-item">
           <div class="tx-dot" style="background:${dotColor}"></div>
@@ -212,7 +343,7 @@
           </div>
           <div class="tx-actions">
             ${completeBtn}
-            <button class="tx-action-btn remove" title="Remove" onclick="removeTreatment(${idx})">✕</button>
+            <button class="tx-action-btn remove" aria-label="Remove ${escHtml(t.label || t.text)}" title="Remove" onclick="removeTreatment(${idx})">✕</button>
           </div>
         </div>`;
     };
@@ -322,18 +453,19 @@
           ${a.action_required ? `<div class="alert-action">→ ${escHtml(a.action_required)}</div>` : ''}
           <div class="alert-meta">
             <span class="alert-priority ${safeClassToken(a.priority, 'normal')}">${escHtml(a.priority || '—')}</span>
-            <button class="resolve-btn" onclick="resolveAlert(${i})">Resolve</button>
+            <button class="resolve-btn" onclick="resolveAlert(${i})">Mark resolved</button>
           </div>
         </div>`).join('')
       : '<div class="empty-state">No active alerts</div>';
-
-    // Mirror to mobile patient panel
-    if (isMobile()) mirrorSidebarToMobile();
   }
 
   async function resolveAlert(idx) {
-    await fetch(`/api/alerts/resolve/${idx}`, { method: 'POST' });
-    loadStatus();
+    try {
+      await requireOk(await fetch(`/api/alerts/resolve/${idx}`, { method: 'POST' }));
+      await loadStatus();
+    } catch (error) {
+      reportLoadError('action', error);
+    }
   }
 
   // ── Executive Summary ───────────────────────────────────────────────────
@@ -343,6 +475,11 @@
     summaryOpen = !summaryOpen;
     document.getElementById('summary-body').classList.toggle('hidden', !summaryOpen);
     document.getElementById('summary-caret').classList.toggle('open', summaryOpen);
+    const toggle = document.getElementById('summary-toggle');
+    if (toggle) {
+      toggle.setAttribute('aria-expanded', String(summaryOpen));
+      toggle.title = summaryOpen ? 'Collapse assessment' : 'Expand assessment';
+    }
   }
 
   function toggleCompleted() {
@@ -354,21 +491,29 @@
   }
 
   async function markTreatment(idx, category) {
-    const r = await fetch('/api/treatments/update', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'set_category', idx, category }),
-    });
-    if (r.ok) await loadStatus();
+    try {
+      await requireOk(await fetch('/api/treatments/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'set_category', idx, category }),
+      }));
+      await loadStatus();
+    } catch (error) {
+      reportLoadError('action', error);
+    }
   }
 
   async function removeTreatment(idx) {
-    const r = await fetch('/api/treatments/update', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'remove', idx }),
-    });
-    if (r.ok) await loadStatus();
+    try {
+      await requireOk(await fetch('/api/treatments/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'remove', idx }),
+      }));
+      await loadStatus();
+    } catch (error) {
+      reportLoadError('action', error);
+    }
   }
 
   async function generateSummary() {
@@ -377,16 +522,12 @@
     try {
       const r = await fetch('/api/summary/generate', { method: 'POST' });
       const submitted = await readJobSubmission(r);
-      const completed = await waitForJob(submitted.job_id);
-      const d = completed.result || {};
-      const summary = d.summary || d;
-      renderSummary(summary);
-      // Reload full status to refresh treatments sidebar
-      await loadStatus();
+      await waitForJob(submitted.job_id);
+      await Promise.all([loadSummary(), loadStatus(), loadChanges()]);
     } catch(e) {
-      console.error('Summary generation failed:', e);
+      reportLoadError('summary', e);
     } finally {
-      if (btn) { btn.disabled = false; btn.textContent = '⊙ Generate summary'; }
+      if (btn) { btn.disabled = false; btn.textContent = '↻ Refresh assessment'; }
     }
   }
 
@@ -397,7 +538,7 @@
 
     // Build quick feedback options
     const feedbackHtml = `
-      <div id="dismiss-dialog-${idx}" style="margin-top:8px;padding:10px;background:var(--bg2);border-radius:6px;border:0.5px solid var(--border)">
+      <div id="dismiss-dialog-${idx}" class="action-feedback" style="margin-top:8px;padding:10px;background:var(--bg2);border-radius:6px;border:0.5px solid var(--border)">
         <div style="font-size:11px;color:var(--text2);margin-bottom:8px;font-weight:500">Why removing? (optional — feeds back into agent)</div>
         <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px">
           ${['Doctor advised against','Not applicable now','Already being done','Renal constraints','Done at last appointment'].map(opt =>
@@ -413,49 +554,71 @@
 
     // Insert dialog after action item
     const existing = document.getElementById('dismiss-dialog-' + idx);
-    if (existing) { existing.remove(); return; }
+    if (existing) {
+      existing.remove();
+      renderPendingSummary();
+      return;
+    }
     el.insertAdjacentHTML('afterend', feedbackHtml);
   }
 
   async function quickDismiss(idx, feedback, category) {
     const el = document.getElementById('action-' + idx);
     const dlg = document.getElementById('dismiss-dialog-' + idx);
+    const payload = {
+      feedback: feedback.trim(),
+      category,
+      expected_action: el?.dataset.actionText || '',
+      summary_revision: el?.dataset.summaryRevision || null,
+    };
     if (el) el.style.opacity = '0.3';
     if (dlg) dlg.remove();
     try {
-      await fetch(`/api/summary/dismiss-action/${idx}`, {
+      await requireOk(await fetch(`/api/summary/dismiss-action/${idx}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ feedback: feedback.trim(), category }),
-      });
+        body: JSON.stringify(payload),
+      }));
       await loadSummary();
       if (feedback.trim()) await loadJudgments();
-    } catch(e) { if (el) el.style.opacity = '1'; }
+    } catch(e) {
+      if (el) el.style.opacity = '1';
+      reportLoadError('action', e);
+    }
   }
 
   async function reportMissedSummary() {
     const note = prompt('What was missed or incorrect? This records review feedback only; it will not change clinical facts.');
     if (!note || !note.trim()) return;
-    const r = await fetch('/api/feedback', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        target: 'summary',
-        item_id: 'current',
-        assessment: 'missed',
-        note: note.trim(),
-      }),
-    });
-    if (r.ok) await loadSummary();
+    try {
+      await requireOk(await fetch('/api/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          target: 'summary',
+          item_id: 'current',
+          assessment: 'missed',
+          note: note.trim(),
+        }),
+      }));
+      await loadSummary();
+    } catch (error) {
+      reportLoadError('action', error);
+    }
   }
 
   // ── Clinical Judgments ───────────────────────────────────────────────────
   async function loadJudgments() {
     try {
       const r = await fetch('/api/judgments');
-      const js = await r.json();
+      const js = await readJsonResponse(r);
       renderJudgments(js);
-    } catch(e) {}
+      reportLoadSuccess('judgments');
+      return js;
+    } catch(e) {
+      reportLoadError('judgments', e);
+      return [];
+    }
   }
 
   function renderJudgments(judgments) {
@@ -480,10 +643,8 @@
       </div>`;}).join('')
     : '<div style="font-size:12px;color:var(--text2);padding:12px 0;text-align:center">No clinical notes yet.<br>Add notes after appointments or dismiss actions with feedback.</div>';
 
-    const desktop = document.getElementById('judgments-list');
-    if (desktop) desktop.innerHTML = html;
-    const mobile = document.getElementById('mob-judgments-list');
-    if (mobile) mobile.innerHTML = html;
+    const list = document.getElementById('judgments-list');
+    if (list) list.innerHTML = html;
   }
 
   function startEditJudgment(button) {
@@ -537,27 +698,15 @@
     const text = (ta?.value || '').trim();
     if (!jid || !text) return;
     try {
-      await fetch(`/api/judgments/${encodeURIComponent(jid)}`, {
+      await requireOk(await fetch(`/api/judgments/${encodeURIComponent(jid)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text, category: catEl?.value || 'context', status: statusEl?.value || 'active' }),
-      });
+      }));
       await loadJudgments();
-    } catch(e) { console.error('Edit judgment error:', e); }
-  }
-
-  async function addMobJudgment() {
-    const input = document.getElementById('mob-judgment-input');
-    const cat   = document.getElementById('mob-judgment-cat');
-    const text  = (input?.value || '').trim();
-    if (!text) return;
-    input.value = '';
-    await fetch('/api/judgments/add', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, category: cat?.value || 'context' }),
-    });
-    await loadJudgments();
+    } catch(e) {
+      reportLoadError('action', e);
+    }
   }
 
   async function addJudgment() {
@@ -566,26 +715,40 @@
     const text  = (input?.value || '').trim();
     if (!text) return;
     input.value = '';
-    await fetch('/api/judgments/add', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, category: cat?.value || 'context' }),
-    });
-    await loadJudgments();
+    try {
+      await requireOk(await fetch('/api/judgments/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, category: cat?.value || 'context' }),
+      }));
+      await loadJudgments();
+    } catch (error) {
+      input.value = text;
+      reportLoadError('action', error);
+    }
   }
 
   async function deleteJudgment(jid) {
-    await fetch(`/api/judgments/${encodeURIComponent(jid)}`, { method: 'DELETE' });
-    await loadJudgments();
+    try {
+      await requireOk(await fetch(`/api/judgments/${encodeURIComponent(jid)}`, { method: 'DELETE' }));
+      await loadJudgments();
+    } catch (error) {
+      reportLoadError('action', error);
+    }
   }
 
   // ── Symptoms ─────────────────────────────────────────────────────────────
   async function loadSymptoms() {
     try {
       const r = await fetch('/api/symptoms');
-      const list = await r.json();
+      const list = await readJsonResponse(r);
       renderSymptoms(list);
-    } catch (e) { console.error('Symptoms error:', e); }
+      reportLoadSuccess('symptoms');
+      return list;
+    } catch (e) {
+      reportLoadError('symptoms', e);
+      return [];
+    }
   }
 
   function renderSymptoms(symptoms) {
@@ -621,7 +784,7 @@
     const sev = document.getElementById('sym-sev').value;
     const note = document.getElementById('sym-note').value.trim();
     try {
-      const r = await fetch('/api/symptoms', {
+      await readJsonResponse(await fetch('/api/symptoms', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -629,46 +792,62 @@
           severity: sev ? parseInt(sev, 10) : null,
           note: note || null,
         }),
-      });
-      if (!r.ok) {
-        const err = await r.json();
-        alert(err.error || 'Failed to log symptom');
-        return;
-      }
+      }));
       document.getElementById('sym-name').value = '';
       document.getElementById('sym-sev').value = '';
       document.getElementById('sym-note').value = '';
       await loadSymptoms();
-    } catch (e) { console.error('Add symptom error:', e); }
+    } catch (e) {
+      reportLoadError('action', e);
+    }
   }
 
   async function deleteSymptom(sid) {
     if (!confirm('Delete this symptom entry?')) return;
-    await fetch(`/api/symptoms/${encodeURIComponent(sid)}`, { method: 'DELETE' });
-    await loadSymptoms();
+    try {
+      await requireOk(await fetch(`/api/symptoms/${encodeURIComponent(sid)}`, { method: 'DELETE' }));
+      await loadSymptoms();
+    } catch (error) {
+      reportLoadError('action', error);
+    }
   }
 
   // ── "Since last login" delta indicator ───────────────────────────────────
   async function loadChanges() {
     try {
       const r = await fetch('/api/changes');
-      const d = await r.json();
+      const d = await readJsonResponse(r);
+      lastChanges = d;
       renderChangesBadge(d);
-    } catch (e) { console.error('Changes error:', e); }
+      reportLoadSuccess('changes');
+      return d;
+    } catch (e) {
+      reportLoadError('changes', e);
+      return null;
+    }
   }
 
   function renderChangesBadge(d) {
     const btn = document.getElementById('btn-changes');
     const count = document.getElementById('changes-count');
+    const card = document.getElementById('changes-card');
     if (!btn || !count) return;
     const total = (d && d.new && d.new.total_new) || 0;
     if (total > 0) {
       count.textContent = total;
-      btn.style.display = '';
+      btn.hidden = false;
       btn.title = _changesBreakdown(d.new);
+      if (card) {
+        card.hidden = false;
+        document.getElementById('changes-card-title').textContent =
+          `${total} update${total === 1 ? '' : 's'} since your last review`;
+        document.getElementById('changes-card-detail').textContent = _changesBreakdown(d.new);
+      }
     } else {
-      btn.style.display = 'none';
+      btn.hidden = true;
+      if (card) card.hidden = true;
     }
+    renderChangesPanel(d);
   }
 
   function _changesBreakdown(n) {
@@ -682,22 +861,95 @@
     if (n.symptoms) parts.push(`${n.symptoms} symptom${n.symptoms === 1 ? '' : 's'}`);
     if (n.judgments) parts.push(`${n.judgments} judgment${n.judgments === 1 ? '' : 's'}`);
     if (n.executive_summary) parts.push('exec summary refreshed');
-    return parts.length ? `New since last ack: ${parts.join(', ')}` : 'Mark all updates as seen';
+    return parts.length ? parts.join(', ') : 'No unreviewed changes';
+  }
+
+  function renderChangesPanel(d) {
+    const body = document.getElementById('changes-body');
+    if (!body) return;
+    const changes = d?.new || {};
+    const rows = [
+      ['Biomarkers', 'New laboratory values', changes.biomarkers, 'B'],
+      ['Imaging', 'New or updated imaging findings', changes.imaging, 'I'],
+      ['Documents', 'New clinical source documents', changes.documents, 'D'],
+      ['Trials', 'New tracked clinical trials', changes.trials, 'T'],
+      ['Research papers', 'New tracked literature', changes.papers, 'P'],
+      ['Alerts', 'New items needing review', changes.alerts, '!'],
+      ['Symptoms', 'New symptom entries', changes.symptoms, 'S'],
+      ['Clinical notes', 'New clinician guidance', changes.judgments, 'N'],
+      ['Assessment', 'Executive summary refreshed', changes.executive_summary ? 1 : 0, 'A'],
+    ].filter(row => Number(row[2]) > 0);
+
+    body.innerHTML = rows.length
+      ? `<div class="changes-list">${rows.map(([label, detail, count, icon]) => `
+          <div class="change-row">
+            <span class="change-icon" aria-hidden="true">${icon}</span>
+            <span class="change-copy"><strong>${label}</strong><small>${detail}</small></span>
+            <span class="change-count">${escHtml(count)}</span>
+          </div>`).join('')}</div>`
+      : '<div class="modal-empty">You are up to date. There are no unreviewed changes.</div>';
+    const ack = document.getElementById('acknowledge-changes-button');
+    if (ack) ack.disabled = rows.length === 0;
+  }
+
+  function openChangesPanel() {
+    lastDialogTrigger = document.activeElement;
+    const overlay = document.getElementById('changes-overlay');
+    overlay.classList.add('open');
+    renderChangesPanel(lastChanges);
+    overlay.querySelector('.icon-button')?.focus();
+  }
+
+  function closeChangesPanel(event) {
+    const overlay = document.getElementById('changes-overlay');
+    if (event && event.target !== overlay) return;
+    overlay.classList.remove('open');
+    restoreDialogFocus();
   }
 
   async function acknowledgeChanges() {
     try {
-      await fetch('/api/changes/acknowledge', { method: 'POST' });
+      await readJsonResponse(await fetch('/api/changes/acknowledge', { method: 'POST' }));
       await loadChanges();
-    } catch (e) { console.error('Acknowledge error:', e); }
+      closeChangesPanel();
+    } catch (e) {
+      reportLoadError('changes', e);
+    }
   }
 
   async function loadSummary() {
     try {
       const r = await fetch('/api/summary');
-      const d = await r.json();
-      renderSummary(d);
-    } catch(e) { console.error('Summary error:', e); }
+      const d = await readJsonResponse(r);
+      if (document.querySelector('.action-feedback')) {
+        pendingSummary = d;
+        const editor = document.querySelector('.action-feedback');
+        if (!editor.querySelector('.feedback-stale')) {
+          const warning = document.createElement('div');
+          warning.className = 'feedback-stale';
+          warning.setAttribute('role', 'alert');
+          warning.textContent = 'The assessment was updated. Close this review and reopen the current action before submitting feedback.';
+          editor.prepend(warning);
+          editor.querySelectorAll('button, input').forEach(control => { control.disabled = true; });
+        }
+      } else {
+        pendingSummary = null;
+        renderSummary(d);
+      }
+      reportLoadSuccess('summary');
+      return d;
+    } catch(e) {
+      renderFreshness(null, e);
+      reportLoadError('summary', e);
+      return null;
+    }
+  }
+
+  function renderPendingSummary() {
+    if (!pendingSummary || document.querySelector('.action-feedback')) return;
+    const summary = pendingSummary;
+    pendingSummary = null;
+    renderSummary(summary);
   }
 
   function summaryIsStale(d) {
@@ -711,20 +963,59 @@
     return Boolean(summaryDate && latestDocDate && latestDocDate > summaryDate);
   }
 
-  function renderSummary(d) {
-    const body = document.getElementById('summary-body');
-    const empty = document.getElementById('summary-empty');
-    const inline = document.getElementById('summary-status-inline');
-    const updated = document.getElementById('summary-updated');
+  function renderFreshness(d, error = null) {
+    const banner = document.getElementById('freshness-banner');
+    if (!banner) return;
+    const title = document.getElementById('freshness-title');
+    const message = document.getElementById('freshness-message');
+    banner.className = 'freshness-banner';
 
+    if (error) {
+      banner.classList.add('error');
+      title.textContent = 'Assessment freshness is unavailable';
+      message.textContent = 'The assessment could not be compared with the latest patient data.';
+      return;
+    }
     if (!d || d.status === 'not_generated') {
-      empty.style.display = 'block';
-      inline.innerHTML = '';
-      updated.textContent = '';
+      banner.classList.add('stale');
+      title.textContent = 'No current assessment';
+      message.textContent = 'Generate an assessment after checking that the patient record is complete.';
       return;
     }
 
-    empty.style.display = 'none';
+    const stale = summaryIsStale(d);
+    const latestDoc = (d.recent_documents || [])[0];
+    const latestDetail = latestDoc
+      ? ` Latest source: ${latestDoc.summary || latestDoc.type || 'clinical document'}${latestDoc.date ? ` (${fmtDate(latestDoc.date)})` : ''}.`
+      : '';
+    if (stale) {
+      banner.classList.add('stale');
+      title.textContent = 'New patient data needs assessment';
+      message.textContent = `This summary predates the current patient record.${latestDetail}`;
+    } else {
+      banner.classList.add('current');
+      title.textContent = 'Assessment is current';
+      message.textContent = d.generated_at
+        ? `Updated ${fmtDate(d.generated_at_timestamp || d.generated_at)} and aligned with the current record.`
+        : 'The summary is aligned with the current patient record.';
+    }
+  }
+
+  function renderSummary(d) {
+    const body = document.getElementById('summary-body');
+    const inline = document.getElementById('summary-status-inline');
+    const updated = document.getElementById('summary-updated');
+    renderFreshness(d);
+
+    if (!d || d.status === 'not_generated') {
+      inline.innerHTML = '';
+      updated.textContent = '';
+      body.innerHTML = `<div class="summary-empty">
+        <div style="margin-bottom:10px">No assessment has been generated yet.</div>
+        <button class="button secondary" onclick="generateSummary()">Generate assessment</button>
+      </div>`;
+      return;
+    }
 
     // Status pill in header
     const statusLabels = {
@@ -736,8 +1027,8 @@
     // Updated timestamp
     // Revision fields are authoritative; dates support profiles created before revisions.
     const isStale = summaryIsStale(d);
-    updated.innerHTML = d.generated_at
-      ? `Updated ${escHtml(d.generated_at_timestamp || d.generated_at)} · rev ${escHtml(d.summary_revision ?? '—')}/${escHtml(d.profile_revision ?? '—')}${isStale ? ' <span style="color:var(--amber);font-size:10px">· new data available</span>' : ''}`
+    updated.textContent = d.generated_at
+      ? `Updated ${d.generated_at_timestamp || fmtDate(d.generated_at)} · record rev ${d.profile_revision ?? '—'} · assessment rev ${d.summary_revision ?? '—'}${isStale ? ' · new data available' : ''}`
       : '';
 
     let html = '';
@@ -761,7 +1052,7 @@
     }
     html += `</div>`;
     if (d.status_rationale) {
-      html += `<div style="font-size:11px;color:var(--text2);margin:2px 0 10px">${escHtml(d.status_rationale)}</div>`;
+      html += `<div style="font-size:11px;color:var(--text2);margin:6px 22px 10px">${escHtml(d.status_rationale)}</div>`;
     }
 
     // Key concern
@@ -785,233 +1076,47 @@
         }).join('')}</div></div>`;
     }
 
-    html += `<div style="margin:12px 0 2px"><button class="btn-digest" style="border-color:var(--amber);color:var(--amber)" onclick="reportMissedSummary()">⚑ Report something missed or incorrect</button>${d.feedback_pending ? ` <span style="font-size:10px;color:var(--amber)">${escHtml(d.feedback_pending)} review item(s) recorded</span>` : ''}</div>`;
+    html += `<div style="margin:18px 22px 2px"><button class="btn-digest" style="border-color:var(--amber);color:var(--amber)" onclick="reportMissedSummary()">⚑ Report something missed or incorrect</button>${d.feedback_pending ? ` <span style="font-size:10px;color:var(--amber)">${escHtml(d.feedback_pending)} review item(s) recorded</span>` : ''}</div>`;
 
     // Next actions
     if (d.next_actions && d.next_actions.length) {
       html += `<div class="summary-section">
-        <div class="summary-section-label">Recommended actions</div>`;
+        <div class="summary-section-label">What to do next</div>
+        <div class="action-list">`;
       d.next_actions.forEach((a, idx) => {
         const provBadge = a.provisional
           ? `<span style="font-family:var(--mono);font-size:9px;color:var(--text2);border:0.5px solid var(--border);padding:1px 4px;border-radius:2px;margin-left:4px">TBD</span>`
           : '';
-        html += `<div class="action-item" id="action-${idx}">
+        html += `<div class="action-item" id="action-${idx}" data-action-text="${escHtml(a.action || '')}" data-summary-revision="${escHtml(d.summary_revision ?? '')}">
           <span class="action-priority ${safeClassToken(a.priority, 'medium')}">${escHtml(a.priority || 'medium')}</span>
           <div class="action-text">
             <div class="action-main">${escHtml(a.action)}${provBadge}</div>
             ${a.rationale ? `<div class="action-sub">${escHtml(a.rationale)}</div>` : ''}
           </div>
-          <div class="action-timeframe">${escHtml(a.timeframe||'')}</div>
-          <button onclick="dismissAction(${idx})" title="Dismiss" style="background:none;border:none;color:var(--text2);font-size:13px;cursor:pointer;padding:0 0 0 8px;flex-shrink:0;line-height:1;opacity:0.25;transition:opacity .15s,color .15s" onmouseenter="this.style.opacity='1';this.style.color='var(--red)'" onmouseleave="this.style.opacity='0.25';this.style.color='var(--text2)'" class="action-dismiss-btn">✕</button>
+          <div class="action-timeframe">${escHtml(a.due_date ? `Due ${fmtDate(a.due_date)}` : (a.timeframe || 'Review with care team'))}</div>
+          <button onclick="dismissAction(${idx})" aria-label="Review or dismiss this action" title="Review or dismiss" class="icon-button action-dismiss-btn">⋯</button>
         </div>`;
       });
-      html += `</div>`;
+      html += `</div></div>`;
     }
 
 
-    // Timeline — interactive graph with hover tooltips
+    // A linear timeline remains readable with a keyboard, a screen reader, and on phones.
     if (d.timeline && d.timeline.length) {
-      const tid = 'tl_' + Math.random().toString(36).slice(2,8);
-      const items = d.timeline;
+      const today = new Date().toISOString().slice(0, 10);
       html += `<div class="summary-section">
         <div class="summary-section-label">Timeline</div>
-        <div id="${tid}" style="padding:4px 0 8px;position:relative"></div>
+        <ol class="timeline-list">${d.timeline.map(item => {
+          const date = item.date || '';
+          const past = date && date < today ? ' past' : '';
+          return `<li class="timeline-entry${past}">
+            <time datetime="${escHtml(date)}">${escHtml(fmtDate(date) || 'Date pending')}</time>
+            <span class="timeline-event-copy">${escHtml(item.event || '')}</span>
+            <span class="timeline-type ${safeClassToken(item.type, 'test')}">${escHtml(translateType(item.type || 'Event'))}</span>
+            ${item.provisional ? '<span class="timeline-provisional">Provisional — confirm with the care team</span>' : ''}
+          </li>`;
+        }).join('')}</ol>
       </div>`;
-
-      setTimeout(() => {
-        const el = document.getElementById(tid);
-        if (!el) return;
-
-        const W = Math.max(el.offsetWidth || 680, 400);
-        const ROW_H = 54;
-        const HEADER_H = 32;   // month labels row
-        const AXIS_Y = HEADER_H + 8;  // axis sits below header
-        const H = AXIS_Y + ROW_H * items.length + 20;
-        const PAD_L = 16, PAD_R = 16;
-        const trackW = W - PAD_L - PAD_R;
-
-        const typeColor = {
-          scan:'#0f6e56', appointment:'#185fa5', treatment:'#854f0b',
-          test:'#5a5650', milestone:'#1a6e40', trial:'#6b48c8', deadline:'#a32d2d'
-        };
-        const typeBg = {
-          scan:'#e0f5ef', appointment:'#deeaf7', treatment:'#fdf3e3',
-          test:'#f0ede8', milestone:'#e8f5ee', trial:'#ede8f8', deadline:'#fcebeb'
-        };
-
-        const parseDate = s => {
-          if (!s) return null;
-          const m = s.match(/^(\d{4})-(\d{2})(?:-(\d{2}))?/);
-          if (m) return new Date(+m[1], +m[2]-1, m[3]?+m[3]:1);
-          return null;
-        };
-
-        const dates = items.map(t => parseDate(t.date)).filter(Boolean);
-        const today = new Date();
-        const allDates = [...dates, today];
-        let minD = new Date(Math.min(...allDates));
-        let maxD = new Date(Math.max(...allDates));
-        minD = new Date(minD.getFullYear(), minD.getMonth() - 1, 1);
-        maxD = new Date(maxD.getFullYear(), maxD.getMonth() + 2, 1);
-        const range = maxD - minD || 1;
-        const toX = d => PAD_L + (d - minD) / range * trackW;
-        const todayX = toX(today);
-
-        // ── Pre-compute event x positions and which event-date labels will show ──
-        // (Needed up front so month labels can avoid colliding with them.)
-        const eventXs = items.map(t => {
-          const d3 = parseDate(t.date);
-          return d3 ? toX(d3) : PAD_L + trackW * 0.5;
-        });
-        // Suppress event date label if another event is within 45px
-        const dateLabelVisible = eventXs.map((cx, i) =>
-          eventXs.every((ox, j) => j === i || Math.abs(ox - cx) > 45)
-        );
-        // Reserved x-zones in the header row that month labels must avoid:
-        // the today marker and every visible event-date label.
-        const reservedXs = [todayX, ...eventXs.filter((_, i) => dateLabelVisible[i])];
-        const nearReserved = (x, gap = 30) =>
-          reservedXs.some(rx => Math.abs(rx - x) < gap);
-
-        // ── Month labels in header row — skip if too close to neighbour or reserved zone ──
-        let grid = '';
-        let lastMonthLabelX = -999;
-        let d2 = new Date(minD.getFullYear(), minD.getMonth(), 1);
-        while (d2 <= maxD) {
-          const x = toX(d2);
-          if (x >= PAD_L && x <= W - PAD_R) {
-            const lbl = d2.toLocaleDateString('en', {month:'short', year:'2-digit'});
-            const approxW = lbl.length * 6;
-            if (x - lastMonthLabelX > approxW + 8 && !nearReserved(x, approxW / 2 + 18)) {
-              grid += `<text x="${x.toFixed(1)}" y="${(HEADER_H - 4).toFixed(1)}" font-size="10" fill="#9a9288" text-anchor="middle" font-family="sans-serif">${lbl}</text>`;
-              lastMonthLabelX = x;
-            }
-            // Grid line runs full height
-            grid += `<line x1="${x.toFixed(1)}" y1="${AXIS_Y}" x2="${x.toFixed(1)}" y2="${H}" stroke="#e8e4dc" stroke-width="0.5"/>`;
-          }
-          d2 = new Date(d2.getFullYear(), d2.getMonth() + 1, 1);
-        }
-
-        // Axis line
-        grid += `<line x1="${PAD_L}" y1="${AXIS_Y}" x2="${W-PAD_R}" y2="${AXIS_Y}" stroke="#cdc8c0" stroke-width="1"/>`;
-
-        // Today line + label (in header row, clear of event dates)
-        grid += `<line x1="${todayX.toFixed(1)}" y1="${AXIS_Y}" x2="${todayX.toFixed(1)}" y2="${H}" stroke="#a32d2d" stroke-width="1.5" stroke-dasharray="3,2" opacity="0.6"/>
-        <text x="${todayX.toFixed(1)}" y="${(HEADER_H - 4).toFixed(1)}" font-size="9" fill="#a32d2d" text-anchor="middle" font-family="sans-serif" font-weight="700">today</text>`;
-
-        // ── Event nodes ──
-        let nodes = '';
-        items.forEach((t, i) => {
-          const d3 = parseDate(t.date);
-          const cx = eventXs[i];
-          const cy = AXIS_Y + 14 + i * ROW_H;
-          const color = typeColor[t.type] || '#5a5650';
-          const bg = typeBg[t.type] || '#f0ede8';
-          const isPast = d3 && d3 < today;
-          const isCurrent = d3 && Math.abs(d3 - today) < 1000*60*60*24*25;
-          const prov = t.provisional;
-          const r = isCurrent ? 8 : 6;
-
-          // Vertical connector from axis to dot
-          nodes += `<line x1="${cx.toFixed(1)}" y1="${AXIS_Y}" x2="${cx.toFixed(1)}" y2="${(cy-r).toFixed(1)}" stroke="${color}" stroke-width="1" opacity="${isPast?'0.25':'0.5'}" stroke-dasharray="${prov?'3,2':''}"/>`;
-
-          // Date label — show below axis on a tick, suppressed if crowded
-          const dateStr = d3 ? fmtDate(t.date) : '?';
-          if (dateLabelVisible[i]) {
-            nodes += `<line x1="${cx.toFixed(1)}" y1="${AXIS_Y}" x2="${cx.toFixed(1)}" y2="${(AXIS_Y+4).toFixed(1)}" stroke="#cdc8c0" stroke-width="1"/>`;
-            nodes += `<text x="${cx.toFixed(1)}" y="${(AXIS_Y-3).toFixed(1)}" font-size="9" fill="${isPast?'#b0a898':color}" text-anchor="middle" font-family="sans-serif" font-weight="600">${escHtml(dateStr)}</text>`;
-          }
-
-          // Main dot
-          const safeEvent = escHtml(t.event || '');
-          const safeDate  = escHtml(dateStr);
-          const tid2 = tid + '_' + i;
-
-          nodes += `<g class="tl-node" id="${tid2}"
-            data-event="${safeEvent}" data-date="${safeDate}"
-            data-type="${escHtml(t.type||'')}"
-            data-prov="${prov?'true':'false'}"
-            data-color="${color}" data-bg="${bg}"
-            style="cursor:pointer">`;
-
-          nodes += `<circle cx="${cx.toFixed(1)}" cy="${cy}" r="14" fill="transparent"/>`;
-          nodes += `<circle cx="${cx.toFixed(1)}" cy="${cy}" r="${r}" fill="${bg}" stroke="${color}" stroke-width="${isCurrent?2.5:1.5}" opacity="${isPast?'0.55':'1'}"/>`;
-          if (isPast) nodes += `<circle cx="${cx.toFixed(1)}" cy="${cy}" r="2.5" fill="${color}" opacity="0.55"/>`;
-          if (isCurrent) nodes += `<circle cx="${cx.toFixed(1)}" cy="${cy}" r="${r+4}" fill="none" stroke="${color}" stroke-width="1" opacity="0.3"/>`;
-
-          // Short label — offset right so it doesn't sit under the dot
-          const short = t.event && t.event.length > 20 ? t.event.slice(0,19)+'…' : (t.event||'');
-          const provMark = prov ? ' ~' : '';
-          // Alternate label side left/right based on proximity to neighbours
-          const nextX = eventXs[i+1];
-          const labelAnchor = (nextX && Math.abs(nextX - cx) < 80) ? 'start' : 'middle';
-          const labelX = labelAnchor === 'start' ? cx + r + 6 : cx;
-          nodes += `<text x="${labelX.toFixed(1)}" y="${(cy + r + 13).toFixed(1)}" font-size="10" fill="${isPast?'#9a9288':'#1e1c18'}" text-anchor="${labelAnchor}" font-family="sans-serif" font-weight="${isCurrent?'600':'400'}">${escHtml(short)}${provMark}</text>`;
-
-          nodes += `</g>`;
-        });
-
-        // Tooltip element (positioned via JS)
-        const tooltipId = tid + '_tt';
-        el.innerHTML = `
-          <svg id="${tid}_svg" width="${W}" height="${H}" style="display:block;overflow:visible">
-            ${grid}
-            ${nodes}
-          </svg>`;
-
-        // Append tooltip to body so it never causes container scrollbars
-        let tt = document.getElementById(tooltipId);
-        if (!tt) {
-          tt = document.createElement('div');
-          tt.id = tooltipId;
-          tt.style.cssText = 'display:none;position:fixed;background:#fff;border:0.5px solid #cdc8c0;border-radius:8px;padding:10px 14px;box-shadow:0 4px 16px rgba(0,0,0,0.12);max-width:260px;pointer-events:none;z-index:9999;font-family:sans-serif';
-          document.body.appendChild(tt);
-        }
-
-        // Attach hover events
-        const svgEl = document.getElementById(tid + '_svg');
-        items.forEach((t, i) => {
-          const nodeEl = document.getElementById(tid + '_' + i);
-          if (!nodeEl) return;
-          const color = nodeEl.dataset.color;
-          const bg = nodeEl.dataset.bg;
-
-          nodeEl.addEventListener('mouseenter', (e) => {
-            const circles = nodeEl.querySelectorAll('circle');
-            circles.forEach(c => { if (parseFloat(c.getAttribute('r')) <= 8) c.setAttribute('r', (parseFloat(c.getAttribute('r'))+2).toString()); });
-
-            const typeLabel = translateType(nodeEl.dataset.type);
-            const provText  = nodeEl.dataset.prov === 'true' ? '<div style="font-size:11px;color:#854f0b;margin-top:4px;font-style:italic">⚠ Provisional — not yet confirmed</div>' : '';
-
-            tt.innerHTML = `
-              <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
-                <span style="background:${bg};color:${color};font-size:10px;font-weight:700;padding:2px 8px;border-radius:3px;border:0.5px solid ${color}">${escHtml(typeLabel)}</span>
-                <span style="font-size:12px;font-weight:600;color:#1e1c18">${escHtml(nodeEl.dataset.date)}</span>
-              </div>
-              <div style="font-size:13px;color:#1e1c18;line-height:1.5;font-weight:500">${escHtml(nodeEl.dataset.event)}</div>
-              ${provText}`;
-            tt.style.display = 'block';
-
-            // Position tooltip using viewport coords (fixed positioning)
-            const nodeRect = nodeEl.getBoundingClientRect();
-            let left = nodeRect.right + 8;
-            let top  = nodeRect.top - 10;
-            // Keep within viewport
-            if (left + 270 > window.innerWidth) left = nodeRect.left - 278;
-            if (top + 120 > window.innerHeight) top = window.innerHeight - 130;
-            if (top < 8) top = 8;
-            tt.style.left = left + 'px';
-            tt.style.top  = top + 'px';
-          });
-
-          nodeEl.addEventListener('mouseleave', () => {
-            const circles = nodeEl.querySelectorAll('circle');
-            circles.forEach(c => { if (parseFloat(c.getAttribute('r')) <= 10) c.setAttribute('r', (parseFloat(c.getAttribute('r'))-2).toString()); });
-            tt.style.display = 'none';
-          });
-        });
-
-      }, 60);
     }
 
     // Best trial
@@ -1031,17 +1136,21 @@
   // ── Tutkimukset / Artikkelit Modal ───────────────────────────────────────────────
   async function removeItem(type, id, button) {
     const endpoint = type === 'trials' ? `/api/trials/${encodeURIComponent(id)}` : `/api/papers/${encodeURIComponent(id)}`;
-    const r = await fetch(endpoint, { method: 'DELETE' });
-    if (r.ok) {
+    try {
+      await requireOk(await fetch(endpoint, { method: 'DELETE' }));
       const el = button?.closest('.modal-item');
       if (el) el.remove();
       // Refresh sidebar counts
       await loadStatus();
+    } catch (error) {
+      reportLoadError('action', error);
     }
   }
 
   async function openModal(type) {
-    document.getElementById('modal-overlay').classList.add('open');
+    lastDialogTrigger = document.activeElement;
+    const overlay = document.getElementById('modal-overlay');
+    overlay.classList.add('open');
     document.getElementById('modal-title').textContent =
       type === 'trials' ? 'Clinical Trials' : 'Research Papers';
     document.getElementById('modal-body').innerHTML =
@@ -1049,23 +1158,21 @@
 
     try {
       const r = await fetch(`/api/${type}`);
-      const items = await r.json();
+      const items = await readJsonResponse(r);
       renderModal(type, items);
     } catch(e) {
       document.getElementById('modal-body').innerHTML =
-        '<div class="modal-empty">Failed to load.</div>';
+        `<div class="modal-empty">Could not load these items. ${escHtml(e.message)}</div>`;
     }
+    overlay.querySelector('.icon-button')?.focus();
   }
 
   function closeModal(e) {
     if (!e || e.target === document.getElementById('modal-overlay') || !e.target) {
       document.getElementById('modal-overlay').classList.remove('open');
+      restoreDialogFocus();
     }
   }
-
-  document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') closeModal();
-  });
 
   function renderModal(type, items) {
     const body = document.getElementById('modal-body');
@@ -1115,10 +1222,18 @@
   async function loadTasks() {
     try {
       const r = await fetch('/api/jobs');
-      const tasks = await r.json();
+      const tasks = await readJsonResponse(r);
+      if (tasks.some(t => t.status === 'running' || t.status === 'queued')) {
+        hadActiveJobs = true;
+      }
       renderTasks(tasks);
       updateHeaderStatus(tasks);
-    } catch(e) {}
+      reportLoadSuccess('tasks');
+      return tasks;
+    } catch(e) {
+      reportLoadError('tasks', e);
+      return [];
+    }
   }
 
   function renderTasks(tasks) {
@@ -1131,7 +1246,7 @@
     }
 
     document.getElementById('task-list').innerHTML = tasks.map(t => `
-      <div class="task-item status-${safeClassToken(t.status, 'unknown')} ${selectedTaskId === t.id ? 'selected' : ''}"
+      <button class="task-item status-${safeClassToken(t.status, 'unknown')} ${selectedTaskId === t.id ? 'selected' : ''}"
            data-task-id="${escHtml(t.id)}" onclick="selectTask(this.dataset.taskId)">
         <div class="task-header">
           <span class="task-type ${t.type === 'digest' ? 'digest' : (t.type === 'deep-sweep' ? 'deep-sweep' : '')}">${escHtml(t.type || 'task')}</span>
@@ -1145,47 +1260,51 @@
           ${t.status === 'error' ? `<span class="task-duration" style="color:var(--red)">${escHtml((t.error||'').slice(0,60))}</span>` : ''}
           ${t.status === 'interrupted' ? `<span class="task-duration" style="color:var(--amber)">${escHtml((t.retry_guidance||t.error||'Interrupted').slice(0,60))}</span>` : ''}
         </div>
-      </div>`).join('');
-
-    // Mirror to mobile
-    if (isMobile()) {
-      const mobList = document.getElementById('mob-task-list');
-      if (mobList) mobList.innerHTML = document.getElementById('task-list').innerHTML;
-      const mobCount = document.getElementById('mob-log-count');
-      if (mobCount) mobCount.textContent = `${tasks.length} task${tasks.length !== 1 ? 's' : ''}`;
-    }
+      </button>`).join('');
   }
 
   function updateHeaderStatus(tasks) {
-    const running = tasks.filter(t => t.status === 'running');
+    const running = tasks.filter(t => t.status === 'running' || t.status === 'queued');
     const bar = document.getElementById('running-bar');
     const dot = document.getElementById('pulse-dot');
     const lbl = document.getElementById('header-status');
+    const navCount = document.getElementById('nav-running-count');
     if (running.length) {
       bar.classList.add('visible');
       dot.style.background = 'var(--amber)';
-      lbl.textContent = `${running.length} käynnissä…`;
+      lbl.textContent = `${running.length} active`;
+      if (navCount) {
+        navCount.textContent = running.length;
+        navCount.hidden = false;
+      }
     } else {
       bar.classList.remove('visible');
       dot.style.background = 'var(--accent)';
-      lbl.textContent = 'Idle';
+      lbl.textContent = 'Up to date';
+      if (navCount) navCount.hidden = true;
     }
   }
 
   function closePanel() {
-    document.getElementById('report-panel').classList.add('collapsed');
+    const report = document.getElementById('report-panel');
+    report.classList.add('collapsed');
+    report.setAttribute('aria-hidden', 'true');
     selectedTaskId = null;
     // Re-render task list to clear selection highlight
-    fetch('/api/jobs').then(r => r.json()).then(tasks => renderTasks(tasks));
+    fetch('/api/jobs').then(readJsonResponse).then(tasks => renderTasks(tasks)).catch(error => reportLoadError('tasks', error));
+    restoreDialogFocus();
   }
 
   async function selectTask(id) {
     selectedTaskId = id;
     // Open panel
-    document.getElementById('report-panel').classList.remove('collapsed');
+    lastDialogTrigger = document.activeElement;
+    const report = document.getElementById('report-panel');
+    report.classList.remove('collapsed');
+    report.setAttribute('aria-hidden', 'false');
     // Re-render task list to update selection
     const r = await fetch('/api/jobs');
-    const tasks = await r.json();
+    const tasks = await readJsonResponse(r);
     renderTasks(tasks);
 
     let task = tasks.find(t => t.id === id);
@@ -1193,7 +1312,9 @@
     if (task.status === 'done' || task.status === 'error' || task.status === 'interrupted') {
       try {
         task = await readJsonResponse(await fetch(`/api/jobs/${encodeURIComponent(id)}`));
-      } catch (_) {}
+      } catch (error) {
+        reportLoadError('tasks', error);
+      }
     }
 
     const panel = document.getElementById('panel-body');
@@ -1251,13 +1372,6 @@
     }
 
     panel.innerHTML = html;
-
-    // Mirror to mobile analysis overlay
-    if (isMobile()) {
-      const mobBody = document.getElementById('mob-panel-body');
-      if (mobBody) mobBody.innerHTML = html;
-      document.getElementById('mob-analysis').classList.add('open');
-    }
   }
 
   function formatReport(text) {
@@ -1312,32 +1426,58 @@
     const pop = document.getElementById('feed-popover');
     const back = document.getElementById('feed-backdrop');
     const willShow = (typeof force === 'boolean') ? force : !pop.classList.contains('visible');
+    if (willShow) lastDialogTrigger = document.activeElement;
     pop.classList.toggle('visible', willShow);
     back.classList.toggle('visible', willShow);
+    pop.setAttribute('aria-hidden', String(!willShow));
     if (willShow) {
       setTimeout(() => {
         const ta = document.getElementById('feed-textarea');
         if (ta && document.getElementById('tab-text').classList.contains('visible')) ta.focus();
       }, 50);
+    } else {
+      pop.querySelector('.dialog-error')?.remove();
+      restoreDialogFocus();
     }
   }
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-      const pop = document.getElementById('feed-popover');
-      if (pop && pop.classList.contains('visible')) toggleFeedPopover(false);
+    if (e.key !== 'Escape') return;
+    const pop = document.getElementById('feed-popover');
+    if (pop?.classList.contains('visible')) {
+      toggleFeedPopover(false);
+      return;
     }
+    if (document.getElementById('changes-overlay')?.classList.contains('open')) {
+      closeChangesPanel();
+      return;
+    }
+    if (document.getElementById('modal-overlay')?.classList.contains('open')) {
+      closeModal();
+      return;
+    }
+    if (!document.getElementById('report-panel')?.classList.contains('collapsed')) {
+      closePanel();
+      return;
+    }
+    if (chatOpen) toggleChat();
   });
 
   function switchTab(tab) {
-    document.querySelectorAll('.tab-btn').forEach((b, i) =>
-      b.classList.toggle('active', (i === 0 && tab === 'text') || (i === 1 && tab === 'file')));
+    const textButton = document.getElementById('feed-tab-text');
+    const fileButton = document.getElementById('feed-tab-file');
+    textButton.classList.toggle('active', tab === 'text');
+    textButton.setAttribute('aria-selected', String(tab === 'text'));
+    fileButton.classList.toggle('active', tab === 'file');
+    fileButton.setAttribute('aria-selected', String(tab === 'file'));
     document.getElementById('tab-text').classList.toggle('visible', tab === 'text');
+    document.getElementById('tab-text').setAttribute('aria-hidden', String(tab !== 'text'));
     document.getElementById('tab-file').classList.toggle('visible', tab === 'file');
+    document.getElementById('tab-file').setAttribute('aria-hidden', String(tab !== 'file'));
   }
 
   function updateCharCount() {
     const n = document.getElementById('feed-textarea').value.length;
-    document.getElementById('char-count').textContent = `${n.toLocaleString()} chars`;
+    document.getElementById('char-count').textContent = `${n.toLocaleString()} characters`;
   }
 
   async function feedText() {
@@ -1359,9 +1499,10 @@
       });
       const d = await readJsonResponse(r);
       await activateSubmittedTask(d);
+      reportLoadSuccess('action');
       return true;
     } catch (e) {
-      alert(e.message);
+      showFeedError(e.message);
       return false;
     } finally {
       document.getElementById('btn-feed').disabled = false;
@@ -1371,9 +1512,24 @@
   async function activateSubmittedTask(data) {
     const id = data.job_id || data.task_id;
     if (!id) throw new Error('Response did not include a job ID');
+    hadActiveJobs = true;
     selectedTaskId = id;
     await loadTasks();
     await selectTask(id);
+    switchView('activity');
+    startPolling();
+  }
+
+  function showFeedError(message) {
+    const pop = document.getElementById('feed-popover');
+    let error = pop.querySelector('.dialog-error');
+    if (!error) {
+      error = document.createElement('div');
+      error.className = 'dialog-error';
+      error.setAttribute('role', 'alert');
+      pop.querySelector('.feed-tabs').before(error);
+    }
+    error.textContent = message || 'The document could not be submitted.';
   }
 
   async function handleDrop(e) {
@@ -1401,9 +1557,10 @@
       });
       const d = await readJsonResponse(r);
       await activateSubmittedTask(d);
+      reportLoadSuccess('action');
       return true;
     } catch (e) {
-      alert(e.message);
+      showFeedError(e.message);
       return false;
     } finally {
       btn.disabled = false;
@@ -1417,6 +1574,9 @@
       const r = await fetch('/api/digest', { method: 'POST' });
       const d = await readJobSubmission(r);
       await activateSubmittedTask(d);
+      reportLoadSuccess('action');
+    } catch (e) {
+      reportLoadError('action', e);
     } finally {
       btn.disabled = false;
     }
@@ -1432,6 +1592,9 @@
       const r = await fetch('/api/deep-sweep', { method: 'POST' });
       const d = await readJobSubmission(r);
       await activateSubmittedTask(d);
+      reportLoadSuccess('action');
+    } catch (e) {
+      reportLoadError('action', e);
     } finally {
       btn.disabled = false;
     }
@@ -1439,26 +1602,42 @@
 
   // ── Polling loop ────────────────────────────────────────────────────────
   function startPolling() {
-    pollingInterval = setInterval(async () => {
-      await loadTasks();
-      await loadStatus();
-      await loadChanges();
-      // If selected task just completed, auto-load its report and refresh summary
+    if (pollingInterval) clearTimeout(pollingInterval);
+    const poll = async () => {
+      const tasks = await loadTasks();
+      const hasActiveJobs = tasks.some(t => t.status === 'running' || t.status === 'queued');
+
+      if (hasActiveJobs) {
+        await Promise.allSettled([loadStatus(), loadChanges()]);
+      }
+      if (hadActiveJobs && !hasActiveJobs) {
+        await Promise.allSettled([loadStatus(), loadChanges(), loadSummary()]);
+      }
+
+      // If selected task just completed, auto-load its report and refresh summary.
       if (selectedTaskId) {
-        const r = await fetch(`/api/jobs/${selectedTaskId}`);
-        const t = await r.json();
-        if (t.status === 'done' || t.status === 'error' || t.status === 'interrupted') {
-          const panel = document.getElementById('panel-body');
-          if (panel.querySelector('.report-empty')) {
-            selectTask(selectedTaskId);
+        try {
+          const t = tasks.find(task => task.id === selectedTaskId);
+          if (t && (t.status === 'done' || t.status === 'error' || t.status === 'interrupted')) {
+            const panel = document.getElementById('panel-body');
+            if (panel.querySelector('.report-empty')) {
+              await selectTask(selectedTaskId);
+            }
           }
+        } catch (error) {
+          reportLoadError('tasks', error);
         }
       }
-    }, 3000);
+
+      hadActiveJobs = hasActiveJobs;
+      const delay = document.hidden ? 60000 : (hasActiveJobs ? 3000 : 30000);
+      pollingInterval = setTimeout(poll, delay);
+    };
+    pollingInterval = setTimeout(poll, 3000);
   }
 
   // ── Questions ────────────────────────────────────────────────────────────
-  let questionsOpen = false;
+  let questionsOpen = true;
 
   function toggleQuestions() {
     questionsOpen = !questionsOpen;
@@ -1471,9 +1650,14 @@
   async function loadQuestions() {
     try {
       const r = await fetch('/api/questions');
-      const qs = await r.json();
+      const qs = await readJsonResponse(r);
       renderQuestions(qs);
-    } catch(e) { console.error('Questions load error:', e); }
+      reportLoadSuccess('questions');
+      return qs;
+    } catch(e) {
+      reportLoadError('questions', e);
+      return [];
+    }
   }
 
   function renderQuestions(qs) {
@@ -1484,14 +1668,15 @@
 
     const badge = document.getElementById('q-count-badge');
     if (badge) {
-      badge.textContent = qs.length;
-      badge.className = `q-count-badge${qs.length ? ' has-questions' : ''}`;
+      const unasked = qs.filter(q => !q.asked).length;
+      badge.textContent = unasked;
+      badge.hidden = unasked === 0;
     }
 
     const qRow = (q) => `
       <div class="q-item${q.asked?' asked':''}" data-question-id="${escHtml(q.id)}">
         <div class="q-priority-dot ${safeClassToken(q.priority, 'medium')}"></div>
-        <div class="q-checkbox${q.asked?' checked':''}" onclick="toggleQuestion(this.closest('.q-item').dataset.questionId)">${q.asked?'✓':''}</div>
+        <button class="q-checkbox${q.asked?' checked':''}" onclick="toggleQuestion(this.closest('.q-item').dataset.questionId)" aria-label="${q.asked ? 'Mark question as not asked' : 'Mark question as asked'}">${q.asked?'✓':''}</button>
         <div class="q-text-wrap">
           <div class="q-text${q.asked?' asked':''}">${escHtml(q.text)}</div>
           <div class="q-meta">
@@ -1499,33 +1684,30 @@
             ${q.rationale ? `<span class="q-rationale">${escHtml(q.rationale)}</span>` : ''}
           </div>
         </div>
-        <button class="q-delete" onclick="deleteQuestion(this.closest('.q-item').dataset.questionId)" title="Poista">✕</button>
+        <button class="q-delete" onclick="deleteQuestion(this.closest('.q-item').dataset.questionId)" aria-label="Delete question" title="Delete">✕</button>
       </div>`;
 
     const grpHdr = (label, color) =>
       `<div style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:.12em;color:${color};padding:8px 16px 2px;border-bottom:1px solid var(--border)">${label}</div>`;
 
     let html = '';
-    if (urgent.length) { html += grpHdr('Kiireelliset', 'var(--red)');   html += urgent.map(qRow).join(''); }
-    if (high.length)   { html += grpHdr('Tärkeät', 'var(--amber)');      html += high.map(qRow).join(''); }
-    if (medium.length) { html += grpHdr('Muut', 'var(--text2)');         html += medium.map(qRow).join(''); }
-    if (asked.length)  { html += grpHdr('Kysytty', 'var(--text2)');      html += asked.map(qRow).join(''); }
-    if (!html) html = '<div class="q-empty">Ei kysymyksiä vielä. Klikkaa ↻ Luo tai lisää oma.</div>';
+    if (urgent.length) { html += grpHdr('Urgent', 'var(--red)'); html += urgent.map(qRow).join(''); }
+    if (high.length)   { html += grpHdr('Important', 'var(--amber)'); html += high.map(qRow).join(''); }
+    if (medium.length) { html += grpHdr('Other', 'var(--text2)'); html += medium.map(qRow).join(''); }
+    if (asked.length)  { html += grpHdr('Already asked', 'var(--text2)'); html += asked.map(qRow).join(''); }
+    if (!html) html = '<div class="q-empty">No questions yet. Generate suggestions or add your own.</div>';
 
-    const desktop = document.getElementById('q-list');
-    if (desktop) desktop.innerHTML = html;
-    const mobile = document.getElementById('mob-q-list');
-    if (mobile) mobile.innerHTML = html;
+    const list = document.getElementById('q-list');
+    if (list) list.innerHTML = html;
   }
 
-  async function generateQuestions(isMob = false) {
-    const btnId    = isMob ? 'mob-q-gen-btn' : 'q-gen-btn';
+  async function generateQuestions() {
+    const btnId    = 'q-gen-btn';
     const apptType = 'oncology follow-up';
     const btn = document.getElementById(btnId);
-    if (btn) { btn.disabled = true; btn.textContent = '…'; }
+    if (btn) { btn.disabled = true; btn.textContent = 'Generating…'; }
 
-    // Open questions panel on desktop if closed
-    if (!isMob && !questionsOpen) toggleQuestions();
+    if (!questionsOpen) toggleQuestions();
 
     try {
       const r = await fetch('/api/questions/generate', {
@@ -1536,128 +1718,50 @@
       const submitted = await readJobSubmission(r);
       const completed = await waitForJob(submitted.job_id);
       renderQuestions((completed.result || {}).questions || []);
-    } catch(e) { console.error('Generate questions error:', e); }
+      reportLoadSuccess('action');
+    } catch(e) {
+      reportLoadError('action', e);
+    }
     finally {
-      if (btn) { btn.disabled = false; btn.textContent = isMob ? '↻' : '↻ Luo'; }
+      if (btn) { btn.disabled = false; btn.textContent = '✦ Generate questions'; }
     }
   }
 
-  async function addQuestion(isMob = false) {
-    const inputId = isMob ? 'mob-q-add-input' : 'q-add-input';
+  async function addQuestion() {
+    const inputId = 'q-add-input';
     const input = document.getElementById(inputId);
     const text = (input?.value || '').trim();
     if (!text) return;
     input.value = '';
     try {
-      await fetch('/api/questions/add', {
+      await readJsonResponse(await fetch('/api/questions/add', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text }),
-      });
+      }));
       await loadQuestions();
-    } catch(e) { console.error('Add question error:', e); }
+    } catch(e) {
+      input.value = text;
+      reportLoadError('action', e);
+    }
   }
 
   async function toggleQuestion(qid) {
     try {
-      await fetch(`/api/questions/${encodeURIComponent(qid)}/toggle`, { method: 'POST' });
+      await readJsonResponse(await fetch(`/api/questions/${encodeURIComponent(qid)}/toggle`, { method: 'POST' }));
       await loadQuestions();
-    } catch(e) { console.error('Toggle question error:', e); }
+    } catch(e) {
+      reportLoadError('action', e);
+    }
   }
 
   async function deleteQuestion(qid) {
     try {
-      await fetch(`/api/questions/${encodeURIComponent(qid)}`, { method: 'DELETE' });
+      await readJsonResponse(await fetch(`/api/questions/${encodeURIComponent(qid)}`, { method: 'DELETE' }));
       await loadQuestions();
-    } catch(e) { console.error('Delete question error:', e); }
-  }
-
-  // ── Mobile helpers ───────────────────────────────────────────────────────
-  const isMobile = () => window.innerWidth <= 768;
-
-  function mirrorSidebarToMobile() {
-    const pairs = [
-      ['patient-dx',    'mob-patient-dx',    'textContent'],
-      ['patient-meta',  'mob-patient-meta',  'innerHTML'],
-      ['tx-list',       'mob-tx-list',       'innerHTML'],
-      ['bm-list',       'mob-bm-list',       'innerHTML'],
-      ['alerts-list',   'mob-alerts-list',   'innerHTML'],
-    ];
-    for (const [src, dst, prop] of pairs) {
-      const s = document.getElementById(src);
-      const d = document.getElementById(dst);
-      if (s && d) d[prop] = s[prop];
+    } catch(e) {
+      reportLoadError('action', e);
     }
-  }
-
-  function switchMobPanel(name) {
-    document.querySelectorAll('.mob-panel').forEach(p => p.classList.remove('active'));
-    document.querySelectorAll('.mob-nav-btn').forEach(b => b.classList.remove('active'));
-    const panel = document.getElementById(`mob-${name}`);
-    const btn = document.getElementById(`mobnav-${name}`);
-    if (panel) panel.classList.add('active');
-    if (btn) btn.classList.add('active');
-    if (name === 'summary') populateMobSummary();
-    if (name === 'questions') { loadQuestions(); loadJudgments(); }
-  }
-
-  function closeMobAnalysis() {
-    document.getElementById('mob-analysis').classList.remove('open');
-  }
-
-  function syncTextarea(el) {
-    const desktop = document.getElementById('feed-textarea');
-    if (desktop) desktop.value = el.value;
-    const count = document.getElementById('mob-char-count');
-    if (count) count.textContent = `${el.value.length.toLocaleString()} chars`;
-  }
-
-  function feedMobText() {
-    const ta = document.getElementById('mob-feed-textarea');
-    if (ta && ta.value.trim()) {
-      document.getElementById('feed-textarea').value = ta.value;
-      feedText();
-      ta.value = '';
-      const count = document.getElementById('mob-char-count');
-      if (count) count.textContent = '0 chars';
-    }
-  }
-
-  function populateMobSummary() {
-    fetch('/api/summary').then(r => r.json()).then(d => {
-      const el = document.getElementById('mob-summary');
-      if (!el) return;
-      if (!d || d.status === 'not_generated') {
-        el.innerHTML = `<div class="summary-empty"><div style="margin-bottom:10px">Ei tiivistelmää vielä.</div><button class="btn-digest" onclick="generateSummary()">⊙ Luo</button></div>`;
-        return;
-      }
-      const statusLabels = {stable:'STABLE',responding:'RESPONDING',progressing:'PROGRESSING',insufficient_data:'DATA PENDING'};
-      let html = `<div style="padding:12px 16px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg1);z-index:5">`;
-      html += `<span class="s-pill status-${safeClassToken(d.overall_status, 'insufficient_data')}">${escHtml(statusLabels[d.overall_status]||d.overall_status||'DATA PENDING')}</span>`;
-      const staleLabel = summaryIsStale(d) ? ' · new data available' : '';
-      html += `<span style="font-family:var(--mono);font-size:10px;color:var(--text2);flex:1">${d.generated_at?'Updated '+escHtml(fmtDate(d.generated_at))+staleLabel:''}</span>`;
-      html += `<button class="btn-digest" style="font-size:10px;padding:3px 8px" onclick="generateSummary()">↻</button></div>`;
-      if (d.key_concern) html += `<div class="summary-concern" style="margin:10px 16px 0"><div class="summary-concern-label">Key concern</div>${escHtml(d.key_concern)}</div>`;
-      if (d.summary) html += `<div class="summary-narrative" style="margin:10px 16px">${escHtml(d.summary)}</div>`;
-      if (d.next_actions && d.next_actions.length) {
-        html += `<div class="summary-section" style="margin:0 16px"><div class="summary-section-label">Recommended actions</div>`;
-        for (const a of d.next_actions) {
-          const prov = a.provisional ? `<span style="font-family:var(--mono);font-size:9px;color:var(--text2);border:1px solid var(--border);padding:1px 4px;border-radius:2px;margin-left:4px">TBD</span>` : '';
-          html += `<div class="action-item"><span class="action-priority ${safeClassToken(a.priority, 'medium')}">${escHtml(a.priority || 'medium')}</span><div class="action-text"><div class="action-main">${escHtml(a.action)}${prov}</div>${a.rationale?`<div class="action-sub">${escHtml(a.rationale)}</div>`:''}</div><div class="action-timeframe">${escHtml(a.timeframe||'')}</div></div>`;
-        }
-        html += '</div>';
-      }
-      if (d.timeline && d.timeline.length) {
-        html += `<div class="summary-section" style="margin:12px 16px 0"><div class="summary-section-label">Timeline</div>`;
-        for (const t of d.timeline) {
-          const prov = t.provisional ? `<span style="font-family:var(--mono);font-size:9px;color:var(--text2);border:1px solid var(--border);padding:1px 4px;border-radius:2px;margin-left:4px">TBD</span>` : '';
-          html += `<div class="timeline-item"><span class="timeline-date">${escHtml(fmtDate(t.date||''))}</span><span class="timeline-event">${escHtml(t.event||'')}${prov}</span><span class="timeline-type ${safeClassToken(t.type, 'test')}">${escHtml(translateType(t.type||''))}</span></div>`;
-        }
-        html += '</div>';
-      }
-      html += '<div style="height:16px"></div>';
-      el.innerHTML = html;
-    }).catch(() => {});
   }
 
   // ── Chat ─────────────────────────────────────────────────────────────────
@@ -1668,7 +1772,13 @@
     chatOpen = !chatOpen;
     const panel = document.getElementById('chat-panel');
     panel.style.display = chatOpen ? 'flex' : 'none';
-    if (chatOpen) setTimeout(() => document.getElementById('chat-input')?.focus(), 50);
+    panel.setAttribute('aria-hidden', String(!chatOpen));
+    if (chatOpen) {
+      lastDialogTrigger = document.activeElement;
+      setTimeout(() => document.getElementById('chat-input')?.focus(), 50);
+    } else {
+      restoreDialogFocus();
+    }
   }
 
   function clearChat() {
@@ -1848,8 +1958,7 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: text, history: chatHistory.slice(0, -1) }),
       });
-      const data = await r.json();
-      if (data.error) throw new Error(data.error);
+      const data = await readJsonResponse(r);
       const completed = await waitForJob(data.job_id);
       const reply = (completed.result || {}).reply;
       if (!reply) throw new Error('No response was produced.');
@@ -1876,4 +1985,7 @@
   loadSymptoms();
   loadChanges();
   startPolling();
-  if (isMobile()) switchMobPanel('summary');
+  const requestedView = window.location.hash.replace('#', '');
+  if (['today', 'patient', 'questions', 'activity'].includes(requestedView) && requestedView !== 'today') {
+    switchView(requestedView, document.getElementById(`nav-${requestedView}`));
+  }

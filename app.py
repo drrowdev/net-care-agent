@@ -2058,10 +2058,42 @@ def api_changes_acknowledge():
 @serialized_profile_mutation
 def api_dismiss_action(idx):
     data = request.get_json(force=True) or {}
+    required_preconditions = {"summary_revision", "expected_action"}
+    if not isinstance(data, dict) or not required_preconditions.issubset(data):
+        return (
+            jsonify(
+                {
+                    "error": "summary_revision and expected_action are required. Refresh the assessment before dismissing an action."
+                }
+            ),
+            400,
+        )
     profile = agent.load_profile()
     summary = profile.get("executive_summary", {})
     actions = summary.get("next_actions", [])
+    expected_revision = data["summary_revision"]
+    current_revision = summary.get("summary_revision")
+    if str(expected_revision or "") != str(current_revision or ""):
+        return (
+            jsonify(
+                {
+                    "error": "The assessment changed while this action was open. Review the updated action before dismissing it."
+                }
+            ),
+            409,
+        )
     if 0 <= idx < len(actions):
+        expected_action = data["expected_action"]
+        current_action = actions[idx].get("action", "")
+        if str(expected_action) != str(current_action):
+            return (
+                jsonify(
+                    {
+                        "error": "This action changed while feedback was open. Review the updated action before dismissing it."
+                    }
+                ),
+                409,
+            )
         dismissed = actions.pop(idx)
         summary["next_actions"] = actions
         profile["executive_summary"] = summary

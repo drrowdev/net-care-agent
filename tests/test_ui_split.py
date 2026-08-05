@@ -9,16 +9,18 @@ from pathlib import Path
 
 import pytest
 
+HTML = Path("static/index.html").read_text(encoding="utf-8")
+CSS = Path("static/styles.css").read_text(encoding="utf-8")
+
 
 def test_index_html_references_split_assets():
     """index.html should link to extracted styles.css and app.js, no inline blocks."""
-    html = Path("static/index.html").read_text(encoding="utf-8")
-    assert '<link rel="stylesheet" href="/static/styles.css">' in html
-    assert '<script defer src="/static/app.js"></script>' in html
+    assert '<link rel="stylesheet" href="/static/styles.css">' in HTML
+    assert '<script defer src="/static/app.js"></script>' in HTML
     # No leftover inline <style> or <script> blocks (other than the link/script tags).
-    assert "<style>" not in html, "inline <style> survived the split"
+    assert "<style>" not in HTML, "inline <style> survived the split"
     # A bare <script> tag (not the external one) would mean inline JS leaked through.
-    assert not re.search(r"<script(?!\s+defer\s+src=)", html), "inline <script> survived"
+    assert not re.search(r"<script(?!\s+defer\s+src=)", HTML), "inline <script> survived"
 
 
 def test_extracted_assets_exist_and_nonempty():
@@ -26,6 +28,35 @@ def test_extracted_assets_exist_and_nonempty():
     js = Path("static/app.js")
     assert css.exists() and css.stat().st_size > 10_000
     assert js.exists() and js.stat().st_size > 10_000
+
+
+def test_ui_uses_one_shared_responsive_workspace():
+    for view in ("today", "patient", "questions", "activity"):
+        assert f'id="view-{view}"' in HTML
+        assert f'id="nav-{view}"' in HTML
+    assert HTML.count("<main") == 1
+    assert "mob-panel" not in HTML
+    assert "mob-" not in HTML
+    assert ".view-nav {" in CSS
+    assert "position: fixed;" in CSS
+    assert "env(safe-area-inset-bottom)" in CSS
+    assert "aside, .panel { display: none !important; }" not in CSS
+
+
+def test_primary_states_and_dialogs_are_accessible():
+    assert 'id="app-state-banner" class="app-state-banner" role="alert"' in HTML
+    assert 'role="dialog" aria-modal="true" aria-labelledby="feed-title"' in HTML
+    assert 'role="tablist" aria-label="Document input method"' in HTML
+    assert 'id="summary-toggle" aria-controls="summary-body" aria-expanded="true"' in HTML
+    assert 'aria-label="Primary"' in HTML
+    assert 'class="skip-link"' in HTML
+
+
+def test_changes_button_opens_review_instead_of_acknowledging_immediately():
+    button = re.search(r'<button class="btn-changes".*?</button>', HTML, re.DOTALL)
+    assert button
+    assert 'onclick="openChangesPanel()"' in button.group()
+    assert "acknowledgeChanges()" not in button.group()
 
 
 @pytest.fixture

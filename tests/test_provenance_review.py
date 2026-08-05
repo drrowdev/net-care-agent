@@ -408,7 +408,11 @@ def test_corrective_action_dismissal_invalidates_summary(client, agent):
 
     response = client.post(
         "/api/summary/dismiss-action/0",
-        json={"feedback": "This was already ruled out"},
+        json={
+            "feedback": "This was already ruled out",
+            "expected_action": "Discuss option X",
+            "summary_revision": 4,
+        },
     )
 
     assert response.status_code == 200
@@ -417,6 +421,65 @@ def test_corrective_action_dismissal_invalidates_summary(client, agent):
     assert stored["executive_summary"]["stale"] is True
     assert stored["executive_summary"]["review_feedback_pending"] is True
     assert stored["feedback"][0]["assessment"] == "corrected"
+
+
+def test_stale_action_dismissal_is_rejected_without_mutation(client, agent):
+    profile = agent.load_profile()
+    profile["profile_revision"] = 5
+    profile["summary_stale"] = False
+    profile["executive_summary"] = {
+        "summary_revision": 5,
+        "stale": False,
+        "next_actions": [{"action": "Discuss current option"}],
+    }
+    agent.save_profile(profile, clinical_change=False)
+
+    stale_revision = client.post(
+        "/api/summary/dismiss-action/0",
+        json={
+            "feedback": "Old feedback",
+            "expected_action": "Discuss old option",
+            "summary_revision": 4,
+        },
+    )
+    stale_action = client.post(
+        "/api/summary/dismiss-action/0",
+        json={
+            "feedback": "Wrong action",
+            "expected_action": "Discuss old option",
+            "summary_revision": 5,
+        },
+    )
+
+    assert stale_revision.status_code == 409
+    assert stale_action.status_code == 409
+    stored = agent.load_profile()
+    assert stored["executive_summary"]["next_actions"] == [{"action": "Discuss current option"}]
+    assert stored.get("feedback", []) == []
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"feedback": "Missing both preconditions"},
+        {"feedback": "Missing revision", "expected_action": "Discuss current option"},
+        {"feedback": "Missing action", "summary_revision": 5},
+    ],
+)
+def test_action_dismissal_requires_concurrency_preconditions(client, agent, payload):
+    profile = agent.load_profile()
+    profile["executive_summary"] = {
+        "summary_revision": 5,
+        "next_actions": [{"action": "Discuss current option"}],
+    }
+    agent.save_profile(profile, clinical_change=False)
+
+    response = client.post("/api/summary/dismiss-action/0", json=payload)
+
+    assert response.status_code == 400
+    stored = agent.load_profile()
+    assert stored["executive_summary"]["next_actions"] == [{"action": "Discuss current option"}]
+    assert stored.get("feedback", []) == []
 
 
 def test_deep_sweep_truncation_is_explicit_and_raw_reports_survive(agent, empty_profile):

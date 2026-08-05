@@ -20,7 +20,7 @@ the Azure Files mount at `/home/data/patient_profile.json`. There is one user
                 │     │                          │
                 │     ├─ /api/feed (feed queue)  │
                 │     ├─ /api/jobs (polling)     │
-                │     ├─ /api/summary            │
+                │     ├─ /api/summary + feedback │
                 │     ├─ /api/sources + evidence │
                 │     ├─ /api/feedback           │
                 │     ├─ /api/chat (general q.)  │
@@ -112,6 +112,11 @@ traversal-safe roots. New job errors and job-runner logs use safe codes/types
 rather than input, model output, or traceback. Legacy records are not rewritten,
 and protected lower-level storage/recovery logs may include OS error paths.
 
+Action dismissal posts the assessment revision and expected action text to
+`POST /api/summary/dismiss-action/<idx>`. Flask returns `409` without mutating
+the profile if either value no longer matches, preventing feedback opened on an
+older assessment from dismissing a newly generated recommendation.
+
 Queued/running jobs cannot survive restart. Startup marks them `interrupted`
 with re-submit guidance. Executor shutdown waits at most five seconds per
 thread, sequentially; at maximum configured concurrency those joins can exceed
@@ -133,7 +138,7 @@ only with exact `APP_ORIGIN` or canonical HTTPS `WEBSITE_HOSTNAME`.
 | Decision | Why |
 |---|---|
 | JSON file, not Postgres | Single patient, single writer; auditable diffs; trivial backup. |
-| Vanilla SPA, not React | Caregiver runs the UI on a phone occasionally — zero build pipeline beats lighter frameworks. The SPA is split into `static/index.html` (markup), `static/app.js` (all logic — feed, jobs, summary, timeline, chat), and `static/styles.css`. The main column scrolls as one (exec summary + timeline + activity log share a single scrollbar); document feed is a header-anchored popover, not an inline panel. |
+| Vanilla SPA, not React | Caregiver runs the UI on a phone occasionally — zero build pipeline beats lighter frameworks. The split SPA uses one responsive Today/Patient/Questions/Activity shell on every screen size. `static/index.html` owns semantic markup and dialogs, `static/app.js` owns API state/rendering, and `static/styles.css` provides the green/amber desktop rail and fixed phone navigation. |
 | Flask + gunicorn, not FastAPI/Containers | App Service runs Python natively; no Docker needed; rapid `az webapp deploy` cycle. |
 | No MSAL | Single user. App Service Easy Auth gates hosted APIs except health/liveness. Local API bypass is explicit (`ALLOW_LOCAL_AUTH_BYPASS=1`), never implicit. |
 | Per-agent model env vars | Lets us downgrade exec_summary or chat to Haiku independently for cost without touching code. |

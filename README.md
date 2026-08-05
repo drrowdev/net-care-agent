@@ -17,7 +17,7 @@ learns from every consultation with the treating oncologist.
 | LLM         | Anthropic Claude per-role tiering (Opus 4.8 / Sonnet 5; Fable 5 + Opus deep sweep) |
 | Backend     | Flask + gunicorn                                            |
 | Storage     | JSON file on Azure Files mount (`/home/data`)               |
-| Frontend    | Single-page vanilla JS UI (`static/index.html` + `app.js` + `styles.css`) |
+| Frontend    | Responsive vanilla JS workspace (`static/index.html` + `app.js` + `styles.css`) |
 | Hosting     | Azure App Service (Linux, swedencentral) behind Easy Auth (Microsoft account) |
 | Secrets     | Azure Key Vault + system-assigned managed identity on the webapp |
 | External    | PubMed E-utilities, ClinicalTrials.gov API v2               |
@@ -225,10 +225,10 @@ directories still referenced by the profile are deliberately protected.
 │   ├── chat.py           # /api/chat handler (pure function)
 │   ├── cli.py            # `python net_agent.py {feed|digest|status|update-profile}`
 │   └── tools/            # PubMed, ClinicalTrials.gov, biomarker trends + dispatcher
-├── static/                 # Single-page UI (Phase 4 split)
-│   ├── index.html          # Markup + header (Feed popover, status pill, actions)
-│   ├── app.js              # All client logic (feed, jobs, summary, chat, timeline)
-│   └── styles.css          # Styles (incl. feed popover + unified main scroll)
+├── static/                 # Responsive caregiver workspace
+│   ├── index.html          # Shared Today/Patient/Questions/Activity shell + dialogs
+│   ├── app.js              # API state, rendering, jobs, review, feed, and chat flows
+│   └── styles.css          # Green/amber responsive design and fixed mobile navigation
 ├── startup.sh            # gunicorn launcher (Azure App Service)
 ├── pyproject.toml        # Python deps + tooling config
 ├── .env.example          # Template for local secrets
@@ -274,7 +274,8 @@ sequenceDiagram
 
 Feed, digest, deep-sweep, chat, question generation, and manual summary
 generation are asynchronous. The SPA polls every 1.5 seconds when awaiting a
-specific result and every 3 seconds for the activity/status views. Queue
+specific result and every 3 seconds while work is active. It backs off to
+30 seconds when idle and 60 seconds while the page is hidden. Queue
 saturation returns `429 Retry-After` before a job is persisted; duplicate
 active digest/deep-sweep/summary runs return `409`. A process restart cannot
 resume in-process work: queued/running records become `interrupted` and the
@@ -292,13 +293,15 @@ The most common loops:
 
 | Action | Where | What happens |
 |---|---|---|
-| Add a clinical document | Header → **📄 Feed** button → popover (paste text or upload file) | Queued on the independent feed executor; PDF parsing is child-only, then intake → orchestrator → exec summary |
-| Run a research-only sweep | Header → **↻ Run digest** | Orchestrator runs without new input; new trials/papers added |
-| Record an oncologist's judgment | UI → "Judgments" tab → Add | Becomes a hard constraint for future runs |
-| Resolve / dismiss an alert | UI → Alert card → Resolve | Marked resolved, persisted in profile |
-| Generate appointment questions | UI → "Questions" tab → Generate | Async result is polled, then the question list is rendered |
+| Review current priorities | **Today** | Shows assessment freshness, the key concern, and task-oriented next actions before supporting detail |
+| Review new information | Header count or **Today** → **Review changes** | Shows per-category counts; **Mark reviewed** clears only the unread marker |
+| Add a clinical document | Header → **Add document** → paste text or upload file | Queued on the independent feed executor; PDF parsing is child-only, then intake → orchestrator → exec summary |
+| Run a research-only sweep | **Activity** → **Run digest** | Orchestrator runs without new input; new trials/papers added |
+| Record an oncologist's judgment | **Questions** → **Clinical notes** | Becomes a hard constraint for future runs |
+| Resolve / dismiss an alert | **Patient** → **Active alerts** → **Mark resolved** | Marked resolved, persisted in profile |
+| Generate appointment questions | **Questions** → **Generate questions** | Async result is polled, then the question list is rendered |
 | Chat with the record | Header → **✦ Ask Claude** | Async result grounded in the full profile; chat remains stateless |
-| Open a trial | Exec summary → "Best matched trial" chip | Opens `clinicaltrials.gov/study/<NCT_ID>` in a new tab |
+| Open a trial | **Today** → “Best matched trial” | Opens `clinicaltrials.gov/study/<NCT_ID>` in a new tab |
 
 ## Keeping docs current
 

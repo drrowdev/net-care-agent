@@ -21,11 +21,6 @@
     <span class="status-pill" id="header-status">Connecting…</span>
   </div>
   <div class="header-actions">
-    <button class="btn-changes" id="btn-changes" onclick="openChangesPanel()" title="Review updates" hidden>
-      <span aria-hidden="true">●</span>
-      <span id="changes-count">0</span>
-      <span class="header-action-label">new</span>
-    </button>
     <button class="button secondary" id="btn-feed-toggle" onclick="toggleFeedPopover()" title="Add a clinical document">
       <span aria-hidden="true">＋</span><span class="header-action-label">Add document</span>
     </button>
@@ -70,7 +65,7 @@
         <div>
           <p class="eyebrow">Care overview</p>
           <h1 id="today-heading">Today</h1>
-          <p>Start with what needs attention, then review the supporting evidence.</p>
+          <p>Start with what needs attention, then open the supporting evidence.</p>
         </div>
         <button class="button secondary" id="btn-gen-summary" onclick="generateSummary()">↻ Refresh assessment</button>
       </div>
@@ -83,11 +78,17 @@
         </div>
       </section>
 
-      <button id="changes-card" class="changes-card" onclick="openChangesPanel()" hidden>
-        <span class="changes-card-icon" aria-hidden="true">●</span>
-        <span><strong id="changes-card-title">New information is ready to review</strong><small id="changes-card-detail"></small></span>
-        <span class="changes-card-link">Review changes →</span>
-      </button>
+      <section id="research-update-card" class="research-update-card" aria-live="polite" hidden>
+        <span class="research-update-icon" aria-hidden="true">✦</span>
+        <div>
+          <strong id="research-update-title">Latest research additions</strong>
+          <p id="research-update-detail"></p>
+        </div>
+        <div class="research-update-actions">
+          <button class="research-update-button" id="research-update-trials" onclick="openModal('trials')">New trials</button>
+          <button class="research-update-button" id="research-update-papers" onclick="openModal('papers')">New papers</button>
+        </div>
+      </section>
 
       <section class="content-card summary-card" id="summary-card" aria-labelledby="summary-heading">
         <div class="card-header">
@@ -247,14 +248,6 @@
     <span>or choose a file from this device</span>
     <input type="file" id="file-input" accept=".txt,.text,.pdf,.md" onchange="handleFileSelect(event)">
   </div>
-</div>
-
-<div class="modal-overlay" id="changes-overlay" onclick="closeChangesPanel(event)">
-  <section class="modal changes-modal" role="dialog" aria-modal="true" aria-labelledby="changes-title">
-    <div class="modal-head"><div><p class="eyebrow">Since your last review</p><h2 id="changes-title">What changed</h2></div><button class="icon-button" onclick="closeChangesPanel()" aria-label="Close changes">×</button></div>
-    <div class="modal-body" id="changes-body"><div class="loading-state">Loading changes…</div></div>
-    <div class="modal-footer"><p>Acknowledging clears this count; it does not change patient data.</p><button class="button primary" id="acknowledge-changes-button" onclick="acknowledgeChanges()">Mark reviewed</button></div>
-  </section>
 </div>
 
 <div class="panel collapsed" id="report-panel" role="dialog" aria-modal="true" aria-labelledby="report-title" aria-hidden="true">

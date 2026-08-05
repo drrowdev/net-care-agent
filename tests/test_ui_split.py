@@ -52,11 +52,12 @@ def test_primary_states_and_dialogs_are_accessible():
     assert 'class="skip-link"' in HTML
 
 
-def test_changes_button_opens_review_instead_of_acknowledging_immediately():
-    button = re.search(r'<button class="btn-changes".*?</button>', HTML, re.DOTALL)
-    assert button
-    assert 'onclick="openChangesPanel()"' in button.group()
-    assert "acknowledgeChanges()" not in button.group()
+def test_generic_review_flow_is_replaced_by_latest_research_additions():
+    assert 'id="research-update-card"' in HTML
+    assert "onclick=\"openModal('trials')\"" in HTML
+    assert "onclick=\"openModal('papers')\"" in HTML
+    assert "changes-overlay" not in HTML
+    assert "Mark reviewed" not in HTML
 
 
 @pytest.fixture

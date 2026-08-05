@@ -40,7 +40,10 @@ from .profile import (
     IOProfileError,
     ProfileLoadError,
     get_patient_summary,
+    get_research_ids,
     load_profile,
+    public_latest_research_update,
+    record_latest_research_update,
     save_profile,
 )
 from .provenance import anchor_source_quote, preserve_source_document, remove_source_document
@@ -82,6 +85,9 @@ __all__ = [
     "load_profile",
     "save_profile",
     "get_patient_summary",
+    "get_research_ids",
+    "record_latest_research_update",
+    "public_latest_research_update",
     "CorruptProfileError",
     "IOProfileError",
     "ProfileLoadError",

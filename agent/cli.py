@@ -12,7 +12,13 @@ from .classify import classify_treatments
 from .exec_summary import generate_executive_summary  # noqa: F401  (kept for callers)
 from .intake import run_intake
 from .orchestrator import run_orchestrator
-from .profile import get_patient_summary, load_profile, save_profile
+from .profile import (
+    get_patient_summary,
+    get_research_ids,
+    load_profile,
+    record_latest_research_update,
+    save_profile,
+)
 from .serialize import serialized_mutation
 
 
@@ -44,6 +50,8 @@ def cmd_feed(args) -> None:
 
     with serialized_mutation():
         profile = load_profile()
+        previous_trial_ids = set(get_research_ids(profile, "trial"))
+        previous_paper_ids = set(get_research_ids(profile, "paper"))
         profile, extracted = run_intake(
             text,
             profile,
@@ -52,6 +60,14 @@ def cmd_feed(args) -> None:
             media_type="text/plain",
         )
         report = run_orchestrator(profile, extracted)
+        record_latest_research_update(
+            profile,
+            job_id=f"cli-feed-{datetime.datetime.now():%Y%m%d%H%M%S}",
+            trigger="feed",
+            previous_trial_ids=previous_trial_ids,
+            previous_paper_ids=previous_paper_ids,
+            record_empty=False,
+        )
         save_profile(profile)
     _print_and_save_report(report, "feed")
 
@@ -70,7 +86,17 @@ def cmd_digest(args) -> None:
     }
     with serialized_mutation():
         profile = load_profile()
+        previous_trial_ids = set(get_research_ids(profile, "trial"))
+        previous_paper_ids = set(get_research_ids(profile, "paper"))
         report = run_orchestrator(profile, extracted)
+        record_latest_research_update(
+            profile,
+            job_id=f"cli-digest-{datetime.datetime.now():%Y%m%d%H%M%S}",
+            trigger="digest",
+            previous_trial_ids=previous_trial_ids,
+            previous_paper_ids=previous_paper_ids,
+            record_empty=True,
+        )
         save_profile(profile)
     _print_and_save_report(report, "digest")
 

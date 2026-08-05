@@ -13,10 +13,14 @@ incremented when something user-visible or operationally meaningful changes.
   desktop/mobile surfaces with shared **Today**, **Patient**, **Questions**, and
   **Activity** views while retaining the warm green/amber visual identity.
   Assessment freshness and newer source data are now prominent, recommended
-  actions are task cards, unread counts open a category review before
-  acknowledgement, and every workflow remains available on phones through fixed
-  bottom navigation. API failures now distinguish sign-in, allowlist, offline,
-  and retry states instead of looking like an empty patient record. Activity
+  actions are task cards, and every workflow remains available on phones through
+  fixed bottom navigation. Generic unread review and acknowledgement were
+  removed; **Today** now shows only the exact net-new trials and research papers
+  from the latest discovery batch, with those records labelled **New** in the
+  tracked lists. Web and CLI runs share canonical ID tracking, malformed IDs
+  are excluded, and returning tabs refresh the latest batch. API failures now
+  distinguish sign-in, allowlist, offline, and
+  retry states instead of looking like an empty patient record. Activity
   polling stays at three seconds only while work is active, backing off to 30
   seconds when idle and 60 seconds while hidden. Controls use semantic buttons,
   labelled dialogs, visible focus treatment, larger touch targets, and

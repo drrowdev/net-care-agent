@@ -666,6 +666,8 @@ def _run_feed_job(
         ):
             _update_job(job_id, {"status": "running", "stage": "intake"})
             profile = agent.load_profile()
+            previous_trial_ids = set(agent.get_research_ids(profile, "trial"))
+            previous_paper_ids = set(agent.get_research_ids(profile, "paper"))
             if raw_bytes is None and filename is None:
                 profile, extracted = agent.run_intake(text, profile)
             else:
@@ -711,6 +713,14 @@ def _run_feed_job(
             profile["treatments_classified"] = agent.classify_treatments(profile)
             _update_job(job_id, {"stage": "refreshing summary"})
             summary_error = _refresh_summary(profile)
+            agent.record_latest_research_update(
+                profile,
+                job_id=job_id,
+                trigger="feed",
+                previous_trial_ids=previous_trial_ids,
+                previous_paper_ids=previous_paper_ids,
+                record_empty=False,
+            )
             agent.save_profile(profile)
             _prune_source_retention()
 
@@ -755,6 +765,8 @@ def _run_digest_job(job_id: str):
         ):
             _update_job(job_id, {"status": "running", "stage": "orchestrating"})
             profile = agent.load_profile()
+            previous_trial_ids = set(agent.get_research_ids(profile, "trial"))
+            previous_paper_ids = set(agent.get_research_ids(profile, "paper"))
             # P5: deterministically poll tracked-trial statuses before the LLM pass so
             # status changes become alerts (and reach the orchestrator) even though the
             # dedup logic would otherwise suppress already-tracked trials.
@@ -779,6 +791,14 @@ def _run_digest_job(job_id: str):
             profile["treatments_classified"] = agent.classify_treatments(profile)
             _update_job(job_id, {"stage": "refreshing summary"})
             summary_error = _refresh_summary(profile)
+            agent.record_latest_research_update(
+                profile,
+                job_id=job_id,
+                trigger="digest",
+                previous_trial_ids=previous_trial_ids,
+                previous_paper_ids=previous_paper_ids,
+                record_empty=True,
+            )
             agent.save_profile(profile)
 
             reports_dir = DATA_DIR / "reports"
@@ -1367,6 +1387,7 @@ def api_status():
                 "total_documents": len(profile.get("documents", [])),
                 "total_biomarkers": len(profile.get("biomarkers", [])),
             },
+            "latest_research_update": agent.public_latest_research_update(profile),
         }
     )
 
@@ -1969,89 +1990,35 @@ def api_symptoms_delete(sid):
     return jsonify({"ok": True})
 
 
-# ── changes / "since last login" ─────────────────────────────────────────────
-def _is_after(item_date: str, ack: str) -> bool:
-    """Return True iff item_date is strictly later than ack.
-
-    Compares as strings — relies on ISO-8601-ish ordering. Both date-only
-    (YYYY-MM-DD) and datetime (YYYY-MM-DDTHH:MM:SS) strings sort
-    correctly under lexicographic comparison.
-    """
-    if not item_date:
-        return False
-    return item_date > ack
-
-
-def _count_new(profile: dict) -> dict:
-    """Compute per-category counts of items dated after acknowledged_at.
-
-    A summary is considered "regenerated since ack" if its
-    ``generated_at`` is later than the ack timestamp.
-    """
-    ack = profile.get("acknowledged_at") or ""
-    if not ack:
-        # Never acknowledged — every item counts as new.
-        ack = ""
-
-    def _count(items, key):
-        # Prefer added_at (ingestion time) so a back-dated item fed after the
-        # last acknowledgement still surfaces as new; fall back to the clinical
-        # date / date_added for legacy items recorded before added_at existed.
-        return sum(1 for it in items if _is_after(it.get("added_at") or it.get(key, "") or "", ack))
-
-    summary = profile.get("executive_summary") or {}
-    summary_generated = summary.get("generated_at_timestamp") or summary.get("generated_at") or ""
-    summary_new = bool(summary_generated and summary_generated > ack)
-
-    counts = {
-        "biomarkers": _count(profile.get("biomarkers", []), "date"),
-        "imaging": _count(profile.get("imaging", []), "date"),
-        "trials": _count(profile.get("trials_tracked", []), "date_added"),
-        "papers": _count(profile.get("literature_watched", []), "date_added"),
-        "alerts": _count(profile.get("alerts", []), "date"),
-        "documents": _count(profile.get("documents", []), "date"),
-        "judgments": _count(profile.get("clinical_judgments", []), "date"),
-        "symptoms": _count(profile.get("symptoms", []), "date"),
-        "executive_summary": summary_new,
+# Cached pre-release tabs may call these until their short-lived static assets
+# revalidate. Keep the routes inert so they hide the removed review UI without
+# mutating the profile or surfacing a global load error.
+def _empty_legacy_changes() -> dict:
+    return {
+        "acknowledged_at": None,
+        "new": {
+            "biomarkers": 0,
+            "imaging": 0,
+            "trials": 0,
+            "papers": 0,
+            "alerts": 0,
+            "documents": 0,
+            "judgments": 0,
+            "symptoms": 0,
+            "executive_summary": False,
+            "total_new": 0,
+        },
     }
-    counts["total_new"] = (
-        counts["biomarkers"]
-        + counts["imaging"]
-        + counts["trials"]
-        + counts["papers"]
-        + counts["alerts"]
-        + counts["documents"]
-        + counts["judgments"]
-        + counts["symptoms"]
-        + (1 if counts["executive_summary"] else 0)
-    )
-    return counts
 
 
 @app.route("/api/changes")
 def api_changes():
-    profile = agent.load_profile()
-    return jsonify(
-        {
-            "acknowledged_at": profile.get("acknowledged_at"),
-            "new": _count_new(profile),
-        }
-    )
+    return jsonify(_empty_legacy_changes())
 
 
 @app.route("/api/changes/acknowledge", methods=["POST"])
-@serialized_profile_mutation
 def api_changes_acknowledge():
-    profile = agent.load_profile()
-    now = datetime.datetime.now().isoformat(timespec="seconds")
-    profile["acknowledged_at"] = now
-    agent.save_profile(profile, clinical_change=False)
-    return jsonify(
-        {
-            "acknowledged_at": now,
-            "new": _count_new(profile),
-        }
-    )
+    return jsonify(_empty_legacy_changes())
 
 
 @app.route("/api/summary/dismiss-action/<int:idx>", methods=["POST"])

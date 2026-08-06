@@ -51,7 +51,11 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
   (`high|medium|low`), `status_rationale, key_concern, summary, prrt_status`
   (`eligible|likely_eligible|pending_dotatate|not_eligible|unknown`),
   `prrt_rationale, cga_trend` (`rising|stable|falling|insufficient_data`),
-  `cga_trend_detail, next_actions[], timeline[], best_trial, generated_at`.
+  `cga_trend_detail, next_actions[], timeline[], best_trial, claim_evidence,
+  generated_at`. `claim_evidence` and `next_actions[].evidence_ids` may contain
+  only opaque IDs from the server-built verified evidence catalog. Unknown IDs
+  are invalid, and an empty list means no exact source span. PRRT/trial values
+  are screening support for clinician discussion, never definitive eligibility.
 - **questions** JSON array items: `text, category`
   (`Treatment|Diagnostics|Symptoms|Trials|Monitoring|Other`), `priority`
   (`urgent|high|medium`), `rationale`. Enums stay English; `text`/`rationale`
@@ -76,6 +80,15 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
 - Feedback writes are serialized review-state mutations. `missed`, `incorrect`,
   and `corrected` feedback may mark the current summary stale, but feedback never
   mutates clinical facts or becomes a clinical judgment implicitly.
+- Document receipt correction/removal/undo is a clinical mutation under
+  `serialized_mutation`. It uses target-level compare-and-swap fingerprints:
+  unrelated profile revisions are allowed, but any changed affected target or
+  later document claim returns atomic `409` before mutation.
+- Receipt undo never deletes immutable source bytes/text and never restores a
+  whole-profile snapshot. It reverses only direct extraction effects, preserves
+  append-only before/after history, and excludes the document from active
+  clinical prompts. Orchestration research additions are derived output and are
+  not silently deleted.
 - **`save_profile` guards structural validity.** Calling `save_profile` with a
   non-dict, string patient, or non-list collection raises `ValueError`
   immediately.  Field-level type issues (out-of-range values, bad enum literals)
@@ -142,6 +155,9 @@ distributed queue and adding distributed coordination.
 - Job errors and job-runner logs must not contain input text, model output,
   traceback, prompts, or PHI. Keep all operational logs access-controlled;
   lower-level storage/recovery `OSError` logs may contain filesystem paths.
+- `GET /api/jobs/<id>/receipt` and `/api/patient/evidence` remain authenticated
+  and no-store. Public projections may include source IDs and URLs but never
+  indexed filesystem paths.
 - Retention removes only completed expired/excess jobs and their indexed
   reports/results, unindexed old/excess reports, and unreferenced source
   directories. Profile-referenced sources are protected. Pruning is

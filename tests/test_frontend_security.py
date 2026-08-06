@@ -100,6 +100,30 @@ def test_escape_closes_only_the_topmost_open_surface():
     assert handler.count("return;") >= 4
 
 
+def test_dialogs_trap_focus_and_make_background_inert():
+    focus = _function_source("dialogFocusable", "setBackgroundInert")
+    inert = _function_source("setBackgroundInert", "activateDialog")
+    trap = _function_source("trapDialogFocus", "loadFailureMarkup")
+    assert "button:not([disabled])" in focus
+    assert "child.inert = true" in inert
+    assert "child.inert = false" in inert
+    assert "event.key !== 'Tab'" in trap
+    assert "event.shiftKey" in trap
+    assert "activateDialog(pop, trigger)" in APP_JS
+    assert "activateDialog(overlay.querySelector('.modal'), trigger)" in APP_JS
+    assert "activateDialog(report, lastDialogTrigger)" in APP_JS
+    assert "activateDialog(panel, trigger)" in APP_JS
+
+
+def test_feed_tabs_support_roving_arrow_home_and_end_keys():
+    source = _function_source("handleFeedTabKeydown", "updateCharCount")
+    for key in ("ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp", "Home", "End"):
+        assert key in source
+    switcher = _function_source("switchTab", "handleFeedTabKeydown")
+    assert "textButton.tabIndex" in switcher
+    assert "fileButton.tabIndex" in switcher
+
+
 def test_load_failures_distinguish_auth_offline_and_retry_states():
     state = _function_source("renderAppState", "retryInitialLoad")
     assert "error?.status === 401" in state
@@ -116,6 +140,68 @@ def test_load_failures_distinguish_auth_offline_and_retry_states():
         "loadSymptoms()",
     ):
         assert loader in retry
+    assert "updateHeaderStatus(null, e)" in APP_JS
+    assert "loadFailureMarkup('Assessment'" in APP_JS
+    assert "loadFailureMarkup('Processing activity'" in APP_JS
+    assert "loadFailureMarkup('Imaging history'" in APP_JS
+
+
+def test_processing_status_never_claims_clinical_freshness():
+    header = _function_source("updateHeaderStatus", "closePanel")
+    assert "Processing ${running.length}" in header
+    assert "lbl.textContent = 'Idle'" in header
+    assert "lbl.textContent = 'Unavailable'" in header
+    assert "Up to date" not in APP_JS
+
+
+def test_receipt_is_job_scoped_and_has_no_global_review_flow():
+    selector = _function_source("selectTask", "formatReport")
+    assert "task.receipt_url" in selector
+    assert "renderReceipt(receipt)" in selector
+    assert "/receipt/changes/" in APP_JS
+    assert "/receipt/undo" in APP_JS
+    assert "/api/changes" not in APP_JS
+    assert "Mark reviewed" not in APP_JS
+
+
+def test_corrected_receipt_renders_effective_value_without_relabelling_original_evidence():
+    receipt = _function_source("renderReceipt", "receiptFieldInput")
+    assert "change.effective_value" in receipt
+    assert "Caregiver correction" in receipt
+    assert "Original extraction span (before correction)" in receipt
+
+
+def test_claim_evidence_and_decision_support_wording_are_non_definitive():
+    summary = _function_source("renderSummary", "removeItem")
+    assert "POTENTIAL FIT" in summary
+    assert "MAY FIT" in summary
+    assert "Trial to discuss" in summary
+    assert "Best matched trial" not in APP_JS
+    assert "PRRT: ELIGIBLE" not in APP_JS
+    assert "renderClaimEvidence" in summary
+    assert "d.claim_evidence?.claims?.cga_trend_detail" in summary
+
+
+def test_empty_form_handlers_surface_inline_feedback():
+    cases = (
+        ("addQuestion", "toggleQuestion", "q-form-error"),
+        ("addJudgment", "deleteJudgment", "judgment-form-error"),
+        ("addSymptom", "deleteSymptom", "sym-form-error"),
+    )
+    for name, next_name, error_id in cases:
+        source = _function_source(name, next_name)
+        assert error_id in source
+        assert "if (!" in source
+    chat = APP_JS[APP_JS.index("function sendChat") :]
+    assert "chat-form-error" in chat
+    assert "if (!text)" in chat
+    feed = _function_source("feedText", "submitFeed")
+    assert "Paste clinical text before processing" in feed
+    parser = _function_source("parsedReceiptInput", "saveReceiptCorrection")
+    assert "if (!input.value.trim()) return null" in parser
+    fields = _function_source("receiptFieldInput", "startReceiptCorrection")
+    assert "field === 'severity'" in fields
+    assert "field === 'new_lesions'" in fields
 
 
 def test_latest_research_update_labels_only_exact_batch_records():

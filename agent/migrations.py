@@ -33,7 +33,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 1
+CURRENT_SCHEMA_VERSION: int = 2
 
 # Append-only ordered registry of migrations.  Never reorder entries.
 _REGISTRY: list[dict[str, Any]] = []
@@ -59,6 +59,15 @@ def _m0001_add_schema_version(data: dict) -> dict:
     stamps the version.
     """
     data["schema_version"] = 1
+    return data
+
+
+@_migration("0002_add_document_imports", to_version=2)
+def _m0002_add_document_imports(data: dict) -> dict:
+    """v1 → v2: add the audit ledger for document reconciliation receipts."""
+    if not isinstance(data.get("document_imports"), list):
+        data["document_imports"] = []
+    data["schema_version"] = 2
     return data
 
 

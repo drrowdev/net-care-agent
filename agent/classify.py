@@ -7,7 +7,7 @@ import json
 
 from . import config
 from .llm import client, first_text, is_timeout_error, render_prompt, strip_code_fences
-from .profile import build_patient_context
+from .profile import active_documents, build_patient_context
 
 TREATMENT_CLASSIFIER_SYSTEM_TEMPLATE = """\
 You are a clinical data analyst. Your job is to deduplicate, merge, and classify treatment entries for [[PATIENT_CONTEXT]]. You are given the raw treatment entries, recent clinical context, and today's date — use today's date and document recency as your PRIMARY evidence for classification; keyword cues are fallbacks.
@@ -64,7 +64,7 @@ def classify_treatments(profile: dict) -> list:
             manual_overrides[key] = e
 
     recent_docs = sorted(
-        profile.get("documents", []),
+        active_documents(profile),
         key=lambda x: x.get("date", ""),
         reverse=True,
     )[:5]

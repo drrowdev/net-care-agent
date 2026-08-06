@@ -27,6 +27,7 @@ _COLLECTION_KEYS: tuple[str, ...] = (
     "appointments",
     "documents",
     "source_documents",
+    "document_imports",
     "trials_tracked",
     "literature_watched",
     "alerts",
@@ -181,6 +182,7 @@ class Patient(_Lenient):
 class Biomarker(_EvidenceFields):
     """A single lab result row (CgA, NSE, 5-HIAA, creatinine, etc.)."""
 
+    id: str | None = Field(None, description="Stable identity for imported rows")
     date: str | None = Field(None, description="YYYY-MM-DD")
     marker: str | None = None
     value: Any = Field(None, description="number or string")
@@ -193,6 +195,7 @@ class Biomarker(_EvidenceFields):
 
 
 class Imaging(_EvidenceFields):
+    id: str | None = Field(None, description="Stable identity for imported rows")
     date: str | None = Field(None, description="YYYY-MM-DD")
     modality: ImagingModality | None = None
     findings: str | None = None
@@ -206,12 +209,17 @@ class Imaging(_EvidenceFields):
 class Document(_Lenient):
     """Every fed document, kept for audit and downstream re-analysis."""
 
+    id: str | None = Field(None, description="Stable identity for imported rows")
     date: str | None = None
     type: DocumentType | None = None
     summary: str | None = Field(None, description="1–2 sentence intake-agent summary")
     key_findings: list[str] = Field(default_factory=list)
     raw_text: str | None = Field(None, description="First ~3000 chars of input")
     source_document_id: str | None = None
+    excluded_from_clinical_context: bool = Field(
+        False,
+        description="True after a caregiver removes or undoes this import's clinical effects",
+    )
     evidence: list[dict[str, Any]] = Field(
         default_factory=list,
         description="Anchored evidence for document-level findings not stored as structured rows",
@@ -247,6 +255,7 @@ class LiteratureWatched(_Lenient):
 
 
 class Alert(_Lenient):
+    id: str | None = Field(None, description="Stable identity for imported rows")
     date: str | None = None
     priority: AlertPriority | None = None
     message: str | None = None
@@ -321,6 +330,7 @@ class Question(_Lenient):
 
 
 class Appointment(_EvidenceFields):
+    id: str | None = Field(None, description="Stable identity for imported rows")
     date: str | None = None
     time: str | None = None
     with_: str | None = Field(None, alias="with")
@@ -344,6 +354,62 @@ class SourceDocument(_Lenient):
     media_type: str | None = None
     source: SourceArtifact
     text: SourceArtifact
+
+
+class ImportTarget(_Lenient):
+    """Server-owned locator used for compare-and-swap receipt mutations."""
+
+    kind: Literal["collection", "scalar", "treatment", "none"]
+    collection: str | None = None
+    record_id: str | None = None
+    path: list[str] = Field(default_factory=list)
+
+
+class ImportHistoryEvent(_Lenient):
+    """Immutable before/after record for a caregiver correction, removal, or undo."""
+
+    event: Literal["corrected", "removed", "undone"]
+    at: str
+    before: Any = None
+    after: Any = None
+
+
+class ImportChange(_Lenient):
+    """One direct or derived outcome shown in a document reconciliation receipt."""
+
+    id: str
+    category: str
+    label: str
+    operation: Literal["added", "updated", "unchanged", "conflict", "derived"]
+    target: ImportTarget
+    before: Any = None
+    after: Any = None
+    effective_value: Any = None
+    evidence_status: Literal["verified", "missing", "invalid"] | None = None
+    evidence_start: int | None = Field(None, ge=0)
+    evidence_end: int | None = Field(None, ge=0)
+    source_document_id: str | None = None
+    editable_fields: list[str] = Field(default_factory=list)
+    state: Literal["active", "corrected", "removed", "unchanged", "derived", "undone"]
+    history: list[ImportHistoryEvent] = Field(default_factory=list)
+
+
+class DocumentImport(_Lenient):
+    """Profile-backed receipt tying one feed job to its immutable source and audit history."""
+
+    id: str
+    job_id: str
+    source_document_id: str
+    ingested_at: str
+    filename: str | None = None
+    media_type: str | None = None
+    document_type: str | None = None
+    document_date: str | None = None
+    document_summary: str | None = None
+    applied_revision: int
+    receipt_revision: int = 1
+    status: Literal["active", "corrected", "partially_removed", "undone"] = "active"
+    changes: list[ImportChange] = Field(default_factory=list)
 
 
 class Feedback(_Lenient):
@@ -388,7 +454,7 @@ class PatientProfile(_Lenient):
     """The complete patient profile. Lives at ${DATA_DIR}/patient_profile.json."""
 
     schema_version: int = Field(
-        default=1,
+        default=2,
         description="Profile schema version. Incremented when a structural migration runs.",
     )
     profile_revision: int = 0
@@ -401,6 +467,7 @@ class PatientProfile(_Lenient):
     appointments: list[Appointment] = Field(default_factory=list)
     documents: list[Document] = Field(default_factory=list)
     source_documents: list[SourceDocument] = Field(default_factory=list)
+    document_imports: list[DocumentImport] = Field(default_factory=list)
     trials_tracked: list[TrialTracked] = Field(default_factory=list)
     literature_watched: list[LiteratureWatched] = Field(default_factory=list)
     alerts: list[Alert] = Field(default_factory=list)
@@ -480,6 +547,10 @@ def render_schema_markdown() -> str:
         ("questions[]", Question),
         ("appointments[]", Appointment),
         ("source_documents[]", SourceDocument),
+        ("document_imports[]", DocumentImport),
+        ("document_imports[].changes[]", ImportChange),
+        ("document_imports[].changes[].target", ImportTarget),
+        ("document_imports[].changes[].history[]", ImportHistoryEvent),
         ("feedback[]", Feedback),
         ("executive_summary", ExecutiveSummary),
         ("latest_research_update", ResearchUpdate),
@@ -506,6 +577,9 @@ def render_schema_markdown() -> str:
         "drift is logged, not blocked.\n"
         "- `Patient.sstr_score` is the only field with a numeric range "
         "constraint (0–4, the Krenning scale).\n"
+        "- `document_imports[]` is append-only audit provenance. Corrections and "
+        "undo update active clinical state and append history events; they never "
+        "delete immutable `source_documents[]` artifacts.\n"
     )
     return "\n".join(sections)
 

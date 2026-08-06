@@ -7,6 +7,7 @@ Data persisted to /home/data (Azure Files mount)
 
 import atexit
 import base64
+import copy
 import datetime
 import hashlib
 import io
@@ -428,6 +429,8 @@ def _job_response(job: dict, *, include_artifacts: bool = False) -> dict:
     response = dict(job)
     if not include_artifacts:
         return response
+    if job.get("type") == "feed" and job.get("source_document_id"):
+        response["receipt_url"] = f"/api/jobs/{job['id']}/receipt"
     report_ref = job.get("report_file")
     if report_ref:
         try:
@@ -666,6 +669,7 @@ def _run_feed_job(
         ):
             _update_job(job_id, {"status": "running", "stage": "intake"})
             profile = agent.load_profile()
+            profile_before_intake = copy.deepcopy(profile)
             previous_trial_ids = set(agent.get_research_ids(profile, "trial"))
             previous_paper_ids = set(agent.get_research_ids(profile, "paper"))
             if raw_bytes is None and filename is None:
@@ -677,6 +681,28 @@ def _run_feed_job(
                     raw_bytes=raw_bytes,
                     filename=filename,
                     media_type=media_type,
+                )
+            receipt_source_id = extracted.get("source_document_id")
+            has_receipt = bool(
+                receipt_source_id
+                and any(
+                    item.get("id") == receipt_source_id
+                    for item in profile.get("source_documents", [])
+                    if isinstance(item, dict)
+                )
+                and any(
+                    item.get("source_document_id") == receipt_source_id
+                    for item in profile.get("documents", [])
+                    if isinstance(item, dict)
+                )
+            )
+            if has_receipt:
+                agent.build_import_record(
+                    profile_before_intake,
+                    profile,
+                    extracted,
+                    job_id=job_id,
+                    text=text,
                 )
             # Commit intake before research. A later orchestrator/model failure
             # must not lose an already-extracted clinical document.
@@ -713,7 +739,7 @@ def _run_feed_job(
             profile["treatments_classified"] = agent.classify_treatments(profile)
             _update_job(job_id, {"stage": "refreshing summary"})
             summary_error = _refresh_summary(profile)
-            agent.record_latest_research_update(
+            research_update = agent.record_latest_research_update(
                 profile,
                 job_id=job_id,
                 trigger="feed",
@@ -721,6 +747,13 @@ def _run_feed_job(
                 previous_paper_ids=previous_paper_ids,
                 record_empty=False,
             )
+            if research_update and has_receipt:
+                agent.add_derived_research(
+                    profile,
+                    job_id,
+                    trial_ids=research_update.get("trial_ids", []),
+                    paper_ids=research_update.get("paper_ids", []),
+                )
             agent.save_profile(profile)
             _prune_source_retention()
 
@@ -1370,9 +1403,9 @@ def api_health():
 def api_status():
     profile = agent.load_profile()
     alerts = [a for a in profile.get("alerts", []) if not a.get("resolved")]
-    bms = sorted(profile.get("biomarkers", []), key=lambda x: x.get("date", ""), reverse=True)[:50]
-    imgs = sorted(profile.get("imaging", []), key=lambda x: x.get("date", ""), reverse=True)[:3]
-    docs = sorted(profile.get("documents", []), key=lambda x: x.get("date", ""), reverse=True)[:5]
+    bms = sorted(profile.get("biomarkers", []), key=lambda x: x.get("date") or "", reverse=True)[:50]
+    imgs = sorted(profile.get("imaging", []), key=lambda x: x.get("date") or "", reverse=True)[:3]
+    docs = sorted(agent.active_documents(profile), key=lambda x: x.get("date") or "", reverse=True)[:5]
     return jsonify(
         {
             "patient": profile.get("patient", {}),
@@ -1546,6 +1579,192 @@ def api_job(job_id):
             if j["id"] == job_id:
                 return jsonify(_job_response(j, include_artifacts=True))
     return jsonify({"error": "Not found"}), 404
+
+
+def _retained_feed_job(job_id: str) -> dict | None:
+    with _jobs_lock:
+        return next(
+            (dict(item) for item in _jobs if item.get("id") == job_id and item.get("type") == "feed"),
+            None,
+        )
+
+
+def _receipt_error_response(profile: dict, job_id: str, exc: Exception):
+    status = 409 if isinstance(exc, agent.ImportConflict) else 400
+    payload = {
+        "error": str(exc),
+        "code": "import_conflict" if status == 409 else "invalid_receipt_change",
+    }
+    if status == 409:
+        try:
+            payload["receipt"] = agent.public_receipt(profile, job_id)
+        except agent.ReconciliationError:
+            pass
+    return jsonify(payload), status
+
+
+@app.route("/api/jobs/<job_id>/receipt")
+def api_job_receipt(job_id):
+    if _retained_feed_job(job_id) is None:
+        return jsonify({"error": "Feed job not found"}), 404
+    profile = agent.load_profile()
+    try:
+        return jsonify(agent.public_receipt(profile, job_id))
+    except agent.ReconciliationError as exc:
+        return jsonify({"error": str(exc)}), 404
+
+
+@app.route("/api/jobs/<job_id>/receipt/changes/<change_id>/correct", methods=["POST"])
+@serialized_profile_mutation
+def api_correct_import_change(job_id, change_id):
+    if _retained_feed_job(job_id) is None:
+        return jsonify({"error": "Feed job not found"}), 404
+    data = request.get_json(force=True) or {}
+    profile = agent.load_profile()
+    try:
+        agent.correct_change(
+            profile,
+            job_id,
+            change_id,
+            receipt_revision=data.get("receipt_revision"),
+            target_token=str(data.get("target_token") or ""),
+            replacement=data.get("replacement"),
+        )
+    except agent.ReconciliationError as exc:
+        return _receipt_error_response(profile, job_id, exc)
+    agent.save_profile(profile)
+    return jsonify({"receipt": agent.public_receipt(profile, job_id)})
+
+
+@app.route("/api/jobs/<job_id>/receipt/changes/<change_id>/remove", methods=["POST"])
+@serialized_profile_mutation
+def api_remove_import_change(job_id, change_id):
+    if _retained_feed_job(job_id) is None:
+        return jsonify({"error": "Feed job not found"}), 404
+    data = request.get_json(force=True) or {}
+    profile = agent.load_profile()
+    try:
+        agent.remove_change(
+            profile,
+            job_id,
+            change_id,
+            receipt_revision=data.get("receipt_revision"),
+            target_token=str(data.get("target_token") or ""),
+        )
+    except agent.ReconciliationError as exc:
+        return _receipt_error_response(profile, job_id, exc)
+    agent.save_profile(profile)
+    return jsonify({"receipt": agent.public_receipt(profile, job_id)})
+
+
+@app.route("/api/jobs/<job_id>/receipt/undo", methods=["POST"])
+@serialized_profile_mutation
+def api_undo_import(job_id):
+    if _retained_feed_job(job_id) is None:
+        return jsonify({"error": "Feed job not found"}), 404
+    data = request.get_json(force=True) or {}
+    profile = agent.load_profile()
+    try:
+        agent.undo_import(
+            profile,
+            job_id,
+            receipt_revision=data.get("receipt_revision"),
+            undo_token=str(data.get("undo_token") or ""),
+        )
+    except agent.ReconciliationError as exc:
+        return _receipt_error_response(profile, job_id, exc)
+    agent.save_profile(profile)
+    return jsonify({"receipt": agent.public_receipt(profile, job_id)})
+
+
+@app.route("/api/patient/evidence")
+def api_patient_evidence():
+    """Return path-free imaging and document/source history for the Patient view."""
+    profile = agent.load_profile()
+    imports_by_source = {
+        item.get("source_document_id"): item
+        for item in profile.get("document_imports", [])
+        if item.get("source_document_id")
+    }
+
+    def evidence_projection(item: dict) -> dict:
+        source_id = item.get("source_document_id")
+        projected = {
+            key: item.get(key)
+            for key in (
+                "id",
+                "date",
+                "modality",
+                "findings",
+                "impression",
+                "new_lesions",
+                "type",
+                "summary",
+                "key_findings",
+                "added_at",
+                "excluded_from_clinical_context",
+                "evidence_status",
+            )
+            if key in item
+        }
+        projected["source_document_id"] = source_id
+        if source_id:
+            projected["source_url"] = f"/api/sources/{source_id}"
+        if (
+            source_id
+            and item.get("evidence_status") == "verified"
+            and item.get("evidence_start") is not None
+            and item.get("evidence_end") is not None
+        ):
+            projected["evidence_url"] = (
+                f"/api/evidence/{source_id}?start={item['evidence_start']}"
+                f"&end={item['evidence_end']}"
+            )
+        receipt = imports_by_source.get(source_id)
+        if receipt and _retained_feed_job(receipt.get("job_id", "")):
+            projected["receipt_url"] = f"/api/jobs/{receipt['job_id']}/receipt"
+            projected["receipt_job_id"] = receipt["job_id"]
+            projected["import_status"] = receipt.get("status")
+        return projected
+
+    sources = []
+    for source in sorted(
+        profile.get("source_documents", []),
+        key=lambda item: item.get("ingested_at") or "",
+        reverse=True,
+    ):
+        public = _public_source_metadata(source)
+        receipt = imports_by_source.get(source.get("id"))
+        if receipt:
+            public["document_type"] = receipt.get("document_type")
+            public["document_date"] = receipt.get("document_date")
+            public["document_summary"] = receipt.get("document_summary")
+            public["import_status"] = receipt.get("status")
+            if _retained_feed_job(receipt.get("job_id", "")):
+                public["receipt_url"] = f"/api/jobs/{receipt['job_id']}/receipt"
+                public["receipt_job_id"] = receipt["job_id"]
+        sources.append(public)
+    return jsonify(
+        {
+            "imaging": [
+                evidence_projection(item)
+                for item in sorted(
+                    profile.get("imaging", []),
+                    key=lambda item: item.get("date") or item.get("added_at") or "",
+                    reverse=True,
+                )
+            ],
+            "documents": [
+                evidence_projection(item)
+                for item in sorted(
+                    agent.active_documents(profile),
+                    key=lambda item: item.get("added_at") or item.get("date") or "",
+                    reverse=True,
+                )
+            ],
+            "sources": sources,
+        }
+    )
 
 
 @app.route("/api/treatments/delete", methods=["POST"])
@@ -2167,7 +2386,7 @@ def api_summary():
     summary = profile.get("executive_summary")
     if not summary:
         return jsonify({"status": "not_generated"})
-    response = dict(summary)
+    response = copy.deepcopy(summary)
     response["profile_revision"] = profile.get("profile_revision")
     response["summary_revision"] = summary.get("summary_revision")
     current_judgment_hash = agent.clinical_judgments_fingerprint(profile)
@@ -2239,6 +2458,7 @@ def api_summary():
         if item.get("assessment") in {"corrected", "incorrect", "missed"}
         and item.get("target", "").startswith("summary")
     )
+    response["claim_evidence"] = agent.resolve_summary_evidence(profile, response)
     return jsonify(response)
 
 

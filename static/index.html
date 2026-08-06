@@ -21,10 +21,10 @@
     <span class="status-pill" id="header-status">Connecting…</span>
   </div>
   <div class="header-actions">
-    <button class="button secondary" id="btn-feed-toggle" onclick="toggleFeedPopover()" title="Add a clinical document">
+    <button class="button secondary" id="btn-feed-toggle" onclick="toggleFeedPopover()" title="Add a clinical document" aria-label="Add a clinical document">
       <span aria-hidden="true">＋</span><span class="header-action-label">Add document</span>
     </button>
-    <button class="button primary" onclick="toggleChat()" title="Ask about the patient record">
+    <button class="button primary" id="btn-chat-toggle" onclick="toggleChat()" title="Ask about the patient record" aria-label="Ask Claude about the patient record">
       <span aria-hidden="true">✦</span><span class="header-action-label">Ask Claude</span>
     </button>
   </div>
@@ -155,9 +155,20 @@
             <label><span>Symptom</span><input id="sym-name" placeholder="e.g. nausea" maxlength="60"></label>
             <label><span>Severity</span><select id="sym-sev"><option value="">Not set</option><option value="1">1 — mild</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5 — severe</option></select></label>
             <label class="symptom-note-field"><span>Optional note</span><input id="sym-note" placeholder="Add context" maxlength="200" onkeydown="if(event.key==='Enter')addSymptom()"></label>
-            <button class="button secondary" onclick="addSymptom()">Log symptom</button>
+            <button class="button secondary" id="sym-add-btn" onclick="addSymptom()" disabled>Log symptom</button>
+            <p class="form-error" id="sym-form-error" role="alert" aria-live="polite"></p>
           </div>
           <div id="symptoms-list"><div class="loading-state">Loading symptoms…</div></div>
+        </section>
+
+        <section class="content-card span-two" aria-labelledby="imaging-heading">
+          <div class="card-header compact"><div><p class="eyebrow">Clinical evidence</p><h2 id="imaging-heading">Imaging history</h2></div></div>
+          <div id="imaging-history"><div class="loading-state">Loading imaging history…</div></div>
+        </section>
+
+        <section class="content-card span-two" aria-labelledby="source-history-heading">
+          <div class="card-header compact"><div><p class="eyebrow">Import provenance</p><h2 id="source-history-heading">Documents and sources</h2></div></div>
+          <div id="source-history"><div class="loading-state">Loading source history…</div></div>
         </section>
       </div>
     </section>
@@ -178,8 +189,9 @@
           <div class="q-body" id="q-body">
             <div class="q-add-row">
               <label class="sr-only" for="q-add-input">Add your own question</label>
-              <input class="q-add-input" id="q-add-input" placeholder="Add your own question…" onkeydown="if(event.key==='Enter')addQuestion()">
-              <button class="q-add-btn" onclick="addQuestion()">Add</button>
+              <input class="q-add-input" id="q-add-input" placeholder="Add your own question…" onkeydown="if(event.key==='Enter')addQuestion()" aria-describedby="q-form-error">
+              <button class="q-add-btn" id="q-add-btn" onclick="addQuestion()" disabled>Add question</button>
+              <p class="form-error" id="q-form-error" role="alert" aria-live="polite"></p>
             </div>
             <div id="q-list"><div class="loading-state">Loading questions…</div></div>
           </div>
@@ -194,7 +206,8 @@
           <div class="judgment-form">
             <label><span>Type</span><select id="judgment-cat"><option value="constraint">Constraint</option><option value="preference">Preference</option><option value="outcome">Outcome</option><option value="context" selected>Context</option></select></label>
             <label class="judgment-text-field"><span>Note</span><input id="judgment-input" placeholder="Add the clinician’s guidance…" onkeydown="if(event.key==='Enter')addJudgment()"></label>
-            <button class="button secondary" onclick="addJudgment()">Add note</button>
+            <button class="button secondary" id="judgment-add-btn" onclick="addJudgment()" disabled>Add note</button>
+            <p class="form-error" id="judgment-form-error" role="alert" aria-live="polite"></p>
           </div>
         </section>
       </div>
@@ -223,19 +236,20 @@
 </div>
 
 <div class="feed-backdrop" id="feed-backdrop" onclick="toggleFeedPopover(false)"></div>
-<div class="feed-popover" id="feed-popover" role="dialog" aria-modal="true" aria-labelledby="feed-title" aria-hidden="true">
+<div class="feed-popover" id="feed-popover" role="dialog" aria-modal="true" aria-labelledby="feed-title" aria-hidden="true" tabindex="-1">
   <div class="dialog-header">
     <div><p class="eyebrow">Update the record</p><h2 id="feed-title">Add a clinical document</h2></div>
     <button class="icon-button" onclick="toggleFeedPopover(false)" aria-label="Close document dialog">×</button>
   </div>
-  <div class="feed-tabs" role="tablist" aria-label="Document input method">
-    <button class="tab-btn active" id="feed-tab-text" role="tab" aria-selected="true" aria-controls="tab-text" onclick="switchTab('text')">Paste text</button>
-    <button class="tab-btn" id="feed-tab-file" role="tab" aria-selected="false" aria-controls="tab-file" onclick="switchTab('file')">Upload file</button>
+  <div class="dialog-error" id="feed-form-error" role="alert" aria-live="polite" hidden></div>
+  <div class="feed-tabs" role="tablist" aria-label="Document input method" onkeydown="handleFeedTabKeydown(event)">
+    <button class="tab-btn active" id="feed-tab-text" role="tab" tabindex="0" aria-selected="true" aria-controls="tab-text" onclick="switchTab('text')">Paste text</button>
+    <button class="tab-btn" id="feed-tab-file" role="tab" tabindex="-1" aria-selected="false" aria-controls="tab-file" onclick="switchTab('file')">Upload file</button>
   </div>
   <div class="text-input-wrap visible" id="tab-text" role="tabpanel" aria-labelledby="feed-tab-text">
     <label for="feed-textarea">Clinical text</label>
     <textarea id="feed-textarea" placeholder="Paste a lab result, imaging report, doctor’s note, or other clinical text…" oninput="updateCharCount()"></textarea>
-    <div class="feed-footer"><span class="char-count" id="char-count">0 characters</span><button class="button primary" id="btn-feed" onclick="feedText()">Process document</button></div>
+    <div class="feed-footer"><span class="char-count" id="char-count">0 characters</span><button class="button primary" id="btn-feed" onclick="feedText()" disabled>Process document</button></div>
   </div>
   <div class="drop-zone" id="tab-file" role="tabpanel" aria-labelledby="feed-tab-file" tabindex="0"
        ondragover="event.preventDefault();this.classList.add('drag-over')"
@@ -250,24 +264,24 @@
   </div>
 </div>
 
-<div class="panel collapsed" id="report-panel" role="dialog" aria-modal="true" aria-labelledby="report-title" aria-hidden="true">
+<div class="panel collapsed" id="report-panel" role="dialog" aria-modal="true" aria-labelledby="report-title" aria-hidden="true" tabindex="-1">
   <div class="panel-head"><div><p class="eyebrow">Activity report</p><h2 id="report-title">Analysis</h2></div><div class="dialog-actions"><button class="button secondary panel-copy-btn" id="copy-btn" onclick="copyReport()">Copy</button><button class="icon-button" onclick="closePanel()" aria-label="Close report">×</button></div></div>
   <div class="panel-body" id="panel-body"><div class="report-empty"><div class="report-empty-icon">◈</div><div class="report-empty-text">Select an activity item to view its report.</div></div></div>
 </div>
 
-<div class="modal-overlay" id="modal-overlay" onclick="closeModal(event)">
-  <section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+<div class="modal-overlay" id="modal-overlay" onclick="closeModal(event)" aria-hidden="true">
+  <section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" tabindex="-1">
     <div class="modal-head"><h2 class="modal-title" id="modal-title">Tracked items</h2><button class="icon-button" onclick="closeModal()" aria-label="Close tracked items">×</button></div>
     <div class="modal-body" id="modal-body"><div class="loading-state">Loading…</div></div>
   </section>
 </div>
 
-<aside id="chat-panel" class="chat-panel" role="dialog" aria-modal="true" aria-labelledby="chat-title" aria-hidden="true">
+<aside id="chat-panel" class="chat-panel" role="dialog" aria-modal="true" aria-labelledby="chat-title" aria-hidden="true" tabindex="-1">
   <div class="panel-head"><div><p class="eyebrow">Grounded in the patient record</p><h2 id="chat-title">Ask Claude</h2></div><div class="dialog-actions"><button class="button secondary" onclick="clearChat()">Clear</button><button class="icon-button" onclick="toggleChat()" aria-label="Close assistant">×</button></div></div>
   <div id="chat-messages" class="chat-messages" aria-live="polite">
     <div class="chat-welcome">Ask about the patient’s data, research findings, or treatment options.<div class="chat-suggestions"><button class="chat-suggestion" onclick="sendSuggestion(this)">What needs attention right now?</button><button class="chat-suggestion" onclick="sendSuggestion(this)">Summarise the biomarker trends over time</button><button class="chat-suggestion" onclick="sendSuggestion(this)">Why is PRRT being considered?</button><button class="chat-suggestion" onclick="sendSuggestion(this)">What do the tracked trials have in common?</button></div></div>
   </div>
-  <div class="chat-composer"><label class="sr-only" for="chat-input">Question about the patient</label><textarea id="chat-input" placeholder="Ask a question about the patient…" rows="2" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}"></textarea><button class="button primary" onclick="sendChat()" id="chat-send-btn">Send</button><small>Shift+Enter for a new line · history stays in this browser tab</small></div>
+  <div class="chat-composer"><label class="sr-only" for="chat-input">Question about the patient</label><textarea id="chat-input" placeholder="Ask a question about the patient…" rows="2" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}"></textarea><button class="button primary" onclick="sendChat()" id="chat-send-btn" disabled>Send</button><p class="form-error" id="chat-form-error" role="alert" aria-live="polite"></p><small>Shift+Enter for a new line · history stays in this browser tab</small></div>
 </aside>
 
 <script defer src="/static/app.js"></script>

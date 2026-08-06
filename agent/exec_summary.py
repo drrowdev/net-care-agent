@@ -6,6 +6,7 @@ import datetime
 import json
 
 from . import config
+from .evidence import evidence_catalog_prompt
 from .judgments import get_clinical_judgments_context
 from .llm import client, first_text, is_timeout_error, render_prompt, strip_code_fences
 from .profile import (
@@ -37,7 +38,7 @@ Return ONLY valid JSON matching this exact schema (no markdown, no prose outside
   "key_concern": "The single most important clinical issue right now (1 sentence, plain language)",
   "summary": "2-3 sentence narrative overview written for a non-clinician caregiver",
   "prrt_status": "eligible|likely_eligible|pending_dotatate|not_eligible|unknown",
-  "prrt_rationale": "Brief explanation of PRRT eligibility. If DOTATATE PET not done, say so explicitly.",
+  "prrt_rationale": "Brief screening assessment of potential PRRT fit; state that the treating team confirms candidacy.",
   "cga_trend": "rising|stable|falling|insufficient_data",
   "cga_trend_detail": "e.g. CgA 145 → 188 nmol/L over 3 months (+30%)",
   "next_actions": [
@@ -46,7 +47,8 @@ Return ONLY valid JSON matching this exact schema (no markdown, no prose outside
       "action": "Specific, concrete task the caregiver can take or request",
       "timeframe": "this week|this month|within 3 months|at next appointment",
       "rationale": "Why this matters for treatment",
-      "provisional": true|false
+      "provisional": true|false,
+      "evidence_ids": ["zero or more IDs copied exactly from the evidence catalog"]
     }
   ],
   "timeline": [
@@ -62,6 +64,13 @@ Return ONLY valid JSON matching this exact schema (no markdown, no prose outside
     "title": "Brief trial title",
     "why_relevant": "1 sentence — why this trial matters for this patient"
   },
+  "claim_evidence": {
+    "status_rationale": ["zero or more evidence catalog IDs"],
+    "key_concern": ["zero or more evidence catalog IDs"],
+    "summary": ["zero or more evidence catalog IDs"],
+    "prrt_rationale": ["zero or more evidence catalog IDs"],
+    "cga_trend_detail": ["zero or more evidence catalog IDs"]
+  },
   "generated_at": "YYYY-MM-DD"
 }
 
@@ -72,10 +81,11 @@ Rules:
 - cga_trend: requires ≥2 comparable CgA readings; otherwise "insufficient_data". cga_trend_detail must quote the actual values, units, and dates from the profile (and note it if assay/units changed between readings).
 - next_actions: max 5, ordered urgent→high→medium. Triage: urgent = needs to happen this week regardless of appointment schedule; high = important but can wait for next appointment IF within 2 weeks; medium = worth doing but not time-critical. Do NOT include actions the oncologist has already addressed per clinical judgments. Do NOT include speculative actions without evidence from the profile data. Each action names WHO does WHAT — not just "consider discussing X".
 - timeline: max 6 most relevant upcoming items. Estimate dates where reasonable.
-- best_trial: choose ONLY from trials tracked in the profile — never construct, recall, or guess an NCT ID. Set to null if the profile lists no suitable trial or if the oncologist has ruled the candidates out.
+- best_trial: this is only a trial to discuss, not a patient match or eligibility finding. Choose ONLY from trials tracked in the profile — never construct, recall, or guess an NCT ID. Set to null if the profile lists no potentially relevant trial or if the oncologist has ruled the candidates out. The treating team and trial site determine eligibility.
 - provisional: true for any timeline item or action NOT explicitly confirmed, agreed, or scheduled in the clinical documents. false only for confirmed appointments, agreed treatment plans, or scheduled tests. When uncertain, default to true.
-- If DOTATATE PET has never been done, set prrt_status to "pending_dotatate" and make requesting it a high/urgent action — this is the most important missing test.
-- Always check PRRT eligibility: SSTR positive, Ki-67 < 20%, adequate renal/hepatic function.
+- Treat prrt_status as a screening description of potential fit, never a definitive eligibility decision. The treating team confirms candidacy using receptor imaging, pathology, organ function, prior treatment, and the full clinical context.
+- If DOTATATE PET has never been done, identify that as a data gap. Add an action only when the current record and an active clinical decision make receptor imaging relevant; never automatically make it the top action.
+- claim_evidence and next_actions[].evidence_ids: copy only IDs from the supplied evidence catalog that directly support that specific claim/action. Use [] when no exact span supports it. Never invent an ID or reuse one merely because it is generally related.
 - generated_at: use today's date as provided in the input; if absent, use the date of the most recent document in the profile.
 - Write for a worried but intelligent non-clinician — no unexplained jargon.
 """
@@ -217,6 +227,8 @@ def generate_executive_summary(profile: dict) -> dict:
             f"Upcoming appointments (already recorded — reflect these in the timeline): "
             f"{json.dumps(profile.get('appointments', []), default=str)}\n\n"
             f"Active alerts: {json.dumps([a for a in profile.get('alerts', []) if not a.get('resolved')], default=str)}\n\n"
+            f"Verified evidence catalog (copy only these evidence IDs; [] means no exact span): "
+            f"{evidence_catalog_prompt(profile)}\n\n"
             f"Corrective review feedback (incorporate cautiously; it is not itself a "
             f"clinical fact): {json.dumps([item for item in profile.get('feedback', []) if item.get('assessment') in ('corrected', 'incorrect', 'missed')], default=str)}\n\n"
         )

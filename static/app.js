@@ -7,6 +7,11 @@
   let lastDialogTrigger = null;
   let hadActiveJobs = false;
   let pendingSummary = null;
+  let activeDialogSurface = null;
+  let currentReceipt = null;
+  let patientEvidence = null;
+  let imagingHistoryExpanded = false;
+  let sourceHistoryExpanded = false;
   const failedLoads = new Map();
 
   // ── UI label localization ───────────────────────────────────────────────
@@ -120,6 +125,108 @@
     document.getElementById(`nav-${activeView}`)?.focus();
   }
 
+  function dialogFocusable(surface) {
+    if (!surface) return [];
+    return [...surface.querySelectorAll(
+      'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )].filter(item => !item.hidden && item.offsetParent !== null);
+  }
+
+  function setBackgroundInert(activeTopLevel) {
+    [...document.body.children].forEach(child => {
+      const keep = child === activeTopLevel || child.id === 'feed-backdrop' || child.classList.contains('skip-link');
+      if (keep) {
+        child.inert = false;
+        if (child.dataset.dialogAriaHidden === 'true') {
+          child.removeAttribute('aria-hidden');
+          delete child.dataset.dialogAriaHidden;
+        }
+      } else {
+        child.inert = true;
+        if (!child.hasAttribute('aria-hidden')) {
+          child.setAttribute('aria-hidden', 'true');
+          child.dataset.dialogAriaHidden = 'true';
+        }
+      }
+    });
+  }
+
+  function activateDialog(surface, trigger = document.activeElement) {
+    if (!surface) return;
+    lastDialogTrigger = trigger;
+    activeDialogSurface = surface;
+    const topLevel = surface.closest('body > *') || surface;
+    setBackgroundInert(topLevel);
+    document.body.classList.add('dialog-open');
+    const focusable = dialogFocusable(surface);
+    (focusable[0] || surface).focus();
+  }
+
+  function deactivateDialog(surface) {
+    if (surface && activeDialogSurface !== surface) return;
+    activeDialogSurface = null;
+    [...document.body.children].forEach(child => {
+      child.inert = false;
+      if (child.dataset.dialogAriaHidden === 'true') {
+        child.removeAttribute('aria-hidden');
+        delete child.dataset.dialogAriaHidden;
+      }
+    });
+    document.body.classList.remove('dialog-open');
+    restoreDialogFocus();
+  }
+
+  function trapDialogFocus(event) {
+    if (event.key !== 'Tab' || !activeDialogSurface) return false;
+    const focusable = dialogFocusable(activeDialogSurface);
+    if (!focusable.length) {
+      event.preventDefault();
+      activeDialogSurface.focus();
+      return true;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+      return true;
+    }
+    if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+      return true;
+    }
+    return false;
+  }
+
+  function loadFailureMarkup(label, retryCall) {
+    return `<div class="load-failure" role="alert"><strong>${escHtml(label)} unavailable</strong><span>Nothing was removed. Retry when the connection is available.</span><button class="button secondary" onclick="${retryCall}">Retry</button></div>`;
+  }
+
+  function setFormError(id, message) {
+    const error = document.getElementById(id);
+    if (error) error.textContent = message || '';
+  }
+
+  function updateFormValidity() {
+    const question = (document.getElementById('q-add-input')?.value || '').trim();
+    const judgment = (document.getElementById('judgment-input')?.value || '').trim();
+    const symptom = (document.getElementById('sym-name')?.value || '').trim();
+    const chat = (document.getElementById('chat-input')?.value || '').trim();
+    const questionButton = document.getElementById('q-add-btn');
+    const judgmentButton = document.getElementById('judgment-add-btn');
+    const symptomButton = document.getElementById('sym-add-btn');
+    const chatButton = document.getElementById('chat-send-btn');
+    if (questionButton) questionButton.disabled = !question;
+    if (judgmentButton) judgmentButton.disabled = !judgment;
+    if (symptomButton) symptomButton.disabled = !symptom;
+    if (chatButton && !chatButton.dataset.busy) chatButton.disabled = !chat;
+    if (question) setFormError('q-form-error', '');
+    if (judgment) setFormError('judgment-form-error', '');
+    if (symptom) setFormError('sym-form-error', '');
+    if (chat) setFormError('chat-form-error', '');
+  }
+
   function renderAppState() {
     const banner = document.getElementById('app-state-banner');
     if (!banner) return;
@@ -164,6 +271,7 @@
       loadQuestions(),
       loadJudgments(),
       loadSymptoms(),
+      loadPatientEvidence(),
     ]);
   }
 
@@ -188,6 +296,7 @@
     } else if (name === 'patient') {
       loadStatus();
       loadSymptoms();
+      loadPatientEvidence();
     } else if (name === 'activity') {
       loadTasks();
     } else if (name === 'today') {
@@ -281,9 +390,21 @@
       reportLoadSuccess('status');
       return d;
     } catch(e) {
+      renderStatusFailure();
       reportLoadError('status', e);
       return null;
     }
+  }
+
+  function renderStatusFailure() {
+    const patient = document.getElementById('patient-dx');
+    const treatments = document.getElementById('tx-list');
+    const biomarkers = document.getElementById('bm-list');
+    const alerts = document.getElementById('alerts-list');
+    if (patient) patient.textContent = 'Patient profile unavailable';
+    if (treatments) treatments.innerHTML = loadFailureMarkup('Treatments', 'loadStatus()');
+    if (biomarkers) biomarkers.innerHTML = loadFailureMarkup('Biomarkers', 'loadStatus()');
+    if (alerts) alerts.innerHTML = loadFailureMarkup('Alerts', 'loadStatus()');
   }
 
   function renderLatestResearchUpdate(update) {
@@ -513,6 +634,85 @@
   // ── Executive Summary ───────────────────────────────────────────────────
   let summaryOpen = true;
 
+  async function loadPatientEvidence() {
+    try {
+      patientEvidence = await readJsonResponse(await fetch('/api/patient/evidence'));
+      renderPatientEvidence();
+      reportLoadSuccess('patient-evidence');
+      return patientEvidence;
+    } catch (error) {
+      document.getElementById('imaging-history').innerHTML = loadFailureMarkup('Imaging history', 'loadPatientEvidence()');
+      document.getElementById('source-history').innerHTML = loadFailureMarkup('Source history', 'loadPatientEvidence()');
+      reportLoadError('patient-evidence', error);
+      return null;
+    }
+  }
+
+  function evidenceBadge(status) {
+    const normalized = ['verified', 'missing', 'invalid'].includes(status) ? status : 'missing';
+    const label = normalized === 'verified' ? 'Exact source' : normalized === 'invalid' ? 'Invalid source quote' : 'No exact source';
+    return `<span class="evidence-badge ${normalized}">${label}</span>`;
+  }
+
+  function renderPatientEvidence() {
+    if (!patientEvidence) return;
+    const imaging = patientEvidence.imaging || [];
+    const visibleImaging = imagingHistoryExpanded ? imaging : imaging.slice(0, 3);
+    document.getElementById('imaging-history').innerHTML = visibleImaging.length
+      ? `${visibleImaging.map(item => `
+          <article class="evidence-history-row">
+            <div class="evidence-history-main">
+              <strong>${escHtml(item.modality || 'Imaging')}</strong>
+              <time>${escHtml(fmtDate(item.date || ''))}</time>
+              <p>${escHtml(item.impression || item.findings || 'No impression recorded')}</p>
+            </div>
+            <div class="evidence-history-actions">
+              ${evidenceBadge(item.evidence_status)}
+              ${item.evidence_url ? `<a class="evidence-link" href="${escHtml(item.evidence_url)}" target="_blank" rel="noopener">Open exact span</a>` : ''}
+              ${item.source_url ? `<a class="evidence-link" href="${escHtml(item.source_url)}" target="_blank" rel="noopener">Source details</a>` : ''}
+            </div>
+          </article>`).join('')}
+          ${imaging.length > 3 ? `<button class="history-toggle" onclick="toggleImagingHistory()">${imagingHistoryExpanded ? 'Show recent imaging only' : `Show all ${imaging.length} imaging records`}</button>` : ''}`
+      : '<div class="empty-state">No imaging records yet.</div>';
+
+    const sources = patientEvidence.sources || [];
+    const visibleSources = sourceHistoryExpanded ? sources : sources.slice(0, 5);
+    document.getElementById('source-history').innerHTML = visibleSources.length
+      ? `${visibleSources.map(source => {
+          const sourceUrl = source.artifacts?.text?.url || source.artifacts?.source?.url;
+          const status = source.import_status || 'legacy';
+          return `<article class="source-history-row">
+            <div class="source-history-main">
+              <strong>${escHtml(source.filename || source.document_type || 'Pasted clinical text')}</strong>
+              <span>${escHtml(source.document_summary || 'Clinical source document')}</span>
+              <time>Added ${escHtml(relativeTime(source.ingested_at))}</time>
+            </div>
+            <div class="evidence-history-actions">
+              <span class="import-status ${safeClassToken(status, 'legacy')}">${escHtml(status.replace(/_/g, ' '))}</span>
+              ${sourceUrl ? `<a class="evidence-link" href="${escHtml(sourceUrl)}" target="_blank" rel="noopener">Open source</a>` : ''}
+              ${source.receipt_job_id ? `<button class="evidence-link button-link" data-job-id="${escHtml(source.receipt_job_id)}" onclick="openReceiptJob(this.dataset.jobId)">View import receipt</button>` : ''}
+            </div>
+          </article>`;
+        }).join('')}
+        ${sources.length > 5 ? `<button class="history-toggle" onclick="toggleSourceHistory()">${sourceHistoryExpanded ? 'Show recent sources only' : `Show all ${sources.length} sources`}</button>` : ''}`
+      : '<div class="empty-state">No source documents have been fed yet.</div>';
+  }
+
+  function toggleImagingHistory() {
+    imagingHistoryExpanded = !imagingHistoryExpanded;
+    renderPatientEvidence();
+  }
+
+  function toggleSourceHistory() {
+    sourceHistoryExpanded = !sourceHistoryExpanded;
+    renderPatientEvidence();
+  }
+
+  async function openReceiptJob(jobId) {
+    switchView('activity', document.getElementById('nav-activity'));
+    await selectTask(jobId);
+  }
+
   function toggleSummary() {
     summaryOpen = !summaryOpen;
     document.getElementById('summary-body').classList.toggle('hidden', !summaryOpen);
@@ -658,6 +858,7 @@
       reportLoadSuccess('judgments');
       return js;
     } catch(e) {
+      document.getElementById('judgments-list').innerHTML = loadFailureMarkup('Clinical notes', 'loadJudgments()');
       reportLoadError('judgments', e);
       return [];
     }
@@ -679,8 +880,8 @@
           <div style="font-size:10px;color:var(--text2);margin-top:2px">${escHtml(j.date||'')} · ${lifecycle}${j.scope ? ` · ${escHtml(j.scope)}` : ''}</div>
         </div>
         <div style="display:flex;gap:4px;flex-shrink:0">
-          <button data-category="${safeClassToken(j.category, 'context')}" data-status="${safeClassToken(j.status, 'active')}" onclick="startEditJudgment(this)" title="Edit" style="background:none;border:none;color:var(--text2);cursor:pointer;font-size:11px;padding:0 2px;opacity:0.4;line-height:1" onmouseenter="this.style.opacity='1';this.style.color='var(--blue)'" onmouseleave="this.style.opacity='0.4';this.style.color='var(--text2)'">✎</button>
-          <button onclick="deleteJudgment(this.closest('.judgment-row').dataset.judgmentId)" title="Delete" style="background:none;border:none;color:var(--text2);cursor:pointer;font-size:12px;padding:0 2px;opacity:0.4;line-height:1" onmouseenter="this.style.opacity='1';this.style.color='var(--red)'" onmouseleave="this.style.opacity='0.4';this.style.color='var(--text2)'">✕</button>
+          <button class="judgment-action" data-category="${safeClassToken(j.category, 'context')}" data-status="${safeClassToken(j.status, 'active')}" onclick="startEditJudgment(this)" title="Edit clinical note" aria-label="Edit clinical note">✎</button>
+          <button class="judgment-action danger" onclick="deleteJudgment(this.closest('.judgment-row').dataset.judgmentId)" title="Delete clinical note" aria-label="Delete clinical note">✕</button>
         </div>
       </div>`;}).join('')
     : '<div style="font-size:12px;color:var(--text2);padding:12px 0;text-align:center">No clinical notes yet.<br>Add notes after appointments or dismiss actions with feedback.</div>';
@@ -755,7 +956,11 @@
     const input = document.getElementById('judgment-input');
     const cat   = document.getElementById('judgment-cat');
     const text  = (input?.value || '').trim();
-    if (!text) return;
+    if (!text) {
+      setFormError('judgment-form-error', 'Enter the clinician’s guidance before adding the note.');
+      updateFormValidity();
+      return;
+    }
     input.value = '';
     try {
       await requireOk(await fetch('/api/judgments/add', {
@@ -764,10 +969,13 @@
         body: JSON.stringify({ text, category: cat?.value || 'context' }),
       }));
       await loadJudgments();
+      setFormError('judgment-form-error', '');
     } catch (error) {
       input.value = text;
+      setFormError('judgment-form-error', error.message || 'The note could not be added.');
       reportLoadError('action', error);
     }
+    updateFormValidity();
   }
 
   async function deleteJudgment(jid) {
@@ -788,6 +996,7 @@
       reportLoadSuccess('symptoms');
       return list;
     } catch (e) {
+      document.getElementById('symptoms-list').innerHTML = loadFailureMarkup('Symptoms', 'loadSymptoms()');
       reportLoadError('symptoms', e);
       return [];
     }
@@ -812,7 +1021,7 @@
             ${sev}
             <span class="sym-name">${escHtml(s.symptom || '')}</span>
             ${src}
-            <button class="sym-del" onclick="deleteSymptom(this.closest('.sym-row').dataset.id)" title="Delete">✕</button>
+            <button class="sym-del" onclick="deleteSymptom(this.closest('.sym-row').dataset.id)" title="Delete symptom" aria-label="Delete symptom">✕</button>
           </div>
           ${note}
           ${related}
@@ -822,7 +1031,11 @@
 
   async function addSymptom() {
     const name = document.getElementById('sym-name').value.trim();
-    if (!name) return;
+    if (!name) {
+      setFormError('sym-form-error', 'Enter a symptom before logging it.');
+      updateFormValidity();
+      return;
+    }
     const sev = document.getElementById('sym-sev').value;
     const note = document.getElementById('sym-note').value.trim();
     try {
@@ -839,9 +1052,12 @@
       document.getElementById('sym-sev').value = '';
       document.getElementById('sym-note').value = '';
       await loadSymptoms();
+      setFormError('sym-form-error', '');
     } catch (e) {
+      setFormError('sym-form-error', e.message || 'The symptom could not be logged.');
       reportLoadError('action', e);
     }
+    updateFormValidity();
   }
 
   async function deleteSymptom(sid) {
@@ -876,6 +1092,7 @@
       reportLoadSuccess('summary');
       return d;
     } catch(e) {
+      document.getElementById('summary-body').innerHTML = loadFailureMarkup('Assessment', 'loadSummary()');
       renderFreshness(null, e);
       reportLoadError('summary', e);
       return null;
@@ -938,6 +1155,21 @@
     }
   }
 
+  function renderClaimEvidence(items) {
+    const evidence = Array.isArray(items) && items.length
+      ? items
+      : [{ evidence_status: 'missing', label: 'No exact source span linked' }];
+    return `<div class="claim-evidence">${evidence.map(item => {
+      const status = ['verified', 'missing', 'invalid'].includes(item.evidence_status)
+        ? item.evidence_status
+        : 'missing';
+      if (status === 'verified' && item.evidence_url) {
+        return `<a class="claim-evidence-link verified" href="${escHtml(item.evidence_url)}" target="_blank" rel="noopener">Evidence: ${escHtml(item.label)}</a>`;
+      }
+      return `<span class="claim-evidence-link ${status}">${status === 'invalid' ? 'Invalid evidence link' : 'Evidence not linked'}</span>`;
+    }).join('')}</div>`;
+  }
+
   function renderSummary(d) {
     const body = document.getElementById('summary-body');
     const inline = document.getElementById('summary-status-inline');
@@ -976,20 +1208,24 @@
       html += `<span class="s-pill" title="${escHtml(d.status_rationale || '')}">CONFIDENCE: ${escHtml(d.status_confidence.toUpperCase())}</span>`;
     }
     const prrtLabels = {
-      eligible: 'PRRT: ELIGIBLE', likely_eligible: 'PRRT: LIKELY ELIGIBLE',
-      pending_dotatate: 'PRRT: NEEDS DOTATATE', not_eligible: 'PRRT: NOT ELIGIBLE', unknown: 'PRRT: UNKNOWN'
+      eligible: 'PRRT: POTENTIAL FIT', likely_eligible: 'PRRT: MAY FIT',
+      pending_dotatate: 'PRRT: NEEDS RECEPTOR-IMAGING REVIEW',
+      not_eligible: 'PRRT: NOT SUPPORTED BY CURRENT RECORD', unknown: 'PRRT: NOT ASSESSED'
     };
-    html += `<span class="s-pill prrt-${safeClassToken(d.prrt_status, 'unknown')}" title="${escHtml(d.prrt_rationale||'')}">${escHtml(prrtLabels[d.prrt_status] || 'PRRT: UNKNOWN')}</span>`;
+    html += `<span class="s-pill prrt-${safeClassToken(d.prrt_status, 'unknown')}" title="${escHtml(d.prrt_rationale||'')}">${escHtml(prrtLabels[d.prrt_status] || 'PRRT: NOT ASSESSED')}</span>`;
     if (d.cga_trend) {
       const cgaLabels = { rising: '↑ CgA RISING', stable: '→ CgA STABLE', falling: '↓ CgA FALLING', insufficient_data: 'CgA: NO DATA' };
       html += `<span class="s-pill cga-${safeClassToken(d.cga_trend, 'insufficient_data')}" title="${escHtml(d.cga_trend_detail||'')}">${escHtml(cgaLabels[d.cga_trend] || 'CgA: NO DATA')}</span>`;
-      if (d.cga_trend_detail) {
-        html += `<span style="font-family:var(--mono);font-size:10px;color:var(--text2)">${escHtml(d.cga_trend_detail)}</span>`;
-      }
     }
     html += `</div>`;
+    if (d.cga_trend_detail) {
+      html += `<div class="summary-rationale"><strong>CgA trend:</strong> ${escHtml(d.cga_trend_detail)}${renderClaimEvidence(d.claim_evidence?.claims?.cga_trend_detail)}</div>`;
+    }
     if (d.status_rationale) {
-      html += `<div style="font-size:11px;color:var(--text2);margin:6px 22px 10px">${escHtml(d.status_rationale)}</div>`;
+      html += `<div class="summary-rationale">${escHtml(d.status_rationale)}${renderClaimEvidence(d.claim_evidence?.claims?.status_rationale)}</div>`;
+    }
+    if (d.prrt_rationale) {
+      html += `<div class="summary-rationale"><strong>PRRT screening context:</strong> ${escHtml(d.prrt_rationale)}${renderClaimEvidence(d.claim_evidence?.claims?.prrt_rationale)}</div>`;
     }
 
     // Key concern
@@ -997,20 +1233,13 @@
       html += `<div class="summary-concern">
         <div class="summary-concern-label">Key concern</div>
         ${escHtml(d.key_concern)}
+        ${renderClaimEvidence(d.claim_evidence?.claims?.key_concern)}
       </div>`;
     }
 
     // Narrative
     if (d.summary) {
-      html += `<div class="summary-narrative">${escHtml(d.summary)}</div>`;
-    }
-
-    if ((d.evidence_links || []).length) {
-      html += `<div class="summary-section"><div class="summary-section-label">Evidence</div>
-        <div style="display:flex;flex-wrap:wrap;gap:6px">${d.evidence_links.map(link => {
-          const url = link.evidence_url || link.source_url;
-          return `<a href="${escHtml(url)}" target="_blank" rel="noopener" class="btn-digest" style="text-decoration:none;font-size:10px">${escHtml(link.label)} · ${escHtml(link.evidence_status)}</a>`;
-        }).join('')}</div></div>`;
+      html += `<div class="summary-narrative">${escHtml(d.summary)}${renderClaimEvidence(d.claim_evidence?.claims?.summary)}</div>`;
     }
 
     html += `<div style="margin:18px 22px 2px"><button class="btn-digest" style="border-color:var(--amber);color:var(--amber)" onclick="reportMissedSummary()">⚑ Report something missed or incorrect</button>${d.feedback_pending ? ` <span style="font-size:10px;color:var(--amber)">${escHtml(d.feedback_pending)} review item(s) recorded</span>` : ''}</div>`;
@@ -1029,6 +1258,7 @@
           <div class="action-text">
             <div class="action-main">${escHtml(a.action)}${provBadge}</div>
             ${a.rationale ? `<div class="action-sub">${escHtml(a.rationale)}</div>` : ''}
+            ${renderClaimEvidence(d.claim_evidence?.actions?.[idx])}
           </div>
           <div class="action-timeframe">${escHtml(a.due_date ? `Due ${fmtDate(a.due_date)}` : (a.timeframe || 'Review with care team'))}</div>
           <button onclick="dismissAction(${idx})" aria-label="Review or dismiss this action" title="Review or dismiss" class="icon-button action-dismiss-btn">⋯</button>
@@ -1056,10 +1286,10 @@
       </div>`;
     }
 
-    // Best trial
+    // Trial for clinician discussion (never presented as an eligibility finding).
     if (d.best_trial && d.best_trial.nct_id) {
       html += `<div class="summary-section">
-        <div class="summary-section-label">Best matched trial</div>
+        <div class="summary-section-label">Trial to discuss</div>
         <div class="trial-chip">
           <a class="trial-chip-id" href="https://clinicaltrials.gov/study/${encodeURIComponent(d.best_trial.nct_id)}" target="_blank" rel="noopener noreferrer">${escHtml(d.best_trial.nct_id)}</a>
           <span class="trial-chip-why">${escHtml(d.best_trial.why_relevant||d.best_trial.title||'')}</span>
@@ -1085,13 +1315,15 @@
   }
 
   async function openModal(type) {
-    lastDialogTrigger = document.activeElement;
+    const trigger = document.activeElement;
     const overlay = document.getElementById('modal-overlay');
     overlay.classList.add('open');
+    overlay.setAttribute('aria-hidden', 'false');
     document.getElementById('modal-title').textContent =
       type === 'trials' ? 'Clinical trials' : 'Research papers';
     document.getElementById('modal-body').innerHTML =
       '<div class="modal-empty">Loading…</div>';
+    activateDialog(overlay.querySelector('.modal'), trigger);
 
     try {
       const r = await fetch(`/api/${type}`);
@@ -1101,13 +1333,13 @@
       document.getElementById('modal-body').innerHTML =
         `<div class="modal-empty">Could not load these items. ${escHtml(e.message)}</div>`;
     }
-    overlay.querySelector('.icon-button')?.focus();
   }
 
   function closeModal(e) {
     if (!e || e.target === document.getElementById('modal-overlay') || !e.target) {
       document.getElementById('modal-overlay').classList.remove('open');
-      restoreDialogFocus();
+      document.getElementById('modal-overlay').setAttribute('aria-hidden', 'true');
+      deactivateDialog(document.querySelector('#modal-overlay .modal'));
     }
   }
 
@@ -1148,7 +1380,7 @@
             ${t.phase ? `<span class="modal-tag">${escHtml(t.phase)}</span>` : ''}
             ${(t.countries||[]).length ? `<span class="modal-item-sub">${escHtml(t.countries.join(', '))}</span>` : ''}
             ${url ? `<a class="modal-item-link" href="${escHtml(url)}" target="_blank" rel="noopener noreferrer">View ↗</a>` : ''}
-            <button class="modal-close" data-item-id="${escHtml(t.nct_id)}" style="margin-left:auto" title="Remove" onclick="removeItem('trials',this.dataset.itemId,this)">✕</button>
+            <button class="modal-close" data-item-id="${escHtml(t.nct_id)}" style="margin-left:auto" title="Remove tracked trial" aria-label="Remove tracked trial" onclick="removeItem('trials',this.dataset.itemId,this)">✕</button>
           </div>
           ${t.brief_summary ? `<div class="modal-item-sub" style="margin-top:5px;color:var(--text2)">${escHtml(t.brief_summary.slice(0,200))}${t.brief_summary.length>200?'…':''}</div>` : ''}
           <div style="font-family:var(--mono);font-size:10px;color:var(--text2);margin-top:4px">Added ${escHtml(fmtDate(t.date_added||''))}</div>
@@ -1168,7 +1400,7 @@
             <span class="modal-item-id">PMID ${escHtml(p.pmid || '')}</span>
             <span class="modal-item-sub">${escHtml(p.journal || '')}${p.date ? ' · ' + escHtml(p.date) : ''}</span>
             ${url ? `<a class="modal-item-link" href="${escHtml(url)}" target="_blank" rel="noopener noreferrer">PubMed ↗</a>` : ''}
-            <button class="modal-close" data-item-id="${escHtml(p.pmid)}" style="margin-left:auto" title="Remove" onclick="removeItem('papers',this.dataset.itemId,this)">✕</button>
+            <button class="modal-close" data-item-id="${escHtml(p.pmid)}" style="margin-left:auto" title="Remove tracked paper" aria-label="Remove tracked paper" onclick="removeItem('papers',this.dataset.itemId,this)">✕</button>
           </div>
           ${p.authors ? `<div class="modal-item-sub" style="margin-top:3px">${escHtml(p.authors)}</div>` : ''}
           <div style="font-family:var(--mono);font-size:10px;color:var(--text2);margin-top:4px">Query: ${escHtml(p.query||'')} · Added ${escHtml(fmtDate(p.date_added||''))}</div>
@@ -1190,6 +1422,9 @@
       reportLoadSuccess('tasks');
       return tasks;
     } catch(e) {
+      document.getElementById('task-list').innerHTML = loadFailureMarkup('Processing activity', 'loadTasks()');
+      document.getElementById('log-count').textContent = 'Unavailable';
+      updateHeaderStatus(null, e);
       reportLoadError('tasks', e);
       return [];
     }
@@ -1222,16 +1457,23 @@
       </button>`).join('');
   }
 
-  function updateHeaderStatus(tasks) {
-    const running = tasks.filter(t => t.status === 'running' || t.status === 'queued');
+  function updateHeaderStatus(tasks, error = null) {
+    const running = Array.isArray(tasks)
+      ? tasks.filter(t => t.status === 'running' || t.status === 'queued')
+      : [];
     const bar = document.getElementById('running-bar');
     const dot = document.getElementById('pulse-dot');
     const lbl = document.getElementById('header-status');
     const navCount = document.getElementById('nav-running-count');
-    if (running.length) {
+    if (error) {
+      bar.classList.remove('visible');
+      dot.style.background = 'var(--red)';
+      lbl.textContent = 'Unavailable';
+      if (navCount) navCount.hidden = true;
+    } else if (running.length) {
       bar.classList.add('visible');
       dot.style.background = 'var(--amber)';
-      lbl.textContent = `${running.length} active`;
+      lbl.textContent = `Processing ${running.length}`;
       if (navCount) {
         navCount.textContent = running.length;
         navCount.hidden = false;
@@ -1239,7 +1481,7 @@
     } else {
       bar.classList.remove('visible');
       dot.style.background = 'var(--accent)';
-      lbl.textContent = 'Up to date';
+      lbl.textContent = 'Idle';
       if (navCount) navCount.hidden = true;
     }
   }
@@ -1249,9 +1491,203 @@
     report.classList.add('collapsed');
     report.setAttribute('aria-hidden', 'true');
     selectedTaskId = null;
+    currentReceipt = null;
     // Re-render task list to clear selection highlight
     fetch('/api/jobs').then(readJsonResponse).then(tasks => renderTasks(tasks)).catch(error => reportLoadError('tasks', error));
-    restoreDialogFocus();
+    deactivateDialog(report);
+  }
+
+  function receiptValueSummary(value, category) {
+    if (value == null) return 'Not recorded';
+    if (typeof value !== 'object') return String(value);
+    if (category === 'biomarkers') return `${value.marker || 'Biomarker'}: ${value.value ?? '—'} ${value.unit || ''}`.trim();
+    if (category === 'imaging') return `${value.modality || 'Imaging'}: ${value.impression || value.findings || 'Finding recorded'}`;
+    if (category === 'symptoms') return `${value.symptom || 'Symptom'}${value.severity ? ` (severity ${value.severity})` : ''}`;
+    if (category === 'appointments') return `${value.date || ''} ${value.description || value.type || 'Appointment'}`.trim();
+    if (category === 'documents') return value.summary || value.type || 'Document summary';
+    if (category === 'alerts') return value.message || 'Safety alert';
+    return JSON.stringify(value);
+  }
+
+  function renderReceipt(receipt) {
+    currentReceipt = receipt;
+    const status = safeClassToken(receipt.status, 'active');
+    const changes = receipt.changes || [];
+    return `<section class="receipt-card" aria-labelledby="receipt-heading">
+      <div class="receipt-header">
+        <div>
+          <p class="eyebrow">Document reconciliation</p>
+          <h3 id="receipt-heading">${escHtml(receipt.filename || receipt.document_type || 'Pasted clinical text')}</h3>
+          <p>${escHtml(receipt.document_summary || 'Structured import receipt')} · ${escHtml(relativeTime(receipt.ingested_at))}</p>
+        </div>
+        <span class="import-status ${status}">${escHtml((receipt.status || 'active').replace(/_/g, ' '))}</span>
+      </div>
+      <div class="receipt-summary">
+        <span>${receipt.counts?.added || 0} added</span>
+        <span>${(receipt.counts?.updated || 0) + (receipt.counts?.conflict || 0)} changed</span>
+        <span>${receipt.counts?.unchanged || 0} unchanged</span>
+        <a href="${escHtml(receipt.source_url)}" target="_blank" rel="noopener">Source details</a>
+      </div>
+      <div class="receipt-error" id="receipt-error" role="alert" aria-live="polite"></div>
+      <div class="receipt-changes">${changes.map(change => {
+        const operation = safeClassToken(change.operation, 'unchanged');
+        const state = safeClassToken(change.state, 'active');
+        const editable = change.editable_fields?.length && ['active', 'corrected'].includes(change.state) && !change.conflicted;
+        const removable = change.target?.kind !== 'none' && ['active', 'corrected'].includes(change.state) && !change.conflicted;
+        const history = change.history?.length
+          ? `<span class="receipt-history">${change.history.length} audit event${change.history.length === 1 ? '' : 's'}</span>`
+          : '';
+        const corrected = change.state === 'corrected';
+        const firstValue = corrected ? change.after : change.before;
+        const secondValue = corrected ? change.effective_value : change.after;
+        const firstLabel = corrected ? 'Original extraction' : 'Before';
+        const secondLabel = corrected ? 'Caregiver correction' : 'From this document';
+        return `<article class="receipt-change ${operation} ${state}" data-change-id="${escHtml(change.id)}">
+          <div class="receipt-change-heading">
+            <strong>${escHtml(change.label)}</strong>
+            <span class="change-badge ${operation}">${escHtml(change.operation)}</span>
+            ${change.state !== 'active' ? `<span class="change-badge state">${escHtml(change.state)}</span>` : ''}
+          </div>
+          ${corrected || change.operation === 'updated' || change.operation === 'conflict'
+            ? `<div class="value-diff"><span><small>${firstLabel}</small>${escHtml(receiptValueSummary(firstValue, change.category))}</span><span class="diff-arrow" aria-hidden="true">→</span><span><small>${secondLabel}</small>${escHtml(receiptValueSummary(secondValue, change.category))}</span></div>`
+            : `<div class="receipt-value">${escHtml(receiptValueSummary(change.effective_value, change.category))}</div>`}
+          <div class="receipt-provenance">
+            ${evidenceBadge(change.evidence_status)}
+            ${change.evidence_url ? `<a href="${escHtml(change.evidence_url)}" target="_blank" rel="noopener">Open exact span</a>` : ''}
+            ${change.original_evidence_url ? `<a href="${escHtml(change.original_evidence_url)}" target="_blank" rel="noopener">Original extraction span (before correction)</a>` : ''}
+            ${history}
+          </div>
+          ${change.conflicted ? `<div class="receipt-conflict">${escHtml(change.conflict_reason || 'This patient value changed later. Reload before editing.')}</div>` : ''}
+          <div class="receipt-edit-slot"></div>
+          ${(editable || removable) ? `<div class="receipt-actions">
+            ${editable ? `<button class="button secondary" data-change-id="${escHtml(change.id)}" onclick="startReceiptCorrection(this.dataset.changeId)">Correct value</button>` : ''}
+            ${removable ? `<button class="button danger-secondary" data-change-id="${escHtml(change.id)}" onclick="removeReceiptChange(this.dataset.changeId)">Remove imported value</button>` : ''}
+          </div>` : ''}
+        </article>`;
+      }).join('')}</div>
+      ${receipt.status !== 'undone' ? `<div class="receipt-undo">
+        <div><strong>Undo this document’s structured changes</strong><p>The original source remains in history. Research findings are not deleted.</p></div>
+        <button class="button danger-secondary" onclick="undoReceipt()" ${receipt.can_undo ? '' : 'disabled'}>Undo document changes</button>
+      </div>` : ''}
+    </section>`;
+  }
+
+  function receiptFieldInput(field, value) {
+    const id = `receipt-field-${field}`;
+    if (field === 'key_findings') {
+      return `<label><span>Key findings (one per line)</span><textarea id="${id}" data-field="${field}" data-kind="array">${escHtml((value || []).join('\n'))}</textarea></label>`;
+    }
+    if (field === 'new_lesions' || typeof value === 'boolean') {
+      return `<label><span>${escHtml(field.replace(/_/g, ' '))}</span><select id="${id}" data-field="${field}" data-kind="boolean"><option value=""${value == null ? ' selected' : ''}>Not set</option><option value="true"${value === true ? ' selected' : ''}>Yes</option><option value="false"${value === false ? ' selected' : ''}>No</option></select></label>`;
+    }
+    const kind = field === 'severity' || typeof value === 'number' ? 'number' : 'string';
+    return `<label><span>${escHtml(field.replace(/_/g, ' '))}</span><input id="${id}" data-field="${field}" data-kind="${kind}" value="${escHtml(value ?? '')}"></label>`;
+  }
+
+  function startReceiptCorrection(changeId) {
+    const change = currentReceipt?.changes?.find(item => item.id === changeId);
+    const row = document.querySelector(`.receipt-change[data-change-id="${CSS.escape(changeId)}"]`);
+    const slot = row?.querySelector('.receipt-edit-slot');
+    if (!change || !slot || change.conflicted) return;
+    const current = change.effective_value;
+    const fields = change.editable_fields || [];
+    const inputs = change.target?.kind === 'collection'
+      ? fields.map(field => receiptFieldInput(field, current?.[field])).join('')
+      : receiptFieldInput('value', current);
+    slot.innerHTML = `<div class="receipt-editor">
+      ${inputs}
+      <div class="receipt-editor-actions">
+        <button class="button primary" data-change-id="${escHtml(changeId)}" onclick="saveReceiptCorrection(this.dataset.changeId)">Save correction</button>
+        <button class="button secondary" onclick="this.closest('.receipt-editor').remove()">Cancel</button>
+      </div>
+    </div>`;
+    slot.querySelector('input, textarea, select')?.focus();
+  }
+
+  function parsedReceiptInput(input) {
+    if (input.dataset.kind === 'array') return input.value.split('\n').map(item => item.trim()).filter(Boolean);
+    if (input.dataset.kind === 'boolean') return input.value === '' ? null : input.value === 'true';
+    if (input.dataset.kind === 'number') {
+      if (!input.value.trim()) return null;
+      const value = Number(input.value);
+      return Number.isFinite(value) ? value : input.value;
+    }
+    return input.value.trim() || null;
+  }
+
+  async function saveReceiptCorrection(changeId) {
+    const change = currentReceipt?.changes?.find(item => item.id === changeId);
+    const row = document.querySelector(`.receipt-change[data-change-id="${CSS.escape(changeId)}"]`);
+    const inputs = [...(row?.querySelectorAll('.receipt-editor [data-field]') || [])];
+    if (!change || !inputs.length) return;
+    let replacement;
+    if (change.target?.kind === 'collection') {
+      replacement = Object.fromEntries(inputs.map(input => [input.dataset.field, parsedReceiptInput(input)]));
+    } else {
+      replacement = parsedReceiptInput(inputs[0]);
+    }
+    await submitReceiptMutation(
+      `/api/jobs/${encodeURIComponent(currentReceipt.job_id)}/receipt/changes/${encodeURIComponent(changeId)}/correct`,
+      {
+        receipt_revision: currentReceipt.receipt_revision,
+        target_token: change.target_token,
+        replacement,
+      },
+    );
+  }
+
+  async function removeReceiptChange(changeId) {
+    const change = currentReceipt?.changes?.find(item => item.id === changeId);
+    if (!change || !confirm(`Remove the imported value “${change.label}”? The original source remains available.`)) return;
+    await submitReceiptMutation(
+      `/api/jobs/${encodeURIComponent(currentReceipt.job_id)}/receipt/changes/${encodeURIComponent(changeId)}/remove`,
+      {
+        receipt_revision: currentReceipt.receipt_revision,
+        target_token: change.target_token,
+      },
+    );
+  }
+
+  async function undoReceipt() {
+    if (!currentReceipt?.can_undo || !confirm('Undo this document’s structured changes? The original source and audit history will remain.')) return;
+    await submitReceiptMutation(
+      `/api/jobs/${encodeURIComponent(currentReceipt.job_id)}/receipt/undo`,
+      {
+        receipt_revision: currentReceipt.receipt_revision,
+        undo_token: currentReceipt.undo_token,
+      },
+    );
+  }
+
+  async function submitReceiptMutation(url, body) {
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      let data;
+      try {
+        data = await response.json();
+      } catch (_) {
+        throw new Error(`The server returned an invalid response (${response.status}).`);
+      }
+      if (!response.ok) {
+        if (response.status === 409 && data.receipt) {
+          document.getElementById('panel-body').querySelector('.receipt-card')?.remove();
+          document.getElementById('panel-body').insertAdjacentHTML('afterbegin', renderReceipt(data.receipt));
+        }
+        throw new Error(data.error || `Request failed (${response.status})`);
+      }
+      const existing = document.getElementById('panel-body').querySelector('.receipt-card');
+      if (existing) existing.outerHTML = renderReceipt(data.receipt);
+      await Promise.allSettled([loadStatus(), loadSummary(), loadPatientEvidence()]);
+      reportLoadSuccess('action');
+    } catch (error) {
+      const target = document.getElementById('receipt-error');
+      if (target) target.textContent = error.message || 'The receipt could not be updated.';
+      reportLoadError('action', error);
+    }
   }
 
   async function selectTask(id) {
@@ -1261,13 +1697,17 @@
     const report = document.getElementById('report-panel');
     report.classList.remove('collapsed');
     report.setAttribute('aria-hidden', 'false');
+    activateDialog(report, lastDialogTrigger);
     // Re-render task list to update selection
     const r = await fetch('/api/jobs');
     const tasks = await readJsonResponse(r);
     renderTasks(tasks);
 
     let task = tasks.find(t => t.id === id);
-    if (!task) return;
+    if (!task) {
+      document.getElementById('panel-body').innerHTML = loadFailureMarkup('Activity detail', 'loadTasks()');
+      return;
+    }
     if (task.status === 'done' || task.status === 'error' || task.status === 'interrupted') {
       try {
         task = await readJsonResponse(await fetch(`/api/jobs/${encodeURIComponent(id)}`));
@@ -1278,6 +1718,17 @@
 
     const panel = document.getElementById('panel-body');
     const copyBtn = document.getElementById('copy-btn');
+
+    let receiptHtml = '';
+    currentReceipt = null;
+    if (task.receipt_url) {
+      try {
+        const receipt = await readJsonResponse(await fetch(task.receipt_url));
+        receiptHtml = renderReceipt(receipt);
+      } catch (error) {
+        receiptHtml = `<div class="receipt-error visible">The import receipt could not be loaded. ${escHtml(error.message)}</div>`;
+      }
+    }
 
     if (task.status === 'running' || task.status === 'queued') {
       panel.innerHTML = `
@@ -1297,21 +1748,21 @@
     }
 
     if (task.status === 'error') {
-      panel.innerHTML = `<div class="report-text" style="color:var(--red)">Error:\n\n${escHtml(task.error || 'Unknown error')}</div>`;
+      panel.innerHTML = `${receiptHtml}<div class="report-text" style="color:var(--red)">Error:\n\n${escHtml(task.error || 'Unknown error')}</div>`;
       copyBtn.classList.remove('visible');
       currentReportText = '';
       return;
     }
 
     if (task.status === 'interrupted') {
-      panel.innerHTML = `<div class="report-text" style="color:var(--amber)">Interrupted:\n\n${escHtml(task.retry_guidance || task.error || 'Re-submit this request to retry.')}</div>`;
+      panel.innerHTML = `${receiptHtml}<div class="report-text" style="color:var(--amber)">Interrupted:\n\n${escHtml(task.retry_guidance || task.error || 'Re-submit this request to retry.')}</div>`;
       copyBtn.classList.remove('visible');
       currentReportText = '';
       return;
     }
 
     // Show key findings chips if present
-    let html = '';
+    let html = receiptHtml;
     if (task.key_findings && task.key_findings.length) {
       html += `<div class="findings-chips">${task.key_findings.map(f =>
         `<span class="finding-chip">${escHtml(f)}</span>`).join('')}</div>`;
@@ -1385,21 +1836,25 @@
     const pop = document.getElementById('feed-popover');
     const back = document.getElementById('feed-backdrop');
     const willShow = (typeof force === 'boolean') ? force : !pop.classList.contains('visible');
-    if (willShow) lastDialogTrigger = document.activeElement;
+    const trigger = document.activeElement;
     pop.classList.toggle('visible', willShow);
     back.classList.toggle('visible', willShow);
     pop.setAttribute('aria-hidden', String(!willShow));
     if (willShow) {
+      const error = document.getElementById('feed-form-error');
+      error.hidden = true;
+      error.textContent = '';
+      activateDialog(pop, trigger);
       setTimeout(() => {
         const ta = document.getElementById('feed-textarea');
         if (ta && document.getElementById('tab-text').classList.contains('visible')) ta.focus();
       }, 50);
     } else {
-      pop.querySelector('.dialog-error')?.remove();
-      restoreDialogFocus();
+      deactivateDialog(pop);
     }
   }
   document.addEventListener('keydown', (e) => {
+    if (trapDialogFocus(e)) return;
     if (e.key !== 'Escape') return;
     const pop = document.getElementById('feed-popover');
     if (pop?.classList.contains('visible')) {
@@ -1422,22 +1877,49 @@
     const fileButton = document.getElementById('feed-tab-file');
     textButton.classList.toggle('active', tab === 'text');
     textButton.setAttribute('aria-selected', String(tab === 'text'));
+    textButton.tabIndex = tab === 'text' ? 0 : -1;
     fileButton.classList.toggle('active', tab === 'file');
     fileButton.setAttribute('aria-selected', String(tab === 'file'));
+    fileButton.tabIndex = tab === 'file' ? 0 : -1;
     document.getElementById('tab-text').classList.toggle('visible', tab === 'text');
     document.getElementById('tab-text').setAttribute('aria-hidden', String(tab !== 'text'));
     document.getElementById('tab-file').classList.toggle('visible', tab === 'file');
     document.getElementById('tab-file').setAttribute('aria-hidden', String(tab !== 'file'));
   }
 
+  function handleFeedTabKeydown(event) {
+    const tabs = [document.getElementById('feed-tab-text'), document.getElementById('feed-tab-file')];
+    const current = tabs.indexOf(document.activeElement);
+    if (current < 0) return;
+    let next = current;
+    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') next = (current + 1) % tabs.length;
+    else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') next = (current - 1 + tabs.length) % tabs.length;
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = tabs.length - 1;
+    else return;
+    event.preventDefault();
+    switchTab(next === 0 ? 'text' : 'file');
+    tabs[next].focus();
+  }
+
   function updateCharCount() {
-    const n = document.getElementById('feed-textarea').value.length;
+    const value = document.getElementById('feed-textarea').value;
+    const n = value.length;
     document.getElementById('char-count').textContent = `${n.toLocaleString()} characters`;
+    document.getElementById('btn-feed').disabled = value.trim().length === 0;
+    if (value.trim()) {
+      const error = document.getElementById('feed-form-error');
+      error.hidden = true;
+      error.textContent = '';
+    }
   }
 
   async function feedText() {
     const text = document.getElementById('feed-textarea').value.trim();
-    if (!text) return;
+    if (!text) {
+      showFeedError('Paste clinical text before processing the document.');
+      return;
+    }
     if (!await submitFeed(text)) return;
     document.getElementById('feed-textarea').value = '';
     updateCharCount();
@@ -1476,15 +1958,9 @@
   }
 
   function showFeedError(message) {
-    const pop = document.getElementById('feed-popover');
-    let error = pop.querySelector('.dialog-error');
-    if (!error) {
-      error = document.createElement('div');
-      error.className = 'dialog-error';
-      error.setAttribute('role', 'alert');
-      pop.querySelector('.feed-tabs').before(error);
-    }
+    const error = document.getElementById('feed-form-error');
     error.textContent = message || 'The document could not be submitted.';
+    error.hidden = false;
   }
 
   async function handleDrop(e) {
@@ -1502,6 +1978,20 @@
 
   async function processFile(file) {
     const btn = document.getElementById('btn-feed');
+    const allowed = ['text/plain', 'text/markdown', 'application/pdf'];
+    const extensionAllowed = /\.(txt|text|md|pdf)$/i.test(file?.name || '');
+    if (!file || file.size === 0) {
+      showFeedError('Choose a non-empty text, Markdown, or PDF file.');
+      return false;
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      showFeedError('The file exceeds the 20 MB upload limit.');
+      return false;
+    }
+    if (!extensionAllowed && !allowed.includes(file.type)) {
+      showFeedError('Choose a .txt, .md, or .pdf file.');
+      return false;
+    }
     btn.disabled = true;
     try {
       const form = new FormData();
@@ -1518,7 +2008,7 @@
       showFeedError(e.message);
       return false;
     } finally {
-      btn.disabled = false;
+      updateCharCount();
     }
   }
 
@@ -1612,6 +2102,7 @@
       reportLoadSuccess('questions');
       return qs;
     } catch(e) {
+      document.getElementById('q-list').innerHTML = loadFailureMarkup('Questions', 'loadQuestions()');
       reportLoadError('questions', e);
       return [];
     }
@@ -1688,7 +2179,11 @@
     const inputId = 'q-add-input';
     const input = document.getElementById(inputId);
     const text = (input?.value || '').trim();
-    if (!text) return;
+    if (!text) {
+      setFormError('q-form-error', 'Enter a question before adding it.');
+      updateFormValidity();
+      return;
+    }
     input.value = '';
     try {
       await readJsonResponse(await fetch('/api/questions/add', {
@@ -1697,10 +2192,13 @@
         body: JSON.stringify({ text }),
       }));
       await loadQuestions();
+      setFormError('q-form-error', '');
     } catch(e) {
       input.value = text;
+      setFormError('q-form-error', e.message || 'The question could not be added.');
       reportLoadError('action', e);
     }
+    updateFormValidity();
   }
 
   async function toggleQuestion(qid) {
@@ -1731,10 +2229,11 @@
     panel.style.display = chatOpen ? 'flex' : 'none';
     panel.setAttribute('aria-hidden', String(!chatOpen));
     if (chatOpen) {
-      lastDialogTrigger = document.activeElement;
+      const trigger = document.activeElement;
+      activateDialog(panel, trigger);
       setTimeout(() => document.getElementById('chat-input')?.focus(), 50);
     } else {
-      restoreDialogFocus();
+      deactivateDialog(panel);
     }
   }
 
@@ -1755,6 +2254,7 @@
   function sendSuggestion(btn) {
     const text = btn.textContent;
     document.getElementById('chat-input').value = text;
+    updateFormValidity();
     sendChat();
   }
 
@@ -1898,13 +2398,19 @@
     const input = document.getElementById('chat-input');
     const btn = document.getElementById('chat-send-btn');
     const text = (input?.value || '').trim();
-    if (!text || btn.disabled) return;
+    if (!text) {
+      setFormError('chat-form-error', 'Enter a question before sending.');
+      updateFormValidity();
+      return;
+    }
+    if (btn.dataset.busy === 'true') return;
 
     input.value = '';
     appendMsg('user', text);
     chatHistory.push({ role: 'user', content: text });
 
     btn.disabled = true;
+    btn.dataset.busy = 'true';
     btn.textContent = '…';
     const thinkingDiv = appendMsg('assistant', 'Thinking…');
     thinkingDiv.querySelector('.chat-bubble').classList.add('thinking');
@@ -1923,13 +2429,16 @@
       thinkingDiv.querySelector('.chat-bubble').classList.remove('thinking');
       updateLastMsg(thinkingDiv, reply);
       chatHistory.push({ role: 'assistant', content: reply });
+      setFormError('chat-form-error', '');
     } catch(e) {
       thinkingDiv.querySelector('.chat-bubble').classList.remove('thinking');
       updateLastMsg(thinkingDiv, `Error: ${e.message}`);
+      setFormError('chat-form-error', e.message || 'The question could not be sent.');
     } finally {
-      btn.disabled = false;
+      delete btn.dataset.busy;
       btn.textContent = 'Send';
       input.focus();
+      updateFormValidity();
     }
   }
 
@@ -1940,6 +2449,11 @@
   loadQuestions();
   loadJudgments();
   loadSymptoms();
+  loadPatientEvidence();
+  ['q-add-input', 'judgment-input', 'sym-name', 'chat-input'].forEach(id => {
+    document.getElementById(id)?.addEventListener('input', updateFormValidity);
+  });
+  updateFormValidity();
   startPolling();
   const requestedView = window.location.hash.replace('#', '');
   if (['today', 'patient', 'questions', 'activity'].includes(requestedView) && requestedView !== 'today') {

@@ -44,12 +44,13 @@ def test_unversioned_migration_records_log_entry():
     assert "_migration_log" in result
     log = result["_migration_log"]
     assert isinstance(log, list)
-    assert len(log) == 1
+    assert len(log) == 2
     entry = log[0]
     assert entry["id"] == "0001_add_schema_version"
     assert "applied_at" in entry
     # Timestamp must not be "backfilled" for an unversioned profile.
     assert entry["applied_at"] != "backfilled"
+    assert log[1]["id"] == "0002_add_document_imports"
 
 
 def test_already_current_fast_path_no_change():
@@ -177,3 +178,14 @@ def test_forward_schema_version_passes_through_unchanged():
     assert result is data  # same object, no copy
     assert result == original  # no mutation whatsoever
     assert "_migration_log" not in result
+
+
+def test_v1_adds_empty_document_import_ledger_without_clinical_inference():
+    from agent.migrations import apply_migrations
+
+    data = {"schema_version": 1, "patient": {"diagnosis": "NET"}}
+    result = apply_migrations(data)
+
+    assert result["schema_version"] == 2
+    assert result["document_imports"] == []
+    assert result["patient"] == {"diagnosis": "NET"}

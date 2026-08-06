@@ -78,6 +78,7 @@ DEFAULT_PROFILE: dict = {
     "appointments": [],
     "documents": [],
     "source_documents": [],
+    "document_imports": [],
     "trials_tracked": [],
     "literature_watched": [],
     "alerts": [],
@@ -522,11 +523,20 @@ def save_profile(profile: dict, *, clinical_change: bool = True) -> None:
             log.warning("daily_backup raised: %s", e)
 
 
+def active_documents(profile: dict) -> list[dict]:
+    """Return documents whose extracted clinical content is still active."""
+    return [
+        item
+        for item in profile.get("documents", [])
+        if not item.get("excluded_from_clinical_context")
+    ]
+
+
 def get_patient_summary(profile: dict) -> str:
     """Concise text summary of the patient's current state, used as LLM context."""
     p = profile["patient"]
     bms = sorted(profile.get("biomarkers", []), key=lambda x: x.get("date", ""), reverse=True)[:6]
-    docs = sorted(profile.get("documents", []), key=lambda x: x.get("date", ""), reverse=True)[:3]
+    docs = sorted(active_documents(profile), key=lambda x: x.get("date", ""), reverse=True)[:3]
     imgs = sorted(profile.get("imaging", []), key=lambda x: x.get("date", ""), reverse=True)[:2]
     active_alerts = [a for a in profile.get("alerts", []) if not a.get("resolved")]
 
@@ -557,7 +567,8 @@ def get_patient_summary(profile: dict) -> str:
     if imgs:
         for i in imgs:
             lines.append(
-                f"  {i.get('date', '')}  {i.get('modality', '?')}: {i.get('impression', '')[:120]}"
+                f"  {i.get('date', '')}  {i.get('modality', '?')}: "
+                f"{(i.get('impression') or i.get('findings') or '')[:120]}"
             )
     else:
         lines.append("  None recorded")

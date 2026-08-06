@@ -5,7 +5,7 @@ from __future__ import annotations
 from . import config
 from .judgments import CLINICAL_JUDGMENTS_OVERRIDE, get_clinical_judgments_context
 from .llm import cached_system, client, first_text
-from .profile import build_patient_context
+from .profile import active_documents, build_patient_context
 
 
 def build_chat_system(profile: dict) -> str:
@@ -109,7 +109,7 @@ def build_chat_system(profile: dict) -> str:
             )
         lines.append("")
 
-    documents = profile.get("documents", [])
+    documents = active_documents(profile)
     if documents:
         lines.append(f"── DOCUMENTS ({len(documents)} entries, most recent first) ──")
         for d in sorted(documents, key=lambda x: x.get("date", ""), reverse=True):

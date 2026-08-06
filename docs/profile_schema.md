@@ -21,6 +21,7 @@ All sub-models accept **extra** fields (forward-compat) and treat every document
   'appointments': list[Appointment],
   'documents': list[Document],
   'source_documents': list[SourceDocument],
+  'document_imports': list[DocumentImport],
   'trials_tracked': list[TrialTracked],
   'literature_watched': list[LiteratureWatched],
   'alerts': list[Alert],
@@ -69,6 +70,7 @@ A single lab result row (CgA, NSE, 5-HIAA, creatinine, etc.).
 | `evidence_status` | `'verified' \| 'missing' \| 'invalid' \| null` |  |
 | `evidence_start` | `int \| None` |  |
 | `evidence_end` | `int \| None` |  |
+| `id` | `str \| None` | Stable identity for imported rows |
 | `date` | `str \| None` | YYYY-MM-DD |
 | `marker` | `str \| None` |  |
 | `value` | `Any` | number or string |
@@ -86,6 +88,7 @@ A single lab result row (CgA, NSE, 5-HIAA, creatinine, etc.).
 | `evidence_status` | `'verified' \| 'missing' \| 'invalid' \| null` |  |
 | `evidence_start` | `int \| None` |  |
 | `evidence_end` | `int \| None` |  |
+| `id` | `str \| None` | Stable identity for imported rows |
 | `date` | `str \| None` | YYYY-MM-DD |
 | `modality` | `'CT' \| 'MRI' \| 'PET-CT' \| 'ultrasound' \| 'other' \| null` |  |
 | `findings` | `str \| None` |  |
@@ -99,12 +102,14 @@ Every fed document, kept for audit and downstream re-analysis.
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `id` | `str \| None` | Stable identity for imported rows |
 | `date` | `str \| None` |  |
 | `type` | `'lab_result' \| 'imaging_report' \| 'doctor_note' \| 'research_paper' \| 'appointment_summary' \| 'pathology_report' \| 'other' \| null` |  |
 | `summary` | `str \| None` | 1–2 sentence intake-agent summary |
 | `key_findings` | `list[str]` |  |
 | `raw_text` | `str \| None` | First ~3000 chars of input |
 | `source_document_id` | `str \| None` |  |
+| `excluded_from_clinical_context` | `bool` | True after a caregiver removes or undoes this import's clinical effects |
 | `evidence` | `list[Any]]` | Anchored evidence for document-level findings not stored as structured rows |
 | `added_at` | `str \| None` | Timestamp when the item first entered the patient profile. |
 
@@ -141,6 +146,7 @@ Every fed document, kept for audit and downstream re-analysis.
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `id` | `str \| None` | Stable identity for imported rows |
 | `date` | `str \| None` |  |
 | `priority` | `'urgent' \| 'high' \| 'medium' \| 'low' \| null` |  |
 | `message` | `str \| None` |  |
@@ -224,6 +230,7 @@ Patient-reported symptom or side effect.
 | `evidence_status` | `'verified' \| 'missing' \| 'invalid' \| null` |  |
 | `evidence_start` | `int \| None` |  |
 | `evidence_end` | `int \| None` |  |
+| `id` | `str \| None` | Stable identity for imported rows |
 | `date` | `str \| None` |  |
 | `time` | `str \| None` |  |
 | `with` | `str \| None` |  |
@@ -243,6 +250,70 @@ Patient-reported symptom or side effect.
 | `media_type` | `str \| None` |  |
 | `source` | `SourceArtifact` |  |
 | `text` | `SourceArtifact` |  |
+
+## `document_imports[]`
+
+Profile-backed receipt tying one feed job to its immutable source and audit history.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `str` |  |
+| `job_id` | `str` |  |
+| `source_document_id` | `str` |  |
+| `ingested_at` | `str` |  |
+| `filename` | `str \| None` |  |
+| `media_type` | `str \| None` |  |
+| `document_type` | `str \| None` |  |
+| `document_date` | `str \| None` |  |
+| `document_summary` | `str \| None` |  |
+| `applied_revision` | `int` |  |
+| `receipt_revision` | `int` |  |
+| `status` | `'active' \| 'corrected' \| 'partially_removed' \| 'undone'` |  |
+| `changes` | `list[ImportChange]` |  |
+
+## `document_imports[].changes[]`
+
+One direct or derived outcome shown in a document reconciliation receipt.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `str` |  |
+| `category` | `str` |  |
+| `label` | `str` |  |
+| `operation` | `'added' \| 'updated' \| 'unchanged' \| 'conflict' \| 'derived'` |  |
+| `target` | `ImportTarget` |  |
+| `before` | `Any` |  |
+| `after` | `Any` |  |
+| `effective_value` | `Any` |  |
+| `evidence_status` | `'verified' \| 'missing' \| 'invalid' \| null` |  |
+| `evidence_start` | `int \| None` |  |
+| `evidence_end` | `int \| None` |  |
+| `source_document_id` | `str \| None` |  |
+| `editable_fields` | `list[str]` |  |
+| `state` | `'active' \| 'corrected' \| 'removed' \| 'unchanged' \| 'derived' \| 'undone'` |  |
+| `history` | `list[ImportHistoryEvent]` |  |
+
+## `document_imports[].changes[].target`
+
+Server-owned locator used for compare-and-swap receipt mutations.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `kind` | `'collection' \| 'scalar' \| 'treatment' \| 'none'` |  |
+| `collection` | `str \| None` |  |
+| `record_id` | `str \| None` |  |
+| `path` | `list[str]` |  |
+
+## `document_imports[].changes[].history[]`
+
+Immutable before/after record for a caregiver correction, removal, or undo.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `event` | `'corrected' \| 'removed' \| 'undone'` |  |
+| `at` | `str` |  |
+| `before` | `Any` |  |
+| `after` | `Any` |  |
 
 ## `feedback[]`
 
@@ -288,3 +359,4 @@ Exact net-new research records added by the latest discovery batch.
 - `extra="allow"` on every sub-model — unknown keys are preserved on round-trip through `normalize_profile()`.
 - Enum-like fields (e.g. `sex`, `priority`, `modality`) document the expected values via `Literal[...]` but are not strictly enforced — drift is logged, not blocked.
 - `Patient.sstr_score` is the only field with a numeric range constraint (0–4, the Krenning scale).
+- `document_imports[]` is append-only audit provenance. Corrections and undo update active clinical state and append history events; they never delete immutable `source_documents[]` artifacts.

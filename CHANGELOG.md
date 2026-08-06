@@ -9,6 +9,29 @@ incremented when something user-visible or operationally meaningful changes.
 ## [Unreleased]
 
 ### Added
+- **Scoped document reconciliation and correction.** Every retained feed job now
+  opens its own profile-backed receipt showing exact additions, old-to-new
+  updates, conflicts/no-ops, immutable source identity/time, and verified,
+  missing, or invalid evidence. Caregivers can correct or remove an extracted
+  value and can atomically undo that document's direct structured changes.
+  Target-level compare-and-swap checks allow unrelated later edits but reject
+  changed affected facts with `409`; source bytes/text and append-only audit
+  history remain intact. No global review inbox, unread count, or acknowledgement
+  was introduced.
+- **Claim-level and Patient evidence.** Key assessment claims and actions now
+  resolve only server-validated evidence-catalog IDs to exact authenticated
+  source spans; missing and invented references are labelled explicitly. Patient
+  now includes progressive imaging and document/source history with receipt and
+  source links, without exposing storage paths.
+- **Caregiver safety and accessibility hardening.** Processing status is now
+  `Processing`, `Idle`, or `Unavailable`, separate from assessment freshness.
+  PRRT is presented as potential fit and trials as items to discuss, not
+  definitive eligibility or matching; missing DOTATATE is no longer
+  automatically the top action. Dialogs trap focus and inert the background,
+  feed tabs support arrow/Home/End keys, mobile controls meet 44px targets,
+  badges/secondary text have stronger contrast, empty submissions show inline
+  validation, and failed loads leave terminal retry states instead of indefinite
+  Connecting/Loading placeholders.
 - **Today-first responsive caregiver workspace.** Replaced the duplicated
   desktop/mobile surfaces with shared **Today**, **Patient**, **Questions**, and
   **Activity** views while retaining the warm green/amber visual identity.

@@ -22,6 +22,12 @@ def new_source_document_id() -> str:
     return f"doc_{uuid.uuid4().hex}"
 
 
+def new_record_id(kind: str) -> str:
+    """Return a stable opaque ID for one imported structured record."""
+    safe_kind = re.sub(r"[^a-z0-9]+", "_", kind.casefold()).strip("_") or "fact"
+    return f"fact_{safe_kind}_{uuid.uuid4().hex}"
+
+
 def _sha256(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 

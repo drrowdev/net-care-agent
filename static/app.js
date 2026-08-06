@@ -12,6 +12,7 @@
   let patientEvidence = null;
   let imagingHistoryExpanded = false;
   let sourceHistoryExpanded = false;
+  let receiptMutationPending = false;
   const failedLoads = new Map();
 
   // ── UI label localization ───────────────────────────────────────────────
@@ -675,17 +676,30 @@
           ${imaging.length > 3 ? `<button class="history-toggle" onclick="toggleImagingHistory()">${imagingHistoryExpanded ? 'Show recent imaging only' : `Show all ${imaging.length} imaging records`}</button>` : ''}`
       : '<div class="empty-state">No imaging records yet.</div>';
 
+    const documents = patientEvidence.documents || [];
     const sources = patientEvidence.sources || [];
-    const visibleSources = sourceHistoryExpanded ? sources : sources.slice(0, 5);
+    const sourcesById = new Map(sources.map(source => [source.id, source]));
+    const documentSourceIds = new Set(documents.map(document => document.source_document_id).filter(Boolean));
+    const history = [
+      ...documents.map(document => ({
+        ...sourcesById.get(document.source_document_id),
+        ...document,
+        history_kind: 'document',
+      })),
+      ...sources
+        .filter(source => !documentSourceIds.has(source.id))
+        .map(source => ({ ...source, history_kind: 'source' })),
+    ].sort((a, b) => String(b.added_at || b.ingested_at || b.date || '').localeCompare(String(a.added_at || a.ingested_at || a.date || '')));
+    const visibleSources = sourceHistoryExpanded ? history : history.slice(0, 5);
     document.getElementById('source-history').innerHTML = visibleSources.length
       ? `${visibleSources.map(source => {
-          const sourceUrl = source.artifacts?.text?.url || source.artifacts?.source?.url;
-          const status = source.import_status || 'legacy';
+          const sourceUrl = source.artifacts?.text?.url || source.artifacts?.source?.url || source.source_url;
+          const status = source.import_status || (source.excluded_from_clinical_context ? 'excluded' : 'legacy');
           return `<article class="source-history-row">
             <div class="source-history-main">
-              <strong>${escHtml(source.filename || source.document_type || 'Pasted clinical text')}</strong>
-              <span>${escHtml(source.document_summary || 'Clinical source document')}</span>
-              <time>Added ${escHtml(relativeTime(source.ingested_at))}</time>
+              <strong>${escHtml(source.filename || source.type || source.document_type || 'Legacy document record')}</strong>
+              <span>${escHtml(source.summary || source.document_summary || 'Clinical source document')}</span>
+              <time>Added ${escHtml(relativeTime(source.added_at || source.ingested_at || source.date))}</time>
             </div>
             <div class="evidence-history-actions">
               <span class="import-status ${safeClassToken(status, 'legacy')}">${escHtml(status.replace(/_/g, ' '))}</span>
@@ -694,7 +708,7 @@
             </div>
           </article>`;
         }).join('')}
-        ${sources.length > 5 ? `<button class="history-toggle" onclick="toggleSourceHistory()">${sourceHistoryExpanded ? 'Show recent sources only' : `Show all ${sources.length} sources`}</button>` : ''}`
+        ${history.length > 5 ? `<button class="history-toggle" onclick="toggleSourceHistory()">${sourceHistoryExpanded ? 'Show recent sources only' : `Show all ${history.length} sources`}</button>` : ''}`
       : '<div class="empty-state">No source documents have been fed yet.</div>';
   }
 
@@ -1136,6 +1150,12 @@
       message.textContent = 'Generate an assessment after checking that the patient record is complete.';
       return;
     }
+    if (d.status === 'stale' || d.content_hidden) {
+      banner.classList.add('stale');
+      title.textContent = 'Assessment refresh required';
+      message.textContent = 'Generated clinical conclusions are hidden because the patient record changed.';
+      return;
+    }
 
     const stale = summaryIsStale(d);
     const latestDoc = (d.recent_documents || [])[0];
@@ -1182,6 +1202,16 @@
       body.innerHTML = `<div class="summary-empty">
         <div style="margin-bottom:10px">No assessment has been generated yet.</div>
         <button class="button secondary" onclick="generateSummary()">Generate assessment</button>
+      </div>`;
+      return;
+    }
+    if (d.status === 'stale' || d.content_hidden) {
+      inline.innerHTML = '<span class="s-pill status-insufficient_data">ASSESSMENT NEEDS REFRESH</span>';
+      updated.textContent = `Record rev ${d.profile_revision ?? '—'} · prior assessment rev ${d.summary_revision ?? '—'}`;
+      body.innerHTML = `<div class="summary-empty stale-summary-hidden">
+        <strong>Prior generated assessment is hidden</strong>
+        <div>The patient record changed after it was generated. Refresh the assessment before using its actions, PRRT screening, or trial suggestion.</div>
+        <button class="button secondary" onclick="generateSummary()">Refresh assessment</button>
       </div>`;
       return;
     }
@@ -1447,7 +1477,7 @@
           ${t.doc_type ? `<span class="task-doctype">${escHtml(docTypeLabel(t))}</span>` : ''}
           <span class="task-time">${escHtml(relativeTime(t.created_at))}</span>
         </div>
-        <div class="task-preview">${escHtml((t.summary || t.input_preview || '').slice(0, 100))}</div>
+        <div class="task-preview">${t.derived_content_stale ? 'Document corrected — prior analysis hidden' : escHtml((t.summary || t.input_preview || '').slice(0, 100))}</div>
         <div class="task-status-row">
           <span class="status-badge ${safeClassToken(t.status, 'unknown')}">${escHtml(translateStatus(t.status))}</span>
           ${t.status === 'done' && duration(t) ? `<span class="task-duration">${escHtml(duration(t))}</span>` : ''}
@@ -1597,11 +1627,17 @@
     slot.innerHTML = `<div class="receipt-editor">
       ${inputs}
       <div class="receipt-editor-actions">
-        <button class="button primary" data-change-id="${escHtml(changeId)}" onclick="saveReceiptCorrection(this.dataset.changeId)">Save correction</button>
+        <button class="button primary receipt-save" data-change-id="${escHtml(changeId)}" onclick="saveReceiptCorrection(this.dataset.changeId)" disabled>Save correction</button>
         <button class="button secondary" onclick="this.closest('.receipt-editor').remove()">Cancel</button>
       </div>
     </div>`;
-    slot.querySelector('input, textarea, select')?.focus();
+    const controls = [...slot.querySelectorAll('[data-field]')];
+    const save = slot.querySelector('.receipt-save');
+    const initial = JSON.stringify(controls.map(input => parsedReceiptInput(input)));
+    controls.forEach(input => input.addEventListener('input', () => {
+      save.disabled = JSON.stringify(controls.map(control => parsedReceiptInput(control))) === initial;
+    }));
+    controls[0]?.focus();
   }
 
   function parsedReceiptInput(input) {
@@ -1660,6 +1696,14 @@
   }
 
   async function submitReceiptMutation(url, body) {
+    if (receiptMutationPending || !currentReceipt) return;
+    const originJobId = currentReceipt.job_id;
+    const originReceiptRevision = currentReceipt.receipt_revision;
+    receiptMutationPending = true;
+    document.querySelectorAll('.receipt-card button').forEach(button => {
+      button.dataset.pendingWasDisabled = String(button.disabled);
+      button.disabled = true;
+    });
     try {
       const response = await fetch(url, {
         method: 'POST',
@@ -1673,20 +1717,32 @@
         throw new Error(`The server returned an invalid response (${response.status}).`);
       }
       if (!response.ok) {
-        if (response.status === 409 && data.receipt) {
+        if (response.status === 409 && data.receipt && selectedTaskId === originJobId && currentReceipt?.job_id === originJobId && currentReceipt?.receipt_revision === originReceiptRevision) {
           document.getElementById('panel-body').querySelector('.receipt-card')?.remove();
           document.getElementById('panel-body').insertAdjacentHTML('afterbegin', renderReceipt(data.receipt));
         }
         throw new Error(data.error || `Request failed (${response.status})`);
       }
-      const existing = document.getElementById('panel-body').querySelector('.receipt-card');
-      if (existing) existing.outerHTML = renderReceipt(data.receipt);
+      const refreshSelectedJob = selectedTaskId === originJobId && currentReceipt?.job_id === originJobId && currentReceipt?.receipt_revision === originReceiptRevision;
+      if (refreshSelectedJob) {
+        const existing = document.getElementById('panel-body').querySelector('.receipt-card');
+        if (existing) existing.outerHTML = renderReceipt(data.receipt);
+        await selectTask(originJobId);
+      }
       await Promise.allSettled([loadStatus(), loadSummary(), loadPatientEvidence()]);
       reportLoadSuccess('action');
     } catch (error) {
-      const target = document.getElementById('receipt-error');
-      if (target) target.textContent = error.message || 'The receipt could not be updated.';
+      if (selectedTaskId === originJobId && currentReceipt?.job_id === originJobId) {
+        const target = document.getElementById('receipt-error');
+        if (target) target.textContent = error.message || 'The receipt could not be updated.';
+      }
       reportLoadError('action', error);
+    } finally {
+      receiptMutationPending = false;
+      document.querySelectorAll('.receipt-card button[data-pending-was-disabled]').forEach(button => {
+        button.disabled = button.dataset.pendingWasDisabled === 'true';
+        delete button.dataset.pendingWasDisabled;
+      });
     }
   }
 
@@ -1763,20 +1819,36 @@
 
     // Show key findings chips if present
     let html = receiptHtml;
-    if (task.key_findings && task.key_findings.length) {
+    if (!task.derived_content_stale && task.key_findings && task.key_findings.length) {
       html += `<div class="findings-chips">${task.key_findings.map(f =>
         `<span class="finding-chip">${escHtml(f)}</span>`).join('')}</div>`;
     }
 
     // Job details hydrate report artifacts on demand.
-    if (task.report) {
+    if (task.report_stale) {
+      currentReportText = '';
+      html += `<div class="load-failure stale-artifact" role="alert">
+        <strong>Document analysis is outdated</strong>
+        <span>The source document was corrected or undone. The original report remains retained for audit but is hidden here.</span>
+      </div>`;
+      copyBtn.classList.remove('visible');
+    } else if (task.report) {
       currentReportText = task.report;
       html += `<div class="report-text">${formatReport(task.report)}</div>`;
       copyBtn.classList.add('visible');
     } else if (task.result) {
-      currentReportText = JSON.stringify(task.result, null, 2);
-      html += `<div class="report-text">${formatReport(currentReportText)}</div>`;
-      copyBtn.classList.add('visible');
+      if (task.result.stale) {
+        currentReportText = '';
+        html += `<div class="load-failure stale-artifact" role="alert">
+          <strong>Generated result is outdated</strong>
+          <span>The patient record changed after this result was created. Regenerate it before use.</span>
+        </div>`;
+        copyBtn.classList.remove('visible');
+      } else {
+        currentReportText = JSON.stringify(task.result, null, 2);
+        html += `<div class="report-text">${formatReport(currentReportText)}</div>`;
+        copyBtn.classList.add('visible');
+      }
     } else {
       html += `<div class="report-text" style="color:var(--text2)">No report generated.</div>`;
     }
@@ -2109,10 +2181,12 @@
   }
 
   function renderQuestions(qs) {
-    const urgent = qs.filter(q => !q.asked && q.priority === 'urgent');
-    const high   = qs.filter(q => !q.asked && q.priority === 'high');
-    const medium = qs.filter(q => !q.asked && (q.priority === 'medium' || !q.priority));
-    const asked  = qs.filter(q => q.asked);
+    const stale  = qs.filter(q => q.source === 'ai' && q.stale);
+    const current = qs.filter(q => !(q.source === 'ai' && q.stale));
+    const urgent = current.filter(q => !q.asked && q.priority === 'urgent');
+    const high   = current.filter(q => !q.asked && q.priority === 'high');
+    const medium = current.filter(q => !q.asked && (q.priority === 'medium' || !q.priority));
+    const asked  = current.filter(q => q.asked);
 
     const badge = document.getElementById('q-count-badge');
     if (badge) {
@@ -2122,13 +2196,14 @@
     }
 
     const qRow = (q) => `
-      <div class="q-item${q.asked?' asked':''}" data-question-id="${escHtml(q.id)}">
+      <div class="q-item${q.asked?' asked':''}${q.stale?' stale':''}" data-question-id="${escHtml(q.id)}">
         <div class="q-priority-dot ${safeClassToken(q.priority, 'medium')}"></div>
         <button class="q-checkbox${q.asked?' checked':''}" onclick="toggleQuestion(this.closest('.q-item').dataset.questionId)" aria-label="${q.asked ? 'Mark question as not asked' : 'Mark question as asked'}">${q.asked?'✓':''}</button>
         <div class="q-text-wrap">
           <div class="q-text${q.asked?' asked':''}">${escHtml(q.text)}</div>
           <div class="q-meta">
             <span class="q-cat ${safeClassToken(q.category, 'Other')}">${escHtml(translateCategory(q.category||'Other'))}</span>
+            ${q.stale ? '<span class="q-stale-label">Outdated — regenerate after record correction</span>' : ''}
             ${q.rationale ? `<span class="q-rationale">${escHtml(q.rationale)}</span>` : ''}
           </div>
         </div>
@@ -2143,6 +2218,7 @@
     if (high.length)   { html += grpHdr('Important', 'var(--amber)'); html += high.map(qRow).join(''); }
     if (medium.length) { html += grpHdr('Other', 'var(--text2)'); html += medium.map(qRow).join(''); }
     if (asked.length)  { html += grpHdr('Already asked', 'var(--text2)'); html += asked.map(qRow).join(''); }
+    if (stale.length)  { html += grpHdr('Outdated generated questions', 'var(--amber)'); html += stale.map(qRow).join(''); }
     if (!html) html = '<div class="q-empty">No questions yet. Generate suggestions or add your own.</div>';
 
     const list = document.getElementById('q-list');

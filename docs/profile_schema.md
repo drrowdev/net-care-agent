@@ -30,6 +30,7 @@ All sub-models accept **extra** fields (forward-compat) and treat every document
   'symptoms': list[Symptom],
   'questions': list[Question],
   'appointment_questions': list[Question],
+  'questions_generation_id': str | None,
   'feedback': list[Feedback],
   'executive_summary': ExecutiveSummary | None,
   'latest_research_update': ResearchUpdate | None,
@@ -152,6 +153,11 @@ Every fed document, kept for audit and downstream re-analysis.
 | `message` | `str \| None` |  |
 | `action_required` | `str \| None` |  |
 | `resolved` | `bool` |  |
+| `source_document_id` | `str \| None` |  |
+| `source_job_id` | `str \| None` |  |
+| `source_dependency_active` | `bool` |  |
+| `source_invalidated_at` | `str \| None` |  |
+| `inactive_reason` | `str \| None` |  |
 | `added_at` | `str \| None` | Timestamp when the item first entered the patient profile. |
 
 ## `treatments_classified[]`
@@ -220,6 +226,11 @@ Patient-reported symptom or side effect.
 | `source` | `'manual' \| 'ai' \| null` |  |
 | `asked` | `bool` |  |
 | `created_at` | `str \| None` |  |
+| `source_profile_revision` | `int \| None` |  |
+| `stale` | `bool` |  |
+| `stale_reason` | `str \| None` |  |
+| `stale_at` | `str \| None` |  |
+| `generation_job_id` | `str \| None` |  |
 
 ## `appointments[]`
 

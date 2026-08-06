@@ -106,3 +106,53 @@ def test_build_chat_system_handles_empty_profile(agent, empty_profile):
     assert "PATIENT RECORD" in prompt
     # Empty sections are simply omitted, not labelled "0 entries"
     assert "DOCUMENTS (0" not in prompt
+
+
+def test_build_chat_system_omits_stale_summary_actions_and_inactive_alerts(agent):
+    profile = _profile_with_documents(1)
+    profile["profile_revision"] = 3
+    profile["summary_stale"] = True
+    profile["executive_summary"] = {
+        "summary_revision": 2,
+        "stale": True,
+        "overall_status": "stable",
+        "summary": "STALE GENERATED SUMMARY",
+        "next_actions": [{"priority": "high", "action": "STALE ACTION"}],
+        "prrt_status": "eligible",
+    }
+    profile["alerts"] = [
+        {
+            "priority": "high",
+            "message": "STALE SOURCE ALERT",
+            "resolved": False,
+            "source_dependency_active": False,
+        }
+    ]
+
+    prompt = agent.build_chat_system(profile)
+
+    assert "STALE GENERATED SUMMARY" not in prompt
+    assert "STALE ACTION" not in prompt
+    assert "STALE SOURCE ALERT" not in prompt
+    assert "CURRENT ASSESSMENT" not in prompt
+
+
+def test_build_chat_system_rejects_legacy_summary_without_judgment_hash(agent):
+    profile = _profile_with_documents(0)
+    profile["profile_revision"] = 3
+    profile["summary_stale"] = False
+    profile["clinical_judgments"] = [
+        {"id": "j1", "text": "Active clinician constraint", "status": "active"}
+    ]
+    profile["executive_summary"] = {
+        "summary_revision": 3,
+        "stale": False,
+        "overall_status": "stable",
+        "summary": "LEGACY JUDGMENT-UNAWARE SUMMARY",
+        "next_actions": [{"priority": "high", "action": "LEGACY ACTION"}],
+    }
+
+    prompt = agent.build_chat_system(profile)
+
+    assert "LEGACY JUDGMENT-UNAWARE SUMMARY" not in prompt
+    assert "LEGACY ACTION" not in prompt

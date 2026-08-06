@@ -167,6 +167,9 @@ def build_import_record(
                 or row.get("id") in prior_ids
             ):
                 continue
+            if collection == "alerts":
+                row["source_job_id"] = job_id
+                row["source_dependency_active"] = True
             _new_change(
                 changes,
                 category=collection,
@@ -435,21 +438,22 @@ def _target_value(profile: dict, change: dict) -> Any:
 def _comparison_value(change: dict, value: Any) -> Any:
     if not isinstance(value, dict):
         return value
-    fields = {
-        "id",
-        "source_document_id",
-        "evidence_status",
-        "evidence_start",
-        "evidence_end",
-        "excluded_from_clinical_context",
-        *(change.get("editable_fields") or []),
-    }
-    compared = {field: value.get(field) for field in sorted(fields)}
-    if "excluded_from_clinical_context" in compared:
-        compared["excluded_from_clinical_context"] = bool(
-            value.get("excluded_from_clinical_context", False)
-        )
-    return compared
+    return _semantic_value(value)
+
+
+def _semantic_value(value: Any) -> Any:
+    """Canonical clinical value with schema-added null defaults removed."""
+    if isinstance(value, dict):
+        return {
+            key: _semantic_value(item)
+            for key, item in sorted(value.items())
+            if item is not None
+            and not (key == "source_dependency_active" and item is True)
+            and not (key == "excluded_from_clinical_context" and item is False)
+        }
+    if isinstance(value, list):
+        return [_semantic_value(item) for item in value]
+    return value
 
 
 def _same_target(change: dict, current: Any) -> bool:
@@ -730,6 +734,25 @@ def _mark_summary_stale(profile: dict) -> None:
         summary["import_correction_pending"] = True
 
 
+def _invalidate_source_dependencies(profile: dict, record: dict) -> None:
+    """Retain dependent alerts/questions but stop presenting them as current."""
+    timestamp = now_stamp()
+    source_id = record.get("source_document_id")
+    for alert in profile.get("alerts", []):
+        if alert.get("source_document_id") != source_id:
+            continue
+        if alert.get("source_dependency_active", True):
+            alert["source_dependency_active"] = False
+            alert["source_invalidated_at"] = timestamp
+            alert["inactive_reason"] = "source_document_corrected_or_undone"
+    for question in profile.get("appointment_questions", []):
+        if question.get("source") != "ai" or question.get("stale"):
+            continue
+        question["stale"] = True
+        question["stale_reason"] = "patient_record_changed_after_generation"
+        question["stale_at"] = timestamp
+
+
 def _invalidate_document_evidence(profile: dict, record: dict, change: dict) -> None:
     """Stop a corrected scalar/treatment from citing its original extracted span."""
     target = change.get("target") or {}
@@ -839,6 +862,8 @@ def correct_change(
         updated = _clone(current)
         updated.update(_clone(replacement))
         updated = _validate_collection_value(target["collection"], updated)
+        if _semantic_value(updated) == _semantic_value(current):
+            raise ReconciliationError("The corrected value is identical to the current value")
         updated["caregiver_corrected_at"] = now_stamp()
         updated["provenance_status"] = "caregiver_corrected"
         if target.get("collection") == "documents":
@@ -869,6 +894,8 @@ def correct_change(
         profile[collection][index] = updated
     elif kind == "scalar":
         updated = _validate_scalar(target.get("path") or [], replacement)
+        if updated == current:
+            raise ReconciliationError("The corrected value is identical to the current value")
         _set_scalar(profile, target["path"], updated)
         _invalidate_document_evidence(profile, record, change)
     elif kind == "treatment":
@@ -877,6 +904,8 @@ def correct_change(
             raise ReconciliationError(
                 "Corrected treatment text is required (maximum 500 characters)"
             )
+        if updated == current:
+            raise ReconciliationError("The corrected value is identical to the current value")
         treatments = profile.get("patient", {}).get("current_treatments", [])
         if updated != current and updated in treatments:
             raise ReconciliationError("That treatment is already recorded")
@@ -886,6 +915,7 @@ def correct_change(
     else:
         raise ReconciliationError("This receipt entry cannot be corrected")
     _exclude_document_context(profile, record)
+    _invalidate_source_dependencies(profile, record)
     _append_history(change, "corrected", current, updated)
     change["effective_value"] = _clone(updated)
     change["state"] = "corrected"
@@ -898,6 +928,7 @@ def _remove_effect(profile: dict, change: dict, *, event: str) -> None:
     target = change.get("target") or {}
     kind = target.get("kind")
     current = _target_value(profile, change)
+    before = _clone(current)
     if kind == "collection":
         collection = target.get("collection")
         if collection == "documents":
@@ -920,7 +951,7 @@ def _remove_effect(profile: dict, change: dict, *, event: str) -> None:
         after = None
     else:
         raise ReconciliationError("This receipt entry cannot be removed")
-    _append_history(change, event, current, after)
+    _append_history(change, event, before, after)
 
 
 def remove_change(
@@ -942,6 +973,7 @@ def remove_change(
     )
     _remove_effect(profile, change, event="removed")
     _exclude_document_context(profile, record)
+    _invalidate_source_dependencies(profile, record)
     change["state"] = "removed"
     record["receipt_revision"] = int(record.get("receipt_revision") or 0) + 1
     _update_status(record)
@@ -973,6 +1005,7 @@ def undo_import(
     for document in profile.get("documents", []):
         if document.get("source_document_id") == record.get("source_document_id"):
             document["excluded_from_clinical_context"] = True
+    _invalidate_source_dependencies(profile, record)
     record["receipt_revision"] = int(record.get("receipt_revision") or 0) + 1
     record["status"] = "undone"
     _mark_summary_stale(profile)

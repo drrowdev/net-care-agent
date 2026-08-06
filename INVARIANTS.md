@@ -89,6 +89,16 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
   append-only before/after history, and excludes the document from active
   clinical prompts. Orchestration research additions are derived output and are
   not silently deleted.
+- Compare-and-swap fingerprints cover the complete semantic collection row.
+  Later resolution or mutation of an imported alert/fact must return `409`;
+  schema-added legacy defaults may be canonicalized only when they do not alter
+  clinical meaning.
+- Identical corrections are rejected before any mutation, save, audit event, or
+  provenance invalidation.
+- Stale generated content is audit history, not current context: stale/revision-
+  mismatched summaries are omitted from chat and `/api/summary`; question
+  generations use persisted generation IDs; corrected feed reports are retained
+  but hidden; source-dependent alerts are inactive after correction/undo.
 - **`save_profile` guards structural validity.** Calling `save_profile` with a
   non-dict, string patient, or non-list collection raises `ValueError`
   immediately.  Field-level type issues (out-of-range values, bad enum literals)
@@ -137,6 +147,8 @@ distributed queue and adding distributed coordination.
   Reports/results remain separate artifacts and are expanded only by
   `GET /api/jobs/<id>`, never embedded in `jobs.json` or the job list. Existing
   legacy records are not rewritten; do not weaken their retention protection.
+  Artifact freshness is computed only in the authenticated job-detail response;
+  no PHI or generated content is added to `jobs.json` or `GET /api/jobs`.
 
 ## 5. Authentication, containment, and retention
 - Flask exempts `/api/health` and `/api/live`; all other hosted `/api/*` routes

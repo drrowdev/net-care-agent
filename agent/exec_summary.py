@@ -10,6 +10,7 @@ from .evidence import evidence_catalog_prompt
 from .judgments import get_clinical_judgments_context
 from .llm import client, first_text, is_timeout_error, render_prompt, strip_code_fences
 from .profile import (
+    active_alerts,
     build_patient_context,
     get_caregiver_relationship,
     get_patient_summary,
@@ -226,7 +227,7 @@ def generate_executive_summary(profile: dict) -> dict:
             f"{json.dumps(_tracked_trials_context(profile), default=str)}\n\n"
             f"Upcoming appointments (already recorded — reflect these in the timeline): "
             f"{json.dumps(profile.get('appointments', []), default=str)}\n\n"
-            f"Active alerts: {json.dumps([a for a in profile.get('alerts', []) if not a.get('resolved')], default=str)}\n\n"
+            f"Active alerts: {json.dumps(active_alerts(profile), default=str)}\n\n"
             f"Verified evidence catalog (copy only these evidence IDs; [] means no exact span): "
             f"{evidence_catalog_prompt(profile)}\n\n"
             f"Corrective review feedback (incorporate cautiously; it is not itself a "

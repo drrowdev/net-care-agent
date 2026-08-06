@@ -33,7 +33,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 2
+CURRENT_SCHEMA_VERSION: int = 3
 
 # Append-only ordered registry of migrations.  Never reorder entries.
 _REGISTRY: list[dict[str, Any]] = []
@@ -68,6 +68,22 @@ def _m0002_add_document_imports(data: dict) -> dict:
     if not isinstance(data.get("document_imports"), list):
         data["document_imports"] = []
     data["schema_version"] = 2
+    return data
+
+
+@_migration("0003_add_generated_content_provenance", to_version=3)
+def _m0003_add_generated_content_provenance(data: dict) -> dict:
+    """v2 → v3: conservatively stale legacy AI questions without generation identity."""
+    data.setdefault("questions_generation_id", None)
+    for question in data.get("appointment_questions") or []:
+        if (
+            isinstance(question, dict)
+            and question.get("source") == "ai"
+            and not question.get("generation_job_id")
+        ):
+            question["stale"] = True
+            question["stale_reason"] = "legacy_missing_generation_provenance"
+    data["schema_version"] = 3
     return data
 
 

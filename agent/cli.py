@@ -13,6 +13,7 @@ from .exec_summary import generate_executive_summary  # noqa: F401  (kept for ca
 from .intake import run_intake
 from .orchestrator import run_orchestrator
 from .profile import (
+    active_alerts,
     get_patient_summary,
     get_research_ids,
     load_profile,
@@ -104,7 +105,7 @@ def cmd_digest(args) -> None:
 def cmd_status(args) -> None:
     profile = load_profile()
     print(get_patient_summary(profile))
-    unresolved = [a for a in profile.get("alerts", []) if not a.get("resolved")]
+    unresolved = active_alerts(profile)
     if unresolved:
         print(
             f"\n⚠  {len(unresolved)} unresolved alert(s) — run `status` to review, "

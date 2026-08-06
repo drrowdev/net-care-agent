@@ -101,6 +101,13 @@ incorrectly:
 3. The assessment becomes stale after any correction/removal/undo. Review the
    Patient record, then explicitly refresh the assessment.
 
+Source-dependent alerts are retained but removed from **Active alerts**.
+Generated appointment questions move to an **Outdated generated questions**
+section, and the prior assessment/feed report is hidden in Today/Activity. This
+prevents old actions, PRRT screening, or trial language from being reused while
+preserving the audit trail. Regenerate each artifact after confirming the
+corrected Patient record.
+
 The server compares only the affected rows/scalars/treatment values. Unrelated
 later profile changes do not block the correction. If an affected value changed
 or a later document also supports it, the server returns `409` before changing
@@ -193,6 +200,9 @@ artifact. Manual additions remain synchronous profile mutations.
 
 Regeneration preserves already-asked AI questions and all manual questions,
 while deduplicating newly generated questions by normalized text.
+Each generation has an identity. Superseded or legacy AI questions without
+generation provenance remain visible as **Outdated** history and are not
+presented as current appointment preparation.
 
 ## 5b. Record review feedback
 

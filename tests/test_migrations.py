@@ -44,13 +44,14 @@ def test_unversioned_migration_records_log_entry():
     assert "_migration_log" in result
     log = result["_migration_log"]
     assert isinstance(log, list)
-    assert len(log) == 2
+    assert len(log) == 3
     entry = log[0]
     assert entry["id"] == "0001_add_schema_version"
     assert "applied_at" in entry
     # Timestamp must not be "backfilled" for an unversioned profile.
     assert entry["applied_at"] != "backfilled"
     assert log[1]["id"] == "0002_add_document_imports"
+    assert log[2]["id"] == "0003_add_generated_content_provenance"
 
 
 def test_already_current_fast_path_no_change():
@@ -186,6 +187,29 @@ def test_v1_adds_empty_document_import_ledger_without_clinical_inference():
     data = {"schema_version": 1, "patient": {"diagnosis": "NET"}}
     result = apply_migrations(data)
 
-    assert result["schema_version"] == 2
+    assert result["schema_version"] == 3
     assert result["document_imports"] == []
     assert result["patient"] == {"diagnosis": "NET"}
+
+
+def test_v2_conservatively_stales_legacy_ai_questions_without_generation_identity():
+    from agent.migrations import apply_migrations
+
+    data = {
+        "schema_version": 2,
+        "patient": {"diagnosis": "NET"},
+        "appointment_questions": [
+            {"id": "legacy-ai", "text": "Old generated question", "source": "ai"},
+            {"id": "manual", "text": "Caregiver question", "source": "manual"},
+        ],
+    }
+
+    result = apply_migrations(data)
+
+    assert result["schema_version"] == 3
+    assert result["questions_generation_id"] is None
+    assert result["appointment_questions"][0]["stale"] is True
+    assert (
+        result["appointment_questions"][0]["stale_reason"] == "legacy_missing_generation_provenance"
+    )
+    assert "stale" not in result["appointment_questions"][1]

@@ -131,6 +131,14 @@ source and append-only before/after history remain, and the document is excluded
 from downstream clinical context. Research discovered during orchestration is
 listed as derived receipt output but is not deleted.
 
+Feed-derived clinical alerts carry their source document and job dependency.
+Correction/removal/undo deactivates those alerts atomically without deleting
+their audit record. Full semantic-row CAS catches later alert resolution and
+other mutations; schema-added legacy defaults are canonicalized so they do not
+create false conflicts. Generated summaries, questions, and feed reports remain
+stored, but revision/generation/source invalidation hides stale conclusions from
+chat, Today, Questions, and Activity until regenerated.
+
 Executive-summary prompts receive an opaque catalog of verified source-span IDs.
 The model may select only those IDs for named claims and actions; Flask resolves
 them to authenticated `/api/evidence/<id>` links. Missing selections remain
@@ -197,6 +205,7 @@ only with exact `APP_ORIGIN` or canonical HTTPS `WEBSITE_HOSTNAME`.
 | Stale import correction or undo | Target-level compare-and-swap fingerprints and later-claim checks return atomic `409`; no whole-profile snapshot is restored |
 | Incorrect import removed from active care context | Direct facts are reversed, the document is marked excluded from clinical prompts, and immutable source/audit history remains visible |
 | Invented summary evidence link | Only server-built evidence catalog IDs resolve; unknown IDs are visibly `invalid` and absent IDs are `missing` |
+| Stale generated conclusions after correction | Revision-aware summary hiding, question generation IDs, source-dependent alert invalidation, and hidden feed reports retain audit artifacts without presenting them as current |
 | Source traversal / browser caching | Auth-gated `/api/sources/<id>[/<artifact>]` and `/api/evidence/<id>` resolve only indexed paths below `DATA_DIR`, reject traversal, and return `no-store` |
 | Stale clinical judgment | Only active, nonexpired, non-review-due judgments constrain agents; all others are visibly framed as needing clinician review |
 | Storage account deletion | `AzureBackupProtectionLock` (CanNotDelete) on the resource group, auto-applied by Azure Backup |

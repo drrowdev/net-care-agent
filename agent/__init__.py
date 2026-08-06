@@ -40,6 +40,7 @@ from .profile import (
     CorruptProfileError,
     IOProfileError,
     ProfileLoadError,
+    active_alerts,
     active_documents,
     get_patient_summary,
     get_research_ids,
@@ -47,6 +48,7 @@ from .profile import (
     public_latest_research_update,
     record_latest_research_update,
     save_profile,
+    summary_is_current,
 )
 from .provenance import anchor_source_quote, preserve_source_document, remove_source_document
 from .questions import generate_appointment_questions, generate_questions_for_profile
@@ -97,7 +99,9 @@ __all__ = [
     "load_profile",
     "save_profile",
     "active_documents",
+    "active_alerts",
     "get_patient_summary",
+    "summary_is_current",
     "get_research_ids",
     "record_latest_research_update",
     "public_latest_research_update",

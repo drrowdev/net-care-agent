@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import datetime
+import re
 
+from ..provenance import new_record_id
 from ..schema import now_stamp
 from .biomarkers import analyze_biomarker_trends
 from .clinical_trials import search_clinical_trials
@@ -109,8 +111,9 @@ TOOLS: list[dict] = [
         "name": "flag_alert",
         "description": (
             "Raise an alert for findings that require action or attention. "
-            "Use for: critical lab values, promising new trials found, PRRT eligibility confirmed, "
-            "urgent treatment considerations, or significant disease progression."
+            "Use for critical values, potentially relevant trial/PRRT screening findings "
+            "requiring clinician confirmation, urgent treatment considerations, or significant "
+            "disease progression. Never claim eligibility, qualification, or a best match."
         ),
         "input_schema": {
             "type": "object",
@@ -216,7 +219,35 @@ def _is_relevant(item: dict, item_type: str) -> bool:
 
 
 # ─── Dispatcher ──────────────────────────────────────────────────────────────
-def execute_tool(name: str, inputs: dict, profile: dict) -> dict:
+def _screening_safe_alert_text(value: object) -> str:
+    original = str(value or "").strip()
+    text = original
+    replacements = (
+        (r"\beligibility confirmed\b", "potential fit requiring clinician confirmation"),
+        (r"\beligibility\b", "potential fit requiring clinician confirmation"),
+        (r"\beligible\b", "a potential fit"),
+        (r"\bqualif\w*\b", "potential fit"),
+        (
+            r"\b(?:one of the )?(?:best|ideal|perfect\w*)[- ]+match(?:es|ed)?\b",
+            "potentially relevant",
+        ),
+        (r"\bperfectly[- ]matched\b", "potentially relevant"),
+    )
+    for pattern, replacement in replacements:
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+    if text != original and "clinician confirmation" not in text.casefold():
+        text = f"{text} — clinician confirmation required"
+    return text
+
+
+def execute_tool(
+    name: str,
+    inputs: dict,
+    profile: dict,
+    *,
+    source_document_id: str | None = None,
+    source_job_id: str | None = None,
+) -> dict:
     if name == "search_pubmed":
         result = search_pubmed(inputs["query"], inputs.get("max_results", 6))
         existing_pmids = {p["pmid"] for p in profile.get("literature_watched", [])}
@@ -310,12 +341,16 @@ def execute_tool(name: str, inputs: dict, profile: dict) -> dict:
 
     elif name == "flag_alert":
         alert = {
+            "id": new_record_id("alert"),
             "date": datetime.date.today().isoformat(),
             "priority": inputs["priority"],
-            "message": inputs["message"],
-            "action_required": inputs.get("action_required", ""),
+            "message": _screening_safe_alert_text(inputs["message"]),
+            "action_required": _screening_safe_alert_text(inputs.get("action_required", "")),
             "resolved": False,
             "added_at": now_stamp(),
+            "source_document_id": source_document_id,
+            "source_job_id": source_job_id,
+            "source_dependency_active": True,
         }
         profile["alerts"].append(alert)
         return {"status": "alert_flagged", **alert}

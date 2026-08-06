@@ -85,6 +85,7 @@ DEFAULT_PROFILE: dict = {
     "symptoms": [],
     "clinical_judgments": [],
     "appointment_questions": [],
+    "questions_generation_id": None,
     "feedback": [],
     "latest_research_update": None,
 }
@@ -532,13 +533,43 @@ def active_documents(profile: dict) -> list[dict]:
     ]
 
 
+def active_alerts(profile: dict) -> list[dict]:
+    """Return unresolved alerts whose clinical source dependency remains valid."""
+    return [
+        item
+        for item in profile.get("alerts", [])
+        if not item.get("resolved") and item.get("source_dependency_active", True)
+    ]
+
+
+def summary_is_current(profile: dict) -> bool:
+    """Return whether generated summary content is safe to reuse as current."""
+    summary = profile.get("executive_summary")
+    if not isinstance(summary, dict) or not summary:
+        return False
+    if profile.get("summary_stale") or summary.get("stale"):
+        return False
+    revision = summary.get("summary_revision")
+    if revision is None or str(revision) != str(profile.get("profile_revision")):
+        return False
+    stored_judgment_hash = summary.get("judgment_context_hash")
+    if stored_judgment_hash is None and profile.get("clinical_judgments"):
+        return False
+    if stored_judgment_hash is not None:
+        from .judgments import clinical_judgments_fingerprint
+
+        if stored_judgment_hash != clinical_judgments_fingerprint(profile):
+            return False
+    return True
+
+
 def get_patient_summary(profile: dict) -> str:
     """Concise text summary of the patient's current state, used as LLM context."""
     p = profile["patient"]
     bms = sorted(profile.get("biomarkers", []), key=lambda x: x.get("date", ""), reverse=True)[:6]
     docs = sorted(active_documents(profile), key=lambda x: x.get("date", ""), reverse=True)[:3]
     imgs = sorted(profile.get("imaging", []), key=lambda x: x.get("date", ""), reverse=True)[:2]
-    active_alerts = [a for a in profile.get("alerts", []) if not a.get("resolved")]
+    current_alerts = active_alerts(profile)
 
     lines = [
         "═══ PATIENT PROFILE ═══",
@@ -604,11 +635,11 @@ def get_patient_summary(profile: dict) -> str:
         "",
         f"Tracked trials     : {len(profile.get('trials_tracked', []))}",
         f"Tracked literature : {len(profile.get('literature_watched', []))} papers",
-        f"Active alerts      : {len(active_alerts)}",
+        f"Active alerts      : {len(current_alerts)}",
     ]
-    if active_alerts:
+    if current_alerts:
         lines.append("")
-        for a in active_alerts:
+        for a in current_alerts:
             lines.append(f"  ⚠  [{a['priority'].upper()}] {a['message']}")
 
     return "\n".join(lines)

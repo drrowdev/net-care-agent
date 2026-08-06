@@ -2034,6 +2034,15 @@ main#main-content {
 .q-add-input { min-height: 40px; border-radius: 7px; font-family: var(--sans); }
 .q-add-btn { min-height: 44px; border-radius: 7px; padding: 6px 14px; font-family: var(--sans); font-weight: 600; }
 .q-item { min-height: 56px; padding: 11px 18px; gap: 10px; }
+.q-item.stale { background: #fffaf1; opacity: 0.82; }
+.q-stale-label {
+  display: inline-flex;
+  margin-right: 6px;
+  color: #684800;
+  font-size: 11px;
+  font-weight: 600;
+}
+.stale-summary-hidden { display: grid; gap: 10px; }
 .q-checkbox {
   width: 44px;
   height: 44px;

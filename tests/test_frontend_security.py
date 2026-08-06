@@ -171,6 +171,49 @@ def test_corrected_receipt_renders_effective_value_without_relabelling_original_
     assert "Original extraction span (before correction)" in receipt
 
 
+def test_receipt_editor_save_stays_disabled_until_clinical_value_changes():
+    editor = _function_source("startReceiptCorrection", "parsedReceiptInput")
+    assert 'class="button primary receipt-save"' in editor
+    assert "disabled>Save correction" in editor
+    assert "const initial = JSON.stringify" in editor
+    assert "save.disabled =" in editor
+
+
+def test_receipt_mutation_response_is_correlated_to_originating_job_and_revision():
+    mutation = _function_source("submitReceiptMutation", "selectTask")
+    assert "receiptMutationPending" in mutation
+    assert "const originJobId = currentReceipt.job_id" in mutation
+    assert "const originReceiptRevision = currentReceipt.receipt_revision" in mutation
+    assert "selectedTaskId === originJobId" in mutation
+    assert "currentReceipt?.job_id === originJobId" in mutation
+    assert "currentReceipt?.receipt_revision === originReceiptRevision" in mutation
+    assert "pendingWasDisabled" in mutation
+    assert "const refreshSelectedJob =" in mutation
+    assert "await selectTask(originJobId)" in mutation
+
+
+def test_stale_job_result_is_hidden_in_activity_panel():
+    detail = _function_source("selectTask", "formatReport")
+    assert "if (task.result.stale)" in detail
+    assert "Generated result is outdated" in detail
+    assert "Regenerate it before use" in detail
+    assert "if (task.report_stale)" in detail
+    assert "Document analysis is outdated" in detail
+    tasks = _function_source("renderTasks", "updateHeaderStatus")
+    assert "t.derived_content_stale" in tasks
+    assert "prior analysis hidden" in tasks
+    assert "!task.derived_content_stale && task.key_findings" in detail
+
+
+def test_patient_history_joins_documents_and_keeps_orphaned_legacy_records():
+    history = _function_source("renderPatientEvidence", "toggleImagingHistory")
+    assert "const documents = patientEvidence.documents || []" in history
+    assert "const sourcesById = new Map" in history
+    assert "history_kind: 'document'" in history
+    assert "Legacy document record" in history
+    assert "source.source_url" in history
+
+
 def test_claim_evidence_and_decision_support_wording_are_non_definitive():
     summary = _function_source("renderSummary", "removeItem")
     assert "POTENTIAL FIT" in summary
@@ -180,6 +223,7 @@ def test_claim_evidence_and_decision_support_wording_are_non_definitive():
     assert "PRRT: ELIGIBLE" not in APP_JS
     assert "renderClaimEvidence" in summary
     assert "d.claim_evidence?.claims?.cga_trend_detail" in summary
+    assert "Prior generated assessment is hidden" in summary
 
 
 def test_empty_form_handlers_surface_inline_feedback():

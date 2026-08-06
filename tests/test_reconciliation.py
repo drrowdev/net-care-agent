@@ -150,6 +150,53 @@ def test_changed_target_rejects_correction_without_mutation(agent, empty_profile
     assert profile["document_imports"][0]["receipt_revision"] == 1
 
 
+def test_resolved_imported_alert_blocks_undo_without_deletion(agent, empty_profile):
+    before = copy.deepcopy(empty_profile)
+    text = "critical extraction could not be completed"
+    with patch_llm(agent, lambda **_: llm_text("not-json")):
+        profile, extracted = agent.run_intake(text, empty_profile)
+    agent.build_import_record(before, profile, extracted, job_id="feed-alert", text=text)
+    receipt = agent.public_receipt(profile, "feed-alert")
+    alert_change = next(item for item in receipt["changes"] if item["category"] == "alerts")
+
+    profile["alerts"][0]["resolved"] = True
+    refreshed = agent.public_receipt(profile, "feed-alert")
+    refreshed_alert = next(
+        item for item in refreshed["changes"] if item["id"] == alert_change["id"]
+    )
+
+    assert refreshed_alert["conflicted"] is True
+    assert refreshed["can_undo"] is False
+    with pytest.raises(agent.ImportConflict):
+        agent.undo_import(
+            profile,
+            "feed-alert",
+            receipt_revision=receipt["receipt_revision"],
+            undo_token=receipt["undo_token"],
+        )
+    assert len(profile["alerts"]) == 1
+    assert profile["alerts"][0]["resolved"] is True
+
+
+def test_legacy_alert_receipt_default_dependency_does_not_false_conflict(agent, empty_profile):
+    before = copy.deepcopy(empty_profile)
+    text = "critical extraction could not be completed"
+    with patch_llm(agent, lambda **_: llm_text("not-json")):
+        profile, extracted = agent.run_intake(text, empty_profile)
+    agent.build_import_record(before, profile, extracted, job_id="feed-alert", text=text)
+    alert_change = next(
+        item for item in profile["document_imports"][0]["changes"] if item["category"] == "alerts"
+    )
+    alert_change["after"].pop("source_dependency_active", None)
+    alert_change["effective_value"].pop("source_dependency_active", None)
+
+    receipt = agent.public_receipt(profile, "feed-alert")
+    public_alert = next(item for item in receipt["changes"] if item["id"] == alert_change["id"])
+
+    assert public_alert["conflicted"] is False
+    assert receipt["can_undo"] is True
+
+
 @pytest.mark.parametrize(
     "replacement",
     [
@@ -181,6 +228,38 @@ def test_invalid_biomarker_correction_is_rejected_without_mutation(
 
     assert profile["biomarkers"][0] == original
     assert profile["document_imports"][0]["receipt_revision"] == 1
+
+
+def test_identical_correction_is_noop_with_profile_bytes_unchanged(
+    app_client, agent, empty_profile
+):
+    app_module, client = app_client
+    profile, _ = _ingest(agent, empty_profile)
+    agent.save_profile(profile)
+    _retain_feed_job(app_module, profile)
+    receipt = client.get("/api/jobs/feed-job/receipt").get_json()
+    biomarker = next(item for item in receipt["changes"] if item["category"] == "biomarkers")
+    before_bytes = agent.PROFILE_PATH.read_bytes()
+
+    response = client.post(
+        f"/api/jobs/feed-job/receipt/changes/{biomarker['id']}/correct",
+        json={
+            "receipt_revision": receipt["receipt_revision"],
+            "target_token": biomarker["target_token"],
+            "replacement": {"value": 234},
+        },
+    )
+
+    assert response.status_code == 400
+    assert "identical" in response.get_json()["error"]
+    assert agent.PROFILE_PATH.read_bytes() == before_bytes
+    saved = agent.load_profile()
+    saved_change = next(
+        item for item in saved["document_imports"][0]["changes"] if item["id"] == biomarker["id"]
+    )
+    assert saved["biomarkers"][0]["evidence_status"] == "verified"
+    assert saved_change["history"] == []
+    assert saved_change["state"] == "active"
 
 
 def test_blank_scalar_correction_is_rejected_without_mutation(agent, empty_profile):
@@ -279,6 +358,15 @@ def test_document_undo_removes_only_direct_effects_and_keeps_source(agent, empty
         for item in profile["document_imports"][0]["changes"]
     )
     assert "New lab and pathology values." not in agent.get_patient_summary(profile)
+    document_change = next(
+        item
+        for item in profile["document_imports"][0]["changes"]
+        if item["category"] == "documents"
+    )
+    undo_event = next(item for item in document_change["history"] if item["event"] == "undone")
+    assert undo_event["before"]["excluded_from_clinical_context"] is False
+    assert undo_event["after"]["excluded_from_clinical_context"] is True
+    assert undo_event["before"] != undo_event["after"]
 
 
 def test_remove_single_scalar_restores_prior_value(agent, empty_profile):
@@ -378,6 +466,27 @@ def test_patient_evidence_api_is_path_free_and_links_receipt(app_client, agent, 
     assert str(agent.DATA_DIR) not in serialized
 
 
+def test_patient_evidence_keeps_excluded_and_orphaned_legacy_documents(
+    app_client, agent, empty_profile
+):
+    _, client = app_client
+    empty_profile["documents"] = [
+        {
+            "date": "2020-01-01",
+            "type": "doctor_note",
+            "summary": "Legacy document without source index",
+            "excluded_from_clinical_context": True,
+        }
+    ]
+    agent.save_profile(empty_profile)
+
+    payload = client.get("/api/patient/evidence").get_json()
+
+    assert payload["documents"][0]["summary"] == "Legacy document without source index"
+    assert payload["documents"][0]["excluded_from_clinical_context"] is True
+    assert "source_url" not in payload["documents"][0]
+
+
 def test_document_undo_api_works_after_normalized_profile_reload(app_client, agent, empty_profile):
     app_module, client = app_client
     empty_profile["patient"]["ki67_percent"] = 8
@@ -447,6 +556,351 @@ def test_post_intake_failure_keeps_job_scoped_receipt(app_client, agent, monkeyp
     assert receipt.status_code == 200
     assert receipt.get_json()["document_summary"] == "Lab imported before research failed."
     assert agent.load_profile()["biomarkers"][0]["value"] == 234
+
+
+def test_correction_invalidates_source_alerts_questions_and_summary(agent, empty_profile):
+    profile, _ = _ingest(agent, empty_profile)
+    source_id = profile["document_imports"][0]["source_document_id"]
+    profile["profile_revision"] = 4
+    profile["summary_stale"] = False
+    profile["executive_summary"] = {
+        "summary_revision": 4,
+        "stale": False,
+        "overall_status": "stable",
+        "summary": "OLD GENERATED SUMMARY",
+        "next_actions": [{"action": "OLD ACTION"}],
+        "prrt_status": "eligible",
+    }
+    profile["appointment_questions"] = [
+        {
+            "id": "generated",
+            "text": "OLD GENERATED QUESTION",
+            "source": "ai",
+            "asked": False,
+            "stale": False,
+        },
+        {
+            "id": "manual",
+            "text": "Manual caregiver question",
+            "source": "manual",
+            "asked": False,
+        },
+    ]
+    profile["alerts"].append(
+        {
+            "id": "source-alert",
+            "priority": "high",
+            "message": "Potential PRRT fit to confirm",
+            "resolved": False,
+            "source_document_id": source_id,
+            "source_job_id": "feed-job",
+            "source_dependency_active": True,
+        }
+    )
+    receipt = agent.public_receipt(profile, "feed-job")
+    biomarker = next(item for item in receipt["changes"] if item["category"] == "biomarkers")
+
+    agent.correct_change(
+        profile,
+        "feed-job",
+        biomarker["id"],
+        receipt_revision=receipt["receipt_revision"],
+        target_token=biomarker["target_token"],
+        replacement={"value": 243},
+    )
+
+    assert profile["summary_stale"] is True
+    assert profile["executive_summary"]["stale"] is True
+    assert profile["appointment_questions"][0]["stale"] is True
+    assert profile["appointment_questions"][1].get("stale", False) is False
+    assert profile["alerts"][-1]["source_dependency_active"] is False
+    assert agent.active_alerts(profile) == []
+    prompt = agent.build_chat_system(profile)
+    assert "OLD GENERATED SUMMARY" not in prompt
+    assert "OLD ACTION" not in prompt
+    assert "Potential PRRT fit to confirm" not in prompt
+
+
+def test_stale_summary_api_hides_generated_content_and_excluded_documents(
+    app_client, agent, empty_profile
+):
+    _, client = app_client
+    empty_profile["profile_revision"] = 5
+    empty_profile["summary_stale"] = True
+    empty_profile["executive_summary"] = {
+        "summary_revision": 4,
+        "stale": True,
+        "overall_status": "stable",
+        "status_rationale": "OLD RATIONALE",
+        "key_concern": "OLD CONCERN",
+        "summary": "OLD SUMMARY",
+        "prrt_status": "eligible",
+        "prrt_rationale": "OLD PRRT",
+        "next_actions": [{"action": "OLD ACTION"}],
+        "timeline": [{"event": "OLD EVENT"}],
+        "best_trial": {"nct_id": "NCT00000001"},
+    }
+    empty_profile["documents"] = [
+        {
+            "date": "2026-08-01",
+            "summary": "Excluded corrected source",
+            "excluded_from_clinical_context": True,
+        },
+        {
+            "date": "2026-08-02",
+            "summary": "Active source",
+            "excluded_from_clinical_context": False,
+        },
+    ]
+    agent.save_profile(empty_profile, clinical_change=False)
+
+    payload = client.get("/api/summary").get_json()
+
+    assert payload["status"] == "stale"
+    assert payload["content_hidden"] is True
+    for field in (
+        "overall_status",
+        "status_rationale",
+        "key_concern",
+        "summary",
+        "prrt_status",
+        "next_actions",
+        "timeline",
+        "best_trial",
+    ):
+        assert field not in payload
+    assert [item["summary"] for item in payload["recent_documents"]] == ["Active source"]
+
+
+@pytest.mark.parametrize("job_type", ["questions", "summary"])
+def test_dependent_job_artifacts_are_marked_or_hidden_after_profile_change(
+    app_client, agent, empty_profile, job_type
+):
+    app_module, client = app_client
+    empty_profile["profile_revision"] = 2
+    agent.save_profile(empty_profile, clinical_change=False)
+    result = (
+        {
+            "questions": [{"text": "OLD GENERATED QUESTION", "source": "ai"}],
+            "source_profile_revision": 1,
+        }
+        if job_type == "questions"
+        else {
+            "summary": {"summary": "OLD GENERATED SUMMARY"},
+            "profile_revision": 1,
+        }
+    )
+    result_ref = app_module._write_job_result("dependent-job", result)
+    app_module._jobs = [
+        {
+            "id": "dependent-job",
+            "type": job_type,
+            "status": "done",
+            "stage": "done",
+            "created_at": "2026-08-01T12:00:00",
+            "result_file": result_ref,
+            "error": None,
+        }
+    ]
+
+    payload = client.get("/api/jobs/dependent-job").get_json()["result"]
+
+    assert payload["stale"] is True
+    assert payload["stale_reason"] == "patient_record_changed_after_generation"
+    if job_type == "summary":
+        assert "summary" not in payload
+    else:
+        assert payload["questions"][0]["stale"] is True
+
+
+def test_revisionless_legacy_question_artifact_is_conservatively_stale(
+    app_client, agent, empty_profile
+):
+    app_module, client = app_client
+    agent.save_profile(empty_profile, clinical_change=False)
+    result_ref = app_module._write_job_result(
+        "legacy-questions",
+        {"questions": [{"text": "LEGACY GENERATED QUESTION", "source": "ai"}]},
+    )
+    app_module._jobs = [
+        {
+            "id": "legacy-questions",
+            "type": "questions",
+            "status": "done",
+            "stage": "done",
+            "created_at": "2026-08-01T12:00:00",
+            "result_file": result_ref,
+            "error": None,
+        }
+    ]
+
+    payload = client.get("/api/jobs/legacy-questions").get_json()["result"]
+
+    assert payload["stale"] is True
+    assert payload["questions"][0]["stale"] is True
+
+
+def test_same_revision_superseded_question_generation_is_stale(app_client, agent, empty_profile):
+    app_module, client = app_client
+    empty_profile["profile_revision"] = 7
+    empty_profile["questions_generation_id"] = "new-generation"
+    empty_profile["appointment_questions"] = [
+        {
+            "id": "new",
+            "text": "Current generated question",
+            "source": "ai",
+            "generation_job_id": "new-generation",
+            "stale": False,
+        }
+    ]
+    agent.save_profile(empty_profile, clinical_change=False)
+    result_ref = app_module._write_job_result(
+        "old-generation",
+        {
+            "questions": [{"text": "OBSOLETE GENERATED QUESTION", "source": "ai"}],
+            "source_profile_revision": 7,
+            "generation_id": "old-generation",
+        },
+    )
+    app_module._jobs = [
+        {
+            "id": "old-generation",
+            "type": "questions",
+            "status": "done",
+            "stage": "done",
+            "created_at": "2026-08-01T12:00:00",
+            "result_file": result_ref,
+            "error": None,
+        }
+    ]
+
+    payload = client.get("/api/jobs/old-generation").get_json()["result"]
+
+    assert payload["stale"] is True
+    assert payload["questions"][0]["stale"] is True
+
+
+def test_historical_stale_asked_question_does_not_poison_current_generation_artifact(
+    app_client, agent, empty_profile
+):
+    app_module, client = app_client
+    empty_profile["profile_revision"] = 7
+    empty_profile["questions_generation_id"] = "new-generation"
+    empty_profile["appointment_questions"] = [
+        {
+            "id": "historical",
+            "text": "Historical asked question",
+            "source": "ai",
+            "asked": True,
+            "generation_job_id": "old-generation",
+            "stale": True,
+        },
+        {
+            "id": "new",
+            "text": "Current generated question",
+            "source": "ai",
+            "generation_job_id": "new-generation",
+            "stale": False,
+        },
+    ]
+    agent.save_profile(empty_profile, clinical_change=False)
+    result_ref = app_module._write_job_result(
+        "new-generation",
+        {
+            "questions": copy.deepcopy(empty_profile["appointment_questions"]),
+            "source_profile_revision": 7,
+            "generation_id": "new-generation",
+        },
+    )
+    app_module._jobs = [
+        {
+            "id": "new-generation",
+            "type": "questions",
+            "status": "done",
+            "stage": "done",
+            "created_at": "2026-08-01T12:00:00",
+            "result_file": result_ref,
+            "error": None,
+        }
+    ]
+
+    payload = client.get("/api/jobs/new-generation").get_json()["result"]
+
+    assert payload.get("stale") is not True
+    assert payload["questions"][1]["text"] == "Current generated question"
+
+
+def test_corrected_feed_report_is_retained_but_hidden_from_job_detail(
+    app_client, agent, empty_profile
+):
+    app_module, client = app_client
+    profile, _ = _ingest(agent, empty_profile)
+    receipt = agent.public_receipt(profile, "feed-job")
+    biomarker = next(item for item in receipt["changes"] if item["category"] == "biomarkers")
+    agent.correct_change(
+        profile,
+        "feed-job",
+        biomarker["id"],
+        receipt_revision=receipt["receipt_revision"],
+        target_token=biomarker["target_token"],
+        replacement={"value": 243},
+    )
+    agent.save_profile(profile)
+    report_path = app_module.DATA_DIR / "reports" / "corrected-feed.txt"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text("OBSOLETE FEED ANALYSIS", encoding="utf-8")
+    app_module._jobs = [
+        {
+            "id": "feed-job",
+            "type": "feed",
+            "status": "done",
+            "stage": "done",
+            "created_at": "2026-08-01T12:00:00",
+            "source_document_id": profile["document_imports"][0]["source_document_id"],
+            "report_file": app_module._artifact_ref(report_path),
+            "summary": "OBSOLETE JOB PREVIEW",
+            "key_findings": ["OBSOLETE FINDING"],
+            "error": None,
+        }
+    ]
+
+    job_list = client.get("/api/jobs").get_json()
+    payload = client.get("/api/jobs/feed-job").get_json()
+
+    assert job_list[0]["derived_content_stale"] is True
+    assert "summary" not in job_list[0]
+    assert "key_findings" not in job_list[0]
+    assert payload["report_stale"] is True
+    assert payload["derived_content_stale"] is True
+    assert "summary" not in payload
+    assert "key_findings" not in payload
+    assert payload["report_available_for_audit"] is True
+    assert "report" not in payload
+    assert report_path.read_text(encoding="utf-8") == "OBSOLETE FEED ANALYSIS"
+
+
+def test_generated_questions_are_dynamically_stale_after_profile_revision_change(
+    app_client, agent, empty_profile
+):
+    _, client = app_client
+    empty_profile["profile_revision"] = 8
+    empty_profile["questions_generation_id"] = "question-job"
+    empty_profile["appointment_questions"] = [
+        {
+            "id": "generated",
+            "text": "Question from revision seven",
+            "source": "ai",
+            "source_profile_revision": 7,
+            "generation_job_id": "question-job",
+            "stale": False,
+        }
+    ]
+    agent.save_profile(empty_profile, clinical_change=False)
+
+    questions = client.get("/api/questions").get_json()
+
+    assert questions[0]["stale"] is True
+    assert questions[0]["stale_reason"] == "missing_or_superseded_generation_provenance"
 
 
 @pytest.mark.parametrize(

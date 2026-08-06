@@ -425,6 +425,7 @@ def _run_intake_impl(
             "raw_text": text[:3000],
             "added_at": source_document["ingested_at"],
             "source_document_id": source_document_id,
+            "excluded_from_clinical_context": False,
             "evidence": document_evidence,
         }
     )

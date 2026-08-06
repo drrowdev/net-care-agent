@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 import responses
 
 # ─── flag_alert ──────────────────────────────────────────────────────────────
@@ -28,6 +29,82 @@ def test_flag_alert_appends_to_profile(agent, empty_profile):
     assert empty_profile["alerts"][0]["priority"] == "urgent"
     assert empty_profile["alerts"][0]["resolved"] is False
     assert empty_profile["alerts"][0]["date"]  # ISO date filled in
+
+
+def test_feed_derived_alert_is_source_scoped_and_uses_screening_language(agent, empty_profile):
+    result = agent.execute_tool(
+        "flag_alert",
+        {
+            "priority": "high",
+            "message": "Patient is eligible and best matched for PRRT trial",
+            "action_required": "Confirm eligibility",
+        },
+        empty_profile,
+        source_document_id="doc_" + "a" * 32,
+        source_job_id="feed-job",
+    )
+
+    alert = empty_profile["alerts"][0]
+    assert result["status"] == "alert_flagged"
+    assert alert["source_document_id"] == "doc_" + "a" * 32
+    assert alert["source_job_id"] == "feed-job"
+    assert alert["source_dependency_active"] is True
+    assert "eligible" not in alert["message"].lower()
+    assert "best match" not in alert["message"].lower()
+    assert "eligibility" not in alert["action_required"].lower()
+    assert "clinician confirmation" in alert["message"].lower()
+
+
+def test_best_match_variant_is_also_softened(agent, empty_profile):
+    agent.execute_tool(
+        "flag_alert",
+        {
+            "priority": "medium",
+            "message": "Patient is the best match for PRRT",
+        },
+        empty_profile,
+    )
+
+    assert "best match" not in empty_profile["alerts"][0]["message"].lower()
+    assert "clinician confirmation" in empty_profile["alerts"][0]["message"].lower()
+
+
+def test_qualification_and_ideal_match_variants_are_softened(agent, empty_profile):
+    agent.execute_tool(
+        "flag_alert",
+        {
+            "priority": "medium",
+            "message": "Patient is qualified as the ideal match for PRRT trial",
+        },
+        empty_profile,
+    )
+
+    message = empty_profile["alerts"][0]["message"].lower()
+    assert "qualified" not in message
+    assert "ideal match" not in message
+    assert "clinician confirmation" in message
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "Patient is one of the best matches for PRRT",
+        "Patient is perfectly matched for PRRT",
+        "Trial qualifications confirmed",
+    ],
+)
+def test_additional_definitive_fit_variants_are_softened(agent, empty_profile, claim):
+    agent.execute_tool(
+        "flag_alert",
+        {"priority": "medium", "message": claim},
+        empty_profile,
+    )
+
+    message = empty_profile["alerts"][0]["message"].lower()
+    assert "best match" not in message
+    assert "perfectly matched" not in message
+    assert "qualifications" not in message
+    assert "clinician confirmation" in message
 
 
 # ─── analyze_biomarker_trends ────────────────────────────────────────────────

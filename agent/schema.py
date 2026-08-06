@@ -261,6 +261,11 @@ class Alert(_Lenient):
     message: str | None = None
     action_required: str | None = None
     resolved: bool = False
+    source_document_id: str | None = None
+    source_job_id: str | None = None
+    source_dependency_active: bool = True
+    source_invalidated_at: str | None = None
+    inactive_reason: str | None = None
     added_at: str | None = Field(
         None, description="Timestamp when the item first entered the patient profile."
     )
@@ -327,6 +332,11 @@ class Question(_Lenient):
     source: QuestionSource | None = None
     asked: bool = False
     created_at: str | None = None
+    source_profile_revision: int | None = None
+    stale: bool = False
+    stale_reason: str | None = None
+    stale_at: str | None = None
+    generation_job_id: str | None = None
 
 
 class Appointment(_EvidenceFields):
@@ -454,7 +464,7 @@ class PatientProfile(_Lenient):
     """The complete patient profile. Lives at ${DATA_DIR}/patient_profile.json."""
 
     schema_version: int = Field(
-        default=2,
+        default=3,
         description="Profile schema version. Incremented when a structural migration runs.",
     )
     profile_revision: int = 0
@@ -476,6 +486,7 @@ class PatientProfile(_Lenient):
     symptoms: list[Symptom] = Field(default_factory=list)
     questions: list[Question] = Field(default_factory=list)
     appointment_questions: list[Question] = Field(default_factory=list)
+    questions_generation_id: str | None = None
     feedback: list[Feedback] = Field(default_factory=list)
     executive_summary: ExecutiveSummary | None = None
     latest_research_update: ResearchUpdate | None = None

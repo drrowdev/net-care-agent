@@ -18,11 +18,17 @@ incremented when something user-visible or operationally meaningful changes.
   changed affected facts with `409`; source bytes/text and append-only audit
   history remain intact. No global review inbox, unread count, or acknowledgement
   was introduced.
+  Full-row CAS now detects later alert resolution/clinical row edits, identical
+  corrections are byte-for-byte no-ops, and undo audit snapshots preserve
+  distinct before/after values.
 - **Claim-level and Patient evidence.** Key assessment claims and actions now
   resolve only server-validated evidence-catalog IDs to exact authenticated
   source spans; missing and invented references are labelled explicitly. Patient
   now includes progressive imaging and document/source history with receipt and
   source links, without exposing storage paths.
+  Document-only legacy history remains visible even without a source index.
+  Source-dependent clinical alerts are retained but deactivated after correction
+  or undo.
 - **Caregiver safety and accessibility hardening.** Processing status is now
   `Processing`, `Idle`, or `Unavailable`, separate from assessment freshness.
   PRRT is presented as potential fit and trials as items to discuss, not
@@ -32,6 +38,10 @@ incremented when something user-visible or operationally meaningful changes.
   badges/secondary text have stronger contrast, empty submissions show inline
   validation, and failed loads leave terminal retry states instead of indefinite
   Connecting/Loading placeholders.
+  Stale summaries/actions/PRRT screening, superseded generated questions, and
+  corrected feed reports are withheld from current UI/model contexts while their
+  audit artifacts remain stored. Receipt mutation controls are dirty-checked,
+  disabled while pending, and late responses cannot overwrite another job panel.
 - **Today-first responsive caregiver workspace.** Replaced the duplicated
   desktop/mobile surfaces with shared **Today**, **Patient**, **Questions**, and
   **Activity** views while retaining the warm green/amber visual identity.

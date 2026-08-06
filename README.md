@@ -131,7 +131,7 @@ All patient state lives in a single JSON file at `${DATA_DIR}/patient_profile.js
 
 ```
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "profile_revision": 42,
   "profile_updated_at": "2026-07-10T16:51:49",
   "profile_saved_at": "2026-07-10T16:52:03",
@@ -145,9 +145,9 @@ All patient state lives in a single JSON file at `${DATA_DIR}/patient_profile.js
   "document_imports": [ {job_id, source_document_id, status, receipt_revision, changes: [...]}, ... ],
   "trials":      [ {nct_id, title, status, ...}, ... ],
   "papers":      [ {pmid, title, journal, date}, ... ],
-  "alerts":      [ {priority, action, created, resolved}, ... ],
+  "alerts":      [ {priority, action, resolved, source_document_id, source_dependency_active}, ... ],
   "judgments":   [ {category, text, scope, status, review_after, valid_until, supersedes}, ... ],
-  "questions":   [ {id, text, category, priority, asked}, ... ],
+  "questions":   [ {id, text, category, priority, asked, generation_job_id, stale}, ... ],
   "feedback":    [ {target, item_id, assessment, note, outcome, timestamps}, ... ],
   "exec_summary": { "summary_revision": 42, "stale": false, ... },
   "latest_research_update": {
@@ -167,6 +167,9 @@ Every clinical-content save advances `profile_revision`; bookkeeping-only saves
 (for example marking a question asked) update `profile_saved_at` without
 invalidating the summary. Summary freshness compares the clinical revision with
 `executive_summary.summary_revision`, independent of clinical dates.
+Schema v3 also carries generation identity for AI questions. Legacy generated
+questions without that identity migrate to explicit stale history rather than
+appearing current.
 
 A daily backup is written to `${DATA_DIR}/backups/profile_YYYYMMDD.json`
 (retention: 30 days).

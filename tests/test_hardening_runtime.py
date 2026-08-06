@@ -271,6 +271,7 @@ def test_job_file_contains_only_metadata_and_detail_hydrates(hardened_app):
     report = hardened_app.DATA_DIR / "reports" / "r.txt"
     report.parent.mkdir(parents=True)
     report.write_text("private report", encoding="utf-8")
+    profile_revision = hardened_app.agent.load_profile().get("profile_revision")
     hardened_app._add_job(
         {
             "id": "job1",
@@ -282,6 +283,7 @@ def test_job_file_contains_only_metadata_and_detail_hydrates(hardened_app):
             "input_preview": "must not persist",
             "traceback": "must not persist",
             "report_file": "reports/r.txt",
+            "profile_revision": profile_revision,
         }
     )
     stored = hardened_app.JOBS_PATH.read_text(encoding="utf-8")

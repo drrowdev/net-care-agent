@@ -210,3 +210,68 @@ def test_cli_research_runs_record_the_latest_batch(
     assert update["job_id"].startswith(f"cli-{command}-")
     assert update["trial_ids"] == ["NCT00000002"]
     assert update["paper_ids"] == ["10000002"]
+
+
+def test_cli_feed_commits_versioned_intake_before_orchestration_failure(agent, monkeypatch):
+    from agent import cli
+
+    def intake(_text, profile, **_kwargs):
+        profile["documents"].append(
+            {
+                "id": "doc-row",
+                "date": "2026-08-01",
+                "summary": "Committed intake",
+                "source_document_id": "doc_" + "a" * 32,
+            }
+        )
+        profile["alerts"].append(
+            {
+                "id": "alert-row",
+                "message": "Intake failure alert",
+                "resolved": False,
+                "source_document_id": "doc_" + "a" * 32,
+            }
+        )
+        return profile, {"source_document_id": "doc_" + "a" * 32}
+
+    monkeypatch.setattr(cli, "run_intake", intake)
+    monkeypatch.setattr(
+        cli,
+        "run_orchestrator",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("research failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="research failed"):
+        cli.cmd_feed(SimpleNamespace(file=None, text="clinical note"))
+
+    saved = agent.load_profile()
+    assert saved["documents"][0]["summary"] == "Committed intake"
+    assert saved["alerts"][0]["source_job_id"].startswith("cli-feed-")
+    assert saved["alerts"][0]["generation_profile_revision"] == saved["profile_revision"]
+
+
+def test_successful_cli_feed_finalizes_intake_alert_revision(agent, monkeypatch):
+    from agent import cli
+
+    def intake(_text, profile, **_kwargs):
+        source_id = "doc_" + "b" * 32
+        profile["alerts"].append(
+            {
+                "id": "alert-row",
+                "message": "Intake failure alert",
+                "resolved": False,
+                "source_document_id": source_id,
+            }
+        )
+        return profile, {"source_document_id": source_id}
+
+    monkeypatch.setattr(cli, "run_intake", intake)
+    monkeypatch.setattr(cli, "run_orchestrator", lambda *_args, **_kwargs: "report")
+    monkeypatch.setattr(cli, "_print_and_save_report", lambda *_args: None)
+
+    cli.cmd_feed(SimpleNamespace(file=None, text="clinical note"))
+
+    saved = agent.load_profile()
+    alert = saved["alerts"][0]
+    assert alert["generation_profile_revision"] == saved["profile_revision"]
+    assert agent.active_alerts(saved)[0]["id"] == alert["id"]

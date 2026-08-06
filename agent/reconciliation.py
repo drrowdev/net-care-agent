@@ -734,6 +734,41 @@ def _mark_summary_stale(profile: dict) -> None:
         summary["import_correction_pending"] = True
 
 
+_ALERT_SYSTEM_FIELDS = {
+    "source_document_id",
+    "source_job_id",
+    "generation_profile_revision",
+    "source_dependency_active",
+    "source_invalidated_at",
+    "inactive_reason",
+}
+
+
+def sync_alert_system_state(profile: dict, alert: dict) -> None:
+    """Mirror system-owned dependency fields without masking caregiver mutations."""
+    alert_id = alert.get("id")
+    if not alert_id:
+        return
+    for record in profile.get("document_imports", []):
+        change = next(
+            (
+                item
+                for item in record.get("changes", [])
+                if item.get("target", {}).get("collection") == "alerts"
+                and item.get("target", {}).get("record_id") == alert_id
+            ),
+            None,
+        )
+        if not change or not isinstance(change.get("effective_value"), dict):
+            continue
+        effective = change["effective_value"]
+        for field in _ALERT_SYSTEM_FIELDS:
+            if field in alert:
+                effective[field] = _clone(alert[field])
+            else:
+                effective.pop(field, None)
+
+
 def _invalidate_source_dependencies(profile: dict, record: dict) -> None:
     """Retain dependent alerts/questions but stop presenting them as current."""
     timestamp = now_stamp()
@@ -745,6 +780,7 @@ def _invalidate_source_dependencies(profile: dict, record: dict) -> None:
             alert["source_dependency_active"] = False
             alert["source_invalidated_at"] = timestamp
             alert["inactive_reason"] = "source_document_corrected_or_undone"
+            sync_alert_system_state(profile, alert)
     for question in profile.get("appointment_questions", []):
         if question.get("source") != "ai" or question.get("stale"):
             continue

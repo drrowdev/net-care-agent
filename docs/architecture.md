@@ -138,6 +138,14 @@ other mutations; schema-added legacy defaults are canonicalized so they do not
 create false conflicts. Generated summaries, questions, and feed reports remain
 stored, but revision/generation/source invalidation hides stale conclusions from
 chat, Today, Questions, and Activity until regenerated.
+Digest/deep-sweep reports and chat results also record their source profile
+revision; revisionless legacy artifacts are conservatively outdated. Job-list
+metadata exposes only the safe revision/stale state, never report bodies.
+Every newly generated alert records its source/origin job and generation profile
+revision. Feed alerts additionally record source-document dependency. System-
+owned dependency updates are mirrored into receipt effective state so they do
+not create false CAS conflicts; caregiver changes such as resolving an alert
+remain conflicting mutations.
 
 Executive-summary prompts receive an opaque catalog of verified source-span IDs.
 The model may select only those IDs for named claims and actions; Flask resolves

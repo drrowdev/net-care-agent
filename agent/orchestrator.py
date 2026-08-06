@@ -145,6 +145,7 @@ def run_orchestrator(profile: dict, extracted: dict) -> str:
                     profile,
                     source_document_id=extracted.get("source_document_id"),
                     source_job_id=extracted.get("source_job_id"),
+                    generation_profile_revision=extracted.get("generation_profile_revision"),
                 )
                 tool_results.append(
                     {

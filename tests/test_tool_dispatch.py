@@ -52,7 +52,7 @@ def test_feed_derived_alert_is_source_scoped_and_uses_screening_language(agent, 
     assert "eligible" not in alert["message"].lower()
     assert "best match" not in alert["message"].lower()
     assert "eligibility" not in alert["action_required"].lower()
-    assert "clinician confirmation" in alert["message"].lower()
+    assert "must review the complete criteria and enrollment status" in alert["message"].lower()
 
 
 def test_best_match_variant_is_also_softened(agent, empty_profile):
@@ -66,7 +66,7 @@ def test_best_match_variant_is_also_softened(agent, empty_profile):
     )
 
     assert "best match" not in empty_profile["alerts"][0]["message"].lower()
-    assert "clinician confirmation" in empty_profile["alerts"][0]["message"].lower()
+    assert "must review the complete criteria" in empty_profile["alerts"][0]["message"].lower()
 
 
 def test_qualification_and_ideal_match_variants_are_softened(agent, empty_profile):
@@ -82,7 +82,7 @@ def test_qualification_and_ideal_match_variants_are_softened(agent, empty_profil
     message = empty_profile["alerts"][0]["message"].lower()
     assert "qualified" not in message
     assert "ideal match" not in message
-    assert "clinician confirmation" in message
+    assert "must review the complete criteria" in message
 
 
 @pytest.mark.parametrize(
@@ -104,7 +104,133 @@ def test_additional_definitive_fit_variants_are_softened(agent, empty_profile, c
     assert "best match" not in message
     assert "perfectly matched" not in message
     assert "qualifications" not in message
-    assert "clinician confirmation" in message
+    assert "must review the complete criteria" in message
+
+
+def test_inclusion_and_enrollment_assertion_is_replaced_not_prefixed(agent, empty_profile):
+    agent.execute_tool(
+        "flag_alert",
+        {
+            "priority": "high",
+            "message": "Patient meets all inclusion criteria and should enroll now",
+            "action_required": "Enroll immediately because all criteria are met",
+        },
+        empty_profile,
+    )
+
+    alert = empty_profile["alerts"][0]
+    for value in (alert["message"], alert["action_required"]):
+        lowered = value.lower()
+        assert "meets all inclusion criteria" not in lowered
+        assert "enroll now" not in lowered
+        assert "enroll immediately" not in lowered
+        assert "must review the complete criteria and enrollment status" in lowered
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "Patient should be included in this trial now",
+        "Patient satisfies all inclusion requirements",
+    ],
+)
+def test_inclusion_verb_and_requirement_claims_are_replaced(agent, empty_profile, claim):
+    agent.execute_tool(
+        "flag_alert",
+        {
+            "priority": "high",
+            "message": claim,
+            "action_required": claim,
+        },
+        empty_profile,
+    )
+
+    for value in (
+        empty_profile["alerts"][0]["message"],
+        empty_profile["alerts"][0]["action_required"],
+    ):
+        assert claim.lower() not in value.lower()
+        assert "must review the complete criteria" in value.lower()
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "Patient is not eligible because prior therapy excludes enrollment",
+        "Do not enroll because the patient fails inclusion criteria",
+    ],
+)
+def test_negative_screening_claims_are_not_reversed_to_positive_fit(agent, empty_profile, claim):
+    agent.execute_tool(
+        "flag_alert",
+        {"priority": "high", "message": claim, "action_required": claim},
+        empty_profile,
+    )
+
+    for value in (
+        empty_profile["alerts"][0]["message"],
+        empty_profile["alerts"][0]["action_required"],
+    ):
+        lowered = value.lower()
+        assert "potential research or treatment fit" not in lowered
+        assert "potential exclusion or non-fit" not in lowered
+        assert "screening information identified" in lowered
+        assert "must review the complete criteria" in lowered
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "Patient is ineligible for this trial",
+        "Patient is excluded because of prior therapy",
+    ],
+)
+def test_standalone_exclusion_claims_are_bounded(agent, empty_profile, claim):
+    agent.execute_tool(
+        "flag_alert",
+        {"priority": "high", "message": claim},
+        empty_profile,
+    )
+
+    message = empty_profile["alerts"][0]["message"].lower()
+    assert claim.lower() not in message
+    assert "screening information identified" in message
+
+
+def test_no_exclusion_criteria_does_not_invert_affirmative_fit(agent, empty_profile):
+    agent.execute_tool(
+        "flag_alert",
+        {
+            "priority": "medium",
+            "message": "Patient is eligible and has no exclusion criteria",
+        },
+        empty_profile,
+    )
+
+    message = empty_profile["alerts"][0]["message"].lower()
+    assert "screening information identified" in message
+    assert "potential exclusion or non-fit" not in message
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "Enrollment is closed for this trial",
+        "Patient is not excluded from enrollment",
+    ],
+)
+def test_ambiguous_screening_polarity_is_neutralized(agent, empty_profile, claim):
+    agent.execute_tool(
+        "flag_alert",
+        {"priority": "medium", "message": claim},
+        empty_profile,
+    )
+
+    message = empty_profile["alerts"][0]["message"].lower()
+    assert claim.lower() not in message
+    assert "screening information identified" in message
+    assert "potential research or treatment fit" not in message
+    assert "potential exclusion or non-fit" not in message
 
 
 # ─── analyze_biomarker_trends ────────────────────────────────────────────────

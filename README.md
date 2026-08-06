@@ -187,6 +187,10 @@ result bodies live in separate artifacts and are read only from
 response. Retention pruning runs at startup/job admission and is best-effort:
 age/count limits do not securely erase backups/provider copies, and source
 directories still referenced by the profile are deliberately protected.
+Profile-dependent feed/digest/deep-sweep reports and chat/question/summary
+results carry a PHI-free profile revision or generation identity. After the
+record changes, authenticated job detail retains only an explicit outdated/audit
+state and withholds the prior clinical content.
 
 ## Safety notes
 

@@ -535,10 +535,16 @@ def active_documents(profile: dict) -> list[dict]:
 
 def active_alerts(profile: dict) -> list[dict]:
     """Return unresolved alerts whose clinical source dependency remains valid."""
+    revision = profile.get("profile_revision")
     return [
         item
         for item in profile.get("alerts", [])
-        if not item.get("resolved") and item.get("source_dependency_active", True)
+        if not item.get("resolved")
+        and item.get("source_dependency_active", True)
+        and (
+            item.get("generation_profile_revision") is None
+            or str(item.get("generation_profile_revision")) == str(revision)
+        )
     ]
 
 

@@ -263,6 +263,7 @@ class Alert(_Lenient):
     resolved: bool = False
     source_document_id: str | None = None
     source_job_id: str | None = None
+    generation_profile_revision: int | None = None
     source_dependency_active: bool = True
     source_invalidated_at: str | None = None
     inactive_reason: str | None = None

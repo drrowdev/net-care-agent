@@ -60,6 +60,7 @@ from .reconciliation import (
     correct_change,
     public_receipt,
     remove_change,
+    sync_alert_system_state,
     undo_import,
 )
 from .recovery import get_recovery_state
@@ -116,6 +117,7 @@ __all__ = [
     "public_receipt",
     "correct_change",
     "remove_change",
+    "sync_alert_system_state",
     "undo_import",
     "ReconciliationError",
     "ImportConflict",

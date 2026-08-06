@@ -155,6 +155,7 @@ Every fed document, kept for audit and downstream re-analysis.
 | `resolved` | `bool` |  |
 | `source_document_id` | `str \| None` |  |
 | `source_job_id` | `str \| None` |  |
+| `generation_profile_revision` | `int \| None` |  |
 | `source_dependency_active` | `bool` |  |
 | `source_invalidated_at` | `str \| None` |  |
 | `inactive_reason` | `str \| None` |  |

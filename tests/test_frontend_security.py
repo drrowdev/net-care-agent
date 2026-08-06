@@ -189,7 +189,9 @@ def test_receipt_mutation_response_is_correlated_to_originating_job_and_revision
     assert "currentReceipt?.receipt_revision === originReceiptRevision" in mutation
     assert "pendingWasDisabled" in mutation
     assert "const refreshSelectedJob =" in mutation
-    assert "await selectTask(originJobId)" in mutation
+    assert "await selectTask(originJobId, originSelectionEpoch)" in mutation
+    assert "const originSelectionEpoch = taskSelectionEpoch" in mutation
+    assert "taskSelectionEpoch === originSelectionEpoch" in mutation
 
 
 def test_stale_job_result_is_hidden_in_activity_panel():
@@ -198,11 +200,22 @@ def test_stale_job_result_is_hidden_in_activity_panel():
     assert "Generated result is outdated" in detail
     assert "Regenerate it before use" in detail
     assert "if (task.report_stale)" in detail
-    assert "Document analysis is outdated" in detail
+    assert "task.type === 'feed' ? 'Document analysis' : 'Generated report'" in detail
+    assert "Generated report" in detail
     tasks = _function_source("renderTasks", "updateHeaderStatus")
     assert "t.derived_content_stale" in tasks
     assert "prior analysis hidden" in tasks
     assert "!task.derived_content_stale && task.key_findings" in detail
+
+
+def test_task_selection_epoch_guards_every_async_panel_update():
+    selection = _function_source("selectTask", "formatReport")
+    assert "const selectionEpoch = expectedEpoch == null ? ++taskSelectionEpoch" in selection
+    assert "currentReceipt = null" in selection
+    assert "Loading activity detail" in selection
+    assert selection.count("selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id") >= 7
+    assert "const detailResponse = await fetch" in selection
+    assert "const receiptResponse = await fetch" in selection
 
 
 def test_patient_history_joins_documents_and_keeps_orphaned_legacy_records():

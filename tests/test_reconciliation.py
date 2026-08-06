@@ -156,6 +156,8 @@ def test_resolved_imported_alert_blocks_undo_without_deletion(agent, empty_profi
     with patch_llm(agent, lambda **_: llm_text("not-json")):
         profile, extracted = agent.run_intake(text, empty_profile)
     agent.build_import_record(before, profile, extracted, job_id="feed-alert", text=text)
+    profile["alerts"][0]["generation_profile_revision"] = 2
+    agent.sync_alert_system_state(profile, profile["alerts"][0])
     receipt = agent.public_receipt(profile, "feed-alert")
     alert_change = next(item for item in receipt["changes"] if item["category"] == "alerts")
 
@@ -195,6 +197,42 @@ def test_legacy_alert_receipt_default_dependency_does_not_false_conflict(agent, 
 
     assert public_alert["conflicted"] is False
     assert receipt["can_undo"] is True
+
+
+def test_correction_then_whole_undo_succeeds_with_source_alert_dependency_sync(
+    agent, empty_profile
+):
+    before = copy.deepcopy(empty_profile)
+    text = "critical extraction could not be completed"
+    with patch_llm(agent, lambda **_: llm_text("not-json")):
+        profile, extracted = agent.run_intake(text, empty_profile)
+    extracted["source_job_id"] = "feed-alert"
+    agent.build_import_record(before, profile, extracted, job_id="feed-alert", text=text)
+    receipt = agent.public_receipt(profile, "feed-alert")
+    document = next(item for item in receipt["changes"] if item["category"] == "documents")
+
+    agent.correct_change(
+        profile,
+        "feed-alert",
+        document["id"],
+        receipt_revision=receipt["receipt_revision"],
+        target_token=document["target_token"],
+        replacement={"summary": "Caregiver-corrected extraction failure summary"},
+    )
+    corrected_receipt = agent.public_receipt(profile, "feed-alert")
+    alert = next(item for item in corrected_receipt["changes"] if item["category"] == "alerts")
+
+    assert alert["conflicted"] is False
+    assert corrected_receipt["can_undo"] is True
+    agent.undo_import(
+        profile,
+        "feed-alert",
+        receipt_revision=corrected_receipt["receipt_revision"],
+        undo_token=corrected_receipt["undo_token"],
+    )
+
+    assert profile["document_imports"][0]["status"] == "undone"
+    assert profile["alerts"] == []
 
 
 @pytest.mark.parametrize(
@@ -558,6 +596,45 @@ def test_post_intake_failure_keeps_job_scoped_receipt(app_client, agent, monkeyp
     assert agent.load_profile()["biomarkers"][0]["value"] == 234
 
 
+def test_orchestration_failure_keeps_versioned_intake_alert_dependency(
+    app_client, agent, monkeypatch
+):
+    app_module, client = app_client
+    app_module._jobs = [
+        {
+            "id": "failed-feed",
+            "type": "feed",
+            "status": "queued",
+            "stage": "queued",
+            "created_at": "2026-08-01T12:00:00",
+            "error": None,
+        }
+    ]
+    monkeypatch.setattr(
+        agent,
+        "run_orchestrator",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("research failed")),
+    )
+    with patch_llm(agent, lambda **_: llm_text("not-json")):
+        app_module._run_feed_job("failed-feed", "unstructured clinical text")
+
+    detail = client.get("/api/jobs/failed-feed").get_json()
+    saved = agent.load_profile()
+    alert = saved["alerts"][0]
+    receipt = client.get("/api/jobs/failed-feed/receipt").get_json()
+    receipt_alert = next(item for item in receipt["changes"] if item["category"] == "alerts")
+
+    assert detail["status"] == "error"
+    assert alert["source_job_id"] == "failed-feed"
+    assert alert["generation_profile_revision"] == saved["profile_revision"]
+    assert receipt_alert["conflicted"] is False
+    assert agent.active_alerts(saved)[0]["id"] == alert["id"]
+
+    saved["patient"]["diagnosis"] = "Updated diagnosis"
+    agent.save_profile(saved)
+    assert agent.active_alerts(agent.load_profile()) == []
+
+
 def test_correction_invalidates_source_alerts_questions_and_summary(agent, empty_profile):
     profile, _ = _ingest(agent, empty_profile)
     source_id = profile["document_imports"][0]["source_document_id"]
@@ -877,6 +954,147 @@ def test_corrected_feed_report_is_retained_but_hidden_from_job_detail(
     assert payload["report_available_for_audit"] is True
     assert "report" not in payload
     assert report_path.read_text(encoding="utf-8") == "OBSOLETE FEED ANALYSIS"
+
+
+@pytest.mark.parametrize("job_type", ["digest", "deep-sweep"])
+def test_profile_dependent_report_is_stale_after_revision_change(
+    app_client, agent, empty_profile, job_type
+):
+    app_module, client = app_client
+    empty_profile["profile_revision"] = 2
+    agent.save_profile(empty_profile, clinical_change=False)
+    report_path = app_module.DATA_DIR / "reports" / f"{job_type}.txt"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text("OBSOLETE PROFILE REPORT", encoding="utf-8")
+    app_module._jobs = [
+        {
+            "id": f"{job_type}-job",
+            "type": job_type,
+            "status": "done",
+            "stage": "done",
+            "created_at": "2026-08-01T12:00:00",
+            "profile_revision": 1,
+            "report_file": app_module._artifact_ref(report_path),
+            "error": None,
+        }
+    ]
+
+    detail = client.get(f"/api/jobs/{job_type}-job").get_json()
+
+    assert detail["derived_content_stale"] is True
+    assert detail["report_stale"] is True
+    assert detail["report_stale_reason"] == "patient_record_changed_after_generation"
+    assert detail["report_available_for_audit"] is True
+    assert "report" not in detail
+    assert report_path.exists()
+
+
+def test_legacy_profile_dependent_report_without_revision_is_stale(
+    app_client, agent, empty_profile
+):
+    app_module, client = app_client
+    agent.save_profile(empty_profile, clinical_change=False)
+    report_path = app_module.DATA_DIR / "reports" / "legacy-digest.txt"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text("LEGACY DIGEST REPORT", encoding="utf-8")
+    app_module._jobs = [
+        {
+            "id": "legacy-digest",
+            "type": "digest",
+            "status": "done",
+            "stage": "done",
+            "created_at": "2026-08-01T12:00:00",
+            "report_file": app_module._artifact_ref(report_path),
+            "error": None,
+        }
+    ]
+
+    detail = client.get("/api/jobs/legacy-digest").get_json()
+
+    assert detail["report_stale"] is True
+    assert "report" not in detail
+
+
+def test_profile_derived_alert_becomes_inactive_after_revision_change(agent, empty_profile):
+    alert = agent.execute_tool(
+        "flag_alert",
+        {
+            "priority": "high",
+            "message": "Renal function requires review",
+            "action_required": "Contact the treating team",
+        },
+        empty_profile,
+        source_job_id="digest-job",
+        generation_profile_revision=4,
+    )
+    empty_profile["profile_revision"] = 4
+    assert agent.active_alerts(empty_profile)[0]["id"] == alert["id"]
+
+    empty_profile["profile_revision"] = 5
+
+    assert agent.active_alerts(empty_profile) == []
+    assert empty_profile["alerts"][0]["resolved"] is False
+    assert "Renal function requires review" not in agent.build_chat_system(empty_profile)
+
+
+def test_resolving_one_alert_does_not_expire_sibling_versioned_alert(
+    app_client, agent, empty_profile
+):
+    _, client = app_client
+    empty_profile["profile_revision"] = 4
+    empty_profile["alerts"] = [
+        {
+            "id": "first",
+            "priority": "high",
+            "message": "First alert",
+            "resolved": False,
+            "generation_profile_revision": 4,
+            "source_dependency_active": True,
+        },
+        {
+            "id": "second",
+            "priority": "medium",
+            "message": "Second alert",
+            "resolved": False,
+            "generation_profile_revision": 4,
+            "source_dependency_active": True,
+        },
+    ]
+    agent.save_profile(empty_profile, clinical_change=False)
+
+    response = client.post("/api/alerts/resolve/0")
+    saved = agent.load_profile()
+
+    assert response.status_code == 200
+    assert saved["profile_revision"] == 4
+    assert saved["alerts"][0]["resolved"] is True
+    assert [item["id"] for item in agent.active_alerts(saved)] == ["second"]
+
+
+def test_chat_artifact_is_hidden_after_profile_revision_change(app_client, agent, empty_profile):
+    app_module, client = app_client
+    empty_profile["profile_revision"] = 5
+    agent.save_profile(empty_profile, clinical_change=False)
+    result_ref = app_module._write_job_result(
+        "chat-job",
+        {"reply": "OBSOLETE CHAT ANSWER", "source_profile_revision": 4},
+    )
+    app_module._jobs = [
+        {
+            "id": "chat-job",
+            "type": "chat",
+            "status": "done",
+            "stage": "done",
+            "created_at": "2026-08-01T12:00:00",
+            "result_file": result_ref,
+            "error": None,
+        }
+    ]
+
+    result = client.get("/api/jobs/chat-job").get_json()["result"]
+
+    assert result["stale"] is True
+    assert "reply" not in result
 
 
 def test_generated_questions_are_dynamically_stale_after_profile_revision_change(

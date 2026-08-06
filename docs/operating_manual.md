@@ -107,6 +107,9 @@ section, and the prior assessment/feed report is hidden in Today/Activity. This
 prevents old actions, PRRT screening, or trial language from being reused while
 preserving the audit trail. Regenerate each artifact after confirming the
 corrected Patient record.
+Digest/deep-sweep reports and chat answers are also labelled outdated and hidden
+after any later clinical revision. Alert resolution is bookkeeping-only: it
+does not expire other alerts generated from the same current record.
 
 The server compares only the affected rows/scalars/treatment values. Unrelated
 later profile changes do not block the correction. If an affected value changed

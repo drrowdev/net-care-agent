@@ -42,6 +42,12 @@ incremented when something user-visible or operationally meaningful changes.
   corrected feed reports are withheld from current UI/model contexts while their
   audit artifacts remain stored. Receipt mutation controls are dirty-checked,
   disabled while pending, and late responses cannot overwrite another job panel.
+  Feed/digest/deep-sweep reports and chat results now carry profile-revision
+  dependencies; profile-derived alerts carry job/revision dependencies and
+  expire from active contexts after later clinical changes. Receipt system-field
+  synchronization preserves correction→undo while caregiver alert resolution
+  still conflicts. Screening claim sanitization is polarity-neutral and replaces
+  the full assertion rather than retaining definitive inclusion/enrollment text.
 - **Today-first responsive caregiver workspace.** Replaced the duplicated
   desktop/mobile surfaces with shared **Today**, **Patient**, **Questions**, and
   **Activity** views while retaining the warm green/amber visual identity.

@@ -111,6 +111,7 @@ _JOB_FIELDS = {
     "report_file",
     "result_file",
     "source_document_id",
+    "profile_revision",
     "retry_guidance",
     "error_code",
     "error",
@@ -432,6 +433,14 @@ def _job_response(
     profile: dict | None = None,
 ) -> dict:
     response = dict(job)
+    profile_dependent_report = job.get("type") in {"feed", "digest", "deep-sweep"}
+    report_revision_stale = False
+    if profile_dependent_report and job.get("report_file"):
+        profile = profile or agent.load_profile()
+        report_revision = job.get("profile_revision")
+        report_revision_stale = report_revision is None or str(report_revision) != str(
+            profile.get("profile_revision")
+        )
     feed_content_stale = False
     if job.get("type") == "feed" and job.get("source_document_id"):
         profile = profile or agent.load_profile()
@@ -451,15 +460,22 @@ def _job_response(
             )
             for field in ("summary", "key_findings", "input_preview"):
                 response.pop(field, None)
+    if report_revision_stale:
+        response["derived_content_stale"] = True
+        response["derived_content_stale_reason"] = "patient_record_changed_after_generation"
     if not include_artifacts:
         return response
     if job.get("type") == "feed" and job.get("source_document_id"):
         response["receipt_url"] = f"/api/jobs/{job['id']}/receipt"
     report_ref = job.get("report_file")
     if report_ref:
-        if feed_content_stale:
+        if feed_content_stale or report_revision_stale:
             response["report_stale"] = True
-            response["report_stale_reason"] = "source_document_corrected_or_undone"
+            response["report_stale_reason"] = (
+                "source_document_corrected_or_undone"
+                if feed_content_stale
+                else "patient_record_changed_after_generation"
+            )
             response["report_available_for_audit"] = True
         else:
             try:
@@ -474,7 +490,7 @@ def _job_response(
             response["result"] = json.loads(
                 safe_artifact_path(DATA_DIR, result_ref, {"job_results"}).read_text(encoding="utf-8")
             )
-            if job.get("type") in {"questions", "summary"} and isinstance(
+            if job.get("type") in {"questions", "summary", "chat"} and isinstance(
                 response["result"], dict
             ):
                 profile = agent.load_profile()
@@ -494,7 +510,7 @@ def _job_response(
                             and bool(nested_summary.get("stale"))
                         )
                     )
-                else:
+                elif job.get("type") == "questions":
                     generation_id = response["result"].get("generation_id")
                     stale = (
                         stale
@@ -513,6 +529,8 @@ def _job_response(
                         if isinstance(item, dict)
                         and item.get("generation_job_id") == generation_id
                     )
+                else:
+                    stale = stale or source_revision is None
                 if stale:
                     stale_reason = "patient_record_changed_after_generation"
                     if job.get("type") == "summary":
@@ -522,7 +540,7 @@ def _job_response(
                             "source_profile_revision": source_revision,
                             "current_profile_revision": current_revision,
                         }
-                    else:
+                    elif job.get("type") == "questions":
                         response["result"]["stale"] = True
                         response["result"]["stale_reason"] = stale_reason
                         response["result"]["current_profile_revision"] = current_revision
@@ -530,6 +548,13 @@ def _job_response(
                             {**item, "stale": True, "stale_reason": stale_reason}
                             for item in response["result"].get("questions", [])
                         ]
+                    else:
+                        response["result"] = {
+                            "stale": True,
+                            "stale_reason": stale_reason,
+                            "source_profile_revision": source_revision,
+                            "current_profile_revision": current_revision,
+                        }
         except (OSError, ValueError, json.JSONDecodeError):
             response["artifact_unavailable"] = True
     return response
@@ -712,6 +737,19 @@ def _refresh_summary(profile: dict) -> str | None:
     return None
 
 
+def _finalize_generated_alert_dependencies(
+    profile: dict,
+    *,
+    job_id: str,
+    profile_revision: int,
+) -> None:
+    for alert in profile.get("alerts", []):
+        if alert.get("source_job_id") != job_id:
+            continue
+        alert["generation_profile_revision"] = profile_revision
+        agent.sync_alert_system_state(profile, alert)
+
+
 # ── background workers ────────────────────────────────────────────────────────
 def _run_feed_job(
     job_id: str,
@@ -790,6 +828,11 @@ def _run_feed_job(
                     job_id=job_id,
                     text=text,
                 )
+                _finalize_generated_alert_dependencies(
+                    profile,
+                    job_id=job_id,
+                    profile_revision=int(profile.get("profile_revision") or 0) + 1,
+                )
             # Commit intake before research. A later orchestrator/model failure
             # must not lose an already-extracted clinical document.
             try:
@@ -820,6 +863,10 @@ def _run_feed_job(
                 },
             )
 
+            extracted["source_job_id"] = job_id
+            extracted["generation_profile_revision"] = int(
+                profile.get("profile_revision") or 0
+            ) + 1
             report = agent.run_orchestrator(profile, extracted)
             _update_job(job_id, {"stage": "classifying"})
             profile["treatments_classified"] = agent.classify_treatments(profile)
@@ -840,6 +887,12 @@ def _run_feed_job(
                     trial_ids=research_update.get("trial_ids", []),
                     paper_ids=research_update.get("paper_ids", []),
                 )
+            final_revision = int(profile.get("profile_revision") or 0) + 1
+            _finalize_generated_alert_dependencies(
+                profile,
+                job_id=job_id,
+                profile_revision=final_revision,
+            )
             agent.save_profile(profile)
             _prune_source_retention()
 
@@ -857,6 +910,7 @@ def _run_feed_job(
                     "status": "done",
                     "stage": "done_with_warnings" if summary_error else "done",
                     "report_file": _artifact_ref(rpath),
+                    "profile_revision": profile.get("profile_revision"),
                     "summary_error": summary_error,
                     "finished_at": datetime.datetime.now().isoformat(),
                 },
@@ -890,7 +944,12 @@ def _run_digest_job(job_id: str):
             # status changes become alerts (and reach the orchestrator) even though the
             # dedup logic would otherwise suppress already-tracked trials.
             try:
-                poll = agent.poll_tracked_trials(profile)
+                final_revision = int(profile.get("profile_revision") or 0) + 1
+                poll = agent.poll_tracked_trials(
+                    profile,
+                    source_job_id=job_id,
+                    generation_profile_revision=final_revision,
+                )
                 if poll["changed"]:
                     _update_job(job_id, {"stage": f"trial updates: {len(poll['changed'])}"})
             except Exception as exc:
@@ -904,6 +963,11 @@ def _run_digest_job(job_id: str):
                     "Comprehensive review: search new NET literature, "
                     "check European trials, review biomarker trends."
                 ),
+                "source_job_id": job_id,
+                "generation_profile_revision": int(
+                    profile.get("profile_revision") or 0
+                )
+                + 1,
             }
             report = agent.run_orchestrator(profile, extracted)
             _update_job(job_id, {"stage": "classifying"})
@@ -917,6 +981,12 @@ def _run_digest_job(job_id: str):
                 previous_trial_ids=previous_trial_ids,
                 previous_paper_ids=previous_paper_ids,
                 record_empty=True,
+            )
+            final_revision = int(profile.get("profile_revision") or 0) + 1
+            _finalize_generated_alert_dependencies(
+                profile,
+                job_id=job_id,
+                profile_revision=final_revision,
             )
             agent.save_profile(profile)
 
@@ -934,6 +1004,7 @@ def _run_digest_job(job_id: str):
                     "status": "done",
                     "stage": "done_with_warnings" if summary_error else "done",
                     "report_file": _artifact_ref(rpath),
+                    "profile_revision": profile.get("profile_revision"),
                     "summary_error": summary_error,
                     "finished_at": datetime.datetime.now().isoformat(),
                 },
@@ -953,6 +1024,7 @@ def _run_deepsweep_job(job_id: str):
     try:
         _update_job(job_id, {"status": "running", "stage": "deep-sweep"})
         profile = agent.load_profile()
+        generation_revision = profile.get("profile_revision")
         result = agent.run_deep_sweep(profile)  # non-mutating; profile NOT saved
         report = result["report"]
 
@@ -968,6 +1040,7 @@ def _run_deepsweep_job(job_id: str):
                 "status": "done",
                 "stage": "done",
                 "report_file": _artifact_ref(rpath),
+                "profile_revision": generation_revision,
                 "cost_total": result.get("cost_total"),
                 "finished_at": datetime.datetime.now().isoformat(),
             },
@@ -1060,8 +1133,15 @@ def _run_chat_job(job_id: str, user_message: str, history: list) -> None:
     try:
         _update_job(job_id, {"status": "running", "stage": "answering", "started_at": now_stamp()})
         profile = agent.load_profile()
+        generation_revision = profile.get("profile_revision")
         reply = agent.handle_chat(profile, user_message, history)
-        result_ref = _write_job_result(job_id, {"reply": reply})
+        result_ref = _write_job_result(
+            job_id,
+            {
+                "reply": reply,
+                "source_profile_revision": generation_revision,
+            },
+        )
         _update_job(
             job_id,
             {
@@ -1897,7 +1977,7 @@ def api_resolve_alert(idx):
     unresolved = agent.active_alerts(profile)
     if idx < len(unresolved):
         unresolved[idx]["resolved"] = True
-    agent.save_profile(profile)
+    agent.save_profile(profile, clinical_change=False)
     return jsonify({"ok": True})
 
 
@@ -1965,7 +2045,11 @@ def api_trials():
 def api_trials_poll():
     """On-demand deterministic poll of tracked-trial statuses (P5)."""
     profile = agent.load_profile()
-    result = agent.poll_tracked_trials(profile)
+    result = agent.poll_tracked_trials(
+        profile,
+        source_job_id="manual-trial-poll",
+        generation_profile_revision=int(profile.get("profile_revision") or 0) + 1,
+    )
     if result.get("changed") or result.get("refreshed"):
         agent.save_profile(profile)
     return jsonify(result)

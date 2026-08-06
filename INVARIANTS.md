@@ -99,6 +99,16 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
   mismatched summaries are omitted from chat and `/api/summary`; question
   generations use persisted generation IDs; corrected feed reports are retained
   but hidden; source-dependent alerts are inactive after correction/undo.
+- All profile-dependent artifacts carry dependency identity: report jobs store a
+  PHI-free profile revision; chat/question/summary results store source revision
+  and generation identity. Missing/mismatched legacy dependencies are stale.
+- Every generated alert carries origin job + profile revision; feed alerts also
+  carry source-document dependency. System dependency-field synchronization may
+  update receipt effective values, but must never mask caregiver mutations such
+  as `resolved`.
+- Eligibility/qualification/inclusion/enrollment/best-fit alert assertions are
+  replaced wholesale by polarity-neutral screening-review language; never infer
+  positive or negative fit from string sanitization.
 - **`save_profile` guards structural validity.** Calling `save_profile` with a
   non-dict, string patient, or non-list collection raises `ValueError`
   immediately.  Field-level type issues (out-of-range values, bad enum literals)
@@ -148,7 +158,8 @@ distributed queue and adding distributed coordination.
   `GET /api/jobs/<id>`, never embedded in `jobs.json` or the job list. Existing
   legacy records are not rewritten; do not weaken their retention protection.
   Artifact freshness is computed only in the authenticated job-detail response;
-  no PHI or generated content is added to `jobs.json` or `GET /api/jobs`.
+  only the numeric profile revision may be added to `jobs.json`/`GET /api/jobs`;
+  no PHI or generated content is added.
 
 ## 5. Authentication, containment, and retention
 - Flask exempts `/api/health` and `/api/live`; all other hosted `/api/*` routes

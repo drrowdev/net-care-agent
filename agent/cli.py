@@ -51,6 +51,7 @@ def cmd_feed(args) -> None:
 
     with serialized_mutation():
         profile = load_profile()
+        job_id = f"cli-feed-{datetime.datetime.now():%Y%m%d%H%M%S}"
         previous_trial_ids = set(get_research_ids(profile, "trial"))
         previous_paper_ids = set(get_research_ids(profile, "paper"))
         profile, extracted = run_intake(
@@ -60,15 +61,29 @@ def cmd_feed(args) -> None:
             filename=filename,
             media_type="text/plain",
         )
+        extracted["source_job_id"] = job_id
+        intake_revision = int(profile.get("profile_revision") or 0) + 1
+        for alert in profile.get("alerts", []):
+            if alert.get("source_document_id") != extracted.get("source_document_id"):
+                continue
+            alert["source_job_id"] = job_id
+            alert["generation_profile_revision"] = intake_revision
+            alert["source_dependency_active"] = True
+        save_profile(profile)
+        extracted["generation_profile_revision"] = int(profile.get("profile_revision") or 0) + 1
         report = run_orchestrator(profile, extracted)
         record_latest_research_update(
             profile,
-            job_id=f"cli-feed-{datetime.datetime.now():%Y%m%d%H%M%S}",
+            job_id=job_id,
             trigger="feed",
             previous_trial_ids=previous_trial_ids,
             previous_paper_ids=previous_paper_ids,
             record_empty=False,
         )
+        final_revision = int(profile.get("profile_revision") or 0) + 1
+        for alert in profile.get("alerts", []):
+            if alert.get("source_job_id") == job_id:
+                alert["generation_profile_revision"] = final_revision
         save_profile(profile)
     _print_and_save_report(report, "feed")
 
@@ -87,17 +102,24 @@ def cmd_digest(args) -> None:
     }
     with serialized_mutation():
         profile = load_profile()
+        job_id = f"cli-digest-{datetime.datetime.now():%Y%m%d%H%M%S}"
+        extracted["source_job_id"] = job_id
+        extracted["generation_profile_revision"] = int(profile.get("profile_revision") or 0) + 1
         previous_trial_ids = set(get_research_ids(profile, "trial"))
         previous_paper_ids = set(get_research_ids(profile, "paper"))
         report = run_orchestrator(profile, extracted)
         record_latest_research_update(
             profile,
-            job_id=f"cli-digest-{datetime.datetime.now():%Y%m%d%H%M%S}",
+            job_id=job_id,
             trigger="digest",
             previous_trial_ids=previous_trial_ids,
             previous_paper_ids=previous_paper_ids,
             record_empty=True,
         )
+        final_revision = int(profile.get("profile_revision") or 0) + 1
+        for alert in profile.get("alerts", []):
+            if alert.get("source_job_id") == job_id:
+                alert["generation_profile_revision"] = final_revision
         save_profile(profile)
     _print_and_save_report(report, "digest")
 

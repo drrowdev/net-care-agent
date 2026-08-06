@@ -219,8 +219,33 @@ def _is_relevant(item: dict, item_type: str) -> bool:
 
 
 # ─── Dispatcher ──────────────────────────────────────────────────────────────
+_DEFINITIVE_SCREENING_RE = re.compile(
+    r"\b(?:eligib\w*|qualif\w*|inclusion\s+criteria|"
+    r"inclusion\s+requirements?|"
+    r"meets?\s+(?:all\s+)?(?:inclusion|criteria)|"
+    r"satisf(?:y|ies|ied)\s+(?:all\s+)?(?:inclusion\s+)?(?:criteria|requirements?)|"
+    r"(?:should|must|can)\s+be\s+includ\w*|"
+    r"enroll\w*|enrol\w*|"
+    r"(?:one\s+of\s+the\s+)?(?:best|ideal|perfect\w*)[- ]+(?:fit|match\w*))\b",
+    re.IGNORECASE,
+)
+_NEGATED_SCREENING_RE = re.compile(
+    r"\b(?:not\s+eligible|ineligible|not\s+qualified|unqualified|"
+    r"does\s+not\s+qualify|cannot\s+qualify|"
+    r"(?:patient\s+is\s+)?excluded\s+(?:from|because)|"
+    r"(?:do|should)\s+not\s+enroll|cannot\s+enroll|"
+    r"excludes?\s+enrollment|fails?\s+(?:the\s+)?inclusion)\b",
+    re.IGNORECASE,
+)
+
+
 def _screening_safe_alert_text(value: object) -> str:
     original = str(value or "").strip()
+    if _NEGATED_SCREENING_RE.search(original) or _DEFINITIVE_SCREENING_RE.search(original):
+        return (
+            "Trial or PRRT screening information identified; the treating team and trial "
+            "site must review the complete criteria and enrollment status before action."
+        )
     text = original
     replacements = (
         (r"\beligibility confirmed\b", "potential fit requiring clinician confirmation"),
@@ -247,6 +272,7 @@ def execute_tool(
     *,
     source_document_id: str | None = None,
     source_job_id: str | None = None,
+    generation_profile_revision: int | None = None,
 ) -> dict:
     if name == "search_pubmed":
         result = search_pubmed(inputs["query"], inputs.get("max_results", 6))
@@ -349,7 +375,12 @@ def execute_tool(
             "resolved": False,
             "added_at": now_stamp(),
             "source_document_id": source_document_id,
-            "source_job_id": source_job_id,
+            "source_job_id": source_job_id or "direct-tool-call",
+            "generation_profile_revision": (
+                generation_profile_revision
+                if generation_profile_revision is not None
+                else profile.get("profile_revision")
+            ),
             "source_dependency_active": True,
         }
         profile["alerts"].append(alert)

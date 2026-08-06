@@ -13,6 +13,7 @@
   let imagingHistoryExpanded = false;
   let sourceHistoryExpanded = false;
   let receiptMutationPending = false;
+  let taskSelectionEpoch = 0;
   const failedLoads = new Map();
 
   // ── UI label localization ───────────────────────────────────────────────
@@ -1521,6 +1522,7 @@
     report.classList.add('collapsed');
     report.setAttribute('aria-hidden', 'true');
     selectedTaskId = null;
+    taskSelectionEpoch += 1;
     currentReceipt = null;
     // Re-render task list to clear selection highlight
     fetch('/api/jobs').then(readJsonResponse).then(tasks => renderTasks(tasks)).catch(error => reportLoadError('tasks', error));
@@ -1699,6 +1701,7 @@
     if (receiptMutationPending || !currentReceipt) return;
     const originJobId = currentReceipt.job_id;
     const originReceiptRevision = currentReceipt.receipt_revision;
+    const originSelectionEpoch = taskSelectionEpoch;
     receiptMutationPending = true;
     document.querySelectorAll('.receipt-card button').forEach(button => {
       button.dataset.pendingWasDisabled = String(button.disabled);
@@ -1717,37 +1720,48 @@
         throw new Error(`The server returned an invalid response (${response.status}).`);
       }
       if (!response.ok) {
-        if (response.status === 409 && data.receipt && selectedTaskId === originJobId && currentReceipt?.job_id === originJobId && currentReceipt?.receipt_revision === originReceiptRevision) {
+        if (response.status === 409 && data.receipt && taskSelectionEpoch === originSelectionEpoch && selectedTaskId === originJobId && currentReceipt?.job_id === originJobId && currentReceipt?.receipt_revision === originReceiptRevision) {
           document.getElementById('panel-body').querySelector('.receipt-card')?.remove();
           document.getElementById('panel-body').insertAdjacentHTML('afterbegin', renderReceipt(data.receipt));
         }
         throw new Error(data.error || `Request failed (${response.status})`);
       }
-      const refreshSelectedJob = selectedTaskId === originJobId && currentReceipt?.job_id === originJobId && currentReceipt?.receipt_revision === originReceiptRevision;
+      const refreshSelectedJob = taskSelectionEpoch === originSelectionEpoch && selectedTaskId === originJobId && currentReceipt?.job_id === originJobId && currentReceipt?.receipt_revision === originReceiptRevision;
       if (refreshSelectedJob) {
         const existing = document.getElementById('panel-body').querySelector('.receipt-card');
         if (existing) existing.outerHTML = renderReceipt(data.receipt);
-        await selectTask(originJobId);
+        await selectTask(originJobId, originSelectionEpoch);
       }
       await Promise.allSettled([loadStatus(), loadSummary(), loadPatientEvidence()]);
       reportLoadSuccess('action');
     } catch (error) {
-      if (selectedTaskId === originJobId && currentReceipt?.job_id === originJobId) {
+      if (taskSelectionEpoch === originSelectionEpoch && selectedTaskId === originJobId && currentReceipt?.job_id === originJobId) {
         const target = document.getElementById('receipt-error');
         if (target) target.textContent = error.message || 'The receipt could not be updated.';
       }
       reportLoadError('action', error);
     } finally {
       receiptMutationPending = false;
-      document.querySelectorAll('.receipt-card button[data-pending-was-disabled]').forEach(button => {
-        button.disabled = button.dataset.pendingWasDisabled === 'true';
-        delete button.dataset.pendingWasDisabled;
-      });
+      if (taskSelectionEpoch === originSelectionEpoch && selectedTaskId === originJobId) {
+        document.querySelectorAll('.receipt-card button[data-pending-was-disabled]').forEach(button => {
+          button.disabled = button.dataset.pendingWasDisabled === 'true';
+          delete button.dataset.pendingWasDisabled;
+        });
+      }
     }
   }
 
-  async function selectTask(id) {
+  async function selectTask(id, expectedEpoch = null) {
+    const selectionEpoch = expectedEpoch == null ? ++taskSelectionEpoch : expectedEpoch;
+    if (selectionEpoch !== taskSelectionEpoch) return;
     selectedTaskId = id;
+    currentReceipt = null;
+    currentReportText = '';
+    const loadingPanel = document.getElementById('panel-body');
+    if (loadingPanel) {
+      loadingPanel.innerHTML = '<div class="loading-state">Loading activity detail…</div>';
+    }
+    document.getElementById('copy-btn')?.classList.remove('visible');
     // Open panel
     lastDialogTrigger = document.activeElement;
     const report = document.getElementById('report-panel');
@@ -1756,7 +1770,9 @@
     activateDialog(report, lastDialogTrigger);
     // Re-render task list to update selection
     const r = await fetch('/api/jobs');
+    if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return;
     const tasks = await readJsonResponse(r);
+    if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return;
     renderTasks(tasks);
 
     let task = tasks.find(t => t.id === id);
@@ -1766,8 +1782,12 @@
     }
     if (task.status === 'done' || task.status === 'error' || task.status === 'interrupted') {
       try {
-        task = await readJsonResponse(await fetch(`/api/jobs/${encodeURIComponent(id)}`));
+        const detailResponse = await fetch(`/api/jobs/${encodeURIComponent(id)}`);
+        if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return;
+        task = await readJsonResponse(detailResponse);
+        if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return;
       } catch (error) {
+        if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return;
         reportLoadError('tasks', error);
       }
     }
@@ -1779,12 +1799,17 @@
     currentReceipt = null;
     if (task.receipt_url) {
       try {
-        const receipt = await readJsonResponse(await fetch(task.receipt_url));
+        const receiptResponse = await fetch(task.receipt_url);
+        if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return;
+        const receipt = await readJsonResponse(receiptResponse);
+        if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return;
         receiptHtml = renderReceipt(receipt);
       } catch (error) {
+        if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return;
         receiptHtml = `<div class="receipt-error visible">The import receipt could not be loaded. ${escHtml(error.message)}</div>`;
       }
     }
+    if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return;
 
     if (task.status === 'running' || task.status === 'queued') {
       panel.innerHTML = `
@@ -1828,8 +1853,8 @@
     if (task.report_stale) {
       currentReportText = '';
       html += `<div class="load-failure stale-artifact" role="alert">
-        <strong>Document analysis is outdated</strong>
-        <span>The source document was corrected or undone. The original report remains retained for audit but is hidden here.</span>
+        <strong>${task.type === 'feed' ? 'Document analysis' : 'Generated report'} is outdated</strong>
+        <span>${task.report_stale_reason === 'source_document_corrected_or_undone' ? 'The source document was corrected or undone.' : 'The patient record changed after this report was generated.'} The original report remains retained for audit but is hidden here.</span>
       </div>`;
       copyBtn.classList.remove('visible');
     } else if (task.report) {

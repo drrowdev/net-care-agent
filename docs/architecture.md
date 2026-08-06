@@ -146,6 +146,16 @@ revision. Feed alerts additionally record source-document dependency. System-
 owned dependency updates are mirrored into receipt effective state so they do
 not create false CAS conflicts; caregiver changes such as resolving an alert
 remain conflicting mutations.
+Alert resolution is serialized by stable alert ID, semantic token, and expected
+profile revision; index-based resolution returns `410`. Resolution is
+bookkeeping-only so sibling alert dependencies stay valid, but it explicitly
+stales summaries and generated questions that consumed the resolved alert.
+
+Clinical jobs establish one effective revision: feed/digest commit clinical
+mutations and finalized alert dependencies first, then generate/save the summary
+as derived bookkeeping at that same revision. Manual summary refresh is also
+derived-only. Chat history carries a profile revision; mismatched history is
+rejected synchronously with `409` and revalidated in the worker.
 
 Executive-summary prompts receive an opaque catalog of verified source-span IDs.
 The model may select only those IDs for named claims and actions; Flask resolves
@@ -214,6 +224,8 @@ only with exact `APP_ORIGIN` or canonical HTTPS `WEBSITE_HOSTNAME`.
 | Incorrect import removed from active care context | Direct facts are reversed, the document is marked excluded from clinical prompts, and immutable source/audit history remains visible |
 | Invented summary evidence link | Only server-built evidence catalog IDs resolve; unknown IDs are visibly `invalid` and absent IDs are `missing` |
 | Stale generated conclusions after correction | Revision-aware summary hiding, question generation IDs, source-dependent alert invalidation, and hidden feed reports retain audit artifacts without presenting them as current |
+| Wrong alert resolved after reorder | Stable alert IDs + semantic token + expected revision under the mutation lock; stale/missing targets return `409` |
+| Old chat contaminates corrected record | Client clears history on profile revision change; server rejects mismatched `history_revision` with `409` |
 | Source traversal / browser caching | Auth-gated `/api/sources/<id>[/<artifact>]` and `/api/evidence/<id>` resolve only indexed paths below `DATA_DIR`, reject traversal, and return `no-store` |
 | Stale clinical judgment | Only active, nonexpired, non-review-due judgments constrain agents; all others are visibly framed as needing clinician review |
 | Storage account deletion | `AzureBackupProtectionLock` (CanNotDelete) on the resource group, auto-applied by Azure Backup |

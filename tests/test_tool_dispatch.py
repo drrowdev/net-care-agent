@@ -213,6 +213,61 @@ def test_no_exclusion_criteria_does_not_invert_affirmative_fit(agent, empty_prof
 
 
 @pytest.mark.parametrize(
+    "instruction",
+    [
+        "Hold PRRT cycle",
+        "Start 120 mg lanreotide now",
+        "Stop everolimus treatment",
+        "Pause therapy",
+        "Resume octreotide",
+        "Switch treatment to sunitinib",
+        "Increase lanreotide dose",
+        "Decrease medication dose",
+        "Stop chemotherapy now",
+        "Increase capecitabine",
+        "Discontinue everolimus immediately",
+        "Withhold the next PRRT dose",
+        "Skip the next lanreotide injection",
+        "Administer 120 mg lanreotide",
+    ],
+)
+def test_treatment_imperatives_are_replaced_wholesale(agent, empty_profile, instruction):
+    agent.execute_tool(
+        "flag_alert",
+        {
+            "priority": "high",
+            "message": instruction,
+            "action_required": instruction,
+        },
+        empty_profile,
+    )
+
+    for value in (
+        empty_profile["alerts"][0]["message"],
+        empty_profile["alerts"][0]["action_required"],
+    ):
+        assert instruction.lower() not in value.lower()
+        assert "contact the treating team" in value.lower()
+        assert "confirm before any treatment change" in value.lower()
+
+
+def test_factual_past_treatment_alert_is_not_rewritten(agent, empty_profile):
+    for factual in (
+        "Lanreotide was stopped on 2026-07-01 because of intolerance",
+        "Lanreotide dose was increased during the prior visit",
+        "Everolimus was discontinued during the prior visit",
+        "The prior PRRT dose was withheld",
+    ):
+        profile = {**empty_profile, "alerts": []}
+        agent.execute_tool(
+            "flag_alert",
+            {"priority": "medium", "message": factual},
+            profile,
+        )
+        assert profile["alerts"][0]["message"] == factual
+
+
+@pytest.mark.parametrize(
     "claim",
     [
         "Enrollment is closed for this trial",

@@ -109,6 +109,18 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
 - Eligibility/qualification/inclusion/enrollment/best-fit alert assertions are
   replaced wholesale by polarity-neutral screening-review language; never infer
   positive or negative fit from string sanitization.
+- Treatment-change directives in alerts (`start/stop/hold/pause/resume/switch/
+  dose-change/discontinue/withhold/skip/administer/take`) are replaced wholesale
+  by treating-team confirmation wording. Factual past-tense treatment history is
+  preserved.
+- Alert resolution uses stable ID + full semantic token + expected profile
+  revision under `serialized_mutation`; index resolution is forbidden. It is a
+  bookkeeping save that explicitly stales dependent summaries/questions.
+- Chat history is revision-bound on both client and server. Nonempty mismatched
+  history returns `409`; workers revalidate before sending history to the model.
+- Clinical mutations commit once at their final effective revision. Summary
+  generation/persistence is derived-only and must see alerts tagged to that same
+  revision.
 - **`save_profile` guards structural validity.** Calling `save_profile` with a
   non-dict, string patient, or non-list collection raises `ValueError`
   immediately.  Field-level type issues (out-of-range values, bad enum literals)

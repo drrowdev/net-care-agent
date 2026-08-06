@@ -1060,15 +1060,133 @@ def test_resolving_one_alert_does_not_expire_sibling_versioned_alert(
             "source_dependency_active": True,
         },
     ]
+    empty_profile["summary_stale"] = False
+    empty_profile["executive_summary"] = {
+        "summary_revision": 4,
+        "stale": False,
+        "next_actions": [{"action": "Respond to first alert"}],
+    }
+    empty_profile["appointment_questions"] = [
+        {
+            "id": "generated",
+            "text": "Question based on first alert",
+            "source": "ai",
+            "stale": False,
+        }
+    ]
     agent.save_profile(empty_profile, clinical_change=False)
+    status = client.get("/api/status").get_json()
+    first = next(item for item in status["alerts"] if item["id"] == "first")
 
-    response = client.post("/api/alerts/resolve/0")
+    response = client.post(
+        "/api/alerts/first/resolve",
+        json={
+            "expected_token": first["resolve_token"],
+            "expected_profile_revision": status["profile_revision"],
+        },
+    )
     saved = agent.load_profile()
 
     assert response.status_code == 200
     assert saved["profile_revision"] == 4
     assert saved["alerts"][0]["resolved"] is True
     assert [item["id"] for item in agent.active_alerts(saved)] == ["second"]
+    assert saved["summary_stale"] is True
+    assert saved["executive_summary"]["stale"] is True
+    assert saved["appointment_questions"][0]["stale"] is True
+    summary_payload = client.get("/api/summary").get_json()
+    assert summary_payload["status"] == "stale"
+    dismissal = client.post(
+        "/api/summary/dismiss-action/0",
+        json={
+            "expected_action": "Respond to first alert",
+            "summary_revision": 4,
+        },
+    )
+    assert dismissal.status_code == 409
+
+
+def test_alert_resolution_by_id_survives_reorder_and_rejects_stale_token(
+    app_client, agent, empty_profile
+):
+    _, client = app_client
+    empty_profile["profile_revision"] = 4
+    empty_profile["alerts"] = [
+        {
+            "id": "first",
+            "priority": "high",
+            "message": "First alert",
+            "resolved": False,
+            "generation_profile_revision": 4,
+            "source_dependency_active": True,
+        },
+        {
+            "id": "second",
+            "priority": "medium",
+            "message": "Second alert",
+            "resolved": False,
+            "generation_profile_revision": 4,
+            "source_dependency_active": True,
+        },
+    ]
+    agent.save_profile(empty_profile, clinical_change=False)
+    status = client.get("/api/status").get_json()
+    target = next(item for item in status["alerts"] if item["id"] == "second")
+
+    reordered = agent.load_profile()
+    reordered["alerts"].reverse()
+    agent.save_profile(reordered, clinical_change=False)
+    response = client.post(
+        "/api/alerts/second/resolve",
+        json={
+            "expected_token": target["resolve_token"],
+            "expected_profile_revision": status["profile_revision"],
+        },
+    )
+
+    assert response.status_code == 200
+    saved = agent.load_profile()
+    assert next(item for item in saved["alerts"] if item["id"] == "second")["resolved"] is True
+    assert next(item for item in saved["alerts"] if item["id"] == "first")["resolved"] is False
+
+    stale_status = client.get("/api/status").get_json()
+    stale_target = next(item for item in stale_status["alerts"] if item["id"] == "first")
+    changed = agent.load_profile()
+    next(item for item in changed["alerts"] if item["id"] == "first")["message"] = "Changed alert"
+    agent.save_profile(changed, clinical_change=False)
+    stale = client.post(
+        "/api/alerts/first/resolve",
+        json={
+            "expected_token": stale_target["resolve_token"],
+            "expected_profile_revision": stale_status["profile_revision"],
+        },
+    )
+
+    assert stale.status_code == 409
+    assert (
+        next(item for item in agent.load_profile()["alerts"] if item["id"] == "first")["resolved"]
+        is False
+    )
+    assert client.post("/api/alerts/resolve/0").status_code == 410
+
+
+def test_chat_rejects_history_from_prior_profile_revision(app_client, agent, empty_profile):
+    _, client = app_client
+    empty_profile["profile_revision"] = 3
+    agent.save_profile(empty_profile, clinical_change=False)
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "message": "What changed?",
+            "history": [{"role": "assistant", "content": "Old answer"}],
+            "history_revision": 2,
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.get_json()["profile_revision"] == 3
+    assert "Clear the prior chat history" in response.get_json()["error"]
 
 
 def test_chat_artifact_is_hidden_after_profile_revision_change(app_client, agent, empty_profile):

@@ -218,6 +218,33 @@ def test_task_selection_epoch_guards_every_async_panel_update():
     assert "const receiptResponse = await fetch" in selection
 
 
+def test_submitted_task_activation_reserves_and_checks_selection_epoch():
+    activation = _function_source("activateSubmittedTask", "showFeedError")
+    assert "const activationEpoch = ++taskSelectionEpoch" in activation
+    assert "await loadTasks()" in activation
+    assert "await selectTask(id, activationEpoch)" in activation
+    assert activation.count("activationEpoch !== taskSelectionEpoch || selectedTaskId !== id") >= 3
+
+
+def test_chat_history_is_bound_to_profile_revision_and_visibly_cleared():
+    sync = _function_source("syncChatRevision", "toggleChat")
+    assert "chatHistoryRevision" in sync
+    assert "Patient record changed. Prior chat history was cleared" in sync
+    sender = APP_JS[APP_JS.index("function sendChat") :]
+    assert "history_revision: chatHistoryRevision" in sender
+    assert "if (e.status === 409)" in sender
+
+
+def test_alert_resolution_uses_stable_id_token_and_revision():
+    sidebar = _function_source("renderSidebar", "resolveAlert")
+    assert "data-alert-id" in sidebar
+    assert "data-resolve-token" in sidebar
+    resolver = _function_source("resolveAlert", "loadPatientEvidence")
+    assert "/api/alerts/${encodeURIComponent(alertId)}/resolve" in resolver
+    assert "expected_token: expectedToken" in resolver
+    assert "expected_profile_revision: latestProfileRevision" in resolver
+
+
 def test_patient_history_joins_documents_and_keeps_orphaned_legacy_records():
     history = _function_source("renderPatientEvidence", "toggleImagingHistory")
     assert "const documents = patientEvidence.documents || []" in history

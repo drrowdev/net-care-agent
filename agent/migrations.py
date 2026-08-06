@@ -28,12 +28,14 @@ Design notes
 from __future__ import annotations
 
 import datetime
+import hashlib
+import json
 import logging
 from typing import Any
 
 log = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 3
+CURRENT_SCHEMA_VERSION: int = 4
 
 # Append-only ordered registry of migrations.  Never reorder entries.
 _REGISTRY: list[dict[str, Any]] = []
@@ -84,6 +86,19 @@ def _m0003_add_generated_content_provenance(data: dict) -> dict:
             question["stale"] = True
             question["stale_reason"] = "legacy_missing_generation_provenance"
     data["schema_version"] = 3
+    return data
+
+
+@_migration("0004_add_stable_alert_ids", to_version=4)
+def _m0004_add_stable_alert_ids(data: dict) -> dict:
+    """v3 → v4: deterministically identify legacy alerts for CAS-safe resolution."""
+    for index, alert in enumerate(data.get("alerts") or []):
+        if not isinstance(alert, dict) or alert.get("id"):
+            continue
+        canonical = json.dumps(alert, sort_keys=True, separators=(",", ":"), default=str)
+        digest = hashlib.sha256(f"{index}:{canonical}".encode()).hexdigest()[:24]
+        alert["id"] = f"alert_legacy_{digest}"
+    data["schema_version"] = 4
     return data
 
 

@@ -357,7 +357,7 @@ def test_pdf_worker_uses_extractor_and_removes_upload(hardened_app, monkeypatch)
         "extract_pdf_subprocess",
         lambda *args, **kwargs: called.append((args, kwargs)) or "safe extracted text",
     )
-    monkeypatch.setattr(hardened_app.agent, "load_profile", lambda: {})
+    monkeypatch.setattr(hardened_app.agent, "load_profile", lambda: {"profile_revision": 0})
     monkeypatch.setattr(
         hardened_app.agent,
         "run_intake",
@@ -480,14 +480,14 @@ def test_timeout_failure_is_sanitized_in_job_metadata(hardened_app, monkeypatch)
             "created_at": "2026-07-11T08:00:00",
         }
     )
-    monkeypatch.setattr(hardened_app.agent, "load_profile", lambda: {})
+    monkeypatch.setattr(hardened_app.agent, "load_profile", lambda: {"profile_revision": 0})
     monkeypatch.setattr(
         hardened_app.agent,
         "handle_chat",
         lambda *_args: (_ for _ in ()).throw(TimeoutError("private upstream detail")),
     )
 
-    hardened_app._run_chat_job("timeout-job", "question", [])
+    hardened_app._run_chat_job("timeout-job", "question", [], 0)
 
     job = hardened_app._jobs[0]
     assert job["status"] == "error"

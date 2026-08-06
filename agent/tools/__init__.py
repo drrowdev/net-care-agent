@@ -237,10 +237,22 @@ _NEGATED_SCREENING_RE = re.compile(
     r"excludes?\s+enrollment|fails?\s+(?:the\s+)?inclusion)\b",
     re.IGNORECASE,
 )
+_TREATMENT_IMPERATIVE_RE = re.compile(
+    r"(?:^\s*(?:(?:please|immediately|now)\s+)*(?:do\s+not\s+)?|"
+    r"\b(?:should|must)\s+|\b(?:plan|consider)\s+to\s+)"
+    r"(?:start|stop|hold|pause|resume|switch|increase|decrease|redose|titrate|"
+    r"discontinue|withhold|omit|skip|administer|take)\b",
+    re.IGNORECASE,
+)
 
 
 def _screening_safe_alert_text(value: object) -> str:
     original = str(value or "").strip()
+    if _TREATMENT_IMPERATIVE_RE.search(original):
+        return (
+            "A treatment-change question was identified; contact the treating team and "
+            "confirm before any treatment change."
+        )
     if _NEGATED_SCREENING_RE.search(original) or _DEFINITIVE_SCREENING_RE.search(original):
         return (
             "Trial or PRRT screening information identified; the treating team and trial "

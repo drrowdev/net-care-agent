@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -546,6 +547,18 @@ def active_alerts(profile: dict) -> list[dict]:
             or str(item.get("generation_profile_revision")) == str(revision)
         )
     ]
+
+
+def alert_token(alert: dict) -> str:
+    """Return a semantic compare-and-swap token for one alert."""
+    canonical = json.dumps(
+        {key: value for key, value in alert.items() if key != "resolve_token"},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def summary_is_current(profile: dict) -> bool:

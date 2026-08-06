@@ -109,7 +109,15 @@ preserving the audit trail. Regenerate each artifact after confirming the
 corrected Patient record.
 Digest/deep-sweep reports and chat answers are also labelled outdated and hidden
 after any later clinical revision. Alert resolution is bookkeeping-only: it
-does not expire other alerts generated from the same current record.
+does not expire other alerts generated from the same current record, but it
+marks assessments/generated questions stale. Alerts resolve by stable identity;
+if the alert changed while open, the UI reloads it instead of resolving another
+row.
+
+Chat history is bound to the patient profile revision. Correction, undo, or any
+other clinical revision clears prior in-tab turns with a visible notice. The
+server rejects stale history with `409`, so an old answer cannot be resent into a
+new-record conversation.
 
 The server compares only the affected rows/scalars/treatment values. Unrelated
 later profile changes do not block the correction. If an affected value changed

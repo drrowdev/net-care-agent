@@ -14,6 +14,7 @@
   let sourceHistoryExpanded = false;
   let receiptMutationPending = false;
   let taskSelectionEpoch = 0;
+  let latestProfileRevision = null;
   const failedLoads = new Map();
 
   // ── UI label localization ───────────────────────────────────────────────
@@ -65,6 +66,7 @@
       const error = new Error(message);
       error.status = response.status;
       error.retryAfter = response.headers.get('Retry-After');
+      error.data = data;
       throw error;
     }
     return data;
@@ -388,6 +390,7 @@
     try {
       const r = await fetch('/api/status');
       const d = await readJsonResponse(r);
+      syncChatRevision(d.profile_revision);
       renderSidebar(d);
       reportLoadSuccess('status');
       return d;
@@ -612,21 +615,31 @@
     // Alerts
     const alerts = d.alerts || [];
     document.getElementById('alerts-list').innerHTML = alerts.length
-      ? alerts.map((a, i) => `
-        <div class="alert-item ${safeClassToken(a.priority, 'normal')}">
+      ? alerts.map(a => `
+        <div class="alert-item ${safeClassToken(a.priority, 'normal')}" data-alert-id="${escHtml(a.id)}" data-resolve-token="${escHtml(a.resolve_token)}">
           <div class="alert-msg">${escHtml(a.message)}</div>
           ${a.action_required ? `<div class="alert-action">→ ${escHtml(a.action_required)}</div>` : ''}
           <div class="alert-meta">
             <span class="alert-priority ${safeClassToken(a.priority, 'normal')}">${escHtml(a.priority || '—')}</span>
-            <button class="resolve-btn" onclick="resolveAlert(${i})">Mark resolved</button>
+            <button class="resolve-btn" onclick="resolveAlert(this.closest('.alert-item'))">Mark resolved</button>
           </div>
         </div>`).join('')
       : '<div class="empty-state">No active alerts</div>';
   }
 
-  async function resolveAlert(idx) {
+  async function resolveAlert(row) {
+    const alertId = row?.dataset.alertId;
+    const expectedToken = row?.dataset.resolveToken;
+    if (!alertId || !expectedToken || latestProfileRevision == null) return;
     try {
-      await requireOk(await fetch(`/api/alerts/resolve/${idx}`, { method: 'POST' }));
+      await readJsonResponse(await fetch(`/api/alerts/${encodeURIComponent(alertId)}/resolve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          expected_token: expectedToken,
+          expected_profile_revision: latestProfileRevision,
+        }),
+      }));
       await loadStatus();
     } catch (error) {
       reportLoadError('action', error);
@@ -2046,11 +2059,15 @@
   async function activateSubmittedTask(data) {
     const id = data.job_id || data.task_id;
     if (!id) throw new Error('Response did not include a job ID');
+    const activationEpoch = ++taskSelectionEpoch;
     hadActiveJobs = true;
     selectedTaskId = id;
     await loadTasks();
-    await selectTask(id);
+    if (activationEpoch !== taskSelectionEpoch || selectedTaskId !== id) return;
+    await selectTask(id, activationEpoch);
+    if (activationEpoch !== taskSelectionEpoch || selectedTaskId !== id) return;
     switchView('activity');
+    if (activationEpoch !== taskSelectionEpoch || selectedTaskId !== id) return;
     startPolling();
   }
 
@@ -2322,7 +2339,29 @@
 
   // ── Chat ─────────────────────────────────────────────────────────────────
   let chatHistory = [];
+  let chatHistoryRevision = null;
   let chatOpen = false;
+
+  function syncChatRevision(revision, forceNotice = false) {
+    if (revision == null) return;
+    const normalized = String(revision);
+    if (chatHistoryRevision == null) {
+      chatHistoryRevision = normalized;
+      latestProfileRevision = revision;
+      return;
+    }
+    const changed = chatHistoryRevision !== normalized;
+    latestProfileRevision = revision;
+    if (!changed && !forceNotice) return;
+    chatHistoryRevision = normalized;
+    chatHistory = [];
+    const msgs = document.getElementById('chat-messages');
+    if (msgs) {
+      msgs.innerHTML = `<div class="chat-revision-notice" role="status">
+        Patient record changed. Prior chat history was cleared before new answers.
+      </div>`;
+    }
+  }
 
   function toggleChat() {
     chatOpen = !chatOpen;
@@ -2520,9 +2559,15 @@
       const r = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, history: chatHistory.slice(0, -1) }),
+        body: JSON.stringify({
+          message: text,
+          history: chatHistory.slice(0, -1),
+          history_revision: chatHistoryRevision,
+        }),
       });
       const data = await readJsonResponse(r);
+      chatHistoryRevision = String(data.profile_revision);
+      latestProfileRevision = data.profile_revision;
       const completed = await waitForJob(data.job_id);
       const reply = (completed.result || {}).reply;
       if (!reply) throw new Error('No response was produced.');
@@ -2532,6 +2577,9 @@
       chatHistory.push({ role: 'assistant', content: reply });
       setFormError('chat-form-error', '');
     } catch(e) {
+      if (e.status === 409) {
+        syncChatRevision(e.data?.profile_revision ?? latestProfileRevision, true);
+      }
       thinkingDiv.querySelector('.chat-bubble').classList.remove('thinking');
       updateLastMsg(thinkingDiv, `Error: ${e.message}`);
       setFormError('chat-form-error', e.message || 'The question could not be sent.');

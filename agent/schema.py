@@ -465,7 +465,7 @@ class PatientProfile(_Lenient):
     """The complete patient profile. Lives at ${DATA_DIR}/patient_profile.json."""
 
     schema_version: int = Field(
-        default=3,
+        default=4,
         description="Profile schema version. Incremented when a structural migration runs.",
     )
     profile_revision: int = 0

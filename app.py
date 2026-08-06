@@ -390,7 +390,12 @@ def _submit_job(
                 )
             if existing:
                 return None, (
-                    jsonify({"error": "An active job of this type already exists.", "job_id": existing["id"]}),
+                    jsonify(
+                        {
+                            "error": "An active job of this type already exists.",
+                            "job_id": existing["id"],
+                        }
+                    ),
                     409,
                 )
         try:
@@ -455,9 +460,7 @@ def _job_response(
         feed_content_stale = bool(receipt and receipt.get("status") != "active")
         if feed_content_stale:
             response["derived_content_stale"] = True
-            response["derived_content_stale_reason"] = (
-                "source_document_corrected_or_undone"
-            )
+            response["derived_content_stale_reason"] = "source_document_corrected_or_undone"
             for field in ("summary", "key_findings", "input_preview"):
                 response.pop(field, None)
     if report_revision_stale:
@@ -488,7 +491,9 @@ def _job_response(
     if result_ref:
         try:
             response["result"] = json.loads(
-                safe_artifact_path(DATA_DIR, result_ref, {"job_results"}).read_text(encoding="utf-8")
+                safe_artifact_path(DATA_DIR, result_ref, {"job_results"}).read_text(
+                    encoding="utf-8"
+                )
             )
             if job.get("type") in {"questions", "summary", "chat"} and isinstance(
                 response["result"], dict
@@ -505,10 +510,7 @@ def _job_response(
                     stale = (
                         stale
                         or not agent.summary_is_current(profile)
-                        or (
-                            isinstance(nested_summary, dict)
-                            and bool(nested_summary.get("stale"))
-                        )
+                        or (isinstance(nested_summary, dict) and bool(nested_summary.get("stale")))
                     )
                 elif job.get("type") == "questions":
                     generation_id = response["result"].get("generation_id")
@@ -526,8 +528,7 @@ def _job_response(
                     stale = stale or any(
                         item.get("stale")
                         for item in response["result"].get("questions", [])
-                        if isinstance(item, dict)
-                        and item.get("generation_job_id") == generation_id
+                        if isinstance(item, dict) and item.get("generation_job_id") == generation_id
                     )
                 else:
                     stale = stale or source_revision is None
@@ -615,9 +616,9 @@ def _prune_retention() -> None:
             referenced = [job for job in _jobs if job.get(field)]
             for index, job in enumerate(referenced):
                 try:
-                    age = now - datetime.datetime.fromisoformat(
-                        job.get("created_at", "")
-                    ).timestamp()
+                    age = (
+                        now - datetime.datetime.fromisoformat(job.get("created_at", "")).timestamp()
+                    )
                 except (TypeError, ValueError):
                     age = age_days * 86400 + 1
                 if index >= max_count or age > age_days * 86400:
@@ -722,7 +723,7 @@ def _refresh_summary(profile: dict) -> str | None:
         profile["summary_stale"] = True
         return message
 
-    generated["summary_revision"] = int(profile.get("profile_revision") or 0) + 1
+    generated["summary_revision"] = int(profile.get("profile_revision") or 0)
     generated["generated_at_timestamp"] = now_stamp()
     generated["feedback_ids_considered"] = [
         item.get("id")
@@ -864,14 +865,10 @@ def _run_feed_job(
             )
 
             extracted["source_job_id"] = job_id
-            extracted["generation_profile_revision"] = int(
-                profile.get("profile_revision") or 0
-            ) + 1
+            extracted["generation_profile_revision"] = int(profile.get("profile_revision") or 0) + 1
             report = agent.run_orchestrator(profile, extracted)
             _update_job(job_id, {"stage": "classifying"})
             profile["treatments_classified"] = agent.classify_treatments(profile)
-            _update_job(job_id, {"stage": "refreshing summary"})
-            summary_error = _refresh_summary(profile)
             research_update = agent.record_latest_research_update(
                 profile,
                 job_id=job_id,
@@ -894,6 +891,9 @@ def _run_feed_job(
                 profile_revision=final_revision,
             )
             agent.save_profile(profile)
+            _update_job(job_id, {"stage": "refreshing summary"})
+            summary_error = _refresh_summary(profile)
+            agent.save_profile(profile, clinical_change=False)
             _prune_source_retention()
 
             reports_dir = DATA_DIR / "reports"
@@ -964,16 +964,11 @@ def _run_digest_job(job_id: str):
                     "check European trials, review biomarker trends."
                 ),
                 "source_job_id": job_id,
-                "generation_profile_revision": int(
-                    profile.get("profile_revision") or 0
-                )
-                + 1,
+                "generation_profile_revision": int(profile.get("profile_revision") or 0) + 1,
             }
             report = agent.run_orchestrator(profile, extracted)
             _update_job(job_id, {"stage": "classifying"})
             profile["treatments_classified"] = agent.classify_treatments(profile)
-            _update_job(job_id, {"stage": "refreshing summary"})
-            summary_error = _refresh_summary(profile)
             agent.record_latest_research_update(
                 profile,
                 job_id=job_id,
@@ -989,6 +984,9 @@ def _run_digest_job(job_id: str):
                 profile_revision=final_revision,
             )
             agent.save_profile(profile)
+            _update_job(job_id, {"stage": "refreshing summary"})
+            summary_error = _refresh_summary(profile)
+            agent.save_profile(profile, clinical_change=False)
 
             reports_dir = DATA_DIR / "reports"
             reports_dir.mkdir(parents=True, exist_ok=True)
@@ -1108,7 +1106,7 @@ def _run_summary_job(job_id: str) -> None:
             classified_txs = agent.classify_treatments(profile)
             profile["treatments_classified"] = classified_txs
             summary_error = _refresh_summary(profile)
-            agent.save_profile(profile)
+            agent.save_profile(profile, clinical_change=False)
             result = {
                 "summary": profile["executive_summary"],
                 "treatments_classified": classified_txs,
@@ -1129,11 +1127,18 @@ def _run_summary_job(job_id: str) -> None:
         _fail_job(job_id, exc)
 
 
-def _run_chat_job(job_id: str, user_message: str, history: list) -> None:
+def _run_chat_job(
+    job_id: str,
+    user_message: str,
+    history: list,
+    expected_profile_revision: int,
+) -> None:
     try:
         _update_job(job_id, {"status": "running", "stage": "answering", "started_at": now_stamp()})
         profile = agent.load_profile()
         generation_revision = profile.get("profile_revision")
+        if str(generation_revision) != str(expected_profile_revision):
+            raise RuntimeError("chat_history_stale")
         reply = agent.handle_chat(profile, user_message, history)
         result_ref = _write_job_result(
             job_id,
@@ -1336,9 +1341,7 @@ def _protect_api():
         return jsonify({"error": "Authentication required."}), 401
     else:
         principal_id = None
-    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not _origin_is_same(
-        hosted=hosted
-    ):
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not _origin_is_same(hosted=hosted):
         return jsonify({"error": "Cross-origin request denied."}), 403
     allowlist = {
         item.strip()
@@ -1508,11 +1511,7 @@ def api_health():
     # eight-day-old backup is protected. Degrade only when the newest backup
     # materially lags the current profile (or is missing).
     backup_out_of_date = profile_status == "ok" and (
-        backup_age is None
-        or (
-            profile_age is not None
-            and backup_age > profile_age + 300
-        )
+        backup_age is None or (profile_age is not None and backup_age > profile_age + 300)
     )
 
     # ── recovery state ────────────────────────────────────────────────────────
@@ -1578,13 +1577,20 @@ def api_health():
 @app.route("/api/status")
 def api_status():
     profile = agent.load_profile()
-    alerts = agent.active_alerts(profile)
-    bms = sorted(profile.get("biomarkers", []), key=lambda x: x.get("date") or "", reverse=True)[:50]
+    alerts = [
+        {**item, "resolve_token": agent.alert_token(item)} for item in agent.active_alerts(profile)
+    ]
+    bms = sorted(profile.get("biomarkers", []), key=lambda x: x.get("date") or "", reverse=True)[
+        :50
+    ]
     imgs = sorted(profile.get("imaging", []), key=lambda x: x.get("date") or "", reverse=True)[:3]
-    docs = sorted(agent.active_documents(profile), key=lambda x: x.get("date") or "", reverse=True)[:5]
+    docs = sorted(agent.active_documents(profile), key=lambda x: x.get("date") or "", reverse=True)[
+        :5
+    ]
     return jsonify(
         {
             "patient": profile.get("patient", {}),
+            "profile_revision": profile.get("profile_revision"),
             "alerts": alerts,
             "recent_biomarkers": bms,
             "recent_imaging": imgs,
@@ -1762,7 +1768,11 @@ def api_job(job_id):
 def _retained_feed_job(job_id: str) -> dict | None:
     with _jobs_lock:
         return next(
-            (dict(item) for item in _jobs if item.get("id") == job_id and item.get("type") == "feed"),
+            (
+                dict(item)
+                for item in _jobs
+                if item.get("id") == job_id and item.get("type") == "feed"
+            ),
             None,
         )
 
@@ -1970,15 +1980,62 @@ def api_delete_treatment():
     return jsonify({"ok": True})
 
 
-@app.route("/api/alerts/resolve/<int:idx>", methods=["POST"])
+@app.route("/api/alerts/<alert_id>/resolve", methods=["POST"])
 @serialized_profile_mutation
-def api_resolve_alert(idx):
+def api_resolve_alert(alert_id):
+    data = request.get_json(force=True) or {}
+    expected_token = str(data.get("expected_token") or "")
+    expected_revision = data.get("expected_profile_revision")
+    if not expected_token or expected_revision is None:
+        return (
+            jsonify({"error": "expected_token and expected_profile_revision are required"}),
+            400,
+        )
     profile = agent.load_profile()
-    unresolved = agent.active_alerts(profile)
-    if idx < len(unresolved):
-        unresolved[idx]["resolved"] = True
+    alert = next(
+        (item for item in profile.get("alerts", []) if item.get("id") == alert_id),
+        None,
+    )
+    if (
+        alert is None
+        or str(expected_revision) != str(profile.get("profile_revision"))
+        or alert.get("resolved")
+        or alert not in agent.active_alerts(profile)
+        or agent.alert_token(alert) != expected_token
+    ):
+        return (
+            jsonify(
+                {
+                    "error": "The alert changed or is no longer active. Reload alerts before resolving it."
+                }
+            ),
+            409,
+        )
+    alert["resolved"] = True
+    profile["summary_stale"] = True
+    if isinstance(profile.get("executive_summary"), dict):
+        profile["executive_summary"]["stale"] = True
+        profile["executive_summary"]["alert_resolution_pending"] = True
+    timestamp = now_stamp()
+    for question in profile.get("appointment_questions", []):
+        if question.get("source") == "ai" and not question.get("stale"):
+            question["stale"] = True
+            question["stale_reason"] = "active_alert_resolved_after_generation"
+            question["stale_at"] = timestamp
     agent.save_profile(profile, clinical_change=False)
     return jsonify({"ok": True})
+
+
+@app.route("/api/alerts/resolve/<int:idx>", methods=["POST"])
+def api_resolve_alert_legacy(idx):
+    return (
+        jsonify(
+            {
+                "error": "Index-based alert resolution is no longer supported. Reload and resolve by alert ID."
+            }
+        ),
+        410,
+    )
 
 
 @app.route("/api/treatments/update", methods=["POST"])
@@ -2097,10 +2154,7 @@ def api_questions():
         if question.get("source") == "ai" and (
             not question.get("generation_job_id")
             or str(question.get("source_profile_revision")) != str(profile_revision)
-            or (
-                not question.get("asked")
-                and question.get("generation_job_id") != generation_id
-            )
+            or (not question.get("asked") and question.get("generation_job_id") != generation_id)
         ):
             question["stale"] = True
             question["stale_reason"] = (
@@ -2714,13 +2768,32 @@ def api_chat():
     if not isinstance(history, list):
         return jsonify({"error": "Invalid history"}), 400
     history = history[-20:]
-    job, rejection = _submit_job("chat", _run_chat_job, user_message[:10000], history)
+    profile = agent.load_profile()
+    current_revision = int(profile.get("profile_revision") or 0)
+    history_revision = data.get("history_revision")
+    if history and str(history_revision) != str(current_revision):
+        return (
+            jsonify(
+                {
+                    "error": "The patient record changed. Clear the prior chat history before continuing.",
+                    "profile_revision": current_revision,
+                }
+            ),
+            409,
+        )
+    job, rejection = _submit_job(
+        "chat",
+        _run_chat_job,
+        user_message[:10000],
+        history,
+        current_revision,
+    )
     if rejection:
         return rejection
     legacy = _legacy_sync_result(job["id"])
     if legacy is not None:
         return jsonify(legacy), 500 if legacy.get("error") else 200
-    return jsonify({"job_id": job["id"]}), 202
+    return jsonify({"job_id": job["id"], "profile_revision": current_revision}), 202
 
 
 @app.route("/")

@@ -48,6 +48,14 @@ incremented when something user-visible or operationally meaningful changes.
   synchronization preserves correction→undo while caregiver alert resolution
   still conflicts. Screening claim sanitization is polarity-neutral and replaces
   the full assertion rather than retaining definitive inclusion/enrollment text.
+  Summary generation now runs after feed/digest clinical state commits and saves
+  as derived-only at the same effective revision, preserving active alerts.
+  In-tab chat history is profile-revision bound and cleared/rejected on mismatch.
+  Alert resolution uses stable schema-v4 IDs plus semantic token/revision CAS,
+  stales dependent summaries/questions, and cannot resolve a reordered row.
+  Treatment imperatives are replaced wholesale with treating-team confirmation
+  wording while factual past treatment history remains unchanged. Submitted-job
+  activation also participates in the task-selection epoch protocol.
 - **Today-first responsive caregiver workspace.** Replaced the duplicated
   desktop/mobile surfaces with shared **Today**, **Patient**, **Questions**, and
   **Activity** views while retaining the warm green/amber visual identity.

@@ -89,6 +89,8 @@ DEFAULT_PROFILE: dict = {
     "questions_generation_id": None,
     "feedback": [],
     "latest_research_update": None,
+    "treatments_classification_revision": None,
+    "treatments_classification_job_id": None,
 }
 
 _NCT_ID_RE = re.compile(r"NCT\d{8}")
@@ -537,15 +539,45 @@ def active_documents(profile: dict) -> list[dict]:
 def active_alerts(profile: dict) -> list[dict]:
     """Return unresolved alerts whose clinical source dependency remains valid."""
     revision = profile.get("profile_revision")
+    active = []
+    for item in profile.get("alerts", []):
+        if item.get("resolved"):
+            continue
+        kind = item.get("dependency_kind") or "durable"
+        if kind == "source" and not item.get("source_dependency_active", True):
+            continue
+        if kind == "profile_snapshot" and str(item.get("generation_profile_revision")) != str(
+            revision
+        ):
+            continue
+        active.append(item)
+    return active
+
+
+def invalidate_treatment_classification(profile: dict) -> None:
+    """Mark derived treatment categories stale without deleting their audit value."""
+    profile["treatments_classification_revision"] = None
+    profile["treatments_classification_job_id"] = None
+
+
+def treatment_classification_is_current(profile: dict) -> bool:
+    revision = profile.get("treatments_classification_revision")
+    return revision is not None and str(revision) == str(profile.get("profile_revision"))
+
+
+def current_treatment_records(profile: dict) -> list[dict]:
+    """Return current classification or a lossless raw-treatment fallback."""
+    if treatment_classification_is_current(profile):
+        return list(profile.get("treatments_classified") or [])
     return [
-        item
-        for item in profile.get("alerts", [])
-        if not item.get("resolved")
-        and item.get("source_dependency_active", True)
-        and (
-            item.get("generation_profile_revision") is None
-            or str(item.get("generation_profile_revision")) == str(revision)
-        )
+        {
+            "text": text,
+            "label": text,
+            "category": "unclassified",
+            "date": None,
+            "classification_stale": True,
+        }
+        for text in profile.get("patient", {}).get("current_treatments", [])
     ]
 
 

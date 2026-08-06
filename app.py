@@ -869,6 +869,9 @@ def _run_feed_job(
             report = agent.run_orchestrator(profile, extracted)
             _update_job(job_id, {"stage": "classifying"})
             profile["treatments_classified"] = agent.classify_treatments(profile)
+            final_revision = int(profile.get("profile_revision") or 0) + 1
+            profile["treatments_classification_revision"] = final_revision
+            profile["treatments_classification_job_id"] = job_id
             research_update = agent.record_latest_research_update(
                 profile,
                 job_id=job_id,
@@ -884,7 +887,6 @@ def _run_feed_job(
                     trial_ids=research_update.get("trial_ids", []),
                     paper_ids=research_update.get("paper_ids", []),
                 )
-            final_revision = int(profile.get("profile_revision") or 0) + 1
             _finalize_generated_alert_dependencies(
                 profile,
                 job_id=job_id,
@@ -952,6 +954,7 @@ def _run_digest_job(job_id: str):
                 )
                 if poll["changed"]:
                     _update_job(job_id, {"stage": f"trial updates: {len(poll['changed'])}"})
+                    agent.save_profile(profile)
             except Exception as exc:
                 log.warning("trial_poll_skipped type=%s", type(exc).__name__)
             extracted = {
@@ -969,6 +972,9 @@ def _run_digest_job(job_id: str):
             report = agent.run_orchestrator(profile, extracted)
             _update_job(job_id, {"stage": "classifying"})
             profile["treatments_classified"] = agent.classify_treatments(profile)
+            final_revision = int(profile.get("profile_revision") or 0) + 1
+            profile["treatments_classification_revision"] = final_revision
+            profile["treatments_classification_job_id"] = job_id
             agent.record_latest_research_update(
                 profile,
                 job_id=job_id,
@@ -977,7 +983,6 @@ def _run_digest_job(job_id: str):
                 previous_paper_ids=previous_paper_ids,
                 record_empty=True,
             )
-            final_revision = int(profile.get("profile_revision") or 0) + 1
             _finalize_generated_alert_dependencies(
                 profile,
                 job_id=job_id,
@@ -1105,6 +1110,8 @@ def _run_summary_job(job_id: str) -> None:
             profile = agent.load_profile()
             classified_txs = agent.classify_treatments(profile)
             profile["treatments_classified"] = classified_txs
+            profile["treatments_classification_revision"] = profile.get("profile_revision")
+            profile["treatments_classification_job_id"] = job_id
             summary_error = _refresh_summary(profile)
             agent.save_profile(profile, clinical_change=False)
             result = {
@@ -1587,6 +1594,7 @@ def api_status():
     docs = sorted(agent.active_documents(profile), key=lambda x: x.get("date") or "", reverse=True)[
         :5
     ]
+    classification_current = agent.treatment_classification_is_current(profile)
     return jsonify(
         {
             "patient": profile.get("patient", {}),
@@ -1595,7 +1603,15 @@ def api_status():
             "recent_biomarkers": bms,
             "recent_imaging": imgs,
             "recent_documents": docs,
-            "treatments_classified": profile.get("treatments_classified", []),
+            "treatments_classified": (
+                profile.get("treatments_classified", []) if classification_current else []
+            ),
+            "treatments_fallback": (
+                []
+                if classification_current
+                else profile.get("patient", {}).get("current_treatments", [])
+            ),
+            "treatments_classification_current": classification_current,
             "stats": {
                 "trials_tracked": len(profile.get("trials_tracked", [])),
                 "literature_watched": len(profile.get("literature_watched", [])),
@@ -1976,6 +1992,7 @@ def api_delete_treatment():
         for t in profile.get("treatments_classified", [])
         if t.get("text") != text and t.get("label") != text
     ]
+    agent.invalidate_treatment_classification(profile)
     agent.save_profile(profile)
     return jsonify({"ok": True})
 
@@ -2048,6 +2065,15 @@ def api_treatments_update():
     category = data.get("category")
 
     profile = agent.load_profile()
+    if not agent.treatment_classification_is_current(profile):
+        return (
+            jsonify(
+                {
+                    "error": "Treatment classification is outdated. Refresh the assessment before editing categories."
+                }
+            ),
+            409,
+        )
     txs = profile.get("treatments_classified", [])
 
     if idx is None or idx >= len(txs):
@@ -2084,6 +2110,10 @@ def api_treatments_update():
         return jsonify({"error": "Invalid action"}), 400
 
     profile["treatments_classified"] = txs
+    profile["treatments_classification_revision"] = (
+        int(profile.get("profile_revision") or 0) + 1
+    )
+    profile["treatments_classification_job_id"] = "manual-treatment-update"
     agent.save_profile(profile)
     return jsonify({"ok": True, "treatments_classified": txs})
 

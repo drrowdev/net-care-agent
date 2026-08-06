@@ -493,7 +493,9 @@
     const sortedCompleted = sortByDate(completed, true);
 
     // Fallback to raw list if not yet classified
-    const rawTxs = (p.current_treatments || []);
+    const rawTxs = (d.treatments_fallback?.length
+      ? d.treatments_fallback
+      : (p.current_treatments || []));
 
     const txRow = (t) => {
       const idx = txs.indexOf(t);
@@ -521,7 +523,8 @@
         '<div class="empty-state">No treatments recorded</div>';
     } else if (txs.length === 0) {
       document.getElementById('tx-list').innerHTML =
-        rawTxs.map(t => `<div class="tx-item"><div class="tx-dot"></div>${escHtml(t)}</div>`).join('');
+        `${d.treatments_classification_current === false ? '<div class="classification-stale-notice">Classification outdated — showing raw treatment entries.</div>' : ''}
+        ${rawTxs.map(t => `<div class="tx-item"><div class="tx-dot"></div>${escHtml(t)}</div>`).join('')}`;
     } else {
       let txHtml = '';
 
@@ -1578,7 +1581,7 @@
         const operation = safeClassToken(change.operation, 'unchanged');
         const state = safeClassToken(change.state, 'active');
         const editable = change.editable_fields?.length && ['active', 'corrected'].includes(change.state) && !change.conflicted;
-        const removable = change.target?.kind !== 'none' && ['active', 'corrected'].includes(change.state) && !change.conflicted;
+        const removable = change.removable !== false && change.target?.kind !== 'none' && ['active', 'corrected'].includes(change.state) && !change.conflicted;
         const history = change.history?.length
           ? `<span class="receipt-history">${change.history.length} audit event${change.history.length === 1 ? '' : 's'}</span>`
           : '';

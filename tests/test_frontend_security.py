@@ -302,6 +302,13 @@ def test_latest_research_update_labels_only_exact_batch_records():
     assert "/api/changes" not in APP_JS
 
 
+def test_stale_treatment_classification_visibly_falls_back_to_raw_entries():
+    sidebar = _function_source("renderSidebar", "resolveAlert")
+    assert "d.treatments_fallback?.length" in sidebar
+    assert "d.treatments_classification_current === false" in sidebar
+    assert "Classification outdated — showing raw treatment entries." in sidebar
+
+
 def test_latest_research_update_refreshes_after_missed_job_transitions():
     switch_view = _function_source("switchView", "refreshAfterVisibilityRestore")
     assert "name === 'today'" in switch_view

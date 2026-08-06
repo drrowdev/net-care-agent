@@ -264,6 +264,7 @@ class Alert(_Lenient):
     source_document_id: str | None = None
     source_job_id: str | None = None
     generation_profile_revision: int | None = None
+    dependency_kind: Literal["durable", "source", "profile_snapshot"] = "durable"
     source_dependency_active: bool = True
     source_invalidated_at: str | None = None
     inactive_reason: str | None = None
@@ -465,7 +466,7 @@ class PatientProfile(_Lenient):
     """The complete patient profile. Lives at ${DATA_DIR}/patient_profile.json."""
 
     schema_version: int = Field(
-        default=4,
+        default=5,
         description="Profile schema version. Incremented when a structural migration runs.",
     )
     profile_revision: int = 0
@@ -483,6 +484,8 @@ class PatientProfile(_Lenient):
     literature_watched: list[LiteratureWatched] = Field(default_factory=list)
     alerts: list[Alert] = Field(default_factory=list)
     treatments_classified: list[TreatmentClassified] = Field(default_factory=list)
+    treatments_classification_revision: int | None = None
+    treatments_classification_job_id: str | None = None
     clinical_judgments: list[ClinicalJudgment] = Field(default_factory=list)
     symptoms: list[Symptom] = Field(default_factory=list)
     questions: list[Question] = Field(default_factory=list)

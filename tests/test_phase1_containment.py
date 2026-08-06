@@ -77,6 +77,7 @@ def test_feed_and_digest_refresh_summary(app_mod, agent, monkeypatch, job_type):
     assert profile["executive_summary"]["summary_revision"] == profile["profile_revision"]
     assert profile["summary_stale"] is False
     assert profile["treatments_classified"][0]["text"] == "SSA"
+    assert profile["treatments_classification_revision"] == profile["profile_revision"]
 
 
 @pytest.mark.parametrize("job_type", ["feed", "digest"])
@@ -163,6 +164,79 @@ def test_manual_summary_is_derived_and_preserves_current_alert_revision(
     assert saved["profile_revision"] == revision
     assert saved["executive_summary"]["summary_revision"] == revision
     assert [item["message"] for item in agent.active_alerts(saved)] == ["Current alert"]
+    assert saved["treatments_classification_revision"] == revision
+
+
+def test_digest_summary_sees_same_run_durable_trial_poll_alert(app_mod, agent, monkeypatch):
+    monkeypatch.setattr(app_mod, "_update_job", lambda *_args, **_kwargs: None)
+
+    def poll(profile, **kwargs):
+        profile["alerts"].append(
+            {
+                "id": "trial-alert",
+                "priority": "high",
+                "message": "Trial status changed",
+                "resolved": False,
+                "source": "trial_status_poll",
+                "source_job_id": kwargs["source_job_id"],
+                "generation_profile_revision": kwargs["generation_profile_revision"],
+                "dependency_kind": "durable",
+                "source_dependency_active": True,
+            }
+        )
+        return {"changed": [{"nct_id": "NCT00000001"}]}
+
+    captured = {}
+
+    def orchestrate(profile, _extracted):
+        captured["alerts"] = [item["message"] for item in agent.active_alerts(profile)]
+        return "report"
+
+    monkeypatch.setattr(agent, "poll_tracked_trials", poll)
+    monkeypatch.setattr(agent, "run_orchestrator", orchestrate)
+    monkeypatch.setattr(agent, "classify_treatments", lambda _profile: [])
+    monkeypatch.setattr(agent, "generate_executive_summary", lambda _profile: _successful_summary())
+
+    app_mod._run_digest_job("digest-job")
+
+    assert captured["alerts"] == ["Trial status changed"]
+    saved = agent.load_profile()
+    assert [item["message"] for item in agent.active_alerts(saved)] == ["Trial status changed"]
+
+
+def test_digest_persists_durable_trial_alert_before_orchestration_failure(
+    app_mod, agent, monkeypatch
+):
+    monkeypatch.setattr(app_mod, "_update_job", lambda *_args, **_kwargs: None)
+
+    def poll(profile, **kwargs):
+        profile["alerts"].append(
+            {
+                "id": "trial-alert",
+                "priority": "high",
+                "message": "Trial status changed",
+                "resolved": False,
+                "source": "trial_status_poll",
+                "source_job_id": kwargs["source_job_id"],
+                "generation_profile_revision": kwargs["generation_profile_revision"],
+                "dependency_kind": "durable",
+                "source_dependency_active": True,
+            }
+        )
+        return {"changed": [{"nct_id": "NCT00000001"}]}
+
+    monkeypatch.setattr(agent, "poll_tracked_trials", poll)
+    monkeypatch.setattr(
+        agent,
+        "run_orchestrator",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("research failed")),
+    )
+
+    app_mod._run_digest_job("digest-job")
+
+    saved = agent.load_profile()
+    assert [item["message"] for item in agent.active_alerts(saved)] == ["Trial status changed"]
+    assert saved["alerts"][0]["dependency_kind"] == "durable"
 
 
 def test_summary_failure_preserves_mutations_and_marks_existing_summary_stale(

@@ -1980,6 +1980,15 @@ main#main-content {
 .tx-actions { opacity: 1; }
 .tx-action-btn { width: 44px; height: 44px; border-radius: 8px; }
 .tx-category-head { padding: 10px 0 4px; }
+.classification-stale-notice {
+  margin: 4px 0 8px;
+  padding: 8px 10px;
+  border: 1px solid #c7b47a;
+  border-radius: 7px;
+  background: #fff5d9;
+  color: #684800;
+  font-size: 11px;
+}
 
 .search-field input,
 .symptom-form input,

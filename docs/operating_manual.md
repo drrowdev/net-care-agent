@@ -119,6 +119,18 @@ other clinical revision clears prior in-tab turns with a visible notice. The
 server rejects stale history with `409`, so an old answer cannot be resent into a
 new-record conversation.
 
+Treatment categories appear only when classification is bound to the current
+clinical revision. If classification fails or raw treatments change, Patient
+shows **Classification outdated — showing raw treatment entries** and every
+agent receives the raw list. Refresh the assessment to classify again; treatment
+data is never omitted.
+
+Alert lifetime follows its declared dependency. Ingestion-failure and
+trial-status alerts are durable until resolved. Feed-source alerts deactivate
+when that source is corrected/undone. Digest/profile-snapshot conclusions
+deactivate after a later clinical revision. Document undo preserves durable
+alerts for explicit resolution.
+
 The server compares only the affected rows/scalars/treatment values. Unrelated
 later profile changes do not block the correction. If an affected value changed
 or a later document also supports it, the server returns `409` before changing

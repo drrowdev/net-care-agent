@@ -44,7 +44,7 @@ def test_unversioned_migration_records_log_entry():
     assert "_migration_log" in result
     log = result["_migration_log"]
     assert isinstance(log, list)
-    assert len(log) == 4
+    assert len(log) == 5
     entry = log[0]
     assert entry["id"] == "0001_add_schema_version"
     assert "applied_at" in entry
@@ -53,6 +53,7 @@ def test_unversioned_migration_records_log_entry():
     assert log[1]["id"] == "0002_add_document_imports"
     assert log[2]["id"] == "0003_add_generated_content_provenance"
     assert log[3]["id"] == "0004_add_stable_alert_ids"
+    assert log[4]["id"] == "0005_add_dependency_lifecycles"
 
 
 def test_already_current_fast_path_no_change():
@@ -188,7 +189,7 @@ def test_v1_adds_empty_document_import_ledger_without_clinical_inference():
     data = {"schema_version": 1, "patient": {"diagnosis": "NET"}}
     result = apply_migrations(data)
 
-    assert result["schema_version"] == 4
+    assert result["schema_version"] == 5
     assert result["document_imports"] == []
     assert result["patient"] == {"diagnosis": "NET"}
 
@@ -207,7 +208,7 @@ def test_v2_conservatively_stales_legacy_ai_questions_without_generation_identit
 
     result = apply_migrations(data)
 
-    assert result["schema_version"] == 4
+    assert result["schema_version"] == 5
     assert result["questions_generation_id"] is None
     assert result["appointment_questions"][0]["stale"] is True
     assert (
@@ -232,9 +233,57 @@ def test_v3_deterministically_backfills_stable_alert_ids():
     first = apply_migrations(copy.deepcopy(source))
     second = apply_migrations(copy.deepcopy(source))
 
-    assert first["schema_version"] == 4
+    assert first["schema_version"] == 5
     assert first["alerts"][0]["id"].startswith("alert_legacy_")
     assert first["alerts"][1]["id"].startswith("alert_legacy_")
     assert first["alerts"][0]["id"] != first["alerts"][1]["id"]
     assert first["alerts"][2]["id"] == "existing"
     assert [item["id"] for item in first["alerts"]] == [item["id"] for item in second["alerts"]]
+
+
+def test_v4_migrates_alert_lifetimes_and_invalidates_legacy_classification():
+    from agent.migrations import apply_migrations
+
+    data = {
+        "schema_version": 4,
+        "patient": {"current_treatments": ["lanreotide"]},
+        "treatments_classified": [{"text": "lanreotide", "category": "active"}],
+        "alerts": [
+            {"id": "intake", "source": "intake_extraction_failure"},
+            {"id": "trial", "source": "trial_status_poll"},
+            {"id": "source", "source_document_id": "doc_" + "a" * 32},
+            {"id": "snapshot", "generation_profile_revision": 4},
+            {"id": "legacy"},
+        ],
+        "document_imports": [
+            {
+                "job_id": "feed",
+                "changes": [
+                    {
+                        "target": {"collection": "alerts", "record_id": "intake"},
+                        "effective_value": {
+                            "id": "intake",
+                            "source": "intake_extraction_failure",
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+
+    result = apply_migrations(data)
+
+    assert result["schema_version"] == 5
+    assert result["treatments_classification_revision"] is None
+    assert result["treatments_classification_job_id"] is None
+    assert [item["dependency_kind"] for item in result["alerts"]] == [
+        "durable",
+        "durable",
+        "source",
+        "profile_snapshot",
+        "durable",
+    ]
+    assert (
+        result["document_imports"][0]["changes"][0]["effective_value"]["dependency_kind"]
+        == "durable"
+    )

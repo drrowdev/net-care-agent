@@ -9,7 +9,7 @@ from __future__ import annotations
 
 # Agents
 from .chat import build_chat_system, handle_chat
-from .classify import classify_treatments
+from .classify import TreatmentClassificationError, classify_treatments
 
 # Configuration & paths
 from .config import (
@@ -43,13 +43,16 @@ from .profile import (
     active_alerts,
     active_documents,
     alert_token,
+    current_treatment_records,
     get_patient_summary,
     get_research_ids,
+    invalidate_treatment_classification,
     load_profile,
     public_latest_research_update,
     record_latest_research_update,
     save_profile,
     summary_is_current,
+    treatment_classification_is_current,
 )
 from .provenance import anchor_source_quote, preserve_source_document, remove_source_document
 from .questions import generate_appointment_questions, generate_questions_for_profile
@@ -103,8 +106,11 @@ __all__ = [
     "active_documents",
     "active_alerts",
     "alert_token",
+    "current_treatment_records",
+    "invalidate_treatment_classification",
     "get_patient_summary",
     "summary_is_current",
+    "treatment_classification_is_current",
     "get_research_ids",
     "record_latest_research_update",
     "public_latest_research_update",
@@ -148,6 +154,7 @@ __all__ = [
     "verify_references",
     "verification_note",
     "classify_treatments",
+    "TreatmentClassificationError",
     "generate_executive_summary",
     "generate_appointment_questions",
     "generate_questions_for_profile",

@@ -5,7 +5,13 @@ from __future__ import annotations
 from . import config
 from .judgments import CLINICAL_JUDGMENTS_OVERRIDE, get_clinical_judgments_context
 from .llm import cached_system, client, first_text
-from .profile import active_alerts, active_documents, build_patient_context, summary_is_current
+from .profile import (
+    active_alerts,
+    active_documents,
+    build_patient_context,
+    current_treatment_records,
+    summary_is_current,
+)
 
 
 def build_chat_system(profile: dict) -> str:
@@ -79,7 +85,7 @@ def build_chat_system(profile: dict) -> str:
                     lines.append(f"  Rationale: {a.get('rationale', '')}")
             lines.append("")
 
-    treatments = profile.get("treatments_classified") or []
+    treatments = current_treatment_records(profile)
     if treatments:
         lines.append("── TREATMENTS ──")
         for t in treatments:

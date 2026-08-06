@@ -126,6 +126,7 @@ def test_build_chat_system_omits_stale_summary_actions_and_inactive_alerts(agent
             "message": "STALE SOURCE ALERT",
             "resolved": False,
             "source_dependency_active": False,
+            "dependency_kind": "source",
         }
     ]
 

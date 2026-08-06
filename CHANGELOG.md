@@ -56,6 +56,12 @@ incremented when something user-visible or operationally meaningful changes.
   Treatment imperatives are replaced wholesale with treating-team confirmation
   wording while factual past treatment history remains unchanged. Submitted-job
   activation also participates in the task-selection epoch protocol.
+  Schema v5 adds durable/source/profile-snapshot alert lifecycles and
+  treatment-classification revision identity. Durable ingestion/trial alerts
+  survive unrelated revisions and document undo; source/snapshot conclusions
+  follow their declared dependencies. Classification rejects empty, partial,
+  extra, or collapsed-distinct output and every consumer visibly falls back to
+  raw treatments whenever classification is stale or fails.
 - **Today-first responsive caregiver workspace.** Replaced the duplicated
   desktop/mobile surfaces with shared **Today**, **Patient**, **Questions**, and
   **Activity** views while retaining the warm green/amber visual identity.

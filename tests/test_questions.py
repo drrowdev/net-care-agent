@@ -64,12 +64,16 @@ def test_patient_context_embedded(agent):
 
 def test_question_generation_excludes_inactive_source_alerts(agent, empty_profile):
     empty_profile["profile_revision"] = 7
+    empty_profile["patient"]["current_treatments"] = ["raw everolimus"]
+    empty_profile["treatments_classified"] = [{"text": "stale lanreotide", "category": "active"}]
+    empty_profile["treatments_classification_revision"] = 6
     empty_profile["alerts"] = [
         {
             "priority": "high",
             "message": "INVALIDATED SOURCE ALERT",
             "resolved": False,
             "source_dependency_active": False,
+            "dependency_kind": "source",
         }
     ]
     captured = {}
@@ -93,5 +97,7 @@ def test_question_generation_excludes_inactive_source_alerts(agent, empty_profil
         questions = agent.generate_questions_for_profile(empty_profile)
 
     assert "INVALIDATED SOURCE ALERT" not in captured["content"]
+    assert "raw everolimus" in captured["content"]
+    assert "stale lanreotide" not in captured["content"]
     assert questions[0]["source_profile_revision"] == 7
     assert questions[0]["stale"] is False

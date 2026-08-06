@@ -237,18 +237,70 @@ _NEGATED_SCREENING_RE = re.compile(
     r"excludes?\s+enrollment|fails?\s+(?:the\s+)?inclusion)\b",
     re.IGNORECASE,
 )
-_TREATMENT_IMPERATIVE_RE = re.compile(
-    r"(?:^\s*(?:(?:please|immediately|now)\s+)*(?:do\s+not\s+)?|"
-    r"\b(?:should|must)\s+|\b(?:plan|consider)\s+to\s+)"
-    r"(?:start|stop|hold|pause|resume|switch|increase|decrease|redose|titrate|"
-    r"discontinue|withhold|omit|skip|administer|take)\b",
+_TREATMENT_CHANGE_VERB = (
+    r"(?:start(?:ing)?|stop(?:ping)?|hold(?:ing)?|paus(?:e|ing)|resum(?:e|ing)|"
+    r"switch(?:ing)?|increas(?:e|ing)|decreas(?:e|ing)|redos(?:e|ing)|"
+    r"titrat(?:e|ing)|discontinu(?:e|ing)|withhold(?:ing)?|omit(?:ting)?|"
+    r"skip(?:ping)?|administer(?:ing)?|tak(?:e|ing))"
+)
+_TREATMENT_RECOMMENDATION_RE = re.compile(
+    rf"\b(?:recommend\w*|needs?\s*(?::|to)|should|must|"
+    rf"plan(?:\s+is)?\s*(?::|to)|consider(?:ed|ing)?\s+).*?\b"
+    rf"{_TREATMENT_CHANGE_VERB}\b",
+    re.IGNORECASE,
+)
+_TREATMENT_COMMAND_RE = re.compile(
+    rf"^\s*(?:(?:please|immediately|now)\s+)*(?:do\s+not\s+)?" rf"{_TREATMENT_CHANGE_VERB}\b",
+    re.IGNORECASE,
+)
+_TREATMENT_GERUND_RE = re.compile(
+    r"^\s*(?:starting|stopping|holding|pausing|resuming|switching|increasing|"
+    r"decreasing|redosing|titrating|discontinuing|withholding|omitting|skipping|"
+    r"administering|taking)\b",
+    re.IGNORECASE,
+)
+_TREATMENT_HISTORICAL_RE = re.compile(
+    r"\b(?:was|were|has\s+been|had\s+been)\s+"
+    r"(?:started|stopped|held|paused|resumed|switched|increased|decreased|"
+    r"redosed|titrated|discontinued|withheld|omitted|skipped|administered|taken)\b",
+    re.IGNORECASE,
+)
+_TREATMENT_NOUN_EVENT_RE = re.compile(
+    r"^\s*(?:start\s+of|hold\s+on)\b.*\b(?:was|were|has\s+been|had\s+been)\b",
+    re.IGNORECASE,
+)
+_TREATMENT_CANCELLED_HISTORY_RE = re.compile(
+    rf"(?:\b(?:plan|recommendation|proposal)\b.*?\b{_TREATMENT_CHANGE_VERB}\b|"
+    rf"^\s*{_TREATMENT_CHANGE_VERB}\b.*?)"
+    r".*?\b(?:was|were|has\s+been|had\s+been)\s+"
+    r"(?:cancelled|canceled|abandoned|withdrawn|postponed|deferred|discontinued)\b",
     re.IGNORECASE,
 )
 
 
 def _screening_safe_alert_text(value: object) -> str:
     original = str(value or "").strip()
-    if _TREATMENT_IMPERATIVE_RE.search(original):
+    treatment_directive = False
+    for clause in (
+        item.strip()
+        for item in re.split(r"[.;,]|\b(?:but|then)\b", original, flags=re.IGNORECASE)
+        if item.strip()
+    ):
+        if _TREATMENT_CANCELLED_HISTORY_RE.search(clause):
+            continue
+        recommendation = bool(_TREATMENT_RECOMMENDATION_RE.search(clause))
+        historical = bool(
+            _TREATMENT_HISTORICAL_RE.search(clause) or _TREATMENT_NOUN_EVENT_RE.search(clause)
+        )
+        directive = bool(
+            recommendation
+            or _TREATMENT_COMMAND_RE.search(clause)
+            or _TREATMENT_GERUND_RE.search(clause)
+        )
+        if directive and (recommendation or not historical):
+            treatment_directive = True
+            break
+    if treatment_directive:
         return (
             "A treatment-change question was identified; contact the treating team and "
             "confirm before any treatment change."
@@ -285,6 +337,7 @@ def execute_tool(
     source_document_id: str | None = None,
     source_job_id: str | None = None,
     generation_profile_revision: int | None = None,
+    dependency_kind: str | None = None,
 ) -> dict:
     if name == "search_pubmed":
         result = search_pubmed(inputs["query"], inputs.get("max_results", 6))
@@ -394,6 +447,8 @@ def execute_tool(
                 else profile.get("profile_revision")
             ),
             "source_dependency_active": True,
+            "dependency_kind": dependency_kind
+            or ("source" if source_document_id else "profile_snapshot"),
         }
         profile["alerts"].append(alert)
         return {"status": "alert_flagged", **alert}

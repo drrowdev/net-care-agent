@@ -232,7 +232,35 @@ def test_correction_then_whole_undo_succeeds_with_source_alert_dependency_sync(
     )
 
     assert profile["document_imports"][0]["status"] == "undone"
-    assert profile["alerts"] == []
+    assert len(profile["alerts"]) == 1
+    assert profile["alerts"][0]["dependency_kind"] == "durable"
+    assert agent.active_alerts(profile)[0]["id"] == profile["alerts"][0]["id"]
+    preserved = next(
+        item for item in profile["document_imports"][0]["changes"] if item["category"] == "alerts"
+    )
+    assert preserved["state"] == "unchanged"
+    assert preserved["preserved_reason"] == "durable_alert_requires_resolution"
+
+
+def test_durable_alert_cannot_be_removed_from_receipt(agent, empty_profile):
+    before = copy.deepcopy(empty_profile)
+    text = "critical extraction could not be completed"
+    with patch_llm(agent, lambda **_: llm_text("not-json")):
+        profile, extracted = agent.run_intake(text, empty_profile)
+    agent.build_import_record(before, profile, extracted, job_id="feed-alert", text=text)
+    receipt = agent.public_receipt(profile, "feed-alert")
+    alert = next(item for item in receipt["changes"] if item["category"] == "alerts")
+
+    assert alert["removable"] is False
+    with pytest.raises(agent.ReconciliationError, match="resolved explicitly"):
+        agent.remove_change(
+            profile,
+            "feed-alert",
+            alert["id"],
+            receipt_revision=receipt["receipt_revision"],
+            target_token=alert["target_token"],
+        )
+    assert len(profile["alerts"]) == 1
 
 
 @pytest.mark.parametrize(
@@ -632,7 +660,9 @@ def test_orchestration_failure_keeps_versioned_intake_alert_dependency(
 
     saved["patient"]["diagnosis"] = "Updated diagnosis"
     agent.save_profile(saved)
-    assert agent.active_alerts(agent.load_profile()) == []
+    reloaded = agent.load_profile()
+    assert reloaded["alerts"][0]["dependency_kind"] == "durable"
+    assert agent.active_alerts(reloaded)[0]["id"] == alert["id"]
 
 
 def test_correction_invalidates_source_alerts_questions_and_summary(agent, empty_profile):
@@ -672,6 +702,7 @@ def test_correction_invalidates_source_alerts_questions_and_summary(agent, empty
             "source_document_id": source_id,
             "source_job_id": "feed-job",
             "source_dependency_active": True,
+            "dependency_kind": "source",
         }
     )
     receipt = agent.public_receipt(profile, "feed-job")
@@ -1028,6 +1059,7 @@ def test_profile_derived_alert_becomes_inactive_after_revision_change(agent, emp
         generation_profile_revision=4,
     )
     empty_profile["profile_revision"] = 4
+    assert empty_profile["alerts"][0]["dependency_kind"] == "profile_snapshot"
     assert agent.active_alerts(empty_profile)[0]["id"] == alert["id"]
 
     empty_profile["profile_revision"] = 5
@@ -1035,6 +1067,48 @@ def test_profile_derived_alert_becomes_inactive_after_revision_change(agent, emp
     assert agent.active_alerts(empty_profile) == []
     assert empty_profile["alerts"][0]["resolved"] is False
     assert "Renal function requires review" not in agent.build_chat_system(empty_profile)
+
+
+def test_alert_dependency_kinds_have_distinct_lifetimes(agent, empty_profile):
+    empty_profile["profile_revision"] = 4
+    empty_profile["alerts"] = [
+        {
+            "id": "durable",
+            "message": "Durable ingestion alert",
+            "resolved": False,
+            "dependency_kind": "durable",
+            "generation_profile_revision": 1,
+        },
+        {
+            "id": "source",
+            "message": "Source-scoped alert",
+            "resolved": False,
+            "dependency_kind": "source",
+            "source_document_id": "doc_" + "a" * 32,
+            "source_dependency_active": True,
+            "generation_profile_revision": 1,
+        },
+        {
+            "id": "snapshot",
+            "message": "Snapshot conclusion",
+            "resolved": False,
+            "dependency_kind": "profile_snapshot",
+            "generation_profile_revision": 3,
+        },
+    ]
+
+    assert [item["id"] for item in agent.active_alerts(empty_profile)] == [
+        "durable",
+        "source",
+    ]
+
+    empty_profile["profile_revision"] = 5
+    assert [item["id"] for item in agent.active_alerts(empty_profile)] == [
+        "durable",
+        "source",
+    ]
+    empty_profile["alerts"][1]["source_dependency_active"] = False
+    assert [item["id"] for item in agent.active_alerts(empty_profile)] == ["durable"]
 
 
 def test_resolving_one_alert_does_not_expire_sibling_versioned_alert(
@@ -1213,6 +1287,140 @@ def test_chat_artifact_is_hidden_after_profile_revision_change(app_client, agent
 
     assert result["stale"] is True
     assert "reply" not in result
+
+
+def test_treatment_correction_invalidates_classification_and_chat_falls_back_raw(
+    agent, empty_profile
+):
+    empty_profile["patient"]["current_treatments"] = ["lanreotide"]
+    empty_profile["profile_revision"] = 2
+    empty_profile["treatments_classified"] = [
+        {"text": "lanreotide", "label": "Lanreotide", "category": "active"}
+    ]
+    empty_profile["treatments_classification_revision"] = 2
+    text = "Start everolimus"
+    payload = {
+        "document_type": "doctor_note",
+        "date": "2026-08-01",
+        "summary": "Treatment change",
+        "treatment_changes": ["everolimus"],
+        "evidence": [
+            {
+                "field": "treatment_changes",
+                "item_index": 0,
+                "source_quote": "Start everolimus",
+            }
+        ],
+    }
+    before = copy.deepcopy(empty_profile)
+    with patch_llm(agent, lambda **_: llm_text(json.dumps(payload))):
+        profile, extracted = agent.run_intake(text, empty_profile)
+    agent.build_import_record(before, profile, extracted, job_id="treatment-feed", text=text)
+    receipt = agent.public_receipt(profile, "treatment-feed")
+    treatment = next(item for item in receipt["changes"] if item["category"] == "treatments")
+
+    assert profile["treatments_classification_revision"] is None
+    agent.correct_change(
+        profile,
+        "treatment-feed",
+        treatment["id"],
+        receipt_revision=receipt["receipt_revision"],
+        target_token=treatment["target_token"],
+        replacement="everolimus 10 mg",
+    )
+
+    records = agent.current_treatment_records(profile)
+    assert [item["text"] for item in records] == ["lanreotide", "everolimus 10 mg"]
+    assert all(item["category"] == "unclassified" for item in records)
+    prompt = agent.build_chat_system(profile)
+    assert "[UNCLASSIFIED] lanreotide" in prompt
+    assert "[UNCLASSIFIED] everolimus 10 mg" in prompt
+
+    corrected = agent.public_receipt(profile, "treatment-feed")
+    agent.undo_import(
+        profile,
+        "treatment-feed",
+        receipt_revision=corrected["receipt_revision"],
+        undo_token=corrected["undo_token"],
+    )
+    assert [item["text"] for item in agent.current_treatment_records(profile)] == ["lanreotide"]
+
+
+def test_feed_classification_failure_keeps_raw_treatment_fallback(app_client, agent, monkeypatch):
+    app_module, client = app_client
+    profile = agent.load_profile()
+    profile["patient"]["current_treatments"] = ["lanreotide"]
+    agent.save_profile(profile)
+    profile["treatments_classified"] = [
+        {"text": "lanreotide", "label": "Lanreotide", "category": "active"}
+    ]
+    profile["treatments_classification_revision"] = profile["profile_revision"]
+    agent.save_profile(profile, clinical_change=False)
+    app_module._jobs = [
+        {
+            "id": "classification-failure",
+            "type": "feed",
+            "status": "queued",
+            "stage": "queued",
+            "created_at": "2026-08-01T12:00:00",
+            "error": None,
+        }
+    ]
+    monkeypatch.setattr(agent, "run_orchestrator", lambda *_args, **_kwargs: "report")
+    monkeypatch.setattr(
+        agent,
+        "classify_treatments",
+        lambda _profile: (_ for _ in ()).throw(RuntimeError("classification failed")),
+    )
+    payload = {
+        "document_type": "doctor_note",
+        "date": "2026-08-01",
+        "summary": "Treatment change",
+        "treatment_changes": ["everolimus"],
+        "evidence": [
+            {
+                "field": "treatment_changes",
+                "item_index": 0,
+                "source_quote": "Start everolimus",
+            }
+        ],
+    }
+    with patch_llm(agent, lambda **_: llm_text(json.dumps(payload))):
+        app_module._run_feed_job("classification-failure", "Start everolimus")
+
+    saved = agent.load_profile()
+    status = client.get("/api/status").get_json()
+    assert saved["treatments_classification_revision"] is None
+    assert saved["patient"]["current_treatments"] == ["lanreotide", "everolimus"]
+    assert status["treatments_classified"] == []
+    assert status["treatments_fallback"] == ["lanreotide", "everolimus"]
+    assert status["treatments_classification_current"] is False
+
+
+def test_stale_treatment_category_edit_is_rejected_and_raw_delete_stays_stale(
+    app_client, agent, empty_profile
+):
+    _, client = app_client
+    empty_profile["profile_revision"] = 3
+    empty_profile["patient"]["current_treatments"] = ["lanreotide", "everolimus"]
+    empty_profile["treatments_classified"] = [
+        {"text": "lanreotide", "label": "Lanreotide", "category": "active"}
+    ]
+    empty_profile["treatments_classification_revision"] = 2
+    agent.save_profile(empty_profile, clinical_change=False)
+
+    stale_edit = client.post(
+        "/api/treatments/update",
+        json={"action": "set_category", "idx": 0, "category": "completed"},
+    )
+    assert stale_edit.status_code == 409
+
+    deleted = client.post("/api/treatments/delete", json={"text": "everolimus"})
+    assert deleted.status_code == 200
+    saved = agent.load_profile()
+    assert saved["patient"]["current_treatments"] == ["lanreotide"]
+    assert saved["treatments_classification_revision"] is None
+    assert [item["text"] for item in agent.current_treatment_records(saved)] == ["lanreotide"]
 
 
 def test_generated_questions_are_dynamically_stale_after_profile_revision_change(

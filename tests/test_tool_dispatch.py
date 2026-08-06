@@ -49,6 +49,7 @@ def test_feed_derived_alert_is_source_scoped_and_uses_screening_language(agent, 
     assert alert["source_document_id"] == "doc_" + "a" * 32
     assert alert["source_job_id"] == "feed-job"
     assert alert["source_dependency_active"] is True
+    assert alert["dependency_kind"] == "source"
     assert "eligible" not in alert["message"].lower()
     assert "best match" not in alert["message"].lower()
     assert "eligibility" not in alert["action_required"].lower()
@@ -229,6 +230,14 @@ def test_no_exclusion_criteria_does_not_invert_affirmative_fit(agent, empty_prof
         "Withhold the next PRRT dose",
         "Skip the next lanreotide injection",
         "Administer 120 mg lanreotide",
+        "Recommendation: stop everolimus immediately",
+        "The patient needs to stop everolimus now",
+        "We recommend stopping lanreotide and starting sunitinib",
+        "Plan is to pause PRRT",
+        "Plan: stop everolimus",
+        "Starting everolimus now",
+        "Titrating lanreotide upward",
+        "Redosing PRRT",
     ],
 )
 def test_treatment_imperatives_are_replaced_wholesale(agent, empty_profile, instruction):
@@ -257,6 +266,10 @@ def test_factual_past_treatment_alert_is_not_rewritten(agent, empty_profile):
         "Lanreotide dose was increased during the prior visit",
         "Everolimus was discontinued during the prior visit",
         "The prior PRRT dose was withheld",
+        "Start of lanreotide was delayed on 2026-07-01",
+        "Hold on everolimus was discontinued at the prior visit",
+        "The plan to stop everolimus was discontinued last week",
+        "Starting everolimus was postponed",
     ):
         profile = {**empty_profile, "alerts": []}
         agent.execute_tool(
@@ -265,6 +278,26 @@ def test_factual_past_treatment_alert_is_not_rewritten(agent, empty_profile):
             profile,
         )
         assert profile["alerts"][0]["message"] == factual
+
+
+@pytest.mark.parametrize(
+    "instruction",
+    [
+        "Start sunitinib now; the prior plan to stop everolimus was cancelled.",
+        "The plan to stop everolimus was cancelled last week. Start sunitinib now.",
+        "The plan to stop everolimus was cancelled last week, but start sunitinib now.",
+    ],
+)
+def test_cancelled_history_clause_does_not_exempt_live_directive(agent, empty_profile, instruction):
+    agent.execute_tool(
+        "flag_alert",
+        {"priority": "high", "message": instruction},
+        empty_profile,
+    )
+
+    message = empty_profile["alerts"][0]["message"].lower()
+    assert instruction.lower() not in message
+    assert "contact the treating team" in message
 
 
 @pytest.mark.parametrize(

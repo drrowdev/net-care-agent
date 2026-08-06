@@ -146,6 +146,11 @@ revision. Feed alerts additionally record source-document dependency. System-
 owned dependency updates are mirrored into receipt effective state so they do
 not create false CAS conflicts; caregiver changes such as resolving an alert
 remain conflicting mutations.
+Alert lifetime is explicit: `durable` ingestion/trial-status alerts remain until
+resolved, `source` alerts remain until source correction/undo or resolution, and
+`profile_snapshot` alerts require their exact generation revision. Digest
+trial-poll mutations commit before fallible orchestration/classification so
+durable alerts survive downstream failure.
 Alert resolution is serialized by stable alert ID, semantic token, and expected
 profile revision; index-based resolution returns `410`. Resolution is
 bookkeeping-only so sibling alert dependencies stay valid, but it explicitly
@@ -156,6 +161,11 @@ mutations and finalized alert dependencies first, then generate/save the summary
 as derived bookkeeping at that same revision. Manual summary refresh is also
 derived-only. Chat history carries a profile revision; mismatched history is
 rejected synchronously with `409` and revalidated in the worker.
+
+Treatment classification carries revision/job identity. Raw treatment mutation
+invalidates it before the first save; output must cover every raw treatment
+component bidirectionally with no ungrounded extras or collapsed distinct drugs.
+When stale/failing, all consumers use the raw `current_treatments` fallback.
 
 Executive-summary prompts receive an opaque catalog of verified source-span IDs.
 The model may select only those IDs for named claims and actions; Flask resolves

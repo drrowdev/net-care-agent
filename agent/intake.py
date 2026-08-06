@@ -374,6 +374,7 @@ def _run_intake_impl(
                 "added_at": now_stamp(),
                 "source": "intake_extraction_failure",
                 "source_document_id": source_document_id,
+                "dependency_kind": "durable",
             }
         )
         extracted["extraction_failed"] = True
@@ -496,6 +497,7 @@ def _run_intake_impl(
         )
         if not is_duplicate:
             existing.append(tx)
+            profile_mod.invalidate_treatment_classification(profile)
 
     return profile, extracted
 

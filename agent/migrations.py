@@ -35,7 +35,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 4
+CURRENT_SCHEMA_VERSION: int = 5
 
 # Append-only ordered registry of migrations.  Never reorder entries.
 _REGISTRY: list[dict[str, Any]] = []
@@ -99,6 +99,37 @@ def _m0004_add_stable_alert_ids(data: dict) -> dict:
         digest = hashlib.sha256(f"{index}:{canonical}".encode()).hexdigest()[:24]
         alert["id"] = f"alert_legacy_{digest}"
     data["schema_version"] = 4
+    return data
+
+
+@_migration("0005_add_dependency_lifecycles", to_version=5)
+def _m0005_add_dependency_lifecycles(data: dict) -> dict:
+    """v4 → v5: classify alert lifetime and invalidate legacy treatment classification."""
+    data.setdefault("treatments_classification_revision", None)
+    data.setdefault("treatments_classification_job_id", None)
+    for alert in data.get("alerts") or []:
+        if not isinstance(alert, dict) or alert.get("dependency_kind"):
+            continue
+        if alert.get("source") in {"intake_extraction_failure", "trial_status_poll"}:
+            alert["dependency_kind"] = "durable"
+        elif alert.get("source_document_id"):
+            alert["dependency_kind"] = "source"
+        elif alert.get("generation_profile_revision") is not None:
+            alert["dependency_kind"] = "profile_snapshot"
+        else:
+            alert["dependency_kind"] = "durable"
+        for receipt in data.get("document_imports") or []:
+            if not isinstance(receipt, dict):
+                continue
+            for change in receipt.get("changes") or []:
+                if (
+                    isinstance(change, dict)
+                    and change.get("target", {}).get("collection") == "alerts"
+                    and change.get("target", {}).get("record_id") == alert.get("id")
+                    and isinstance(change.get("effective_value"), dict)
+                ):
+                    change["effective_value"]["dependency_kind"] = alert["dependency_kind"]
+    data["schema_version"] = 5
     return data
 
 

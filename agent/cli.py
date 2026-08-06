@@ -16,6 +16,7 @@ from .profile import (
     active_alerts,
     get_patient_summary,
     get_research_ids,
+    invalidate_treatment_classification,
     load_profile,
     record_latest_research_update,
     save_profile,
@@ -72,6 +73,7 @@ def cmd_feed(args) -> None:
         save_profile(profile)
         extracted["generation_profile_revision"] = int(profile.get("profile_revision") or 0) + 1
         report = run_orchestrator(profile, extracted)
+        profile["treatments_classified"] = classify_treatments(profile)
         record_latest_research_update(
             profile,
             job_id=job_id,
@@ -81,6 +83,8 @@ def cmd_feed(args) -> None:
             record_empty=False,
         )
         final_revision = int(profile.get("profile_revision") or 0) + 1
+        profile["treatments_classification_revision"] = final_revision
+        profile["treatments_classification_job_id"] = job_id
         for alert in profile.get("alerts", []):
             if alert.get("source_job_id") == job_id:
                 alert["generation_profile_revision"] = final_revision
@@ -108,6 +112,7 @@ def cmd_digest(args) -> None:
         previous_trial_ids = set(get_research_ids(profile, "trial"))
         previous_paper_ids = set(get_research_ids(profile, "paper"))
         report = run_orchestrator(profile, extracted)
+        profile["treatments_classified"] = classify_treatments(profile)
         record_latest_research_update(
             profile,
             job_id=job_id,
@@ -117,6 +122,8 @@ def cmd_digest(args) -> None:
             record_empty=True,
         )
         final_revision = int(profile.get("profile_revision") or 0) + 1
+        profile["treatments_classification_revision"] = final_revision
+        profile["treatments_classification_job_id"] = job_id
         for alert in profile.get("alerts", []):
             if alert.get("source_job_id") == job_id:
                 alert["generation_profile_revision"] = final_revision
@@ -167,8 +174,13 @@ def cmd_update_profile(args) -> None:
         profile["patient"].update(updates)
         if tx_raw:
             profile["patient"].setdefault("current_treatments", []).append(tx_raw)
-        profile["treatments_classified"] = classify_treatments(profile)
+            invalidate_treatment_classification(profile)
         save_profile(profile)
+        job_id = f"cli-update-{datetime.datetime.now():%Y%m%d%H%M%S}"
+        profile["treatments_classified"] = classify_treatments(profile)
+        profile["treatments_classification_revision"] = profile.get("profile_revision")
+        profile["treatments_classification_job_id"] = job_id
+        save_profile(profile, clinical_change=False)
     print("\n✓  Profile updated.")
     print(get_patient_summary(profile))
 

@@ -121,6 +121,14 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
 - Clinical mutations commit once at their final effective revision. Summary
   generation/persistence is derived-only and must see alerts tagged to that same
   revision.
+- Treatment classification is current only when its revision equals
+  `profile_revision`. Raw mutation invalidates before save. Output must cover all
+  raw treatment components, contain no extras, and not collapse distinct drugs.
+  Every consumer falls back to raw `current_treatments` when stale/failing.
+- Alert dependency kinds are explicit: `durable` ignores unrelated revisions and
+  survives document undo until resolved; `source` follows source invalidation;
+  `profile_snapshot` requires exact generation revision. Producers stamp the
+  lifecycle deliberately; future revisions are never generically active.
 - **`save_profile` guards structural validity.** Calling `save_profile` with a
   non-dict, string patient, or non-list collection raises `ValueError`
   immediately.  Field-level type issues (out-of-range values, bad enum literals)

@@ -108,6 +108,7 @@ def _append_alert(
             "source_job_id": source_job_id,
             "generation_profile_revision": generation_profile_revision,
             "source_dependency_active": True,
+            "dependency_kind": "durable",
         }
     )
 

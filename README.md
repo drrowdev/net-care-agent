@@ -131,7 +131,7 @@ All patient state lives in a single JSON file at `${DATA_DIR}/patient_profile.js
 
 ```
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "profile_revision": 42,
   "profile_updated_at": "2026-07-10T16:51:49",
   "profile_saved_at": "2026-07-10T16:52:03",
@@ -172,6 +172,9 @@ questions without that identity migrate to explicit stale history rather than
 appearing current.
 Schema v4 deterministically backfills stable IDs for legacy alerts so resolution
 uses ID + semantic token + profile revision instead of list position.
+Schema v5 adds explicit alert dependency lifecycles and treatment-classification
+revision/job identity. Legacy classifications become stale and fall back to raw
+`current_treatments`; alerts migrate to durable/source/profile-snapshot rules.
 
 A daily backup is written to `${DATA_DIR}/backups/profile_YYYYMMDD.json`
 (retention: 30 days).

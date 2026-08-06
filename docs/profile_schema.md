@@ -26,6 +26,8 @@ All sub-models accept **extra** fields (forward-compat) and treat every document
   'literature_watched': list[LiteratureWatched],
   'alerts': list[Alert],
   'treatments_classified': list[TreatmentClassified],
+  'treatments_classification_revision': int | None,
+  'treatments_classification_job_id': str | None,
   'clinical_judgments': list[ClinicalJudgment],
   'symptoms': list[Symptom],
   'questions': list[Question],
@@ -156,6 +158,7 @@ Every fed document, kept for audit and downstream re-analysis.
 | `source_document_id` | `str \| None` |  |
 | `source_job_id` | `str \| None` |  |
 | `generation_profile_revision` | `int \| None` |  |
+| `dependency_kind` | `'durable' \| 'source' \| 'profile_snapshot'` |  |
 | `source_dependency_active` | `bool` |  |
 | `source_invalidated_at` | `str \| None` |  |
 | `inactive_reason` | `str \| None` |  |

@@ -4,10 +4,133 @@ from __future__ import annotations
 
 import datetime
 import json
+import re
 
 from . import config
 from .llm import client, first_text, is_timeout_error, render_prompt, strip_code_fences
 from .profile import active_documents, build_patient_context
+
+
+class TreatmentClassificationError(RuntimeError):
+    """The model did not return a lossless classification of raw treatments."""
+
+
+_IDENTITY_ALIASES = {
+    "lanreotide": ("somatuline", "lanreotide", "somatostatin analogue", "sst analogue"),
+    "prrt": (
+        "lutetium-177 dotatate",
+        "lutetium-177",
+        "lu-177-dotatate",
+        "177lu-octreotate",
+        "lutathera",
+        "lu-177",
+        "177lu",
+        "lutetium",
+        "prrt",
+    ),
+    "octreotide": ("octreotide",),
+    "everolimus": ("everolimus",),
+    "sunitinib": ("sunitinib",),
+    "capecitabine": ("capecitabine",),
+    "temozolomide": ("temozolomide",),
+    "streptozocin": ("streptozocin",),
+    "radiotherapy": ("radiotherapy", "radiation therapy", "sbrt"),
+    "chemotherapy": ("chemotherapy",),
+}
+
+
+def _treatment_identities(value: str) -> set[str]:
+    normalized = value.casefold()
+    identities = set()
+    for identity, aliases in _IDENTITY_ALIASES.items():
+        for alias in sorted(aliases, key=len, reverse=True):
+            if alias in normalized:
+                identities.add(identity)
+                normalized = normalized.replace(alias, " ")
+    ignored = {
+        "active",
+        "planned",
+        "completed",
+        "ongoing",
+        "historical",
+        "treatment",
+        "therapy",
+        "medication",
+        "regimen",
+        "every",
+        "plus",
+        "and",
+        "monthly",
+        "month",
+        "months",
+        "weekly",
+        "week",
+        "weeks",
+        "daily",
+        "day",
+        "days",
+        "oral",
+        "intravenous",
+        "subcutaneous",
+        "injection",
+        "infusion",
+        "tablet",
+        "tablets",
+        "capsule",
+        "capsules",
+        "once",
+        "twice",
+        "dose",
+        "dosing",
+        "cycle",
+        "cycles",
+        "depot",
+        "autogel",
+        "lar",
+        "extended",
+        "release",
+        "longacting",
+        "long-acting",
+        "mg",
+        "mcg",
+        "g",
+        "ml",
+    }
+    generic = {
+        token
+        for token in re.findall(r"[a-z][a-z0-9-]+", normalized)
+        if token not in ignored and not re.fullmatch(r"q\d+[a-z]*|\d+(?:mg|mcg|g|ml)", token)
+    }
+    return identities | generic
+
+
+def _classification_is_lossless(treatments: list[str], classified: object) -> bool:
+    if not isinstance(classified, list) or not classified:
+        return False
+    outputs = [
+        str(item.get("text") or item.get("label") or "").casefold().strip()
+        for item in classified
+        if isinstance(item, dict)
+    ]
+    for item in classified:
+        if (
+            not isinstance(item, dict)
+            or item.get("category") not in {"active", "planned", "completed"}
+            or not str(item.get("text") or item.get("label") or "").strip()
+        ):
+            return False
+    raw_identity_sets = [_treatment_identities(item) for item in treatments]
+    output_identity_sets = [_treatment_identities(item) for item in outputs]
+    if any(not identities for identities in raw_identity_sets):
+        return False
+    if any(len(identities) != 1 for identities in output_identity_sets):
+        return False
+    raw_identities = set().union(*raw_identity_sets)
+    output_identities = set().union(*output_identity_sets)
+    return output_identities == raw_identities and len(output_identity_sets) == len(
+        output_identities
+    )
+
 
 TREATMENT_CLASSIFIER_SYSTEM_TEMPLATE = """\
 You are a clinical data analyst. Your job is to deduplicate, merge, and classify treatment entries for [[PATIENT_CONTEXT]]. You are given the raw treatment entries, recent clinical context, and today's date — use today's date and document recency as your PRIMARY evidence for classification; keyword cues are fallbacks.
@@ -96,8 +219,10 @@ def classify_treatments(profile: dict) -> list:
         )
         raw = strip_code_fences(first_text(resp))
         classified = json.loads(raw)
-        if not isinstance(classified, list):
-            classified = []
+        if not _classification_is_lossless(treatments, classified):
+            raise TreatmentClassificationError(
+                "Treatment classification did not preserve every raw treatment"
+            )
 
         for item in classified:
             item_key = (item.get("label") or item.get("text") or "").lower().strip()
@@ -108,9 +233,9 @@ def classify_treatments(profile: dict) -> list:
 
         return classified
 
+    except TreatmentClassificationError:
+        raise
     except Exception as exc:
         if is_timeout_error(exc):
             raise
-        return [
-            {"text": t, "category": "active", "label": t[:60], "date": None} for t in treatments
-        ]
+        raise TreatmentClassificationError("Treatment classification failed") from exc

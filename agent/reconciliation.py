@@ -521,6 +521,11 @@ def public_receipt(profile: dict, job_id: str) -> dict:
         reason = _conflict_reason(profile, record, original)
         change["conflicted"] = reason is not None
         change["conflict_reason"] = reason
+        change["removable"] = not (
+            original.get("category") == "alerts"
+            and isinstance(original.get("effective_value"), dict)
+            and original["effective_value"].get("dependency_kind") == "durable"
+        )
         if (
             original.get("state") in {"active", "corrected"}
             and original.get("target", {}).get("kind") != "none"
@@ -738,6 +743,7 @@ _ALERT_SYSTEM_FIELDS = {
     "source_document_id",
     "source_job_id",
     "generation_profile_revision",
+    "dependency_kind",
     "source_dependency_active",
     "source_invalidated_at",
     "inactive_reason",
@@ -775,6 +781,8 @@ def _invalidate_source_dependencies(profile: dict, record: dict) -> None:
     source_id = record.get("source_document_id")
     for alert in profile.get("alerts", []):
         if alert.get("source_document_id") != source_id:
+            continue
+        if alert.get("dependency_kind") != "source":
             continue
         if alert.get("source_dependency_active", True):
             alert["source_dependency_active"] = False
@@ -946,7 +954,9 @@ def correct_change(
         if updated != current and updated in treatments:
             raise ReconciliationError("That treatment is already recorded")
         treatments[treatments.index(current)] = updated
-        profile["treatments_classified"] = []
+        from .profile import invalidate_treatment_classification
+
+        invalidate_treatment_classification(profile)
         _invalidate_document_evidence(profile, record, change)
     else:
         raise ReconciliationError("This receipt entry cannot be corrected")
@@ -983,7 +993,9 @@ def _remove_effect(profile: dict, change: dict, *, event: str) -> None:
     elif kind == "treatment":
         treatments = profile.get("patient", {}).get("current_treatments", [])
         profile["patient"]["current_treatments"] = [item for item in treatments if item != current]
-        profile["treatments_classified"] = []
+        from .profile import invalidate_treatment_classification
+
+        invalidate_treatment_classification(profile)
         after = None
     else:
         raise ReconciliationError("This receipt entry cannot be removed")
@@ -1000,6 +1012,12 @@ def remove_change(
 ) -> None:
     record = find_import(profile, job_id)
     change = _find_change(record, change_id)
+    if (
+        change.get("category") == "alerts"
+        and isinstance(change.get("effective_value"), dict)
+        and change["effective_value"].get("dependency_kind") == "durable"
+    ):
+        raise ReconciliationError("Durable alerts must be resolved explicitly")
     _require_preconditions(
         profile,
         record,
@@ -1036,6 +1054,16 @@ def undo_import(
         and change.get("operation") not in {"unchanged", "derived"}
     ]
     for change in changes:
+        if (
+            change.get("category") == "alerts"
+            and isinstance(change.get("effective_value"), dict)
+            and change["effective_value"].get("dependency_kind") == "durable"
+        ):
+            current = _clone(_target_value(profile, change))
+            _append_history(change, "undone", current, current)
+            change["state"] = "unchanged"
+            change["preserved_reason"] = "durable_alert_requires_resolution"
+            continue
         _remove_effect(profile, change, event="undone")
         change["state"] = "undone"
     for document in profile.get("documents", []):

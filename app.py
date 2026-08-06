@@ -112,6 +112,7 @@ _JOB_FIELDS = {
     "result_file",
     "source_document_id",
     "profile_revision",
+    "generation_id",
     "retry_guidance",
     "error_code",
     "error",
@@ -439,6 +440,7 @@ def _job_response(
 ) -> dict:
     response = dict(job)
     profile_dependent_report = job.get("type") in {"feed", "digest", "deep-sweep"}
+    profile_dependent_result = job.get("type") in {"chat", "questions", "summary"}
     report_revision_stale = False
     if profile_dependent_report and job.get("report_file"):
         profile = profile or agent.load_profile()
@@ -446,6 +448,33 @@ def _job_response(
         report_revision_stale = report_revision is None or str(report_revision) != str(
             profile.get("profile_revision")
         )
+    result_revision_stale = False
+    result_same_revision_invalidated = False
+    if profile_dependent_result and job.get("result_file"):
+        profile = profile or agent.load_profile()
+        result_revision = job.get("profile_revision")
+        result_revision_stale = result_revision is None or str(result_revision) != str(
+            profile.get("profile_revision")
+        )
+        if job.get("type") == "summary" and not agent.summary_is_current(profile):
+            result_same_revision_invalidated = not result_revision_stale
+            result_revision_stale = True
+        if job.get("type") == "questions":
+            generation_id = job.get("generation_id")
+            questions_invalid = (
+                generation_id is None
+                or generation_id != profile.get("questions_generation_id")
+                or any(
+                    item.get("stale")
+                    for item in profile.get("appointment_questions", [])
+                    if isinstance(item, dict)
+                    and item.get("source") == "ai"
+                    and item.get("generation_job_id") == generation_id
+                )
+            )
+            if questions_invalid:
+                result_same_revision_invalidated = not result_revision_stale
+                result_revision_stale = True
     feed_content_stale = False
     if job.get("type") == "feed" and job.get("source_document_id"):
         profile = profile or agent.load_profile()
@@ -465,7 +494,23 @@ def _job_response(
                 response.pop(field, None)
     if report_revision_stale:
         response["derived_content_stale"] = True
-        response["derived_content_stale_reason"] = "patient_record_changed_after_generation"
+        if not feed_content_stale:
+            response["derived_content_stale_reason"] = (
+                "freshness_cannot_be_verified"
+                if job.get("profile_revision") is None
+                else "patient_record_changed_after_generation"
+            )
+    if result_revision_stale:
+        response["derived_content_stale"] = True
+        response["derived_content_stale_reason"] = (
+            "freshness_cannot_be_verified"
+            if job.get("profile_revision") is None
+            else (
+                "generated_content_invalidated"
+                if result_same_revision_invalidated
+                else "patient_record_changed_after_generation"
+            )
+        )
     if not include_artifacts:
         return response
     if job.get("type") == "feed" and job.get("source_document_id"):
@@ -477,7 +522,11 @@ def _job_response(
             response["report_stale_reason"] = (
                 "source_document_corrected_or_undone"
                 if feed_content_stale
-                else "patient_record_changed_after_generation"
+                else (
+                    "freshness_cannot_be_verified"
+                    if job.get("profile_revision") is None
+                    else "patient_record_changed_after_generation"
+                )
             )
             response["report_available_for_audit"] = True
         else:
@@ -533,7 +582,10 @@ def _job_response(
                 else:
                     stale = stale or source_revision is None
                 if stale:
-                    stale_reason = "patient_record_changed_after_generation"
+                    stale_reason = response.get(
+                        "derived_content_stale_reason",
+                        "patient_record_changed_after_generation",
+                    )
                     if job.get("type") == "summary":
                         response["result"] = {
                             "stale": True,
@@ -1096,6 +1148,8 @@ def _run_questions_job(job_id: str, appointment_type: str) -> None:
                 "status": "done",
                 "stage": "done",
                 "result_file": result_ref,
+                "profile_revision": generation_revision,
+                "generation_id": job_id,
                 "finished_at": now_stamp(),
             },
         )
@@ -1127,6 +1181,7 @@ def _run_summary_job(job_id: str) -> None:
                 "status": "done",
                 "stage": "done",
                 "result_file": result_ref,
+                "profile_revision": profile.get("profile_revision"),
                 "finished_at": now_stamp(),
             },
         )
@@ -1160,6 +1215,7 @@ def _run_chat_job(
                 "status": "done",
                 "stage": "done",
                 "result_file": result_ref,
+                "profile_revision": generation_revision,
                 "finished_at": now_stamp(),
             },
         )
@@ -2110,9 +2166,7 @@ def api_treatments_update():
         return jsonify({"error": "Invalid action"}), 400
 
     profile["treatments_classified"] = txs
-    profile["treatments_classification_revision"] = (
-        int(profile.get("profile_revision") or 0) + 1
-    )
+    profile["treatments_classification_revision"] = int(profile.get("profile_revision") or 0) + 1
     profile["treatments_classification_job_id"] = "manual-treatment-update"
     agent.save_profile(profile)
     return jsonify({"ok": True, "treatments_classified": txs})

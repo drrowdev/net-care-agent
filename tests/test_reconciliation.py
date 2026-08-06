@@ -806,6 +806,8 @@ def test_dependent_job_artifacts_are_marked_or_hidden_after_profile_change(
             "status": "done",
             "stage": "done",
             "created_at": "2026-08-01T12:00:00",
+            "generation_id": "old-generation",
+            "profile_revision": 1,
             "result_file": result_ref,
             "error": None,
         }
@@ -837,6 +839,8 @@ def test_revisionless_legacy_question_artifact_is_conservatively_stale(
             "status": "done",
             "stage": "done",
             "created_at": "2026-08-01T12:00:00",
+            "generation_id": "old-generation",
+            "profile_revision": 7,
             "result_file": result_ref,
             "error": None,
         }
@@ -877,13 +881,18 @@ def test_same_revision_superseded_question_generation_is_stale(app_client, agent
             "status": "done",
             "stage": "done",
             "created_at": "2026-08-01T12:00:00",
+            "generation_id": "old-generation",
+            "profile_revision": 7,
             "result_file": result_ref,
             "error": None,
         }
     ]
 
+    listed = client.get("/api/jobs").get_json()[0]
     payload = client.get("/api/jobs/old-generation").get_json()["result"]
 
+    assert listed["derived_content_stale"] is True
+    assert listed["derived_content_stale_reason"] == "generated_content_invalidated"
     assert payload["stale"] is True
     assert payload["questions"][0]["stale"] is True
 
@@ -980,6 +989,7 @@ def test_corrected_feed_report_is_retained_but_hidden_from_job_detail(
     assert "key_findings" not in job_list[0]
     assert payload["report_stale"] is True
     assert payload["derived_content_stale"] is True
+    assert payload["derived_content_stale_reason"] == "source_document_corrected_or_undone"
     assert "summary" not in payload
     assert "key_findings" not in payload
     assert payload["report_available_for_audit"] is True
@@ -1043,6 +1053,8 @@ def test_legacy_profile_dependent_report_without_revision_is_stale(
     detail = client.get("/api/jobs/legacy-digest").get_json()
 
     assert detail["report_stale"] is True
+    assert detail["report_stale_reason"] == "freshness_cannot_be_verified"
+    assert detail["derived_content_stale_reason"] == "freshness_cannot_be_verified"
     assert "report" not in detail
 
 

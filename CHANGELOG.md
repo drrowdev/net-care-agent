@@ -62,6 +62,12 @@ incremented when something user-visible or operationally meaningful changes.
   follow their declared dependencies. Classification rejects empty, partial,
   extra, or collapsed-distinct output and every consumer visibly falls back to
   raw treatments whenever classification is stale or fails.
+  Stale summary responses now preempt open action-feedback editors; open
+  report/result panels revalidate on revision/task polling, clear copy state, and
+  show source-correction/profile-change/unverifiable-legacy reasons accurately.
+  Successful receipt mutations retain the authoritative receipt through detail
+  refresh failure. Status/auth failures clear rendered status-derived PHI and
+  client caches instead of leaving prior patient data visible.
 - **Today-first responsive caregiver workspace.** Replaced the duplicated
   desktop/mobile surfaces with shared **Today**, **Patient**, **Questions**, and
   **Activity** views while retaining the warm green/amber visual identity.

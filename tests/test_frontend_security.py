@@ -91,6 +91,17 @@ def test_summary_refresh_preserves_open_action_feedback():
     assert "summary_revision: el?.dataset.summaryRevision || null" in dismiss
 
 
+def test_stale_summary_preempts_open_action_feedback_immediately():
+    loader = _function_source("loadSummary", "renderPendingSummary")
+    assert "const responseStale =" in loader
+    assert "editor && responseStale" in loader
+    assert "editor.querySelectorAll('button, input')" in loader
+    assert "editor.remove()" in loader
+    assert "pendingSummary = null" in loader
+    assert "renderSummary(d)" in loader
+    assert "editor && sameRevision" in loader
+
+
 def test_escape_closes_only_the_topmost_open_surface():
     assert APP_JS.count("document.addEventListener('keydown'") == 1
     handler_start = APP_JS.index("document.addEventListener('keydown'")
@@ -146,6 +157,22 @@ def test_load_failures_distinguish_auth_offline_and_retry_states():
     assert "loadFailureMarkup('Imaging history'" in APP_JS
 
 
+def test_status_failure_clears_all_status_derived_phi_and_caches():
+    failure = _function_source("renderStatusFailure", "renderLatestResearchUpdate")
+    for expression in (
+        "latestProfileRevision = null",
+        "latestResearchUpdate = null",
+        "allBiomarkers = []",
+        "renderLatestResearchUpdate(null)",
+        "patientMeta.innerHTML = ''",
+        "search.value = ''",
+        "search.disabled = true",
+    ):
+        assert expression in failure
+    evidence = _function_source("loadPatientEvidence", "evidenceBadge")
+    assert "patientEvidence = null" in evidence
+
+
 def test_processing_status_never_claims_clinical_freshness():
     header = _function_source("updateHeaderStatus", "closePanel")
     assert "Processing ${running.length}" in header
@@ -189,7 +216,8 @@ def test_receipt_mutation_response_is_correlated_to_originating_job_and_revision
     assert "currentReceipt?.receipt_revision === originReceiptRevision" in mutation
     assert "pendingWasDisabled" in mutation
     assert "const refreshSelectedJob =" in mutation
-    assert "await selectTask(originJobId, originSelectionEpoch)" in mutation
+    assert "await selectTask(originJobId, originSelectionEpoch, data.receipt)" in mutation
+    assert "data.receipt" in mutation
     assert "const originSelectionEpoch = taskSelectionEpoch" in mutation
     assert "taskSelectionEpoch === originSelectionEpoch" in mutation
 
@@ -197,25 +225,60 @@ def test_receipt_mutation_response_is_correlated_to_originating_job_and_revision
 def test_stale_job_result_is_hidden_in_activity_panel():
     detail = _function_source("selectTask", "formatReport")
     assert "if (task.result.stale)" in detail
-    assert "Generated result is outdated" in detail
+    assert "const staleCopy = staleTaskCopy(task)" in detail
     assert "Regenerate it before use" in detail
     assert "if (task.report_stale)" in detail
-    assert "task.type === 'feed' ? 'Document analysis' : 'Generated report'" in detail
-    assert "Generated report" in detail
+    assert "staleTaskCopy({" in detail
     tasks = _function_source("renderTasks", "updateHeaderStatus")
     assert "t.derived_content_stale" in tasks
     assert "prior analysis hidden" in tasks
     assert "!task.derived_content_stale && task.key_findings" in detail
 
 
+def test_open_task_is_revalidated_and_copy_state_cleared():
+    loader = _function_source("loadTasks", "renderTasks")
+    assert "revalidateOpenTask(tasks)" in loader
+    stale = _function_source("staleTaskCopy", "clearReportCopyState")
+    assert "source_document_corrected_or_undone" in stale
+    assert "patient_record_changed_after_generation" not in stale
+    assert "freshness_cannot_be_verified" in stale
+    revalidate = _function_source("revalidateOpenTask", "updateHeaderStatus")
+    assert "task?.derived_content_stale" in revalidate
+    assert "clearReportCopyState()" in revalidate
+    copy = _function_source("clearReportCopyState", "revalidateOpenTask")
+    assert "currentReportText = ''" in copy
+    assert "copy.disabled = true" in copy
+
+
+def test_receipt_success_survives_detail_refresh_failure():
+    helper = _function_source("receiptRefreshFailureMarkup", "selectTask")
+    assert "Correction saved successfully." in helper
+    assert "Retry detail refresh" in helper
+    selection = _function_source("selectTask", "formatReport")
+    assert "fallbackReceipt = null" in selection
+    assert "receiptRefreshFailureMarkup(fallbackReceipt" in selection
+    assert "Saved. Refreshing activity detail" in selection
+
+
 def test_task_selection_epoch_guards_every_async_panel_update():
     selection = _function_source("selectTask", "formatReport")
     assert "const selectionEpoch = expectedEpoch == null ? ++taskSelectionEpoch" in selection
-    assert "currentReceipt = null" in selection
+    assert "currentReceipt = fallbackReceipt" in selection
     assert "Loading activity detail" in selection
     assert selection.count("selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id") >= 7
     assert "const detailResponse = await fetch" in selection
     assert "const receiptResponse = await fetch" in selection
+
+
+def test_stale_task_copy_maps_reason_and_type_without_source_mislabeling():
+    copy = _function_source("staleTaskCopy", "clearReportCopyState")
+    assert "Deep-sweep report" in copy
+    assert "Digest report" in copy
+    assert "Document analysis" in copy
+    assert "The source document was corrected or undone." in copy
+    assert "The patient record changed after this task was generated." in copy
+    assert "This retained legacy task has no source profile revision." in copy
+    assert "Generated content was invalidated by a review-state change." in copy
 
 
 def test_submitted_task_activation_reserves_and_checks_selection_epoch():

@@ -28,6 +28,9 @@ If an API request is unauthorized, forbidden, offline, or otherwise fails, the
 page shows an explicit error and retry action instead of replacing the patient
 record with empty states. The phone layout keeps these same views in a fixed
 bottom navigation bar.
+Failed status/evidence loads also clear previously rendered patient metadata,
+research additions, treatment/results/alert rows, search caches, and filters so
+old PHI is not left looking current in the browser.
 
 The header reports processing only: **Processing N**, **Idle**, or
 **Unavailable**. It never claims the clinical assessment is current. Assessment
@@ -107,6 +110,10 @@ section, and the prior assessment/feed report is hidden in Today/Activity. This
 prevents old actions, PRRT screening, or trial language from being reused while
 preserving the audit trail. Regenerate each artifact after confirming the
 corrected Patient record.
+If correction saves but Activity detail cannot refresh, the authoritative saved
+receipt remains visible with **Correction saved successfully** and a retry
+button. Open feedback editors and report/result panels are immediately replaced
+when stale state is detected; old actions/reports cannot remain copyable.
 Digest/deep-sweep reports and chat answers are also labelled outdated and hidden
 after any later clinical revision. Alert resolution is bookkeeping-only: it
 does not expire other alerts generated from the same current record, but it

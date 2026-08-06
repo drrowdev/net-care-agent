@@ -2457,6 +2457,20 @@ body.dialog-open { overflow: hidden; }
 }
 .receipt-error:not(:empty),
 .receipt-error.visible { display: block; }
+.receipt-refresh-warning {
+  margin: 10px 0 18px;
+  padding: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #c7b47a;
+  border-radius: 8px;
+  background: #fff5d9;
+  color: #684800;
+  font-size: 11px;
+}
+.receipt-refresh-warning .button { margin-left: auto; }
 .receipt-change { padding: 14px 16px; border-bottom: 1px solid var(--border); }
 .receipt-change-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
 .receipt-change-heading strong { margin-right: auto; font-size: 13px; overflow-wrap: anywhere; }

@@ -390,8 +390,9 @@
     try {
       const r = await fetch('/api/status');
       const d = await readJsonResponse(r);
-      syncChatRevision(d.profile_revision);
+      const revisionChanged = syncChatRevision(d.profile_revision);
       renderSidebar(d);
+      if (revisionChanged && selectedTaskId) loadTasks();
       reportLoadSuccess('status');
       return d;
     } catch(e) {
@@ -403,19 +404,34 @@
 
   function renderStatusFailure() {
     const patient = document.getElementById('patient-dx');
+    const patientMeta = document.getElementById('patient-meta');
     const treatments = document.getElementById('tx-list');
     const biomarkers = document.getElementById('bm-list');
     const alerts = document.getElementById('alerts-list');
+    const search = document.getElementById('bm-search');
+    latestProfileRevision = null;
+    latestResearchUpdate = null;
+    allBiomarkers = [];
+    renderLatestResearchUpdate(null);
     if (patient) patient.textContent = 'Patient profile unavailable';
+    if (patientMeta) patientMeta.innerHTML = '';
     if (treatments) treatments.innerHTML = loadFailureMarkup('Treatments', 'loadStatus()');
     if (biomarkers) biomarkers.innerHTML = loadFailureMarkup('Biomarkers', 'loadStatus()');
     if (alerts) alerts.innerHTML = loadFailureMarkup('Alerts', 'loadStatus()');
+    if (search) {
+      search.value = '';
+      search.disabled = true;
+    }
   }
 
   function renderLatestResearchUpdate(update) {
     const card = document.getElementById('research-update-card');
     if (!card) return;
     if (!update) {
+      document.getElementById('research-update-title').textContent = '';
+      document.getElementById('research-update-detail').textContent = '';
+      document.getElementById('research-update-trials').hidden = true;
+      document.getElementById('research-update-papers').hidden = true;
       card.hidden = true;
       return;
     }
@@ -443,6 +459,8 @@
   }
 
   function renderSidebar(d) {
+    const search = document.getElementById('bm-search');
+    if (search) search.disabled = false;
     const p = d.patient || {};
     latestResearchUpdate = d.latest_research_update || null;
     renderLatestResearchUpdate(latestResearchUpdate);
@@ -659,6 +677,7 @@
       reportLoadSuccess('patient-evidence');
       return patientEvidence;
     } catch (error) {
+      patientEvidence = null;
       document.getElementById('imaging-history').innerHTML = loadFailureMarkup('Imaging history', 'loadPatientEvidence()');
       document.getElementById('source-history').innerHTML = loadFailureMarkup('Source history', 'loadPatientEvidence()');
       reportLoadError('patient-evidence', error);
@@ -1105,17 +1124,22 @@
     try {
       const r = await fetch('/api/summary');
       const d = await readJsonResponse(r);
-      if (document.querySelector('.action-feedback')) {
+      const editor = document.querySelector('.action-feedback');
+      const responseStale = d.status === 'stale' || d.content_hidden || summaryIsStale(d);
+      const editorRevision = editor?.previousElementSibling?.dataset.summaryRevision;
+      const sameRevision = String(editorRevision ?? '') === String(d.summary_revision ?? '');
+      if (editor && responseStale) {
+        editor.querySelectorAll('button, input').forEach(control => { control.disabled = true; });
+        editor.remove();
+        pendingSummary = null;
+        renderSummary(d);
+      } else if (editor && sameRevision) {
         pendingSummary = d;
-        const editor = document.querySelector('.action-feedback');
-        if (!editor.querySelector('.feedback-stale')) {
-          const warning = document.createElement('div');
-          warning.className = 'feedback-stale';
-          warning.setAttribute('role', 'alert');
-          warning.textContent = 'The assessment was updated. Close this review and reopen the current action before submitting feedback.';
-          editor.prepend(warning);
-          editor.querySelectorAll('button, input').forEach(control => { control.disabled = true; });
-        }
+      } else if (editor) {
+        editor.querySelectorAll('button, input').forEach(control => { control.disabled = true; });
+        editor.remove();
+        pendingSummary = null;
+        renderSummary(d);
       } else {
         pendingSummary = null;
         renderSummary(d);
@@ -1465,6 +1489,7 @@
         hadActiveJobs = true;
       }
       renderTasks(tasks);
+      revalidateOpenTask(tasks);
       updateHeaderStatus(tasks);
       reportLoadSuccess('tasks');
       return tasks;
@@ -1494,7 +1519,7 @@
           ${t.doc_type ? `<span class="task-doctype">${escHtml(docTypeLabel(t))}</span>` : ''}
           <span class="task-time">${escHtml(relativeTime(t.created_at))}</span>
         </div>
-        <div class="task-preview">${t.derived_content_stale ? 'Document corrected — prior analysis hidden' : escHtml((t.summary || t.input_preview || '').slice(0, 100))}</div>
+        <div class="task-preview">${t.derived_content_stale ? escHtml(staleTaskCopy(t).preview) : escHtml((t.summary || t.input_preview || '').slice(0, 100))}</div>
         <div class="task-status-row">
           <span class="status-badge ${safeClassToken(t.status, 'unknown')}">${escHtml(translateStatus(t.status))}</span>
           ${t.status === 'done' && duration(t) ? `<span class="task-duration">${escHtml(duration(t))}</span>` : ''}
@@ -1502,6 +1527,67 @@
           ${t.status === 'interrupted' ? `<span class="task-duration" style="color:var(--amber)">${escHtml((t.retry_guidance||t.error||'Interrupted').slice(0,60))}</span>` : ''}
         </div>
       </button>`).join('');
+  }
+
+  function staleTaskCopy(task) {
+    const type = task.type === 'deep-sweep'
+      ? 'Deep-sweep report'
+      : task.type === 'digest'
+        ? 'Digest report'
+        : task.type === 'feed'
+          ? 'Document analysis'
+          : 'Generated result';
+    if (task.derived_content_stale_reason === 'source_document_corrected_or_undone') {
+      return {
+        title: 'Document analysis is outdated',
+        detail: 'The source document was corrected or undone.',
+        preview: 'Document corrected — prior analysis hidden',
+      };
+    }
+    if (task.derived_content_stale_reason === 'freshness_cannot_be_verified') {
+      return {
+        title: `${type} freshness cannot be verified`,
+        detail: 'This retained legacy task has no source profile revision.',
+        preview: `${type} freshness cannot be verified`,
+      };
+    }
+    if (task.derived_content_stale_reason === 'generated_content_invalidated') {
+      return {
+        title: `${type} is outdated`,
+        detail: 'Generated content was invalidated by a review-state change.',
+        preview: `${type} outdated — review state changed`,
+      };
+    }
+    return {
+      title: `${type} is outdated`,
+      detail: 'The patient record changed after this task was generated.',
+      preview: `${type} outdated — patient record changed`,
+    };
+  }
+
+  function clearReportCopyState() {
+    currentReportText = '';
+    const copy = document.getElementById('copy-btn');
+    if (copy) {
+      copy.classList.remove('visible');
+      copy.disabled = true;
+    }
+  }
+
+  function revalidateOpenTask(tasks) {
+    const panel = document.getElementById('report-panel');
+    if (!selectedTaskId || panel?.classList.contains('collapsed')) return;
+    const task = tasks.find(item => item.id === selectedTaskId);
+    if (!task?.derived_content_stale) return;
+    const copy = staleTaskCopy(task);
+    const receiptHtml = currentReceipt?.job_id === selectedTaskId
+      ? renderReceipt(currentReceipt)
+      : '';
+    document.getElementById('panel-body').innerHTML = `${receiptHtml}
+      <div class="load-failure stale-artifact" role="alert">
+        <strong>${escHtml(copy.title)}</strong><span>${escHtml(copy.detail)} The original artifact remains retained for audit.</span>
+      </div>`;
+    clearReportCopyState();
   }
 
   function updateHeaderStatus(tasks, error = null) {
@@ -1746,7 +1832,7 @@
       if (refreshSelectedJob) {
         const existing = document.getElementById('panel-body').querySelector('.receipt-card');
         if (existing) existing.outerHTML = renderReceipt(data.receipt);
-        await selectTask(originJobId, originSelectionEpoch);
+        await selectTask(originJobId, originSelectionEpoch, data.receipt);
       }
       await Promise.allSettled([loadStatus(), loadSummary(), loadPatientEvidence()]);
       reportLoadSuccess('action');
@@ -1767,15 +1853,26 @@
     }
   }
 
-  async function selectTask(id, expectedEpoch = null) {
+  function receiptRefreshFailureMarkup(receipt, jobId, message) {
+    return `${renderReceipt(receipt)}
+      <div class="receipt-refresh-warning" role="status">
+        <strong>Correction saved successfully.</strong>
+        <span>${escHtml(message || 'Activity detail could not be refreshed.')}</span>
+        <button class="button secondary" data-job-id="${escHtml(jobId)}" onclick="selectTask(this.dataset.jobId)">Retry detail refresh</button>
+      </div>`;
+  }
+
+  async function selectTask(id, expectedEpoch = null, fallbackReceipt = null) {
     const selectionEpoch = expectedEpoch == null ? ++taskSelectionEpoch : expectedEpoch;
     if (selectionEpoch !== taskSelectionEpoch) return;
     selectedTaskId = id;
-    currentReceipt = null;
+    currentReceipt = fallbackReceipt;
     currentReportText = '';
     const loadingPanel = document.getElementById('panel-body');
     if (loadingPanel) {
-      loadingPanel.innerHTML = '<div class="loading-state">Loading activity detail…</div>';
+      loadingPanel.innerHTML = fallbackReceipt
+        ? `${renderReceipt(fallbackReceipt)}<div class="loading-state">Saved. Refreshing activity detail…</div>`
+        : '<div class="loading-state">Loading activity detail…</div>';
     }
     document.getElementById('copy-btn')?.classList.remove('visible');
     // Open panel
@@ -1785,16 +1882,28 @@
     report.setAttribute('aria-hidden', 'false');
     activateDialog(report, lastDialogTrigger);
     // Re-render task list to update selection
-    const r = await fetch('/api/jobs');
-    if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return;
-    const tasks = await readJsonResponse(r);
-    if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return;
+    let tasks;
+    try {
+      const r = await fetch('/api/jobs');
+      if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return false;
+      tasks = await readJsonResponse(r);
+      if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return false;
+    } catch (error) {
+      if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return false;
+      document.getElementById('panel-body').innerHTML = fallbackReceipt
+        ? receiptRefreshFailureMarkup(fallbackReceipt, id, error.message)
+        : loadFailureMarkup('Activity detail', 'loadTasks()');
+      reportLoadError('tasks', error);
+      return false;
+    }
     renderTasks(tasks);
 
     let task = tasks.find(t => t.id === id);
     if (!task) {
-      document.getElementById('panel-body').innerHTML = loadFailureMarkup('Activity detail', 'loadTasks()');
-      return;
+      document.getElementById('panel-body').innerHTML = fallbackReceipt
+        ? receiptRefreshFailureMarkup(fallbackReceipt, id, 'The saved job detail is temporarily unavailable.')
+        : loadFailureMarkup('Activity detail', 'loadTasks()');
+      return false;
     }
     if (task.status === 'done' || task.status === 'error' || task.status === 'interrupted') {
       try {
@@ -1803,7 +1912,14 @@
         task = await readJsonResponse(detailResponse);
         if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return;
       } catch (error) {
-        if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return;
+        if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return false;
+        if (fallbackReceipt) {
+          document.getElementById('panel-body').innerHTML = receiptRefreshFailureMarkup(
+            fallbackReceipt, id, error.message
+          );
+          reportLoadError('tasks', error);
+          return false;
+        }
         reportLoadError('tasks', error);
       }
     }
@@ -1812,7 +1928,8 @@
     const copyBtn = document.getElementById('copy-btn');
 
     let receiptHtml = '';
-    currentReceipt = null;
+    currentReceipt = fallbackReceipt;
+    if (fallbackReceipt) receiptHtml = renderReceipt(fallbackReceipt);
     if (task.receipt_url) {
       try {
         const receiptResponse = await fetch(task.receipt_url);
@@ -1821,8 +1938,10 @@
         if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return;
         receiptHtml = renderReceipt(receipt);
       } catch (error) {
-        if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return;
-        receiptHtml = `<div class="receipt-error visible">The import receipt could not be loaded. ${escHtml(error.message)}</div>`;
+        if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return false;
+        receiptHtml = fallbackReceipt
+          ? renderReceipt(fallbackReceipt)
+          : `<div class="receipt-error visible">The import receipt could not be loaded. ${escHtml(error.message)}</div>`;
       }
     }
     if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return;
@@ -1841,21 +1960,21 @@
         </div>`;
       copyBtn.classList.remove('visible');
       currentReportText = '';
-      return;
+      return true;
     }
 
     if (task.status === 'error') {
       panel.innerHTML = `${receiptHtml}<div class="report-text" style="color:var(--red)">Error:\n\n${escHtml(task.error || 'Unknown error')}</div>`;
       copyBtn.classList.remove('visible');
       currentReportText = '';
-      return;
+      return true;
     }
 
     if (task.status === 'interrupted') {
       panel.innerHTML = `${receiptHtml}<div class="report-text" style="color:var(--amber)">Interrupted:\n\n${escHtml(task.retry_guidance || task.error || 'Re-submit this request to retry.')}</div>`;
       copyBtn.classList.remove('visible');
       currentReportText = '';
-      return;
+      return true;
     }
 
     // Show key findings chips if present
@@ -1867,34 +1986,40 @@
 
     // Job details hydrate report artifacts on demand.
     if (task.report_stale) {
-      currentReportText = '';
+      const staleCopy = staleTaskCopy({
+        ...task,
+        derived_content_stale_reason: task.report_stale_reason,
+      });
       html += `<div class="load-failure stale-artifact" role="alert">
-        <strong>${task.type === 'feed' ? 'Document analysis' : 'Generated report'} is outdated</strong>
-        <span>${task.report_stale_reason === 'source_document_corrected_or_undone' ? 'The source document was corrected or undone.' : 'The patient record changed after this report was generated.'} The original report remains retained for audit but is hidden here.</span>
+        <strong>${escHtml(staleCopy.title)}</strong>
+        <span>${escHtml(staleCopy.detail)} The original report remains retained for audit but is hidden here.</span>
       </div>`;
-      copyBtn.classList.remove('visible');
+      clearReportCopyState();
     } else if (task.report) {
       currentReportText = task.report;
       html += `<div class="report-text">${formatReport(task.report)}</div>`;
       copyBtn.classList.add('visible');
+      copyBtn.disabled = false;
     } else if (task.result) {
       if (task.result.stale) {
-        currentReportText = '';
+        const staleCopy = staleTaskCopy(task);
         html += `<div class="load-failure stale-artifact" role="alert">
-          <strong>Generated result is outdated</strong>
-          <span>The patient record changed after this result was created. Regenerate it before use.</span>
+          <strong>${escHtml(staleCopy.title)}</strong>
+          <span>${escHtml(staleCopy.detail)} Regenerate it before use.</span>
         </div>`;
-        copyBtn.classList.remove('visible');
+        clearReportCopyState();
       } else {
         currentReportText = JSON.stringify(task.result, null, 2);
         html += `<div class="report-text">${formatReport(currentReportText)}</div>`;
         copyBtn.classList.add('visible');
+        copyBtn.disabled = false;
       }
     } else {
       html += `<div class="report-text" style="color:var(--text2)">No report generated.</div>`;
     }
 
     panel.innerHTML = html;
+    return true;
   }
 
   function formatReport(text) {
@@ -2346,16 +2471,16 @@
   let chatOpen = false;
 
   function syncChatRevision(revision, forceNotice = false) {
-    if (revision == null) return;
+    if (revision == null) return false;
     const normalized = String(revision);
     if (chatHistoryRevision == null) {
       chatHistoryRevision = normalized;
       latestProfileRevision = revision;
-      return;
+      return false;
     }
     const changed = chatHistoryRevision !== normalized;
     latestProfileRevision = revision;
-    if (!changed && !forceNotice) return;
+    if (!changed && !forceNotice) return false;
     chatHistoryRevision = normalized;
     chatHistory = [];
     const msgs = document.getElementById('chat-messages');
@@ -2364,6 +2489,7 @@
         Patient record changed. Prior chat history was cleared before new answers.
       </div>`;
     }
+    return changed;
   }
 
   function toggleChat() {

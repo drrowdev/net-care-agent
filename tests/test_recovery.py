@@ -334,6 +334,38 @@ def test_load_profile_corrupt_json_quarantine_and_recover(tmp_path, monkeypatch)
     assert len(qfiles) == 1
 
 
+def test_load_profile_recovery_migrates_generationless_summary_as_stale(tmp_path, monkeypatch):
+    import agent.backups as bk
+    import agent.config as cfg
+    from agent.profile import load_profile
+
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "PROFILE_PATH", tmp_path / "patient_profile.json")
+    monkeypatch.setattr(bk, "BACKUPS_DIR", tmp_path / "backups")
+    legacy = json.dumps(
+        {
+            "schema_version": 7,
+            "profile_revision": 4,
+            "summary_stale": False,
+            "patient": {"diagnosis": "NET"},
+            "executive_summary": {
+                "summary_revision": 4,
+                "stale": False,
+                "next_actions": [{"action": "Ask the treating team about timing"}],
+            },
+        }
+    ).encode()
+    _write_profile(tmp_path, b"{{not-valid-json}}")
+    _write_snapshot(tmp_path, legacy)
+
+    loaded = load_profile()
+
+    assert loaded["schema_version"] == 8
+    assert loaded["summary_stale"] is True
+    assert loaded["executive_summary"]["stale"] is True
+    assert loaded["executive_summary"]["next_actions"][0]["id"].startswith("sumact_")
+
+
 def test_load_profile_invalid_shape_quarantine_and_recover(tmp_path, monkeypatch):
     """load_profile: invalid shape (patient=42) → quarantine + recover."""
     import agent.backups as bk
@@ -384,6 +416,7 @@ def test_missing_profile_recovers_backup_instead_of_creating_default(tmp_path, m
     monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
     monkeypatch.setattr(cfg, "PROFILE_PATH", tmp_path / "patient_profile.json")
     monkeypatch.setattr(bk, "BACKUPS_DIR", tmp_path / "backups")
+    (tmp_path / ".profile-initialized").write_text("stale\n")
     valid = json.dumps(
         {"schema_version": 1, "patient": {"diagnosis": "Recovered NET"}, "biomarkers": []}
     ).encode()

@@ -8,7 +8,40 @@ incremented when something user-visible or operationally meaningful changes.
 
 ## [Unreleased]
 
+### Fixed
+- **Mutation replay identity and immutable results.** Layer 2 and alert-resolution
+  idempotency is now bound to endpoint, operation, target, and the complete
+  accepted request, including CAS/source tokens. Unsupported fields are rejected
+  before replay lookup; cross-endpoint, cross-target, or changed-payload reuse
+  returns `409`. Exact retries return the original endpoint-shaped item, links,
+  tokens, and revisions without another save, audit event, or revision increase,
+  even after later edits. Result hashes and owner/link checks fail closed on
+  malformed stored snapshots. Legacy alert requests without a mutation ID remain
+  compatible through a deterministic ID in a client-inaccessible namespace.
+- **Profile-save commit semantics.** Atomic replacement of
+  `patient_profile.json` is now the explicit commit point. Failures writing or
+  replacing the profile still fail the request without committed workflow
+  state, while post-commit `.profile-initialized` maintenance is best-effort,
+  path-free in logs, and cannot make a successful mutation appear failed.
+  Missing markers are repaired after a valid profile load, and stale markers do
+  not block snapshot/backup recovery or permit duplicate initialization.
+
 ### Added
+- **Durable caregiver follow-through backend.** Schema v8 adds independent
+  workflow revisioning, accepted/generated action snapshots, visit working
+  records with ordered question snapshots, explicit unknowns, caregiver-entered
+  clinician-attributed decisions/answers, structured outcomes, and append-only
+  mutation audit. Stable target tokens and idempotency keys allow unrelated
+  workflow edits while stale targets return `409`; administrative bookkeeping
+  no longer stales clinical artifacts, while new clinical capture and alert
+  resolution still invalidate every revision-bound generated context. Alert
+  resolution can atomically record an outcome/link a follow-up or decision
+  without changing sibling alerts. No appointment UI, generic review inbox,
+  autonomous treatment instruction, database, or scheduler is introduced.
+  Generated summary actions and questions are now acceptable only from an
+  explicitly current, fully identified generation with an exact source token;
+  generationless or migrated legacy content remains visible as stale provenance
+  until regenerated and cannot create workflow records.
 - **Scoped document reconciliation and correction.** Every retained feed job now
   opens its own profile-backed receipt showing exact additions, old-to-new
   updates, conflicts/no-ops, immutable source identity/time, and verified,

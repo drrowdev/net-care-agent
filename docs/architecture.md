@@ -25,6 +25,8 @@ the Azure Files mount at `/home/data/patient_profile.json`. There is one user
                 │     ├─ /api/sources + evidence │
                 │     ├─ /api/patient/evidence   │
                 │     ├─ /api/feedback           │
+                │     ├─ /api/follow-ups         │
+                │     ├─ /api/visits             │
                 │     ├─ /api/chat (general q.)  │
                 │     ├─ /api/health             │
                 │     └─ /api/{trials,papers,…}  │
@@ -158,6 +160,49 @@ invalidates prior chat history, in-flight chat responses, reports/results,
 summaries, and generated questions while durable/source-scoped sibling alerts
 remain active under their own lifecycle.
 
+Schema v8 separates clinical freshness from durable workflow bookkeeping.
+`profile_revision` remains the clinical/effective dependency identity for
+summaries, questions, chat, reports, alerts, and treatment classification.
+`workflow_revision` advances once for every follow-through transaction.
+Administrative owner/due/order/pin/status changes do not stale clinical
+artifacts; caregiver-captured answers, decisions, clinical outcomes, and every
+alert resolution advance both revisions.
+
+`caregiver_actions[]` stores accepted follow-ups independently of their
+generated source. `POST /api/follow-ups` accepts a current summary action only
+by opaque stable source ID + semantic token, then snapshots its full
+caregiver-visible row and generation identity. `PATCH
+/api/follow-ups/<action_id>` uses action ID + full-row token and records owner,
+due date, lifecycle, and a typed completion/cancellation outcome. Direct
+treatment instructions are rejected in favor of contact/ask/confirm wording.
+
+`visits[]` is deliberately separate from intake-imported `appointments[]`.
+`/api/visits` creates and updates working records; nested question endpoints
+snapshot a current generated question or an explicit manual question, then
+capture pin/order and an answered/unknown clinician response. Decision endpoints
+append immutable caregiver-entered, clinician-attributed statements and change
+only explicit lifecycle state. Resulting follow-ups are durable action records
+linked by ID. Generated questions never become clinician facts.
+
+Every new Layer 2 mutation carries a bounded `mutation_id`, appends an immutable
+endpoint/operation/target scope plus request-hash/before-token/after-token event,
+compares only the addressed semantic target, and saves once under
+`serialized_mutation`. The request hash uses deterministic key ordering while
+preserving every accepted value, including CAS/source tokens; unsupported fields
+are rejected before replay lookup. Each event stores the original endpoint-shaped
+response, including returned tokens, linked objects, and revision values. Exact
+retries return that snapshot without another save even after later target edits;
+mutation-ID reuse across endpoints, operations, targets, or payloads returns
+`409`. A canonical result hash and endpoint/owner/link contract reject missing,
+malformed, or mismatched snapshots rather than returning a success-shaped row.
+Older committed events without those replay guarantees also conflict. Alert
+resolution extends the same
+audit model with structured outcome and optional visit/decision/follow-up links
+while preserving sibling alerts. Legacy alert clients that omit `mutation_id`
+retain a deterministic server-derived ID in a client-inaccessible namespace and
+can replay only an exact request.
+The index route stays retired.
+
 Clinical jobs establish one effective revision: feed/digest commit clinical
 mutations and finalized alert dependencies first, then generate/save the summary
 as derived bookkeeping at that same revision. Manual summary refresh is also
@@ -231,6 +276,8 @@ only with exact `APP_ORIGIN` or canonical HTTPS `WEBSITE_HOSTNAME`.
 | Flask + gunicorn, not FastAPI/Containers | App Service runs Python natively; no Docker needed; rapid `az webapp deploy` cycle. |
 | No MSAL | Single user. App Service Easy Auth gates hosted APIs except health/liveness. Local API bypass is explicit (`ALLOW_LOCAL_AUTH_BYPASS=1`), never implicit. |
 | Per-agent model env vars | Lets us downgrade exec_summary or chat to Haiku independently for cost without touching code. |
+| Separate imported appointments and workflow visits | Receipt-correctable source facts remain immutable evidence; caregiver working state can evolve without pretending generated questions or captured statements are source-verified. |
+| Clinical + workflow revisions | Administrative follow-through does not invalidate expensive clinical artifacts, while new model-context facts still stale every dependent artifact safely. |
 
 ## Failure modes & mitigations
 
@@ -253,6 +300,10 @@ only with exact `APP_ORIGIN` or canonical HTTPS `WEBSITE_HOSTNAME`.
 | Invented summary evidence link | Only server-built evidence catalog IDs resolve; unknown IDs are visibly `invalid` and absent IDs are `missing` |
 | Stale generated conclusions after correction | Revision-aware summary hiding, question generation IDs, source-dependent alert invalidation, and hidden feed reports retain audit artifacts without presenting them as current |
 | Wrong alert resolved after reorder | Stable alert IDs + semantic token + expected revision under the mutation lock; stale/missing targets return `409` |
+| Accepted action disappears with an old summary | Server-side source ID/token acceptance snapshots the full generated row into durable `caregiver_actions[]` before the artifact can become stale |
+| Administrative task edit stales clinical output | `workflow_revision` advances independently; only explicit clinical capture advances `profile_revision` |
+| Caregiver note presented as verified clinician fact | Fixed provenance labels every answer/decision as caregiver-entered, clinician-attributed, and unverified; generated questions remain snapshots |
+| Retry duplicates a decision or follow-up | Mutation ID + canonical request hash replay returns the prior target without another save or revision increment |
 | Old chat contaminates corrected record | Client clears history on profile revision change; server rejects mismatched `history_revision` with `409` |
 | Cached PHI after auth/load failure | Central client eviction clears every patient-bearing cache, panel, dialog, chat turn, receipt/report, filter, and open feedback surface; non-auth receipt refresh is the only fallback exception |
 | Source traversal / browser caching | Auth-gated `/api/sources/<id>[/<artifact>]` and `/api/evidence/<id>` resolve only indexed paths below `DATA_DIR`, reject traversal, and return `no-store` |

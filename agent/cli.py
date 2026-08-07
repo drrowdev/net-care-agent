@@ -10,10 +10,18 @@ from pathlib import Path
 from . import config
 from .classify import classify_treatments
 from .exec_summary import generate_executive_summary  # noqa: F401  (kept for callers)
+from .follow_through import (
+    append_history,
+    increment_workflow_revision,
+    invalidate_generated_context,
+    new_workflow_id,
+    validate_text,
+)
 from .intake import run_intake
 from .orchestrator import run_orchestrator
 from .profile import (
     active_alerts,
+    alert_token,
     get_patient_summary,
     get_research_ids,
     invalidate_treatment_classification,
@@ -22,6 +30,7 @@ from .profile import (
     save_profile,
     sync_treatment_records,
 )
+from .schema import now_stamp
 from .serialize import serialized_mutation
 
 
@@ -138,9 +147,58 @@ def cmd_status(args) -> None:
     unresolved = active_alerts(profile)
     if unresolved:
         print(
-            f"\n⚠  {len(unresolved)} unresolved alert(s) — run `status` to review, "
-            "or edit patient_profile.json to mark as resolved."
+            f"\n⚠  {len(unresolved)} unresolved alert(s) — run `resolve-alert ALERT_ID` "
+            "after reviewing the current stable ID."
         )
+
+
+def cmd_resolve_alert(args) -> None:
+    with serialized_mutation():
+        profile = load_profile()
+        alert = next(
+            (item for item in active_alerts(profile) if item.get("id") == args.alert_id),
+            None,
+        )
+        if alert is None:
+            print("❌  Alert not found or no longer active")
+            sys.exit(1)
+        outcome_text = validate_text(
+            args.outcome or "Marked resolved from the CLI",
+            "outcome",
+            limit=2000,
+        )
+        mutation_id = new_workflow_id("cli")
+        before_token = alert_token(alert)
+        timestamp = now_stamp()
+        alert["resolved"] = True
+        alert["resolution"] = {
+            "status": "resolved",
+            "resolved_at": timestamp,
+            "outcome_kind": "administrative",
+            "outcome_text": outcome_text,
+            "provenance": {
+                "capture_method": "caregiver_entered",
+                "attributed_to": "caregiver",
+                "source_verification": "not_applicable",
+            },
+            "follow_up_id": None,
+            "visit_id": None,
+            "decision_id": None,
+        }
+        append_history(
+            alert,
+            endpoint="cli:resolve-alert",
+            operation="resolved",
+            target=f"alert:{args.alert_id}",
+            mutation_id=mutation_id,
+            payload={"alert_id": args.alert_id, "outcome": outcome_text},
+            before_token=before_token,
+            changes={"resolved": {"before": False, "after": True}},
+        )
+        increment_workflow_revision(profile)
+        invalidate_generated_context(profile, "active_alert_resolved_after_generation")
+        save_profile(profile)
+    print(f"✓  Resolved alert {args.alert_id}")
 
 
 def cmd_update_profile(args) -> None:
@@ -204,6 +262,11 @@ def main() -> None:
 
     status_p = sub.add_parser("status", help="Show current patient status summary")
     status_p.set_defaults(func=cmd_status)
+
+    resolve_p = sub.add_parser("resolve-alert", help="Resolve an active alert by stable ID")
+    resolve_p.add_argument("alert_id", help="Stable alert ID shown by status")
+    resolve_p.add_argument("--outcome", help="Administrative resolution outcome")
+    resolve_p.set_defaults(func=cmd_resolve_alert)
 
     update_p = sub.add_parser("update-profile", help="Interactively update patient fields")
     update_p.set_defaults(func=cmd_update_profile)

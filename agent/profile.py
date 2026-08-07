@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import re
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from .schema import (
 from .serialize import serialized_mutation
 
 log = logging.getLogger(__name__)
+_INITIALIZED_MARKER_NAME = ".profile-initialized"
 
 
 # ── exceptions ────────────────────────────────────────────────────────────────
@@ -54,6 +56,7 @@ class CorruptProfileError(ProfileLoadError):
 DEFAULT_PROFILE: dict = {
     "schema_version": CURRENT_SCHEMA_VERSION,
     "profile_revision": 0,
+    "workflow_revision": 0,
     "profile_updated_at": None,
     "summary_stale": True,
     "patient": {
@@ -89,6 +92,8 @@ DEFAULT_PROFILE: dict = {
     "appointment_questions": [],
     "questions_generation_id": None,
     "feedback": [],
+    "caregiver_actions": [],
+    "visits": [],
     "latest_research_update": None,
     "treatments_classification_revision": None,
     "treatments_classification_job_id": None,
@@ -414,6 +419,19 @@ def _quarantine_and_recover(path: Path, raw_bytes: bytes, reason: str) -> dict:
     return normalized
 
 
+def _maintain_initialized_marker() -> None:
+    """Best-effort marker maintenance after an authoritative profile exists."""
+    try:
+        atomic_write_text(config.DATA_DIR / _INITIALIZED_MARKER_NAME, "initialized\n")
+    except Exception as exc:
+        # The profile replace is the commit point. This secondary marker must not
+        # turn an already-committed mutation into an apparent request failure.
+        log.warning(
+            "profile_initialized_marker_write_failed after_commit=true error_type=%s",
+            type(exc).__name__,
+        )
+
+
 def load_profile() -> dict:
     """Load, validate, migrate and return the patient profile.
 
@@ -437,14 +455,20 @@ def load_profile() -> dict:
     path = config.PROFILE_PATH
 
     if path.exists():
-        return _load_validated(path)
+        profile = _load_validated(path)
+        if not (config.DATA_DIR / _INITIALIZED_MARKER_NAME).exists():
+            _maintain_initialized_marker()
+        return profile
 
     # First-run creation — serialize to prevent two simultaneous first requests
     # from both creating (and then one overwriting) a new default profile.
     with serialized_mutation():
         if path.exists():
             # Another process created it between our check and lock acquisition.
-            return _load_validated(path)
+            profile = _load_validated(path)
+            if not (config.DATA_DIR / _INITIALIZED_MARKER_NAME).exists():
+                _maintain_initialized_marker()
+            return profile
         from .recovery import NoRecoveryCandidateError, find_recovery_candidates, recover_profile
 
         if find_recovery_candidates():
@@ -456,8 +480,10 @@ def load_profile() -> dict:
                 ) from exc
             recovered = apply_migrations(recovered)
             recovered = _coerce_none_fields(recovered)
-            return normalize_profile(recovered)
-        initialized_marker = config.DATA_DIR / ".profile-initialized"
+            recovered = normalize_profile(recovered)
+            _maintain_initialized_marker()
+            return recovered
+        initialized_marker = config.DATA_DIR / _INITIALIZED_MARKER_NAME
         if initialized_marker.exists():
             raise CorruptProfileError(
                 "Profile is missing from an initialized data directory and no recovery "
@@ -468,7 +494,12 @@ def load_profile() -> dict:
         return profile
 
 
-def save_profile(profile: dict, *, clinical_change: bool = True) -> None:
+def save_profile(
+    profile: dict,
+    *,
+    clinical_change: bool = True,
+    before_write: Callable[[dict], None] | None = None,
+) -> None:
     """Persist the profile under the global transaction lock.
 
     Raises ``ValueError`` if *profile* is structurally invalid (not a dict,
@@ -479,6 +510,11 @@ def save_profile(profile: dict, *, clinical_change: bool = True) -> None:
 
     ``clinical_change=False`` is reserved for bookkeeping-only writes. Those
     writes must not invalidate an otherwise current clinical summary.
+
+    The atomic replacement of ``PROFILE_PATH`` is the commit point. Failures
+    before or during that replacement propagate. Initialization-marker and
+    backup maintenance happen after commit and cannot make a committed save
+    appear unsuccessful.
     """
     if not structural_check(profile):
         raise ValueError(
@@ -502,6 +538,9 @@ def save_profile(profile: dict, *, clinical_change: bool = True) -> None:
             else:
                 profile["summary_stale"] = True
 
+        if before_write is not None:
+            before_write(profile)
+
         # Strict validation pass for the log only — we still write the caller's
         # dict verbatim so ad-hoc / in-flight fields aren't dropped.
         try:
@@ -520,7 +559,7 @@ def save_profile(profile: dict, *, clinical_change: bool = True) -> None:
             config.PROFILE_PATH,
             json.dumps(profile, indent=2, default=str),
         )
-        atomic_write_text(config.DATA_DIR / ".profile-initialized", "initialized\n")
+        _maintain_initialized_marker()
         # Cheap: only copies once per day, then prunes.
         try:
             backups.daily_backup(config.PROFILE_PATH)
@@ -648,8 +687,20 @@ def current_treatment_records(profile: dict) -> list[dict]:
 
 def alert_token(alert: dict) -> str:
     """Return a semantic compare-and-swap token for one alert."""
+
+    def immutable_value(value):
+        if isinstance(value, dict):
+            return {
+                key: immutable_value(item)
+                for key, item in value.items()
+                if key not in {"resolve_token", "result_hash", "result_snapshot"}
+            }
+        if isinstance(value, list):
+            return [immutable_value(item) for item in value]
+        return value
+
     canonical = json.dumps(
-        {key: value for key, value in alert.items() if key != "resolve_token"},
+        immutable_value(alert),
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
@@ -663,7 +714,10 @@ def summary_is_current(profile: dict) -> bool:
     summary = profile.get("executive_summary")
     if not isinstance(summary, dict) or not summary:
         return False
-    if profile.get("summary_stale") or summary.get("stale"):
+    if profile.get("summary_stale") is not False or summary.get("stale") is not False:
+        return False
+    generation_id = summary.get("generation_id")
+    if not isinstance(generation_id, str) or not generation_id.strip():
         return False
     revision = summary.get("summary_revision")
     if revision is None or str(revision) != str(profile.get("profile_revision")):
@@ -757,6 +811,73 @@ def get_patient_summary(profile: dict) -> str:
         lines.append("")
         for a in current_alerts:
             lines.append(f"  ⚠  [{a['priority'].upper()}] {a['message']}")
+
+    captured = []
+    for visit in profile.get("visits", []):
+        if not isinstance(visit, dict):
+            continue
+        for question in visit.get("question_snapshots", []):
+            answer = question.get("answer") if isinstance(question, dict) else None
+            if not isinstance(answer, dict):
+                continue
+            captured.append(
+                {
+                    "kind": "answer",
+                    "visit": visit.get("title") or "Visit",
+                    "question": question.get("text") or "",
+                    "status": answer.get("status"),
+                    "text": answer.get("text"),
+                }
+            )
+        for decision in visit.get("decisions", []):
+            if isinstance(decision, dict) and decision.get("status") == "active":
+                captured.append(
+                    {
+                        "kind": "decision",
+                        "visit": visit.get("title") or "Visit",
+                        "text": decision.get("text") or "",
+                    }
+                )
+    for action in profile.get("caregiver_actions", []):
+        outcome = action.get("outcome") if isinstance(action, dict) else None
+        if not isinstance(outcome, dict) or outcome.get("kind") not in {
+            "caregiver_reported",
+            "clinician_attributed",
+        }:
+            continue
+        captured.append(
+            {
+                "kind": "action_outcome",
+                "action": action.get("text") or "Follow-up",
+                "attribution": outcome.get("kind"),
+                "text": outcome.get("text") or "",
+            }
+        )
+    if captured:
+        lines += [
+            "",
+            "─── Caregiver-captured clinician statements (attributed, unverified) ───",
+        ]
+        for item in captured[-12:]:
+            if item["kind"] == "answer":
+                answer = "explicitly unknown" if item["status"] == "unknown" else item["text"]
+                lines.append(
+                    f"  [{item['visit']}] Q: {item['question'][:180]} — "
+                    f"caregiver-recorded clinician answer: {str(answer)[:300]}"
+                )
+            else:
+                if item["kind"] == "decision":
+                    lines.append(
+                        f"  [{item['visit']}] caregiver-recorded clinician decision: "
+                        f"{item['text'][:400]}"
+                    )
+                else:
+                    label = (
+                        "caregiver-recorded clinician outcome"
+                        if item["attribution"] == "clinician_attributed"
+                        else "caregiver-reported outcome"
+                    )
+                    lines.append(f"  [{item['action'][:180]}] {label}: {item['text'][:400]}")
 
     return "\n".join(lines)
 

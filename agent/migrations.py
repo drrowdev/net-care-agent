@@ -27,6 +27,7 @@ Design notes
 
 from __future__ import annotations
 
+import copy
 import datetime
 import hashlib
 import json
@@ -35,7 +36,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 7
+CURRENT_SCHEMA_VERSION: int = 8
 
 # Append-only ordered registry of migrations.  Never reorder entries.
 _REGISTRY: list[dict[str, Any]] = []
@@ -223,6 +224,76 @@ def _m0007_harden_legacy_generated_alerts(data: dict) -> dict:
                 if key in alert:
                     effective[key] = alert[key]
     data["schema_version"] = 7
+    return data
+
+
+@_migration("0008_add_follow_through_foundation", to_version=8)
+def _m0008_add_follow_through_foundation(data: dict) -> dict:
+    """v7 -> v8: add durable workflow state without inferring clinical facts."""
+    from .follow_through import ensure_summary_action_ids
+
+    data.setdefault("workflow_revision", 0)
+    if not isinstance(data.get("caregiver_actions"), list):
+        data["caregiver_actions"] = []
+    if not isinstance(data.get("visits"), list):
+        data["visits"] = []
+
+    summary = data.get("executive_summary")
+    if isinstance(summary, dict):
+        ensure_summary_action_ids(summary)
+        generation_id = summary.get("generation_id")
+        summary_revision = summary.get("summary_revision")
+        current_revision = data.get("profile_revision")
+        complete_current_identity = (
+            isinstance(generation_id, str)
+            and bool(generation_id.strip())
+            and summary_revision is not None
+            and str(summary_revision) == str(current_revision)
+            and summary.get("stale") is False
+            and data.get("summary_stale") is False
+        )
+        if not complete_current_identity:
+            summary["stale"] = True
+            summary.setdefault("stale_reason", "legacy_missing_generation_provenance")
+            data["summary_stale"] = True
+
+    alerts_by_id = {}
+    for alert in data.get("alerts") or []:
+        if not isinstance(alert, dict):
+            continue
+        alert.setdefault("history", [])
+        if alert.get("resolved") and "resolution" not in alert:
+            alert["resolution"] = {
+                "status": "resolved",
+                "resolved_at": None,
+                "outcome_kind": "legacy_unknown",
+                "outcome_text": None,
+                "provenance": {"capture_method": "legacy_unknown"},
+                "follow_up_id": None,
+                "visit_id": None,
+                "decision_id": None,
+            }
+        if alert.get("id"):
+            alerts_by_id[alert["id"]] = alert
+
+    for receipt in data.get("document_imports") or []:
+        if not isinstance(receipt, dict):
+            continue
+        for change in receipt.get("changes") or []:
+            if not isinstance(change, dict):
+                continue
+            target = change.get("target") or {}
+            if target.get("collection") != "alerts":
+                continue
+            alert = alerts_by_id.get(target.get("record_id"))
+            effective = change.get("effective_value")
+            if alert is None or not isinstance(effective, dict):
+                continue
+            effective["history"] = copy.deepcopy(alert["history"])
+            if "resolution" in alert:
+                effective["resolution"] = copy.deepcopy(alert["resolution"])
+
+    data["schema_version"] = 8
     return data
 
 

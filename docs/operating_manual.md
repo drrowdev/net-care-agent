@@ -227,6 +227,9 @@ visible but is no longer a hard constraint until a clinician reactivates it.
 1. UI → **Patient** → **Active alerts**.
 2. Click **Mark resolved** on the card.
 3. The alert is marked `resolved=true` in the profile but kept for audit.
+   New API clients may also record what happened and link a visit decision or
+   durable follow-up; the outcome and append-only history remain attached to the
+   stable alert ID.
 4. Prior chat turns clear and open generated reports/results become outdated;
    regenerate only after reviewing the remaining active alerts.
 
@@ -248,6 +251,46 @@ while deduplicating newly generated questions by normalized text.
 Each generation has an identity. Superseded or legacy AI questions without
 generation provenance remain visible as **Outdated** history and are not
 presented as current appointment preparation.
+
+## 5d. Durable follow-through and visit records (backend foundation)
+
+The schema and authenticated HTTP APIs are available for the later appointment
+working-mode UI; this release does not add that UI yet.
+
+- `GET/POST /api/follow-ups` and `PATCH /api/follow-ups/<id>` manage durable
+  caregiver actions. Accepting a generated assessment action uses its current
+  opaque ID and semantic token; the server snapshots the visible action and
+  provenance so it survives later assessment revisions.
+- `GET/POST /api/visits` and `PATCH /api/visits/<id>` manage working visit
+  records linked optionally to an intake-imported appointment.
+- Nested visit question endpoints snapshot a generated/manual question and
+  record order/pin state. An answer is either `answered` or explicitly
+  `unknown`.
+- Nested decision endpoints append immutable statements and expose
+  `active|superseded|retracted|needs_confirmation`; corrections create a
+  successor instead of rewriting what was captured.
+- `POST /api/visits/<id>/follow-ups` creates a durable resulting action and
+  links it to the visit/decision in one atomic save.
+
+Every new mutation uses a client `mutation_id` and the addressed record's
+semantic token. Exact retries return the original mutation result, including its
+original item tokens, links, and revision values, without another save. A reused
+mutation ID with a different endpoint, operation, target, token, or payload
+returns `409`; unsupported request fields return `400` before replay lookup.
+Legacy alert clients may omit `mutation_id`, in which case the server derives a
+deterministic, client-inaccessible ID from the alert and expected token. There is no
+delete-by-index/text route and no generic reviewed/unread/acknowledgement state.
+
+Owner, due date, ordering, pinning, and administrative lifecycle changes update
+only `workflow_revision`. Captured answers, clinician-attributed decisions,
+clinical outcomes, and alert resolution also advance `profile_revision`, clear
+revision-bound chat, and stale generated artifacts.
+
+Caregiver capture is always stored and presented as
+**caregiver-entered, clinician-attributed, unverified**. It is not immutable
+source evidence and is not silently promoted to the hard-constraint clinical
+judgment lifecycle. Follow-ups must use contact/ask/discuss/confirm wording with
+the treating team; autonomous treatment directives are rejected.
 
 ## 5b. Record review feedback
 
@@ -361,8 +404,19 @@ python Scripts\seed_test_profile.py               # populate a fake profile
 Every `save_profile` call:
 1. Writes a pre-save **rotating snapshot** (`/home/data/snapshots/profile_<timestamp>.json`)
    with an optional `.sha256` sidecar.  The last 20 snapshots are kept.
-2. Writes a **daily backup** (`/home/data/backups/profile_YYYYMMDD.json`) once per
+2. Atomically replaces `patient_profile.json`. This replacement is the mutation
+   commit point: write or replace failures are reported and the prior profile
+   remains authoritative.
+3. Best-effort maintains `.profile-initialized`. A marker failure is logged with
+   only its error type and does not turn the committed mutation into an API
+   failure. Loading a valid profile repairs an absent marker best-effort.
+4. Writes a **daily backup** (`/home/data/backups/profile_YYYYMMDD.json`) once per
    calendar day and prunes files older than 30 days.
+
+If the profile is missing, recovery candidates are checked before the marker.
+Therefore an absent marker never blocks recovery, and a stale marker never
+causes a default profile to overwrite a valid backup. A marker with no profile
+and no valid recovery candidate still fails closed for operator intervention.
 
 ### Automated recovery on corrupt profile
 

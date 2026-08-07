@@ -80,6 +80,23 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
 - Feedback writes are serialized review-state mutations. `missed`, `incorrect`,
   and `corrected` feedback may mark the current summary stale, but feedback never
   mutates clinical facts or becomes a clinical judgment implicitly.
+- `profile_revision` remains the clinical/effective dependency identity.
+  `workflow_revision` advances for every durable follow-through mutation.
+  Owner/due/order/pin/administrative status changes advance only workflow;
+  captured answers/unknowns/decisions/clinical outcomes and alert resolution
+  advance both and invalidate revision-bound generated context.
+- Accepted generated actions are server-side snapshots selected by stable source
+  ID + full semantic token. Durable `caregiver_actions[]` never reads its text or
+  provenance back from a later summary. No index/text acceptance route exists.
+- Workflow visits are separate from receipt-correctable `appointments[]`.
+  Generated questions remain ordered snapshots. Answers and decisions are
+  caregiver-entered, clinician-attributed, and unverified; they are never model-
+  written, source-verified, silently rewritten, or promoted to hard constraints.
+- Every Layer 2 mutation is stable-ID/target-token CAS under
+  `serialized_mutation`, appends one request-hash audit event, increments each
+  applicable revision once, and saves once. Exact `mutation_id` retries are
+  no-ops; payload reuse or changed targets return `409`. No whole-profile
+  rollback is permitted.
 - Document receipt correction/removal/undo is a clinical mutation under
   `serialized_mutation`. It uses target-level compare-and-swap fingerprints:
   unrelated profile revisions are allowed, but any changed affected target or
@@ -113,9 +130,12 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
   dose-change/discontinue/withhold/skip/administer/take`) are replaced wholesale
   by treating-team confirmation wording. Factual past-tense treatment history is
   preserved.
-- Alert resolution uses stable ID + full semantic token + expected profile
-  revision under `serialized_mutation`; index resolution is forbidden. It is a
-  bookkeeping save that explicitly stales dependent summaries/questions.
+- Alert resolution uses stable ID + full semantic token under
+  `serialized_mutation`; profile-snapshot alerts also require their generation
+  revision. Durable/source alerts may survive unrelated revisions when their
+  target is unchanged. Resolution records outcome/links/history, advances both
+  revisions, stales dependent context, preserves siblings, and never adds
+  reviewed/unread/acknowledged machinery. Index resolution is forbidden.
 - Chat history is revision-bound on both client and server. Nonempty mismatched
   history returns `409`; workers revalidate before sending history to the model.
 - Clinical mutations commit once at their final effective revision. Summary

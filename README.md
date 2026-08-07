@@ -131,8 +131,9 @@ All patient state lives in a single JSON file at `${DATA_DIR}/patient_profile.js
 
 ```
 {
-  "schema_version": 7,
+  "schema_version": 8,
   "profile_revision": 42,
+  "workflow_revision": 17,
   "profile_updated_at": "2026-07-10T16:51:49",
   "profile_saved_at": "2026-07-10T16:52:03",
   "summary_stale": false,
@@ -149,7 +150,14 @@ All patient state lives in a single JSON file at `${DATA_DIR}/patient_profile.js
   "judgments":   [ {category, text, scope, status, review_after, valid_until, supersedes}, ... ],
   "questions":   [ {id, text, category, priority, asked, generation_job_id, stale}, ... ],
   "feedback":    [ {target, item_id, assessment, note, outcome, timestamps}, ... ],
-  "exec_summary": { "summary_revision": 42, "stale": false, ... },
+  "caregiver_actions": [ {id, origin_snapshot, text, owner, due_date, status, outcome, history}, ... ],
+  "visits":      [ {id, status, question_snapshots, decisions, follow_up_ids, history}, ... ],
+  "exec_summary": {
+    "generation_id": "summary-job-abc123",
+    "summary_revision": 42,
+    "stale": false,
+    ...
+  },
   "latest_research_update": {
     "job_id": "abc123", "trigger": "digest", "completed_at": "...",
     "trial_ids": ["NCT..."], "paper_ids": ["PMID..."]
@@ -163,10 +171,13 @@ legacy profiles to the current version and logging each step in `_migration_log`
 If a corrupt profile is detected, the app automatically recovers the newest valid
 pre-save snapshot or daily backup before applying migrations.
 
-Every clinical-content save advances `profile_revision`; bookkeeping-only saves
-(for example marking a question asked) update `profile_saved_at` without
-invalidating the summary. Summary freshness compares the clinical revision with
-`executive_summary.summary_revision`, independent of clinical dates.
+Every clinical-content save advances `profile_revision`; generated artifacts
+remain bound to that clinical/effective revision. Schema v8 adds
+`workflow_revision`, which advances for every durable follow-through mutation.
+Owner, due-date, ordering, pinning, and administrative status changes advance
+only the workflow revision. Caregiver-captured clinician answers, decisions,
+clinical outcomes, and alert resolution advance both revisions and stale
+dependent generated context.
 Schema v3 also carries generation identity for AI questions. Legacy generated
 questions without that identity migrate to explicit stale history rather than
 appearing current.
@@ -182,6 +193,10 @@ Schema v7 sanitizes source-less legacy generated alerts and binds them to the
 profile snapshot that was current at migration; only recognized ingestion and
 trial-status producers remain durable. Treatment certification also rejects any
 unidentified residual therapy content before editable mappings become current.
+Schema v8 adds durable caregiver actions and visit working records, deterministic
+generated-action snapshot IDs, structured alert outcomes, target-level semantic
+CAS, endpoint/operation/target-scoped idempotent mutation audit with immutable
+response snapshots, and the independent workflow revision.
 
 A daily backup is written to `${DATA_DIR}/backups/profile_YYYYMMDD.json`
 (retention: 30 days).
@@ -240,6 +255,7 @@ state and withholds the prior clinical content.
 │   ├── intake.py         # extract structured medical data from text
 │   ├── evidence.py       # validated claim-level source-span catalog/resolution
 │   ├── reconciliation.py # per-document receipts + compare-and-swap correction/undo
+│   ├── follow_through.py # durable actions/visits, validation, CAS + audit helpers
 │   ├── orchestrator.py   # agentic loop driving the tools
 │   ├── verify.py         # deterministic PMID/NCT existence verifier (report backstop)
 │   ├── trials_poll.py    # deterministic tracked-trial status poller
@@ -248,7 +264,7 @@ state and withholds the prior clinical content.
 │   ├── exec_summary.py   # JSON executive summary generator
 │   ├── questions.py      # Appointment questions (language via patient.language)
 │   ├── chat.py           # /api/chat handler (pure function)
-│   ├── cli.py            # `python net_agent.py {feed|digest|status|update-profile}`
+│   ├── cli.py            # `python net_agent.py {feed|digest|status|resolve-alert|update-profile}`
 │   └── tools/            # PubMed, ClinicalTrials.gov, biomarker trends + dispatcher
 ├── static/                 # Responsive caregiver workspace
 │   ├── index.html          # Shared Today/Patient/Questions/Activity shell + dialogs
@@ -330,6 +346,7 @@ The most common loops:
 | Record an oncologist's judgment | **Questions** → **Clinical notes** | Becomes a hard constraint for future runs |
 | Resolve / dismiss an alert | **Patient** → **Active alerts** → **Mark resolved** | Marked resolved, persisted in profile |
 | Generate appointment questions | **Questions** → **Generate questions** | Async result is polled, then the question list is rendered |
+| Persist follow-through work (backend foundation) | Authenticated `/api/follow-ups` and `/api/visits` | Snapshots accepted generated actions, visit questions, clinician-attributed answers/decisions, outcomes, and audit history; the appointment UI is a later layer |
 | Chat with the record | Header → **✦ Ask Claude** | Async result grounded in the full profile; chat remains stateless |
 | Open a trial to discuss | **Today** → **Trial to discuss** | Opens `clinicaltrials.gov/study/<NCT_ID>` in a new tab; the treating team and trial site determine eligibility |
 

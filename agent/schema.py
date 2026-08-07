@@ -37,6 +37,8 @@ _COLLECTION_KEYS: tuple[str, ...] = (
     "questions",
     "appointment_questions",
     "feedback",
+    "caregiver_actions",
+    "visits",
 )
 
 
@@ -118,6 +120,10 @@ SymptomSource = Literal["manual", "ai"]
 QuestionCategory = Literal["Treatment", "Diagnostics", "Symptoms", "Trials", "Monitoring", "Other"]
 QuestionPriority = Literal["urgent", "high", "medium"]
 QuestionSource = Literal["ai", "manual"]
+ActionStatus = Literal["open", "in_progress", "completed", "cancelled"]
+VisitStatus = Literal["planned", "in_progress", "completed", "cancelled"]
+DecisionStatus = Literal["active", "superseded", "retracted", "needs_confirmation"]
+OutcomeKind = Literal["administrative", "caregiver_reported", "clinician_attributed"]
 
 
 # ── shared base ───────────────────────────────────────────────────────────────
@@ -272,6 +278,8 @@ class Alert(_Lenient):
     source_dependency_active: bool = True
     source_invalidated_at: str | None = None
     inactive_reason: str | None = None
+    resolution: dict[str, Any] | None = None
+    history: list[WorkflowAuditEvent] = Field(default_factory=list)
     added_at: str | None = Field(
         None, description="Timestamp when the item first entered the patient profile."
     )
@@ -441,11 +449,130 @@ class Feedback(_Lenient):
     updated_at: str
 
 
+class WorkflowAuditEvent(_Lenient):
+    """Append-only mutation event supporting idempotent target-level updates."""
+
+    id: str
+    mutation_id: str
+    endpoint: str | None = None
+    operation: str
+    target: str | None = None
+    at: str
+    request_hash: str
+    before_token: str | None = None
+    after_token: str | None = None
+    changes: dict[str, Any] = Field(default_factory=dict)
+    result_hash: str | None = None
+    result_snapshot: dict[str, Any] | None = None
+
+
+class ActionOriginSnapshot(_Lenient):
+    """Immutable source snapshot captured when a caregiver accepts an action."""
+
+    kind: Literal["manual", "executive_summary_action", "alert", "visit_decision"]
+    source_id: str | None = None
+    source_job_id: str | None = None
+    source_profile_revision: int | None = None
+    generation_id: str | None = None
+    text: str
+    snapshot: dict[str, Any] = Field(default_factory=dict)
+
+
+class ActionOutcome(_Lenient):
+    kind: OutcomeKind
+    text: str
+    recorded_at: str
+    provenance: dict[str, str] = Field(default_factory=dict)
+
+
+class CaregiverAction(_Lenient):
+    """Durable caregiver-owned follow-up independent of generated artifacts."""
+
+    id: str
+    origin_snapshot: ActionOriginSnapshot
+    text: str
+    owner: str | None = None
+    due_date: str | None = None
+    status: ActionStatus = "open"
+    outcome: ActionOutcome | None = None
+    visit_id: str | None = None
+    decision_id: str | None = None
+    alert_id: str | None = None
+    created_at: str
+    updated_at: str
+    completed_at: str | None = None
+    cancelled_at: str | None = None
+    history: list[WorkflowAuditEvent] = Field(default_factory=list)
+
+
+class CaptureProvenance(_Lenient):
+    """Visible trust boundary for caregiver-entered clinician attribution."""
+
+    capture_method: Literal["caregiver_entered"] = "caregiver_entered"
+    attributed_to: Literal["clinician"] = "clinician"
+    source_verification: Literal["unverified"] = "unverified"
+
+
+class VisitAnswer(_Lenient):
+    status: Literal["answered", "unknown"]
+    text: str | None = None
+    recorded_at: str
+    provenance: CaptureProvenance = Field(default_factory=CaptureProvenance)
+
+
+class VisitQuestionSnapshot(_Lenient):
+    id: str
+    text: str
+    category: str | None = None
+    priority: str | None = None
+    rationale: str | None = None
+    source_kind: Literal["manual", "generated"]
+    source_question_id: str | None = None
+    source_generation_id: str | None = None
+    source_profile_revision: int | None = None
+    pinned: bool = False
+    order: int = 0
+    answer: VisitAnswer | None = None
+    created_at: str
+
+
+class VisitDecision(_Lenient):
+    id: str
+    text: str
+    status: DecisionStatus = "active"
+    provenance: CaptureProvenance = Field(default_factory=CaptureProvenance)
+    supersedes_id: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class Visit(_Lenient):
+    """Caregiver working record, optionally linked to an imported appointment."""
+
+    id: str
+    title: str
+    date: str | None = None
+    time: str | None = None
+    clinician: str | None = None
+    location: str | None = None
+    status: VisitStatus = "planned"
+    source_appointment_id: str | None = None
+    question_snapshots: list[VisitQuestionSnapshot] = Field(default_factory=list)
+    decisions: list[VisitDecision] = Field(default_factory=list)
+    follow_up_ids: list[str] = Field(default_factory=list)
+    created_at: str
+    updated_at: str
+    completed_at: str | None = None
+    cancelled_at: str | None = None
+    history: list[WorkflowAuditEvent] = Field(default_factory=list)
+
+
 class ExecutiveSummary(_Lenient):
     """Most recent JSON output of agent.exec_summary.generate_executive_summary."""
 
     generated_at: str | None = None
     generated_at_timestamp: str | None = None
+    generation_id: str | None = None
     summary_revision: int | None = None
     stale: bool = True
     summary_error: str | None = None
@@ -472,10 +599,11 @@ class PatientProfile(_Lenient):
     """The complete patient profile. Lives at ${DATA_DIR}/patient_profile.json."""
 
     schema_version: int = Field(
-        default=6,
+        default=8,
         description="Profile schema version. Incremented when a structural migration runs.",
     )
     profile_revision: int = 0
+    workflow_revision: int = 0
     profile_updated_at: str | None = None
     profile_saved_at: str | None = None
     summary_stale: bool = True
@@ -498,6 +626,8 @@ class PatientProfile(_Lenient):
     appointment_questions: list[Question] = Field(default_factory=list)
     questions_generation_id: str | None = None
     feedback: list[Feedback] = Field(default_factory=list)
+    caregiver_actions: list[CaregiverAction] = Field(default_factory=list)
+    visits: list[Visit] = Field(default_factory=list)
     executive_summary: ExecutiveSummary | None = None
     latest_research_update: ResearchUpdate | None = None
 
@@ -573,6 +703,14 @@ def render_schema_markdown() -> str:
         ("document_imports[].changes[].target", ImportTarget),
         ("document_imports[].changes[].history[]", ImportHistoryEvent),
         ("feedback[]", Feedback),
+        ("caregiver_actions[]", CaregiverAction),
+        ("caregiver_actions[].origin_snapshot", ActionOriginSnapshot),
+        ("caregiver_actions[].outcome", ActionOutcome),
+        ("visits[]", Visit),
+        ("visits[].question_snapshots[]", VisitQuestionSnapshot),
+        ("visits[].question_snapshots[].answer", VisitAnswer),
+        ("visits[].decisions[]", VisitDecision),
+        ("workflow_history[]", WorkflowAuditEvent),
         ("executive_summary", ExecutiveSummary),
         ("latest_research_update", ResearchUpdate),
     ]

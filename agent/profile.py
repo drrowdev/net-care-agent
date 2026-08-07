@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import re
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
@@ -471,7 +472,12 @@ def load_profile() -> dict:
         return profile
 
 
-def save_profile(profile: dict, *, clinical_change: bool = True) -> None:
+def save_profile(
+    profile: dict,
+    *,
+    clinical_change: bool = True,
+    before_write: Callable[[dict], None] | None = None,
+) -> None:
     """Persist the profile under the global transaction lock.
 
     Raises ``ValueError`` if *profile* is structurally invalid (not a dict,
@@ -504,6 +510,9 @@ def save_profile(profile: dict, *, clinical_change: bool = True) -> None:
                 profile["summary_stale"] = stale
             else:
                 profile["summary_stale"] = True
+
+        if before_write is not None:
+            before_write(profile)
 
         # Strict validation pass for the log only — we still write the caller's
         # dict verbatim so ad-hoc / in-flight fields aren't dropped.
@@ -651,8 +660,20 @@ def current_treatment_records(profile: dict) -> list[dict]:
 
 def alert_token(alert: dict) -> str:
     """Return a semantic compare-and-swap token for one alert."""
+
+    def immutable_value(value):
+        if isinstance(value, dict):
+            return {
+                key: immutable_value(item)
+                for key, item in value.items()
+                if key not in {"resolve_token", "result_hash", "result_snapshot"}
+            }
+        if isinstance(value, list):
+            return [immutable_value(item) for item in value]
+        return value
+
     canonical = json.dumps(
-        {key: value for key, value in alert.items() if key != "resolve_token"},
+        immutable_value(alert),
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,

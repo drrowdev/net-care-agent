@@ -273,9 +273,13 @@ working-mode UI; this release does not add that UI yet.
   links it to the visit/decision in one atomic save.
 
 Every new mutation uses a client `mutation_id` and the addressed record's
-semantic token. Exact retries are idempotent; a changed target or reused
-mutation ID returns `409`. There is no delete-by-index/text route and no generic
-reviewed/unread/acknowledgement state.
+semantic token. Exact retries return the original mutation result, including its
+original item tokens, links, and revision values, without another save. A reused
+mutation ID with a different endpoint, operation, target, token, or payload
+returns `409`; unsupported request fields return `400` before replay lookup.
+Legacy alert clients may omit `mutation_id`, in which case the server derives a
+deterministic, client-inaccessible ID from the alert and expected token. There is no
+delete-by-index/text route and no generic reviewed/unread/acknowledgement state.
 
 Owner, due date, ordering, pinning, and administrative lifecycle changes update
 only `workflow_revision`. Captured answers, clinician-attributed decisions,

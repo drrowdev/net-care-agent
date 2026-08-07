@@ -460,18 +460,28 @@ Caregiver working record, optionally linked to an imported appointment.
 
 ## `workflow_history[]`
 
-Append-only mutation event supporting idempotent target-level updates.
+Append-only mutation event supporting endpoint/operation/target-scoped
+idempotency. `request_hash` canonically sorts JSON object keys but preserves all
+accepted values, including CAS/source tokens. `result_snapshot` is the immutable
+original endpoint response; old events without one conflict instead of replaying
+mutable current state. `result_hash` binds that snapshot to its exact canonical
+serialization, while replay also verifies the endpoint's required shape and the
+owning record/link IDs.
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `id` | `str` |  |
 | `mutation_id` | `str` |  |
+| `endpoint` | `str \| None` | Stable route template for the mutation scope. |
 | `operation` | `str` |  |
+| `target` | `str \| None` | Stable semantic target scope. |
 | `at` | `str` |  |
 | `request_hash` | `str` |  |
 | `before_token` | `str \| None` |  |
 | `after_token` | `str \| None` |  |
-| `changes` | `Any]` |  |
+| `changes` | `dict` |  |
+| `result_hash` | `str \| None` | Canonical hash of `result_snapshot`. |
+| `result_snapshot` | `dict \| None` | Original successful response body. |
 
 ## `executive_summary`
 

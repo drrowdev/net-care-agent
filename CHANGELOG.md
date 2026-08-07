@@ -8,6 +8,17 @@ incremented when something user-visible or operationally meaningful changes.
 
 ## [Unreleased]
 
+### Fixed
+- **Mutation replay identity and immutable results.** Layer 2 and alert-resolution
+  idempotency is now bound to endpoint, operation, target, and the complete
+  accepted request, including CAS/source tokens. Unsupported fields are rejected
+  before replay lookup; cross-endpoint, cross-target, or changed-payload reuse
+  returns `409`. Exact retries return the original endpoint-shaped item, links,
+  tokens, and revisions without another save, audit event, or revision increase,
+  even after later edits. Result hashes and owner/link checks fail closed on
+  malformed stored snapshots. Legacy alert requests without a mutation ID remain
+  compatible through a deterministic ID in a client-inaccessible namespace.
+
 ### Added
 - **Durable caregiver follow-through backend.** Schema v8 adds independent
   workflow revisioning, accepted/generated action snapshots, visit working

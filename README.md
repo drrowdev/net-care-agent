@@ -190,7 +190,8 @@ trial-status producers remain durable. Treatment certification also rejects any
 unidentified residual therapy content before editable mappings become current.
 Schema v8 adds durable caregiver actions and visit working records, deterministic
 generated-action snapshot IDs, structured alert outcomes, target-level semantic
-CAS, idempotent mutation audit, and the independent workflow revision.
+CAS, endpoint/operation/target-scoped idempotent mutation audit with immutable
+response snapshots, and the independent workflow revision.
 
 A daily backup is written to `${DATA_DIR}/backups/profile_YYYYMMDD.json`
 (retention: 30 days).

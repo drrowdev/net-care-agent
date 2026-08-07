@@ -185,12 +185,23 @@ only explicit lifecycle state. Resulting follow-ups are durable action records
 linked by ID. Generated questions never become clinician facts.
 
 Every new Layer 2 mutation carries a bounded `mutation_id`, appends an immutable
-request-hash/before-token/after-token event, compares only the addressed semantic
-target, and saves once under `serialized_mutation`. Exact retries are no-ops;
-mutation-ID reuse or stale targets return `409`. Alert resolution extends the
-same audit model with structured outcome and optional visit/decision/follow-up
-links while preserving sibling alerts. Existing clients remain compatible, and
-the index route stays retired.
+endpoint/operation/target scope plus request-hash/before-token/after-token event,
+compares only the addressed semantic target, and saves once under
+`serialized_mutation`. The request hash uses deterministic key ordering while
+preserving every accepted value, including CAS/source tokens; unsupported fields
+are rejected before replay lookup. Each event stores the original endpoint-shaped
+response, including returned tokens, linked objects, and revision values. Exact
+retries return that snapshot without another save even after later target edits;
+mutation-ID reuse across endpoints, operations, targets, or payloads returns
+`409`. A canonical result hash and endpoint/owner/link contract reject missing,
+malformed, or mismatched snapshots rather than returning a success-shaped row.
+Older committed events without those replay guarantees also conflict. Alert
+resolution extends the same
+audit model with structured outcome and optional visit/decision/follow-up links
+while preserving sibling alerts. Legacy alert clients that omit `mutation_id`
+retain a deterministic server-derived ID in a client-inaccessible namespace and
+can replay only an exact request.
+The index route stays retired.
 
 Clinical jobs establish one effective revision: feed/digest commit clinical
 mutations and finalized alert dependencies first, then generate/save the summary

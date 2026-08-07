@@ -153,6 +153,135 @@ def test_canonical_identity_accepts_dose_punctuation_and_complete_aliases(
     assert result[0]["text"] == output
 
 
+@pytest.mark.parametrize(
+    "treatment",
+    [
+        "CAPTEM",
+        "hepatic artery embolization",
+        "radiofrequency ablation",
+        "liver resection",
+        "peptide receptor radionuclide therapy",
+        "TACE",
+        "Y-90 radioembolization",
+        "pasireotide",
+        "telotristat",
+        "interferon alfa",
+    ],
+)
+def test_common_net_regimens_and_procedures_have_canonical_identity(
+    agent, empty_profile, treatment
+):
+    empty_profile["patient"]["current_treatments"] = [treatment]
+    payload = [{"text": treatment, "category": "active", "label": treatment}]
+    with patch_llm(agent, lambda **_: llm_text(json.dumps(payload))):
+        result = agent.classify_treatments(empty_profile)
+    assert result[0]["text"] == treatment
+
+
+def test_mixed_known_and_custom_treatment_cannot_drop_custom_identity(agent, empty_profile):
+    empty_profile["patient"]["current_treatments"] = ["lanreotide plus TACE"]
+    payload = [{"text": "lanreotide", "category": "active", "label": "lanreotide"}]
+    with patch_llm(agent, lambda **_: llm_text(json.dumps(payload))):
+        with pytest.raises(agent.TreatmentClassificationError):
+            agent.classify_treatments(empty_profile)
+
+
+def test_unknown_drug_suffix_in_composite_cannot_be_dropped(agent, empty_profile):
+    empty_profile["patient"]["current_treatments"] = ["lanreotide plus cabozantinib"]
+    incomplete = [{"text": "lanreotide", "category": "active", "label": "lanreotide"}]
+    with patch_llm(agent, lambda **_: llm_text(json.dumps(incomplete))):
+        with pytest.raises(agent.TreatmentClassificationError):
+            agent.classify_treatments(empty_profile)
+
+    complete = [
+        {"text": "lanreotide", "category": "active", "label": "lanreotide"},
+        {"text": "cabozantinib", "category": "planned", "label": "cabozantinib"},
+    ]
+    with patch_llm(agent, lambda **_: llm_text(json.dumps(complete))):
+        result = agent.classify_treatments(empty_profile)
+    assert [item["text"] for item in result] == ["lanreotide", "cabozantinib"]
+
+
+def test_short_alias_does_not_match_inside_narrative_word(agent, empty_profile):
+    empty_profile["patient"]["current_treatments"] = ["surface findings plus cabozantinib"]
+    payload = [
+        {"text": "RFA", "category": "completed", "label": "RFA"},
+        {"text": "cabozantinib", "category": "planned", "label": "cabozantinib"},
+    ]
+    with patch_llm(agent, lambda **_: llm_text(json.dumps(payload))):
+        with pytest.raises(agent.TreatmentClassificationError):
+            agent.classify_treatments(empty_profile)
+
+
+@pytest.mark.parametrize(
+    ("raw", "outputs"),
+    [
+        (
+            "CAPTEM (capecitabine and temozolomide)",
+            [{"text": "CAPTEM", "category": "active", "label": "CAPTEM"}],
+        ),
+        (
+            "capecitabine / temozolomide",
+            [{"text": "CAPTEM", "category": "active", "label": "CAPTEM"}],
+        ),
+    ],
+)
+def test_captem_expansions_canonicalize_to_one_regimen(agent, empty_profile, raw, outputs):
+    empty_profile["patient"]["current_treatments"] = [raw]
+    with patch_llm(agent, lambda **_: llm_text(json.dumps(outputs))):
+        result = agent.classify_treatments(empty_profile)
+    assert result[0]["text"] == "CAPTEM"
+
+
+def test_captem_stays_atomic_while_additional_treatment_splits(agent, empty_profile):
+    raw = "CAPTEM (capecitabine and temozolomide) plus lanreotide"
+    empty_profile["patient"]["current_treatments"] = [raw]
+    payload = [
+        {"text": "CAPTEM", "category": "active", "label": "CAPTEM"},
+        {"text": "lanreotide", "category": "active", "label": "lanreotide"},
+    ]
+    with patch_llm(agent, lambda **_: llm_text(json.dumps(payload))):
+        result = agent.classify_treatments(empty_profile)
+    assert [item["text"] for item in result] == ["CAPTEM", "lanreotide"]
+    records = agent.sync_treatment_records(empty_profile)
+    assert [item["text"] for item in records] == ["CAPTEM", "lanreotide"]
+
+
+@pytest.mark.parametrize("separator", ["+", "&", "/", "and", "plus"])
+def test_captem_parenthetical_separator_is_preserved_atomically(agent, separator):
+    from agent.classify import split_treatment_components
+
+    raw = f"CAPTEM (capecitabine {separator} temozolomide) plus lanreotide"
+    assert split_treatment_components(raw) == ["CAPTEM", "lanreotide"]
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "Start everolimus",
+        "Stop lanreotide",
+        "Hold everolimus",
+        "Pause PRRT",
+        "Continue octreotide",
+        "Restart sunitinib",
+        "Reduce everolimus dose now",
+        "Everolimus dose reduced to 5 mg daily",
+        "Plan to start lanreotide next week",
+    ],
+)
+def test_treatment_action_words_are_not_canonical_identities(agent, empty_profile, raw):
+    expected = next(
+        name
+        for name in ("everolimus", "lanreotide", "prrt", "octreotide", "sunitinib")
+        if name in raw.casefold()
+    )
+    empty_profile["patient"]["current_treatments"] = [raw]
+    payload = [{"text": expected, "category": "active", "label": expected}]
+    with patch_llm(agent, lambda **_: llm_text(json.dumps(payload))):
+        result = agent.classify_treatments(empty_profile)
+    assert result[0]["text"] == expected
+
+
 def test_duplicate_contradictory_rows_for_one_identity_are_rejected(agent, empty_profile):
     empty_profile["patient"]["current_treatments"] = ["lanreotide"]
     payload = [

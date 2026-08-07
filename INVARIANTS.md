@@ -125,10 +125,18 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
   `profile_revision`. Raw mutation invalidates before save. Output must cover all
   raw treatment components, contain no extras, and not collapse distinct drugs.
   Every consumer falls back to raw `current_treatments` when stale/failing.
+- Classification identity is canonical treatment identity, never action/status,
+  dose, route, schedule, or formulation noise. Output identity set must exactly
+  equal raw identity set, with exactly one row per identity. Stable raw component
+  IDs and classified source mappings back ID/token/revision CAS edits; composite
+  siblings must survive.
 - Alert dependency kinds are explicit: `durable` ignores unrelated revisions and
   survives document undo until resolved; `source` follows source invalidation;
   `profile_snapshot` requires exact generation revision. Producers stamp the
   lifecycle deliberately; future revisions are never generically active.
+- Hard status/tasks/summary/evidence or authorization failure centrally evicts
+  all client-side patient PHI caches and rendered/dialog content. An authoritative
+  receipt may survive only a non-auth post-save detail-refresh failure.
 - **`save_profile` guards structural validity.** Calling `save_profile` with a
   non-dict, string patient, or non-list collection raises `ValueError`
   immediately.  Field-level type issues (out-of-range values, bad enum literals)

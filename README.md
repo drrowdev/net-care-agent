@@ -131,7 +131,7 @@ All patient state lives in a single JSON file at `${DATA_DIR}/patient_profile.js
 
 ```
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "profile_revision": 42,
   "profile_updated_at": "2026-07-10T16:51:49",
   "profile_saved_at": "2026-07-10T16:52:03",
@@ -175,6 +175,9 @@ uses ID + semantic token + profile revision instead of list position.
 Schema v5 adds explicit alert dependency lifecycles and treatment-classification
 revision/job identity. Legacy classifications become stale and fall back to raw
 `current_treatments`; alerts migrate to durable/source/profile-snapshot rules.
+Schema v6 backfills stable raw treatment component/source IDs. Classified rows
+map explicitly to those components so ID/token/revision CAS edits preserve
+unaffected parts of composite entries.
 
 A daily backup is written to `${DATA_DIR}/backups/profile_YYYYMMDD.json`
 (retention: 30 days).

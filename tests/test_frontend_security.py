@@ -171,6 +171,73 @@ def test_status_failure_clears_all_status_derived_phi_and_caches():
         assert expression in failure
     evidence = _function_source("loadPatientEvidence", "evidenceBadge")
     assert "patientEvidence = null" in evidence
+    assert evidence.index("const evidence = await") < evidence.index("requestPhiEpoch !== phiEpoch")
+    assert evidence.index("requestPhiEpoch !== phiEpoch") < evidence.index(
+        "patientEvidence = evidence"
+    )
+
+
+def test_central_phi_eviction_clears_patient_panels_dialogs_and_histories():
+    eviction = _function_source("evictClientPhi", "renderLatestResearchUpdate")
+    for expression in (
+        "taskSelectionEpoch += 1",
+        "selectedTaskId = null",
+        "currentReportText = ''",
+        "currentReceipt = null",
+        "pendingSummary = null",
+        "chatHistory = []",
+        "chatHistoryRevision = null",
+        "document.querySelectorAll('.action-feedback')",
+        "clear('panel-body'",
+        "clear('summary-body'",
+        "'chat-messages'",
+        "feedText.value = ''",
+        "clearReportCopyState()",
+        "'judgment-input'",
+        "'q-add-input'",
+        "'sym-name'",
+        "'sym-note'",
+        "severity.value = ''",
+        ".judgment-edit-text",
+        ".receipt-editor input",
+    ):
+        assert expression in eviction
+    for loader, next_name in (
+        ("loadStatus", "renderStatusFailure"),
+        ("loadPatientEvidence", "evidenceBadge"),
+        ("loadSummary", "renderPendingSummary"),
+        ("loadTasks", "renderTasks"),
+    ):
+        assert "evictClientPhi(" in _function_source(loader, next_name)
+    submission = _function_source("readJobSubmission", "waitForJob")
+    json_reader = _function_source("readJsonResponse", "readJobSubmission")
+    assert json_reader.index("response.status === 401") < json_reader.index("response.json()")
+    assert submission.index("response.status === 401") < submission.index("response.json()")
+    assert "evictClientPhi(error)" in submission
+    mutation = _function_source("submitReceiptMutation", "receiptRefreshFailureMarkup")
+    assert "evictClientPhi(authError)" in mutation
+    assert mutation.index("response.status === 401") < mutation.index("response.json()")
+    close = _function_source("closePanel", "receiptValueSummary")
+    assert "const requestPhiEpoch = phiEpoch" in close
+    assert "requestPhiEpoch === phiEpoch" in close
+    questions = _function_source("generateQuestions", "addQuestion")
+    assert "const requestPhiEpoch = phiEpoch" in questions
+    assert "requestPhiEpoch !== phiEpoch" in questions
+    for handler, next_name in (
+        ("addJudgment", "deleteJudgment"),
+        ("addSymptom", "deleteSymptom"),
+        ("addQuestion", "toggleQuestion"),
+    ):
+        source = _function_source(handler, next_name)
+        assert "const requestPhiEpoch = phiEpoch" in source
+        assert "requestPhiEpoch !== phiEpoch" in source
+
+
+def test_missing_selected_task_evicts_instead_of_restoring_cached_receipt():
+    selection = _function_source("selectTask", "formatReport")
+    missing = selection[selection.index("if (!task)") : selection.index("if (task.status")]
+    assert "evictClientPhi(missingError)" in missing
+    assert "receiptRefreshFailureMarkup" not in missing
 
 
 def test_processing_status_never_claims_clinical_freshness():
@@ -258,6 +325,9 @@ def test_receipt_success_survives_detail_refresh_failure():
     assert "fallbackReceipt = null" in selection
     assert "receiptRefreshFailureMarkup(fallbackReceipt" in selection
     assert "Saved. Refreshing activity detail" in selection
+    assert "if (error?.status === 401 || error?.status === 403)" in selection
+    assert "evictClientPhi(error)" in selection
+    assert "shouldEvictClientPhi(error) && !fallbackReceipt" in selection
 
 
 def test_task_selection_epoch_guards_every_async_panel_update():
@@ -279,6 +349,7 @@ def test_stale_task_copy_maps_reason_and_type_without_source_mislabeling():
     assert "The patient record changed after this task was generated." in copy
     assert "This retained legacy task has no source profile revision." in copy
     assert "Generated content was invalidated by a review-state change." in copy
+    assert "A newer appointment-question generation replaced this result." in copy
 
 
 def test_submitted_task_activation_reserves_and_checks_selection_epoch():
@@ -370,6 +441,19 @@ def test_stale_treatment_classification_visibly_falls_back_to_raw_entries():
     assert "d.treatments_fallback?.length" in sidebar
     assert "d.treatments_classification_current === false" in sidebar
     assert "Classification outdated — showing raw treatment entries." in sidebar
+
+
+def test_treatment_actions_use_stable_id_token_and_profile_revision():
+    sidebar = _function_source("renderSidebar", "resolveAlert")
+    assert "data-treatment-id" in sidebar
+    assert "data-edit-token" in sidebar
+    assert "editTreatment(this,'complete')" in sidebar
+    assert "editTreatment(this,'remove')" in sidebar
+    editor = _function_source("editTreatment", "generateSummary")
+    assert "/api/treatments/${encodeURIComponent(treatmentId)}" in editor
+    assert "expected_token: expectedToken" in editor
+    assert "expected_profile_revision: latestProfileRevision" in editor
+    assert "/api/treatments/update" not in editor
 
 
 def test_latest_research_update_refreshes_after_missed_job_transitions():

@@ -20,6 +20,7 @@ from .profile import (
     load_profile,
     record_latest_research_update,
     save_profile,
+    sync_treatment_records,
 )
 from .serialize import serialized_mutation
 
@@ -175,6 +176,7 @@ def cmd_update_profile(args) -> None:
         if tx_raw:
             profile["patient"].setdefault("current_treatments", []).append(tx_raw)
             invalidate_treatment_classification(profile)
+            sync_treatment_records(profile)
         save_profile(profile)
         job_id = f"cli-update-{datetime.datetime.now():%Y%m%d%H%M%S}"
         profile["treatments_classified"] = classify_treatments(profile)

@@ -461,20 +461,25 @@ def _job_response(
             result_revision_stale = True
         if job.get("type") == "questions":
             generation_id = job.get("generation_id")
-            questions_invalid = (
-                generation_id is None
-                or generation_id != profile.get("questions_generation_id")
-                or any(
-                    item.get("stale")
-                    for item in profile.get("appointment_questions", [])
-                    if isinstance(item, dict)
-                    and item.get("source") == "ai"
-                    and item.get("generation_job_id") == generation_id
-                )
+            revision_was_stale = result_revision_stale
+            superseded = (
+                generation_id is not None
+                and generation_id != profile.get("questions_generation_id")
+            )
+            questions_invalid = generation_id is None or superseded or any(
+                item.get("stale")
+                for item in profile.get("appointment_questions", [])
+                if isinstance(item, dict)
+                and item.get("source") == "ai"
+                and item.get("generation_job_id") == generation_id
             )
             if questions_invalid:
                 result_same_revision_invalidated = not result_revision_stale
                 result_revision_stale = True
+                if superseded and not revision_was_stale:
+                    response["derived_content_stale_reason"] = (
+                        "question_generation_superseded"
+                    )
     feed_content_stale = False
     if job.get("type") == "feed" and job.get("source_document_id"):
         profile = profile or agent.load_profile()
@@ -502,14 +507,17 @@ def _job_response(
             )
     if result_revision_stale:
         response["derived_content_stale"] = True
-        response["derived_content_stale_reason"] = (
-            "freshness_cannot_be_verified"
-            if job.get("profile_revision") is None
-            else (
-                "generated_content_invalidated"
-                if result_same_revision_invalidated
-                else "patient_record_changed_after_generation"
-            )
+        response.setdefault(
+            "derived_content_stale_reason",
+            (
+                "freshness_cannot_be_verified"
+                if job.get("profile_revision") is None
+                else (
+                    "generated_content_invalidated"
+                    if result_same_revision_invalidated
+                    else "patient_record_changed_after_generation"
+                )
+            ),
         )
     if not include_artifacts:
         return response
@@ -1660,7 +1668,12 @@ def api_status():
             "recent_imaging": imgs,
             "recent_documents": docs,
             "treatments_classified": (
-                profile.get("treatments_classified", []) if classification_current else []
+                [
+                    {**item, "edit_token": agent.treatment_edit_token(profile, item)}
+                    for item in profile.get("treatments_classified", [])
+                ]
+                if classification_current
+                else []
             ),
             "treatments_fallback": (
                 []
@@ -2031,26 +2044,15 @@ def api_patient_evidence():
 
 
 @app.route("/api/treatments/delete", methods=["POST"])
-@serialized_profile_mutation
 def api_delete_treatment():
-    data = request.get_json(force=True) or {}
-    text = data.get("text", "").strip()
-    if not text:
-        return jsonify({"error": "No text provided"}), 400
-    profile = agent.load_profile()
-    # Remove from raw treatments list
-    profile["patient"]["current_treatments"] = [
-        t for t in profile["patient"].get("current_treatments", []) if t != text
-    ]
-    # Remove from classified list
-    profile["treatments_classified"] = [
-        t
-        for t in profile.get("treatments_classified", [])
-        if t.get("text") != text and t.get("label") != text
-    ]
-    agent.invalidate_treatment_classification(profile)
-    agent.save_profile(profile)
-    return jsonify({"ok": True})
+    return (
+        jsonify(
+            {
+                "error": "Text-based treatment deletion is no longer supported. Reload and edit by treatment ID."
+            }
+        ),
+        410,
+    )
 
 
 @app.route("/api/alerts/<alert_id>/resolve", methods=["POST"])
@@ -2112,64 +2114,96 @@ def api_resolve_alert_legacy(idx):
 
 
 @app.route("/api/treatments/update", methods=["POST"])
-@serialized_profile_mutation
 def api_treatments_update():
-    """Update a treatment's category or remove it — syncs both classified and raw lists."""
-    data = request.get_json(force=True) or {}
-    action = data.get("action")  # "remove" or "set_category"
-    idx = data.get("idx")
-    category = data.get("category")
+    return (
+        jsonify(
+            {
+                "error": "Index-based treatment updates are no longer supported. Reload and edit by treatment ID."
+            }
+        ),
+        410,
+    )
 
-    profile = agent.load_profile()
-    if not agent.treatment_classification_is_current(profile):
+
+@app.route("/api/treatments/<treatment_id>", methods=["POST"])
+@serialized_profile_mutation
+def api_treatment_edit(treatment_id):
+    data = request.get_json(force=True) or {}
+    action = data.get("action")
+    expected_token = str(data.get("expected_token") or "")
+    expected_revision = data.get("expected_profile_revision")
+    if action not in {"remove", "complete"} or not expected_token or expected_revision is None:
         return (
             jsonify(
                 {
-                    "error": "Treatment classification is outdated. Refresh the assessment before editing categories."
+                    "error": "action, expected_token, and expected_profile_revision are required"
+                }
+            ),
+            400,
+        )
+    profile = agent.load_profile()
+    classified = profile.get("treatments_classified", [])
+    treatment = next((item for item in classified if item.get("id") == treatment_id), None)
+    if (
+        not agent.treatment_classification_is_current(profile)
+        or str(expected_revision) != str(profile.get("profile_revision"))
+        or treatment is None
+        or agent.treatment_edit_token(profile, treatment) != expected_token
+    ):
+        return (
+            jsonify(
+                {
+                    "error": "The treatment changed or classification is outdated. Reload before editing."
                 }
             ),
             409,
         )
-    txs = profile.get("treatments_classified", [])
-
-    if idx is None or idx >= len(txs):
-        return jsonify({"error": "Invalid index"}), 400
-
-    tx = txs[idx]
-    tx_text_lower = (tx.get("text") or tx.get("label") or "").lower().strip()
-
+    source_ids = set(treatment.get("source_treatment_ids") or [])
+    records = profile.get("patient", {}).get("current_treatment_records", [])
+    if not source_ids or not any(item.get("id") in source_ids for item in records):
+        return jsonify({"error": "Mapped raw treatment components are unavailable"}), 409
+    overlapping = [
+        item
+        for item in classified
+        if item.get("id") != treatment_id
+        and source_ids & set(item.get("source_treatment_ids") or [])
+    ]
+    if overlapping:
+        return (
+            jsonify(
+                {
+                    "error": "Treatment source mapping overlaps another treatment. Refresh classification before editing."
+                }
+            ),
+            409,
+        )
     if action == "remove":
-        txs.pop(idx)
-        # Also remove from raw current_treatments — match by substring
-        profile["patient"]["current_treatments"] = [
-            t
-            for t in profile["patient"].get("current_treatments", [])
-            if tx_text_lower not in t.lower() and t.lower() not in tx_text_lower
+        profile["patient"]["current_treatment_records"] = [
+            item for item in records if item.get("id") not in source_ids
         ]
-
-    elif action == "set_category" and category:
-        txs[idx]["category"] = category
-        # If marking completed, note the change in raw list by appending a completion marker
-        if category == "completed":
-            raw = profile["patient"].get("current_treatments", [])
-            # Replace matching raw entry with a completed-flagged version
-            updated_raw = []
-            matched = False
-            for t in raw:
-                if not matched and (tx_text_lower in t.lower() or t.lower() in tx_text_lower):
-                    updated_raw.append(f"{t} [completed]")
-                    matched = True
-                else:
-                    updated_raw.append(t)
-            profile["patient"]["current_treatments"] = updated_raw
+        profile["treatments_classified"] = [
+            item for item in classified if item.get("id") != treatment_id
+        ]
     else:
-        return jsonify({"error": "Invalid action"}), 400
-
-    profile["treatments_classified"] = txs
-    profile["treatments_classification_revision"] = int(profile.get("profile_revision") or 0) + 1
-    profile["treatments_classification_job_id"] = "manual-treatment-update"
+        for record in records:
+            if record.get("id") in source_ids and "[completed]" not in record.get("text", ""):
+                record["text"] = f"{record.get('text', '').strip()} [completed]"
+        treatment["category"] = "completed"
+    agent.rebuild_raw_treatments(profile)
+    profile["treatments_classification_revision"] = (
+        int(profile.get("profile_revision") or 0) + 1
+    )
+    profile["treatments_classification_job_id"] = "manual-treatment-edit"
     agent.save_profile(profile)
-    return jsonify({"ok": True, "treatments_classified": txs})
+    return jsonify(
+        {
+            "ok": True,
+            "treatments_classified": [
+                {**item, "edit_token": agent.treatment_edit_token(profile, item)}
+                for item in profile.get("treatments_classified", [])
+            ],
+        }
+    )
 
 
 @app.route("/api/trials")

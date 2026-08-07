@@ -13,7 +13,9 @@ def test_load_profile_creates_default_when_missing(agent):
     assert "neuroendocrine" in (profile["patient"]["diagnosis"] or "").lower()
     assert profile["biomarkers"] == []
     assert profile["alerts"] == []
+    assert profile["patient"]["current_treatment_records"] == []
     assert agent.PROFILE_PATH.exists()
+    assert agent.load_profile()["patient"] == profile["patient"]
 
 
 def test_save_then_load_round_trip(agent, empty_profile):

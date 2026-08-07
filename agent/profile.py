@@ -65,6 +65,7 @@ DEFAULT_PROFILE: dict = {
         "sstr_status": None,
         "sstr_score": None,
         "current_treatments": [],
+        "current_treatment_records": [],
         "allergies": [],
         "comorbidities": [],
         "oncologist": None,
@@ -558,6 +559,70 @@ def invalidate_treatment_classification(profile: dict) -> None:
     """Mark derived treatment categories stale without deleting their audit value."""
     profile["treatments_classification_revision"] = None
     profile["treatments_classification_job_id"] = None
+
+
+def sync_treatment_records(profile: dict) -> list[dict]:
+    """Deterministically map raw/composite treatment strings to stable components."""
+    patient = profile.setdefault("patient", {})
+    records = []
+    occurrences: dict[str, int] = {}
+    for source_order, raw in enumerate(patient.get("current_treatments") or []):
+        text = str(raw)
+        occurrence = occurrences.get(text, 0)
+        occurrences[text] = occurrence + 1
+        source_digest = hashlib.sha256(f"{text}:{occurrence}".encode()).hexdigest()[:20]
+        source_id = f"txsrc_{source_digest}"
+        from .classify import split_treatment_components
+
+        components = split_treatment_components(text)
+        for component_order, component in enumerate(components):
+            digest = hashlib.sha256(
+                f"{source_id}:{component_order}:{component}".encode()
+            ).hexdigest()[:20]
+            records.append(
+                {
+                    "id": f"tx_{digest}",
+                    "source_entry_id": source_id,
+                    "source_order": source_order,
+                    "component_order": component_order,
+                    "text": component,
+                    "source_text": text,
+                }
+            )
+    patient["current_treatment_records"] = records
+    return records
+
+
+def rebuild_raw_treatments(profile: dict) -> list[str]:
+    """Rebuild raw entries after component-safe edits without dropping siblings."""
+    records = profile.setdefault("patient", {}).get("current_treatment_records") or []
+    grouped: dict[str, list[dict]] = {}
+    for record in sorted(
+        records,
+        key=lambda item: (item.get("source_order", 0), item.get("component_order", 0)),
+    ):
+        grouped.setdefault(record.get("source_entry_id") or record.get("id"), []).append(record)
+    raw = [" plus ".join(item.get("text", "") for item in group) for group in grouped.values()]
+    profile["patient"]["current_treatments"] = [item for item in raw if item.strip()]
+    return profile["patient"]["current_treatments"]
+
+
+def treatment_edit_token(profile: dict, classified: dict) -> str:
+    """CAS token covering one classified row and its mapped raw components."""
+    source_ids = set(classified.get("source_treatment_ids") or [])
+    records = [
+        item
+        for item in profile.get("patient", {}).get("current_treatment_records", [])
+        if item.get("id") in source_ids
+    ]
+    canonical = json.dumps(
+        {"classified": classified, "records": records},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def treatment_classification_is_current(profile: dict) -> bool:

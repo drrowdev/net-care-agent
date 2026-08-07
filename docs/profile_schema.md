@@ -53,6 +53,7 @@ Demographics + diagnosis. The only non-list top-level branch.
 | `sstr_status` | `'positive' \| 'negative' \| 'unknown' \| null` | Somatostatin receptor status |
 | `sstr_score` | `int \| None` | Krenning score 0–4 |
 | `current_treatments` | `list[str]` | Raw treatment strings; deduped by classify step |
+| `current_treatment_records` | `list[Any]]` | Stable component/source mapping for composite-safe treatment edits |
 | `allergies` | `list[str]` |  |
 | `comorbidities` | `list[str]` |  |
 | `oncologist` | `str \| None` |  |
@@ -170,10 +171,12 @@ Built by agent.classify.classify_treatments — deduped + categorised.
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `id` | `str \| None` |  |
 | `text` | `str \| None` | Canonical merged description |
 | `category` | `'active' \| 'planned' \| 'completed' \| null` |  |
 | `label` | `str \| None` |  |
 | `date` | `str \| None` | YYYY-MM, YYYY, or null |
+| `source_treatment_ids` | `list[str]` |  |
 
 ## `clinical_judgments[]`
 

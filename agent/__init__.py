@@ -49,10 +49,13 @@ from .profile import (
     invalidate_treatment_classification,
     load_profile,
     public_latest_research_update,
+    rebuild_raw_treatments,
     record_latest_research_update,
     save_profile,
     summary_is_current,
+    sync_treatment_records,
     treatment_classification_is_current,
+    treatment_edit_token,
 )
 from .provenance import anchor_source_quote, preserve_source_document, remove_source_document
 from .questions import generate_appointment_questions, generate_questions_for_profile
@@ -108,8 +111,11 @@ __all__ = [
     "alert_token",
     "current_treatment_records",
     "invalidate_treatment_classification",
+    "rebuild_raw_treatments",
     "get_patient_summary",
     "summary_is_current",
+    "sync_treatment_records",
+    "treatment_edit_token",
     "treatment_classification_is_current",
     "get_research_ids",
     "record_latest_research_update",

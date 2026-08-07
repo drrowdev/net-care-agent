@@ -31,6 +31,9 @@ bottom navigation bar.
 Failed status/evidence loads also clear previously rendered patient metadata,
 research additions, treatment/results/alert rows, search caches, and filters so
 old PHI is not left looking current in the browser.
+Authorization failure additionally clears open reports/receipts, chat turns and
+revision, summary feedback, tracked-item dialogs, and clinical text still in the
+feed dialog. A missing selected activity is treated the same way.
 
 The header reports processing only: **Processing N**, **Idle**, or
 **Unavailable**. It never claims the clinical assessment is current. Assessment
@@ -131,6 +134,10 @@ clinical revision. If classification fails or raw treatments change, Patient
 shows **Classification outdated — showing raw treatment entries** and every
 agent receives the raw list. Refresh the assessment to classify again; treatment
 data is never omitted.
+Treatment remove/complete actions use stable mapped component identities. For a
+composite raw entry such as `lanreotide plus everolimus`, removing/completing one
+row preserves the other component. Concurrent reorder/change returns `409`
+instead of mutating the shifted row.
 
 Alert lifetime follows its declared dependency. Ingestion-failure and
 trial-status alerts are durable until resolved. Feed-source alerts deactivate

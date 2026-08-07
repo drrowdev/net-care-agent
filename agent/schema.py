@@ -152,6 +152,10 @@ class Patient(_Lenient):
         default_factory=list,
         description="Raw treatment strings; deduped by classify step",
     )
+    current_treatment_records: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Stable component/source mapping for composite-safe treatment edits",
+    )
     allergies: list[str] = Field(default_factory=list)
     comorbidities: list[str] = Field(default_factory=list)
     oncologist: str | None = None
@@ -276,10 +280,12 @@ class Alert(_Lenient):
 class TreatmentClassified(_Lenient):
     """Built by agent.classify.classify_treatments — deduped + categorised."""
 
+    id: str | None = None
     text: str | None = Field(None, description="Canonical merged description")
     category: TreatmentCategory | None = None
     label: str | None = None
     date: str | None = Field(None, description="YYYY-MM, YYYY, or null")
+    source_treatment_ids: list[str] = Field(default_factory=list)
 
 
 class ClinicalJudgment(_Lenient):
@@ -466,7 +472,7 @@ class PatientProfile(_Lenient):
     """The complete patient profile. Lives at ${DATA_DIR}/patient_profile.json."""
 
     schema_version: int = Field(
-        default=5,
+        default=6,
         description="Profile schema version. Incremented when a structural migration runs.",
     )
     profile_revision: int = 0

@@ -226,7 +226,10 @@ _DEFINITIVE_SCREENING_RE = re.compile(
     r"satisf(?:y|ies|ied)\s+(?:all\s+)?(?:inclusion\s+)?(?:criteria|requirements?)|"
     r"(?:should|must|can)\s+be\s+includ\w*|"
     r"enroll\w*|enrol\w*|"
-    r"(?:one\s+of\s+the\s+)?(?:best|ideal|perfect\w*)[- ]+(?:fit|match\w*))\b",
+    r"(?:one\s+of\s+the\s+)?(?:best|ideal|perfect\w*)[- ]+(?:fit|match\w*)|"
+    r"(?:ideal|suitable)\s+candidate|candidate\s+for|"
+    r"matches?\s+(?:the\s+)?(?:trial\s+)?criteria|"
+    r"(?:good|strong)\s+fit)\b",
     re.IGNORECASE,
 )
 _NEGATED_SCREENING_RE = re.compile(
@@ -237,16 +240,31 @@ _NEGATED_SCREENING_RE = re.compile(
     r"excludes?\s+enrollment|fails?\s+(?:the\s+)?inclusion)\b",
     re.IGNORECASE,
 )
+_SCREENING_CONTEXT_RE = re.compile(r"\b(?:trial|study|protocol|prrt|nct\d+)\b", re.IGNORECASE)
+_SCREENING_ASSERTION_RE = re.compile(
+    r"\b(?:candidate|suitable|fit|match\w*|criteria|eligib\w*|qualif\w*|"
+    r"inclusion|exclusion|enroll\w*|enrol\w*|excellent|compelling|ideal|top)\b",
+    re.IGNORECASE,
+)
 _TREATMENT_CHANGE_VERB = (
     r"(?:start(?:ing)?|stop(?:ping)?|hold(?:ing)?|paus(?:e|ing)|resum(?:e|ing)|"
     r"switch(?:ing)?|increas(?:e|ing)|decreas(?:e|ing)|redos(?:e|ing)|"
     r"titrat(?:e|ing)|discontinu(?:e|ing)|withhold(?:ing)?|omit(?:ting)?|"
-    r"skip(?:ping)?|administer(?:ing)?|tak(?:e|ing))"
+    r"skip(?:ping)?|administer(?:ing)?|tak(?:e|ing)|reduc(?:e|ing)|"
+    r"restart(?:ing)?|continu(?:e|ing)|initiat(?:e|ing)|escalat(?:e|ing)|"
+    r"de-escalat(?:e|ing))"
 )
 _TREATMENT_RECOMMENDATION_RE = re.compile(
     rf"\b(?:recommend\w*|needs?\s*(?::|to)|should|must|"
     rf"plan(?:\s+is)?\s*(?::|to)|consider(?:ed|ing)?\s+).*?\b"
     rf"{_TREATMENT_CHANGE_VERB}\b",
+    re.IGNORECASE,
+)
+_TREATMENT_MODAL_PASSIVE_RE = re.compile(
+    r"\b(?:should|must|needs?\s+to)\s+be\s+"
+    r"(?:started|stopped|held|paused|resumed|switched|increased|decreased|"
+    r"redosed|titrated|discontinued|withheld|omitted|skipped|administered|taken|"
+    r"reduced|restarted|continued|initiated|escalated|de-escalated)\b",
     re.IGNORECASE,
 )
 _TREATMENT_COMMAND_RE = re.compile(
@@ -262,7 +280,8 @@ _TREATMENT_GERUND_RE = re.compile(
 _TREATMENT_HISTORICAL_RE = re.compile(
     r"\b(?:was|were|has\s+been|had\s+been)\s+"
     r"(?:started|stopped|held|paused|resumed|switched|increased|decreased|"
-    r"redosed|titrated|discontinued|withheld|omitted|skipped|administered|taken)\b",
+    r"redosed|titrated|discontinued|withheld|omitted|skipped|administered|taken|"
+    r"reduced|restarted|continued|initiated|escalated|de-escalated)\b",
     re.IGNORECASE,
 )
 _TREATMENT_NOUN_EVENT_RE = re.compile(
@@ -283,7 +302,7 @@ def _screening_safe_alert_text(value: object) -> str:
     treatment_directive = False
     for clause in (
         item.strip()
-        for item in re.split(r"[.;,]|\b(?:but|then)\b", original, flags=re.IGNORECASE)
+        for item in re.split(r"[.;,:]|\b(?:but|then)\b", original, flags=re.IGNORECASE)
         if item.strip()
     ):
         if _TREATMENT_CANCELLED_HISTORY_RE.search(clause):
@@ -294,6 +313,7 @@ def _screening_safe_alert_text(value: object) -> str:
         )
         directive = bool(
             recommendation
+            or _TREATMENT_MODAL_PASSIVE_RE.search(clause)
             or _TREATMENT_COMMAND_RE.search(clause)
             or _TREATMENT_GERUND_RE.search(clause)
         )
@@ -304,6 +324,11 @@ def _screening_safe_alert_text(value: object) -> str:
         return (
             "A treatment-change question was identified; contact the treating team and "
             "confirm before any treatment change."
+        )
+    if _SCREENING_CONTEXT_RE.search(original) and _SCREENING_ASSERTION_RE.search(original):
+        return (
+            "Trial or PRRT screening information identified; the treating team and trial "
+            "site must review the complete criteria and enrollment status before action."
         )
     if _NEGATED_SCREENING_RE.search(original) or _DEFINITIVE_SCREENING_RE.search(original):
         return (

@@ -68,6 +68,13 @@ incremented when something user-visible or operationally meaningful changes.
   Successful receipt mutations retain the authoritative receipt through detail
   refresh failure. Status/auth failures clear rendered status-derived PHI and
   client caches instead of leaving prior patient data visible.
+  Hard loader/auth failures now evict PHI across reports, receipts, chat,
+  feedback, modals, feed text, patient projections, and filters; missing selected
+  tasks cannot resurrect cached content. Generated-alert containment covers
+  recommendation/need/plan/gerund and embedded-colon treatment directives plus
+  candidate/fit assertions while preserving explicit historical passive facts.
+  Schema v6 adds stable treatment source/component mappings and
+  ID/token/revision CAS so composite edits preserve siblings.
 - **Today-first responsive caregiver workspace.** Replaced the duplicated
   desktop/mobile surfaces with shared **Today**, **Patient**, **Questions**, and
   **Activity** views while retaining the warm green/amber visual identity.

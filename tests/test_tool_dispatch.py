@@ -238,6 +238,15 @@ def test_no_exclusion_criteria_does_not_invert_affirmative_fit(agent, empty_prof
         "Starting everolimus now",
         "Titrating lanreotide upward",
         "Redosing PRRT",
+        "Reduce everolimus dose now",
+        "Restart lanreotide tomorrow",
+        "Continue taking everolimus",
+        "Renal decline: hold everolimus",
+        "Initiate sunitinib",
+        "Escalate everolimus dose",
+        "De-escalate lanreotide",
+        "Everolimus should be held now",
+        "Lanreotide must be stopped",
     ],
 )
 def test_treatment_imperatives_are_replaced_wholesale(agent, empty_profile, instruction):
@@ -319,6 +328,32 @@ def test_ambiguous_screening_polarity_is_neutralized(agent, empty_profile, claim
     assert "screening information identified" in message
     assert "potential research or treatment fit" not in message
     assert "potential exclusion or non-fit" not in message
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "Patient is an ideal candidate for PRRT",
+        "Patient is a suitable candidate for this trial",
+        "Patient matches the trial criteria",
+        "Patient is a strong fit for PRRT",
+        "Patient is an excellent fit for PRRT",
+        "Patient is a compelling match for trial NCT123",
+        "Patient is the top match for this trial",
+    ],
+)
+def test_candidate_and_fit_assertions_are_neutralized(agent, empty_profile, claim):
+    agent.execute_tool(
+        "flag_alert",
+        {"priority": "high", "message": claim, "action_required": claim},
+        empty_profile,
+    )
+    for value in (
+        empty_profile["alerts"][0]["message"],
+        empty_profile["alerts"][0]["action_required"],
+    ):
+        assert claim.casefold() not in value.casefold()
+        assert "must review the complete criteria and enrollment status" in value.casefold()
 
 
 # ─── analyze_biomarker_trends ────────────────────────────────────────────────

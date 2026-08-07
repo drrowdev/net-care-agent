@@ -498,6 +498,7 @@ def _run_intake_impl(
         if not is_duplicate:
             existing.append(tx)
             profile_mod.invalidate_treatment_classification(profile)
+            profile_mod.sync_treatment_records(profile)
 
     return profile, extracted
 

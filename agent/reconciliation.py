@@ -954,9 +954,10 @@ def correct_change(
         if updated != current and updated in treatments:
             raise ReconciliationError("That treatment is already recorded")
         treatments[treatments.index(current)] = updated
-        from .profile import invalidate_treatment_classification
+        from .profile import invalidate_treatment_classification, sync_treatment_records
 
         invalidate_treatment_classification(profile)
+        sync_treatment_records(profile)
         _invalidate_document_evidence(profile, record, change)
     else:
         raise ReconciliationError("This receipt entry cannot be corrected")
@@ -993,9 +994,10 @@ def _remove_effect(profile: dict, change: dict, *, event: str) -> None:
     elif kind == "treatment":
         treatments = profile.get("patient", {}).get("current_treatments", [])
         profile["patient"]["current_treatments"] = [item for item in treatments if item != current]
-        from .profile import invalidate_treatment_classification
+        from .profile import invalidate_treatment_classification, sync_treatment_records
 
         invalidate_treatment_classification(profile)
+        sync_treatment_records(profile)
         after = None
     else:
         raise ReconciliationError("This receipt entry cannot be removed")

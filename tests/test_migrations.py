@@ -44,7 +44,7 @@ def test_unversioned_migration_records_log_entry():
     assert "_migration_log" in result
     log = result["_migration_log"]
     assert isinstance(log, list)
-    assert len(log) == 5
+    assert len(log) == 6
     entry = log[0]
     assert entry["id"] == "0001_add_schema_version"
     assert "applied_at" in entry
@@ -54,6 +54,7 @@ def test_unversioned_migration_records_log_entry():
     assert log[2]["id"] == "0003_add_generated_content_provenance"
     assert log[3]["id"] == "0004_add_stable_alert_ids"
     assert log[4]["id"] == "0005_add_dependency_lifecycles"
+    assert log[5]["id"] == "0006_add_stable_treatment_records"
 
 
 def test_already_current_fast_path_no_change():
@@ -189,9 +190,10 @@ def test_v1_adds_empty_document_import_ledger_without_clinical_inference():
     data = {"schema_version": 1, "patient": {"diagnosis": "NET"}}
     result = apply_migrations(data)
 
-    assert result["schema_version"] == 5
+    assert result["schema_version"] == 6
     assert result["document_imports"] == []
-    assert result["patient"] == {"diagnosis": "NET"}
+    assert result["patient"]["diagnosis"] == "NET"
+    assert result["patient"]["current_treatment_records"] == []
 
 
 def test_v2_conservatively_stales_legacy_ai_questions_without_generation_identity():
@@ -208,7 +210,7 @@ def test_v2_conservatively_stales_legacy_ai_questions_without_generation_identit
 
     result = apply_migrations(data)
 
-    assert result["schema_version"] == 5
+    assert result["schema_version"] == 6
     assert result["questions_generation_id"] is None
     assert result["appointment_questions"][0]["stale"] is True
     assert (
@@ -233,7 +235,7 @@ def test_v3_deterministically_backfills_stable_alert_ids():
     first = apply_migrations(copy.deepcopy(source))
     second = apply_migrations(copy.deepcopy(source))
 
-    assert first["schema_version"] == 5
+    assert first["schema_version"] == 6
     assert first["alerts"][0]["id"].startswith("alert_legacy_")
     assert first["alerts"][1]["id"].startswith("alert_legacy_")
     assert first["alerts"][0]["id"] != first["alerts"][1]["id"]
@@ -273,7 +275,7 @@ def test_v4_migrates_alert_lifetimes_and_invalidates_legacy_classification():
 
     result = apply_migrations(data)
 
-    assert result["schema_version"] == 5
+    assert result["schema_version"] == 6
     assert result["treatments_classification_revision"] is None
     assert result["treatments_classification_job_id"] is None
     assert [item["dependency_kind"] for item in result["alerts"]] == [
@@ -287,3 +289,34 @@ def test_v4_migrates_alert_lifetimes_and_invalidates_legacy_classification():
         result["document_imports"][0]["changes"][0]["effective_value"]["dependency_kind"]
         == "durable"
     )
+
+
+def test_v5_backfills_stable_composite_treatment_records_and_stales_classification():
+    from agent.migrations import apply_migrations
+
+    source = {
+        "schema_version": 5,
+        "patient": {
+            "current_treatments": ["lanreotide plus everolimus"],
+        },
+        "treatments_classified": [
+            {"text": "lanreotide", "category": "active"},
+            {"text": "everolimus", "category": "active"},
+        ],
+        "treatments_classification_revision": 5,
+        "treatments_classification_job_id": "legacy",
+    }
+
+    first = apply_migrations(copy.deepcopy(source))
+    second = apply_migrations(copy.deepcopy(source))
+
+    assert first["schema_version"] == 6
+    records = first["patient"]["current_treatment_records"]
+    assert [item["text"] for item in records] == ["lanreotide", "everolimus"]
+    assert len({item["id"] for item in records}) == 2
+    assert len({item["source_entry_id"] for item in records}) == 1
+    assert [item["id"] for item in records] == [
+        item["id"] for item in second["patient"]["current_treatment_records"]
+    ]
+    assert first["treatments_classification_revision"] is None
+    assert first["treatments_classification_job_id"] is None

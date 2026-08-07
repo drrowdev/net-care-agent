@@ -35,7 +35,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 5
+CURRENT_SCHEMA_VERSION: int = 6
 
 # Append-only ordered registry of migrations.  Never reorder entries.
 _REGISTRY: list[dict[str, Any]] = []
@@ -130,6 +130,42 @@ def _m0005_add_dependency_lifecycles(data: dict) -> dict:
                 ):
                     change["effective_value"]["dependency_kind"] = alert["dependency_kind"]
     data["schema_version"] = 5
+    return data
+
+
+@_migration("0006_add_stable_treatment_records", to_version=6)
+def _m0006_add_stable_treatment_records(data: dict) -> dict:
+    """v5 → v6: backfill deterministic raw treatment component identities."""
+    patient = data.setdefault("patient", {})
+    records = []
+    occurrences: dict[str, int] = {}
+    for source_order, raw in enumerate(patient.get("current_treatments") or []):
+        text = str(raw)
+        occurrence = occurrences.get(text, 0)
+        occurrences[text] = occurrence + 1
+        source_digest = hashlib.sha256(f"{text}:{occurrence}".encode()).hexdigest()[:20]
+        source_id = f"txsrc_{source_digest}"
+        from .classify import split_treatment_components
+
+        components = split_treatment_components(text)
+        for component_order, component in enumerate(components):
+            digest = hashlib.sha256(
+                f"{source_id}:{component_order}:{component}".encode()
+            ).hexdigest()[:20]
+            records.append(
+                {
+                    "id": f"tx_{digest}",
+                    "source_entry_id": source_id,
+                    "source_order": source_order,
+                    "component_order": component_order,
+                    "text": component,
+                    "source_text": text,
+                }
+            )
+    patient["current_treatment_records"] = records
+    data["treatments_classification_revision"] = None
+    data["treatments_classification_job_id"] = None
+    data["schema_version"] = 6
     return data
 
 

@@ -166,6 +166,10 @@ Treatment classification carries revision/job identity. Raw treatment mutation
 invalidates it before the first save; output must cover every raw treatment
 component bidirectionally with no ungrounded extras or collapsed distinct drugs.
 When stale/failing, all consumers use the raw `current_treatments` fallback.
+Schema v6 also stores deterministic raw source/component records and maps every
+classified row to component IDs. Manual remove/complete uses treatment ID +
+semantic token + expected profile revision; composite siblings survive, and
+stale/missing/changed mappings return `409`.
 
 Executive-summary prompts receive an opaque catalog of verified source-span IDs.
 The model may select only those IDs for named claims and actions; Flask resolves
@@ -236,6 +240,7 @@ only with exact `APP_ORIGIN` or canonical HTTPS `WEBSITE_HOSTNAME`.
 | Stale generated conclusions after correction | Revision-aware summary hiding, question generation IDs, source-dependent alert invalidation, and hidden feed reports retain audit artifacts without presenting them as current |
 | Wrong alert resolved after reorder | Stable alert IDs + semantic token + expected revision under the mutation lock; stale/missing targets return `409` |
 | Old chat contaminates corrected record | Client clears history on profile revision change; server rejects mismatched `history_revision` with `409` |
+| Cached PHI after auth/load failure | Central client eviction clears every patient-bearing cache, panel, dialog, chat turn, receipt/report, filter, and open feedback surface; non-auth receipt refresh is the only fallback exception |
 | Source traversal / browser caching | Auth-gated `/api/sources/<id>[/<artifact>]` and `/api/evidence/<id>` resolve only indexed paths below `DATA_DIR`, reject traversal, and return `no-store` |
 | Stale clinical judgment | Only active, nonexpired, non-review-due judgments constrain agents; all others are visibly framed as needing clinician review |
 | Storage account deletion | `AzureBackupProtectionLock` (CanNotDelete) on the resource group, auto-applied by Azure Backup |

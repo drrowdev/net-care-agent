@@ -15,6 +15,7 @@
   let receiptMutationPending = false;
   let taskSelectionEpoch = 0;
   let latestProfileRevision = null;
+  let phiEpoch = 0;
   const failedLoads = new Map();
 
   // ── UI label localization ───────────────────────────────────────────────
@@ -51,6 +52,11 @@
   }
 
   async function readJsonResponse(response) {
+    if (response.status === 401 || response.status === 403) {
+      const authError = new Error('Authorization failed.');
+      authError.status = response.status;
+      evictClientPhi(authError);
+    }
     let data;
     try {
       data = await response.json();
@@ -67,12 +73,20 @@
       error.status = response.status;
       error.retryAfter = response.headers.get('Retry-After');
       error.data = data;
+      if (response.status === 401 || response.status === 403) {
+        evictClientPhi(error);
+      }
       throw error;
     }
     return data;
   }
 
   async function readJobSubmission(response) {
+    if (response.status === 401 || response.status === 403) {
+      const authError = new Error('Authorization failed.');
+      authError.status = response.status;
+      evictClientPhi(authError);
+    }
     let data;
     try {
       data = await response.json();
@@ -87,6 +101,10 @@
       : `Request failed (${response.status})`);
     error.status = response.status;
     error.retryAfter = response.headers.get('Retry-After');
+    error.data = data;
+    if (response.status === 401 || response.status === 403) {
+      evictClientPhi(error);
+    }
     throw error;
   }
 
@@ -117,6 +135,10 @@
   function reportLoadError(scope, error) {
     failedLoads.set(scope, error);
     renderAppState();
+  }
+
+  function shouldEvictClientPhi(error) {
+    return error?.status === 401 || error?.status === 403 || Number(error?.status) >= 500;
   }
 
   function restoreDialogFocus() {
@@ -387,15 +409,18 @@
 
   // ── Status sidebar ──────────────────────────────────────────────────────
   async function loadStatus() {
+    const requestPhiEpoch = phiEpoch;
     try {
       const r = await fetch('/api/status');
       const d = await readJsonResponse(r);
+      if (requestPhiEpoch !== phiEpoch) return null;
       const revisionChanged = syncChatRevision(d.profile_revision);
       renderSidebar(d);
       if (revisionChanged && selectedTaskId) loadTasks();
       reportLoadSuccess('status');
       return d;
     } catch(e) {
+      if (requestPhiEpoch === phiEpoch && shouldEvictClientPhi(e)) evictClientPhi(e);
       renderStatusFailure();
       reportLoadError('status', e);
       return null;
@@ -422,6 +447,106 @@
       search.value = '';
       search.disabled = true;
     }
+  }
+
+  function evictClientPhi(error = null) {
+    phiEpoch += 1;
+      taskSelectionEpoch += 1;
+      selectedTaskId = null;
+      currentReportText = '';
+      currentReceipt = null;
+      pendingSummary = null;
+      latestProfileRevision = null;
+      latestResearchUpdate = null;
+      patientEvidence = null;
+      allBiomarkers = [];
+      chatHistory = [];
+      chatHistoryRevision = null;
+      document.querySelectorAll('.action-feedback').forEach(editor => editor.remove());
+      renderLatestResearchUpdate(null);
+
+      const clear = (id, html = '') => {
+        const element = document.getElementById(id);
+        if (element) element.innerHTML = html;
+      };
+      const patient = document.getElementById('patient-dx');
+      if (patient) patient.textContent = 'Patient data unavailable';
+      clear('patient-meta');
+      clear('tx-list');
+      clear('bm-list');
+      clear('alerts-list');
+      clear('imaging-history');
+      clear('source-history');
+      clear('q-list');
+      clear('judgments-list');
+      clear('symptoms-list');
+      clear('summary-status-inline');
+      clear('summary-updated');
+      clear('summary-body', '<div class="summary-empty">Patient assessment unavailable.</div>');
+      clear('task-list');
+      clear('panel-body', '<div class="report-empty">Activity detail unavailable.</div>');
+      const search = document.getElementById('bm-search');
+      if (search) {
+        search.value = '';
+        search.disabled = true;
+      }
+      const report = document.getElementById('report-panel');
+      report?.classList.add('collapsed');
+      report?.setAttribute('aria-hidden', 'true');
+      clearReportCopyState();
+      const modal = document.getElementById('modal-overlay');
+      modal?.classList.remove('open');
+      modal?.setAttribute('aria-hidden', 'true');
+      clear('modal-body');
+      const chat = document.getElementById('chat-panel');
+      if (chat) {
+        chat.style.display = 'none';
+        chat.setAttribute('aria-hidden', 'true');
+      }
+      chatOpen = false;
+      clear(
+        'chat-messages',
+        `<div class="chat-revision-notice" role="alert">${
+          error?.status === 401 || error?.status === 403
+            ? 'Patient chat was cleared because authorization is unavailable.'
+            : 'Patient chat was cleared because current data could not be loaded.'
+        }</div>`,
+      );
+      const chatInput = document.getElementById('chat-input');
+      if (chatInput) chatInput.value = '';
+      for (const id of (
+        'judgment-input', 'q-add-input', 'sym-name', 'sym-note',
+        'dismiss-text-0', 'dismiss-text-1', 'dismiss-text-2',
+        'dismiss-text-3', 'dismiss-text-4'
+      )) {
+        const input = document.getElementById(id);
+        if (input) input.value = '';
+      }
+      const severity = document.getElementById('sym-sev');
+      if (severity) severity.value = '';
+      document.querySelectorAll(
+        '.judgment-edit-text, .receipt-editor input, .receipt-editor textarea, .receipt-editor select'
+      ).forEach(control => {
+        if ('value' in control) control.value = '';
+        control.closest('.judgment-edit-area, .receipt-editor')?.remove();
+      });
+      const feed = document.getElementById('feed-popover');
+      const backdrop = document.getElementById('feed-backdrop');
+      feed?.classList.remove('visible');
+      feed?.setAttribute('aria-hidden', 'true');
+      backdrop?.classList.remove('visible');
+      const feedText = document.getElementById('feed-textarea');
+      if (feedText) feedText.value = '';
+      updateCharCount();
+    activeDialogSurface = null;
+    document.body.classList.remove('dialog-open');
+    [...document.body.children].forEach(child => { child.inert = false; });
+    [...document.body.children].forEach(child => {
+      if (child.dataset.dialogAriaHidden === 'true') {
+        child.removeAttribute('aria-hidden');
+        delete child.dataset.dialogAriaHidden;
+      }
+    });
   }
 
   function renderLatestResearchUpdate(update) {
@@ -516,12 +641,11 @@
       : (p.current_treatments || []));
 
     const txRow = (t) => {
-      const idx = txs.indexOf(t);
       const dotColor = t.category === 'active' ? 'var(--accent)'
                      : t.category === 'planned' ? 'var(--amber)' : 'var(--text2)';
       const textStyle = t.category === 'completed' ? ' style="color:var(--text2)"' : '';
       const completeBtn = t.category !== 'completed'
-        ? `<button class="tx-action-btn complete" aria-label="Mark ${escHtml(t.label || t.text)} as completed" title="Mark as completed" onclick="markTreatment(${idx},'completed')">✓</button>` : '';
+        ? `<button class="tx-action-btn complete" data-treatment-id="${escHtml(t.id)}" data-edit-token="${escHtml(t.edit_token)}" aria-label="Mark ${escHtml(t.label || t.text)} as completed" title="Mark as completed" onclick="editTreatment(this,'complete')">✓</button>` : '';
       return `
         <div class="tx-item">
           <div class="tx-dot" style="background:${dotColor}"></div>
@@ -531,7 +655,7 @@
           </div>
           <div class="tx-actions">
             ${completeBtn}
-            <button class="tx-action-btn remove" aria-label="Remove ${escHtml(t.label || t.text)}" title="Remove" onclick="removeTreatment(${idx})">✕</button>
+            <button class="tx-action-btn remove" data-treatment-id="${escHtml(t.id)}" data-edit-token="${escHtml(t.edit_token)}" aria-label="Remove ${escHtml(t.label || t.text)}" title="Remove" onclick="editTreatment(this,'remove')">✕</button>
           </div>
         </div>`;
     };
@@ -671,12 +795,18 @@
   let summaryOpen = true;
 
   async function loadPatientEvidence() {
+    const requestPhiEpoch = phiEpoch;
     try {
-      patientEvidence = await readJsonResponse(await fetch('/api/patient/evidence'));
+      const evidence = await readJsonResponse(await fetch('/api/patient/evidence'));
+      if (requestPhiEpoch !== phiEpoch) return null;
+      patientEvidence = evidence;
       renderPatientEvidence();
       reportLoadSuccess('patient-evidence');
       return patientEvidence;
     } catch (error) {
+      if (requestPhiEpoch === phiEpoch && shouldEvictClientPhi(error)) {
+        evictClientPhi(error);
+      }
       patientEvidence = null;
       document.getElementById('imaging-history').innerHTML = loadFailureMarkup('Imaging history', 'loadPatientEvidence()');
       document.getElementById('source-history').innerHTML = loadFailureMarkup('Source history', 'loadPatientEvidence()');
@@ -782,25 +912,19 @@
     if (caret) caret.textContent = list.classList.contains('hidden') ? '▼' : '▲';
   }
 
-  async function markTreatment(idx, category) {
+  async function editTreatment(button, action) {
+    const treatmentId = button?.dataset.treatmentId;
+    const expectedToken = button?.dataset.editToken;
+    if (!treatmentId || !expectedToken || latestProfileRevision == null) return;
     try {
-      await requireOk(await fetch('/api/treatments/update', {
+      await readJsonResponse(await fetch(`/api/treatments/${encodeURIComponent(treatmentId)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'set_category', idx, category }),
-      }));
-      await loadStatus();
-    } catch (error) {
-      reportLoadError('action', error);
-    }
-  }
-
-  async function removeTreatment(idx) {
-    try {
-      await requireOk(await fetch('/api/treatments/update', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'remove', idx }),
+        body: JSON.stringify({
+          action,
+          expected_token: expectedToken,
+          expected_profile_revision: latestProfileRevision,
+        }),
       }));
       await loadStatus();
     } catch (error) {
@@ -901,9 +1025,11 @@
 
   // ── Clinical Judgments ───────────────────────────────────────────────────
   async function loadJudgments() {
+    const requestPhiEpoch = phiEpoch;
     try {
       const r = await fetch('/api/judgments');
       const js = await readJsonResponse(r);
+      if (requestPhiEpoch !== phiEpoch) return [];
       renderJudgments(js);
       reportLoadSuccess('judgments');
       return js;
@@ -1003,6 +1129,7 @@
   }
 
   async function addJudgment() {
+    const requestPhiEpoch = phiEpoch;
     const input = document.getElementById('judgment-input');
     const cat   = document.getElementById('judgment-cat');
     const text  = (input?.value || '').trim();
@@ -1021,6 +1148,7 @@
       await loadJudgments();
       setFormError('judgment-form-error', '');
     } catch (error) {
+      if (requestPhiEpoch !== phiEpoch) return;
       input.value = text;
       setFormError('judgment-form-error', error.message || 'The note could not be added.');
       reportLoadError('action', error);
@@ -1039,9 +1167,11 @@
 
   // ── Symptoms ─────────────────────────────────────────────────────────────
   async function loadSymptoms() {
+    const requestPhiEpoch = phiEpoch;
     try {
       const r = await fetch('/api/symptoms');
       const list = await readJsonResponse(r);
+      if (requestPhiEpoch !== phiEpoch) return [];
       renderSymptoms(list);
       reportLoadSuccess('symptoms');
       return list;
@@ -1080,6 +1210,7 @@
   }
 
   async function addSymptom() {
+    const requestPhiEpoch = phiEpoch;
     const name = document.getElementById('sym-name').value.trim();
     if (!name) {
       setFormError('sym-form-error', 'Enter a symptom before logging it.');
@@ -1104,6 +1235,7 @@
       await loadSymptoms();
       setFormError('sym-form-error', '');
     } catch (e) {
+      if (requestPhiEpoch !== phiEpoch) return;
       setFormError('sym-form-error', e.message || 'The symptom could not be logged.');
       reportLoadError('action', e);
     }
@@ -1121,9 +1253,11 @@
   }
 
   async function loadSummary() {
+    const requestPhiEpoch = phiEpoch;
     try {
       const r = await fetch('/api/summary');
       const d = await readJsonResponse(r);
+      if (requestPhiEpoch !== phiEpoch) return null;
       const editor = document.querySelector('.action-feedback');
       const responseStale = d.status === 'stale' || d.content_hidden || summaryIsStale(d);
       const editorRevision = editor?.previousElementSibling?.dataset.summaryRevision;
@@ -1147,6 +1281,7 @@
       reportLoadSuccess('summary');
       return d;
     } catch(e) {
+      if (requestPhiEpoch === phiEpoch && shouldEvictClientPhi(e)) evictClientPhi(e);
       document.getElementById('summary-body').innerHTML = loadFailureMarkup('Assessment', 'loadSummary()');
       renderFreshness(null, e);
       reportLoadError('summary', e);
@@ -1386,6 +1521,7 @@
   }
 
   async function openModal(type) {
+    const requestPhiEpoch = phiEpoch;
     const trigger = document.activeElement;
     const overlay = document.getElementById('modal-overlay');
     overlay.classList.add('open');
@@ -1399,8 +1535,10 @@
     try {
       const r = await fetch(`/api/${type}`);
       const items = await readJsonResponse(r);
+      if (requestPhiEpoch !== phiEpoch) return;
       renderModal(type, items);
     } catch(e) {
+      if (requestPhiEpoch !== phiEpoch) return;
       document.getElementById('modal-body').innerHTML =
         `<div class="modal-empty">Could not load these items. ${escHtml(e.message)}</div>`;
     }
@@ -1482,9 +1620,11 @@
 
   // ── Task log ────────────────────────────────────────────────────────────
   async function loadTasks() {
+    const requestPhiEpoch = phiEpoch;
     try {
       const r = await fetch('/api/jobs');
       const tasks = await readJsonResponse(r);
+      if (requestPhiEpoch !== phiEpoch) return [];
       if (tasks.some(t => t.status === 'running' || t.status === 'queued')) {
         hadActiveJobs = true;
       }
@@ -1494,6 +1634,7 @@
       reportLoadSuccess('tasks');
       return tasks;
     } catch(e) {
+      if (requestPhiEpoch === phiEpoch && shouldEvictClientPhi(e)) evictClientPhi(e);
       document.getElementById('task-list').innerHTML = loadFailureMarkup('Processing activity', 'loadTasks()');
       document.getElementById('log-count').textContent = 'Unavailable';
       updateHeaderStatus(null, e);
@@ -1558,6 +1699,13 @@
         preview: `${type} outdated — review state changed`,
       };
     }
+    if (task.derived_content_stale_reason === 'question_generation_superseded') {
+      return {
+        title: 'Generated questions are superseded',
+        detail: 'A newer appointment-question generation replaced this result.',
+        preview: 'Generated questions superseded by a newer run',
+      };
+    }
     return {
       title: `${type} is outdated`,
       detail: 'The patient record changed after this task was generated.',
@@ -1620,6 +1768,7 @@
   }
 
   function closePanel() {
+    const requestPhiEpoch = phiEpoch;
     const report = document.getElementById('report-panel');
     report.classList.add('collapsed');
     report.setAttribute('aria-hidden', 'true');
@@ -1627,7 +1776,12 @@
     taskSelectionEpoch += 1;
     currentReceipt = null;
     // Re-render task list to clear selection highlight
-    fetch('/api/jobs').then(readJsonResponse).then(tasks => renderTasks(tasks)).catch(error => reportLoadError('tasks', error));
+    fetch('/api/jobs')
+      .then(readJsonResponse)
+      .then(tasks => {
+        if (requestPhiEpoch === phiEpoch) renderTasks(tasks);
+      })
+      .catch(error => reportLoadError('tasks', error));
     deactivateDialog(report);
   }
 
@@ -1815,6 +1969,12 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
+      if (response.status === 401 || response.status === 403) {
+        const authError = new Error('Authorization failed.');
+        authError.status = response.status;
+        evictClientPhi(authError);
+        throw authError;
+      }
       let data;
       try {
         data = await response.json();
@@ -1822,6 +1982,13 @@
         throw new Error(`The server returned an invalid response (${response.status}).`);
       }
       if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          const authError = new Error(data.error || 'Authorization failed.');
+          authError.status = response.status;
+          authError.data = data;
+          evictClientPhi(authError);
+          throw authError;
+        }
         if (response.status === 409 && data.receipt && taskSelectionEpoch === originSelectionEpoch && selectedTaskId === originJobId && currentReceipt?.job_id === originJobId && currentReceipt?.receipt_revision === originReceiptRevision) {
           document.getElementById('panel-body').querySelector('.receipt-card')?.remove();
           document.getElementById('panel-body').insertAdjacentHTML('afterbegin', renderReceipt(data.receipt));
@@ -1890,6 +2057,9 @@
       if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return false;
     } catch (error) {
       if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return false;
+      if (shouldEvictClientPhi(error) && !fallbackReceipt) {
+        evictClientPhi(error);
+      }
       document.getElementById('panel-body').innerHTML = fallbackReceipt
         ? receiptRefreshFailureMarkup(fallbackReceipt, id, error.message)
         : loadFailureMarkup('Activity detail', 'loadTasks()');
@@ -1900,9 +2070,9 @@
 
     let task = tasks.find(t => t.id === id);
     if (!task) {
-      document.getElementById('panel-body').innerHTML = fallbackReceipt
-        ? receiptRefreshFailureMarkup(fallbackReceipt, id, 'The saved job detail is temporarily unavailable.')
-        : loadFailureMarkup('Activity detail', 'loadTasks()');
+      const missingError = new Error('The selected activity no longer exists.');
+      evictClientPhi(missingError);
+      reportLoadError('tasks', missingError);
       return false;
     }
     if (task.status === 'done' || task.status === 'error' || task.status === 'interrupted') {
@@ -1920,7 +2090,9 @@
           reportLoadError('tasks', error);
           return false;
         }
+        if (shouldEvictClientPhi(error)) evictClientPhi(error);
         reportLoadError('tasks', error);
+        return false;
       }
     }
 
@@ -1939,6 +2111,11 @@
         receiptHtml = renderReceipt(receipt);
       } catch (error) {
         if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return false;
+        if (error?.status === 401 || error?.status === 403) {
+          evictClientPhi(error);
+          reportLoadError('tasks', error);
+          return false;
+        }
         receiptHtml = fallbackReceipt
           ? renderReceipt(fallbackReceipt)
           : `<div class="receipt-error visible">The import receipt could not be loaded. ${escHtml(error.message)}</div>`;
@@ -2337,9 +2514,11 @@
   }
 
   async function loadQuestions() {
+    const requestPhiEpoch = phiEpoch;
     try {
       const r = await fetch('/api/questions');
       const qs = await readJsonResponse(r);
+      if (requestPhiEpoch !== phiEpoch) return [];
       renderQuestions(qs);
       reportLoadSuccess('questions');
       return qs;
@@ -2396,6 +2575,7 @@
   }
 
   async function generateQuestions() {
+    const requestPhiEpoch = phiEpoch;
     const btnId    = 'q-gen-btn';
     const apptType = 'oncology follow-up';
     const btn = document.getElementById(btnId);
@@ -2411,6 +2591,7 @@
       });
       const submitted = await readJobSubmission(r);
       const completed = await waitForJob(submitted.job_id);
+      if (requestPhiEpoch !== phiEpoch) return;
       renderQuestions((completed.result || {}).questions || []);
       reportLoadSuccess('action');
     } catch(e) {
@@ -2422,6 +2603,7 @@
   }
 
   async function addQuestion() {
+    const requestPhiEpoch = phiEpoch;
     const inputId = 'q-add-input';
     const input = document.getElementById(inputId);
     const text = (input?.value || '').trim();
@@ -2440,6 +2622,7 @@
       await loadQuestions();
       setFormError('q-form-error', '');
     } catch(e) {
+      if (requestPhiEpoch !== phiEpoch) return;
       input.value = text;
       setFormError('q-form-error', e.message || 'The question could not be added.');
       reportLoadError('action', e);
@@ -2664,6 +2847,7 @@
   }
 
   async function sendChat() {
+    const requestPhiEpoch = phiEpoch;
     const input = document.getElementById('chat-input');
     const btn = document.getElementById('chat-send-btn');
     const text = (input?.value || '').trim();
@@ -2695,9 +2879,11 @@
         }),
       });
       const data = await readJsonResponse(r);
+      if (requestPhiEpoch !== phiEpoch) return;
       chatHistoryRevision = String(data.profile_revision);
       latestProfileRevision = data.profile_revision;
       const completed = await waitForJob(data.job_id);
+      if (requestPhiEpoch !== phiEpoch) return;
       const reply = (completed.result || {}).reply;
       if (!reply) throw new Error('No response was produced.');
 
@@ -2706,6 +2892,7 @@
       chatHistory.push({ role: 'assistant', content: reply });
       setFormError('chat-form-error', '');
     } catch(e) {
+      if (requestPhiEpoch !== phiEpoch) return;
       if (e.status === 409) {
         syncChatRevision(e.data?.profile_revision ?? latestProfileRevision, true);
       }
@@ -2715,7 +2902,7 @@
     } finally {
       delete btn.dataset.busy;
       btn.textContent = 'Send';
-      input.focus();
+      if (requestPhiEpoch === phiEpoch) input.focus();
       updateFormValidity();
     }
   }

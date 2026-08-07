@@ -3782,7 +3782,12 @@ def api_dismiss_action(idx):
             400,
         )
     profile = agent.load_profile()
-    if not agent.summary_is_current(profile):
+    summary = profile.get("executive_summary", {})
+    if (
+        not isinstance(summary, dict)
+        or profile.get("summary_stale") is not False
+        or summary.get("stale") is not False
+    ):
         return (
             jsonify(
                 {
@@ -3791,7 +3796,6 @@ def api_dismiss_action(idx):
             ),
             409,
         )
-    summary = profile.get("executive_summary", {})
     actions = summary.get("next_actions", [])
     expected_revision = data["summary_revision"]
     current_revision = summary.get("summary_revision")

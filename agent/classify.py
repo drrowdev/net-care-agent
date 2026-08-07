@@ -61,7 +61,23 @@ _IDENTITY_ALIASES = {
     "liver_resection": (
         "liver resection",
         "hepatic resection",
+        "hepatectomy",
+        "partial hepatectomy",
+        "liver surgery",
     ),
+    "pancreatectomy": (
+        "pancreatectomy",
+        "distal pancreatectomy",
+        "whipple procedure",
+        "pancreaticoduodenectomy",
+    ),
+    "cytoreductive_surgery": (
+        "cytoreductive surgery",
+        "debulking surgery",
+        "tumor debulking",
+        "tumour debulking",
+    ),
+    "metastasectomy": ("metastasectomy",),
 }
 
 
@@ -132,6 +148,45 @@ def split_treatment_components(value: str) -> list[str]:
     return [value]
 
 
+def _has_uncertified_mixed_component(value: str) -> bool:
+    """Reject recognized+unknown compounds instead of silently dropping a side."""
+    protected = re.sub(
+        r"captem\s*\(\s*capecitabine\s*(?:and|plus|/|\+|&)\s*temozolomide\s*\)",
+        "CAPTEM",
+        value,
+        flags=re.IGNORECASE,
+    )
+    protected = re.sub(
+        r"capecitabine\s*(?:/|\+|\band\b|\bplus\b)\s*temozolomide",
+        "CAPTEM",
+        protected,
+        flags=re.IGNORECASE,
+    )
+    candidates = [
+        item.strip()
+        for item in re.split(
+            r"\s*(?:\+|&|[,;/])\s*|\s+(?:plus|and|with)\s+",
+            protected,
+            flags=re.IGNORECASE,
+        )
+        if item.strip()
+    ]
+    candidates = [
+        item
+        for item in candidates
+        if not re.fullmatch(
+            r"(?:\d+(?:\.\d+)?\s*)?(?:mcg|mg|g|ml|units?)?\s*"
+            r"(?:daily|weekly|monthly|q\d+\w*|every\s+.+|once\s+.+|twice\s+.+)",
+            item,
+            flags=re.IGNORECASE,
+        )
+    ]
+    if len(candidates) <= 1:
+        return False
+    identities = [_treatment_identities(item) for item in candidates]
+    return any(identities) and not all(identities)
+
+
 def _classification_is_lossless(treatments: list[str], classified: object) -> bool:
     if not isinstance(classified, list) or not classified:
         return False
@@ -147,6 +202,8 @@ def _classification_is_lossless(treatments: list[str], classified: object) -> bo
             or not str(item.get("text") or item.get("label") or "").strip()
         ):
             return False
+    if any(_has_uncertified_mixed_component(item) for item in treatments):
+        return False
     raw_identity_sets = [
         _treatment_identities(component)
         for item in treatments

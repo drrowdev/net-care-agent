@@ -247,6 +247,8 @@ def test_no_exclusion_criteria_does_not_invert_affirmative_fit(agent, empty_prof
         "De-escalate lanreotide",
         "Everolimus should be held now",
         "Lanreotide must be stopped",
+        "Advise stopping everolimus immediately",
+        "Renal decline - hold everolimus",
     ],
 )
 def test_treatment_imperatives_are_replaced_wholesale(agent, empty_profile, instruction):
@@ -354,6 +356,75 @@ def test_candidate_and_fit_assertions_are_neutralized(agent, empty_profile, clai
     ):
         assert claim.casefold() not in value.casefold()
         assert "must review the complete criteria and enrollment status" in value.casefold()
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "PRRT is indicated for this patient",
+        "The patient is appropriate for PRRT",
+        "This patient would benefit from trial NCT12345678",
+        "The patient should receive PRRT",
+        "Offer trial NCT12345678 now",
+    ],
+)
+def test_indication_benefit_and_offer_assertions_are_neutralized(agent, empty_profile, claim):
+    agent.execute_tool(
+        "flag_alert",
+        {"priority": "high", "message": claim, "action_required": claim},
+        empty_profile,
+    )
+    for value in (
+        empty_profile["alerts"][0]["message"],
+        empty_profile["alerts"][0]["action_required"],
+    ):
+        assert claim.casefold() not in value.casefold()
+        assert "must review the complete criteria and enrollment status" in value.casefold()
+
+
+@pytest.mark.parametrize(
+    "historical",
+    [
+        "PRRT was indicated in the 2024 treatment plan",
+        "The patient was considered appropriate for PRRT in 2023",
+        "A prior note said the patient would benefit from trial review",
+    ],
+)
+def test_historical_screening_assertions_remain_factual(agent, empty_profile, historical):
+    agent.execute_tool(
+        "flag_alert",
+        {"priority": "medium", "message": historical},
+        empty_profile,
+    )
+    assert empty_profile["alerts"][0]["message"] == historical
+
+
+@pytest.mark.parametrize(
+    "mixed",
+    [
+        (
+            "The patient was considered appropriate for PRRT in 2023. "
+            "The patient is appropriate for PRRT now."
+        ),
+        "Patient was considered suitable previously. Patient is appropriate for PRRT now.",
+        (
+            "Prior note said benefit from PRRT was seen; patient is appropriate "
+            "for the trial and should receive PRRT."
+        ),
+        ("The prior plan recorded stable disease and the patient is now " "indicated for PRRT"),
+        ("A prior note said benefit from PRRT was seen and the patient " "should receive PRRT"),
+    ],
+)
+def test_historical_clause_does_not_exempt_live_screening_assertion(agent, empty_profile, mixed):
+    agent.execute_tool(
+        "flag_alert",
+        {"priority": "high", "message": mixed},
+        empty_profile,
+    )
+    message = empty_profile["alerts"][0]["message"].lower()
+    assert "screening information identified" in message
+    assert "appropriate for prrt now" not in message
+    assert "should receive prrt" not in message
 
 
 # ─── analyze_biomarker_trends ────────────────────────────────────────────────

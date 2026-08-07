@@ -243,7 +243,20 @@ _NEGATED_SCREENING_RE = re.compile(
 _SCREENING_CONTEXT_RE = re.compile(r"\b(?:trial|study|protocol|prrt|nct\d+)\b", re.IGNORECASE)
 _SCREENING_ASSERTION_RE = re.compile(
     r"\b(?:candidate|suitable|fit|match\w*|criteria|eligib\w*|qualif\w*|"
-    r"inclusion|exclusion|enroll\w*|enrol\w*|excellent|compelling|ideal|top)\b",
+    r"inclusion|exclusion|enroll\w*|enrol\w*|excellent|compelling|ideal|top|"
+    r"indicat\w*|appropriate|benefit\w*|receive|offer\w*)\b",
+    re.IGNORECASE,
+)
+_SCREENING_HISTORICAL_RE = re.compile(
+    r"\b(?:(?:was|were|had\s+been)\s+(?:considered\s+)?(?:indicat\w*|appropriate|suitable|"
+    r"eligible|qualified|a\s+candidate)|"
+    r"(?:prior|previous|historical)\s+(?:note|plan|assessment)\s+(?:said|stated|"
+    r"recorded)?(?:(?![.;]|\b(?:and|but|however|then|now)\b).)*?"
+    r"(?:benefit\w*|candidate|fit|match\w*|indicat\w*))\b",
+    re.IGNORECASE,
+)
+_SCREENING_CLAUSE_SPLIT_RE = re.compile(
+    r"(?:[.;]|\s+[–—-]\s+|,\s*(?:but|and)\s+|\s+(?:but|however)\s+)",
     re.IGNORECASE,
 )
 _TREATMENT_CHANGE_VERB = (
@@ -255,7 +268,7 @@ _TREATMENT_CHANGE_VERB = (
     r"de-escalat(?:e|ing))"
 )
 _TREATMENT_RECOMMENDATION_RE = re.compile(
-    rf"\b(?:recommend\w*|needs?\s*(?::|to)|should|must|"
+    rf"\b(?:recommend\w*|advis\w*|needs?\s*(?::|to)|should|must|"
     rf"plan(?:\s+is)?\s*(?::|to)|consider(?:ed|ing)?\s+).*?\b"
     rf"{_TREATMENT_CHANGE_VERB}\b",
     re.IGNORECASE,
@@ -289,7 +302,7 @@ _TREATMENT_NOUN_EVENT_RE = re.compile(
     re.IGNORECASE,
 )
 _TREATMENT_CANCELLED_HISTORY_RE = re.compile(
-    rf"(?:\b(?:plan|recommendation|proposal)\b.*?\b{_TREATMENT_CHANGE_VERB}\b|"
+    rf"(?:\b(?:plan|recommendation|advice|proposal)\b.*?\b{_TREATMENT_CHANGE_VERB}\b|"
     rf"^\s*{_TREATMENT_CHANGE_VERB}\b.*?)"
     r".*?\b(?:was|were|has\s+been|had\s+been)\s+"
     r"(?:cancelled|canceled|abandoned|withdrawn|postponed|deferred|discontinued)\b",
@@ -297,12 +310,26 @@ _TREATMENT_CANCELLED_HISTORY_RE = re.compile(
 )
 
 
+def _screening_clause_is_historical(clause: str) -> bool:
+    matches = list(_SCREENING_HISTORICAL_RE.finditer(clause))
+    if not matches:
+        return False
+    remainder = list(clause)
+    for match in matches:
+        remainder[match.start() : match.end()] = " " * (match.end() - match.start())
+    return not _SCREENING_ASSERTION_RE.search("".join(remainder))
+
+
 def _screening_safe_alert_text(value: object) -> str:
     original = str(value or "").strip()
     treatment_directive = False
     for clause in (
         item.strip()
-        for item in re.split(r"[.;,:]|\b(?:but|then)\b", original, flags=re.IGNORECASE)
+        for item in re.split(
+            r"[.;,:]|\s+[-–—]\s+|\b(?:but|then)\b",
+            original,
+            flags=re.IGNORECASE,
+        )
         if item.strip()
     ):
         if _TREATMENT_CANCELLED_HISTORY_RE.search(clause):
@@ -325,7 +352,13 @@ def _screening_safe_alert_text(value: object) -> str:
             "A treatment-change question was identified; contact the treating team and "
             "confirm before any treatment change."
         )
-    if _SCREENING_CONTEXT_RE.search(original) and _SCREENING_ASSERTION_RE.search(original):
+    screening_clauses = [
+        clause.strip() for clause in _SCREENING_CLAUSE_SPLIT_RE.split(original) if clause.strip()
+    ]
+    if _SCREENING_CONTEXT_RE.search(original) and any(
+        _SCREENING_ASSERTION_RE.search(clause) and not _screening_clause_is_historical(clause)
+        for clause in screening_clauses
+    ):
         return (
             "Trial or PRRT screening information identified; the treating team and trial "
             "site must review the complete criteria and enrollment status before action."

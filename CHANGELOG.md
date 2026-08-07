@@ -72,9 +72,12 @@ incremented when something user-visible or operationally meaningful changes.
   feedback, modals, feed text, patient projections, and filters; missing selected
   tasks cannot resurrect cached content. Generated-alert containment covers
   recommendation/need/plan/gerund and embedded-colon treatment directives plus
-  candidate/fit assertions while preserving explicit historical passive facts.
+  candidate/fit/indication/benefit assertions while preserving explicit
+  historical passive facts and containing mixed historical/live clauses.
   Schema v6 adds stable treatment source/component mappings and
-  ID/token/revision CAS so composite edits preserve siblings.
+  ID/token/revision CAS so composite edits preserve siblings. Lossless
+  classification recognizes common NET surgical therapies and rejects mixed
+  recognized/unknown compounds before mappings can be edited.
 - **Today-first responsive caregiver workspace.** Replaced the duplicated
   desktop/mobile surfaces with shared **Today**, **Patient**, **Questions**, and
   **Activity** views while retaining the warm green/amber visual identity.

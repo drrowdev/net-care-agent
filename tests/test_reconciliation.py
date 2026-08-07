@@ -1555,6 +1555,42 @@ def test_symbolic_composite_remove_preserves_sibling(app_client, agent, empty_pr
     assert [item["text"] for item in saved["treatments_classified"]] == ["everolimus"]
 
 
+def test_surgery_and_medication_composite_preserves_surgery_on_remove(
+    app_client, agent, empty_profile
+):
+    _, client = app_client
+    empty_profile["profile_revision"] = 3
+    empty_profile["patient"]["current_treatments"] = ["hepatectomy and lanreotide"]
+    agent.sync_treatment_records(empty_profile)
+    payload = [
+        {"text": "hepatectomy", "label": "Hepatectomy", "category": "completed"},
+        {"text": "lanreotide", "label": "Lanreotide", "category": "active"},
+    ]
+    with patch_llm(agent, lambda **_: llm_text(json.dumps(payload))):
+        empty_profile["treatments_classified"] = agent.classify_treatments(empty_profile)
+    empty_profile["treatments_classification_revision"] = 3
+    empty_profile["treatments_classification_job_id"] = "seed"
+    agent.save_profile(empty_profile, clinical_change=False)
+    status = client.get("/api/status").get_json()
+    lanreotide = next(
+        item for item in status["treatments_classified"] if item["text"] == "lanreotide"
+    )
+
+    response = client.post(
+        f"/api/treatments/{lanreotide['id']}",
+        json={
+            "action": "remove",
+            "expected_token": lanreotide["edit_token"],
+            "expected_profile_revision": 3,
+        },
+    )
+
+    assert response.status_code == 200
+    saved = agent.load_profile()
+    assert saved["patient"]["current_treatments"] == ["hepatectomy"]
+    assert [item["text"] for item in saved["treatments_classified"]] == ["hepatectomy"]
+
+
 @pytest.mark.parametrize(
     "raw",
     [

@@ -308,6 +308,31 @@ def test_cli_classification_failure_keeps_precommitted_raw_treatments(agent, mon
     assert [item["text"] for item in agent.current_treatment_records(saved)] == ["everolimus"]
 
 
+def test_cli_mixed_surgery_treatment_partial_classification_fails_closed(agent, monkeypatch):
+    from agent import cli
+
+    def intake(_text, profile, **_kwargs):
+        profile["patient"]["current_treatments"].append("hepatectomy and lanreotide")
+        agent.invalidate_treatment_classification(profile)
+        agent.sync_treatment_records(profile)
+        return profile, {"source_document_id": "doc_" + "d" * 32}
+
+    monkeypatch.setattr(cli, "run_intake", intake)
+    monkeypatch.setattr(cli, "run_orchestrator", lambda *_args, **_kwargs: "report")
+    monkeypatch.setattr(
+        cli,
+        "classify_treatments",
+        lambda _profile: (_ for _ in ()).throw(agent.TreatmentClassificationError("partial")),
+    )
+
+    with pytest.raises(agent.TreatmentClassificationError):
+        cli.cmd_feed(SimpleNamespace(file=None, text="clinical note"))
+
+    saved = agent.load_profile()
+    assert saved["patient"]["current_treatments"] == ["hepatectomy and lanreotide"]
+    assert saved["treatments_classification_revision"] is None
+
+
 def test_cli_update_profile_binds_successful_classification_to_saved_revision(agent, monkeypatch):
     from agent import cli
 

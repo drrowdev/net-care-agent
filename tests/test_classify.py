@@ -178,6 +178,32 @@ def test_common_net_regimens_and_procedures_have_canonical_identity(
     assert result[0]["text"] == treatment
 
 
+@pytest.mark.parametrize(
+    "surgery",
+    [
+        "hepatectomy",
+        "partial hepatectomy",
+        "pancreatectomy",
+        "debulking surgery",
+        "metastasectomy",
+    ],
+)
+def test_common_net_surgeries_have_canonical_identity(agent, empty_profile, surgery):
+    empty_profile["patient"]["current_treatments"] = [surgery]
+    payload = [{"text": surgery, "category": "completed", "label": surgery}]
+    with patch_llm(agent, lambda **_: llm_text(json.dumps(payload))):
+        result = agent.classify_treatments(empty_profile)
+    assert result[0]["text"] == surgery
+
+
+def test_mixed_recognized_and_unknown_compound_fails_closed(agent, empty_profile):
+    empty_profile["patient"]["current_treatments"] = ["hepatectomy and lanreotide"]
+    incomplete = [{"text": "lanreotide", "category": "active", "label": "lanreotide"}]
+    with patch_llm(agent, lambda **_: llm_text(json.dumps(incomplete))):
+        with pytest.raises(agent.TreatmentClassificationError):
+            agent.classify_treatments(empty_profile)
+
+
 def test_mixed_known_and_custom_treatment_cannot_drop_custom_identity(agent, empty_profile):
     empty_profile["patient"]["current_treatments"] = ["lanreotide plus TACE"]
     payload = [{"text": "lanreotide", "category": "active", "label": "lanreotide"}]

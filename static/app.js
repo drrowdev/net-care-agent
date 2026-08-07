@@ -20,6 +20,8 @@
   let visitsById = new Map();
   let appointmentOptions = [];
   let appointmentQuestionSources = [];
+  let questionLoadEpoch = 0;
+  let generatedQuestionsUnavailable = false;
   let visitFollowUps = [];
   let selectedVisitId = null;
   let visitSelectionEpoch = 0;
@@ -129,9 +131,10 @@
   }
 
   async function refreshClinicalWorkflowState(profileRevision) {
+    redactGeneratedQuestionChoices();
     phiEpoch += 1;
     taskSelectionEpoch += 1;
-    syncChatRevision(profileRevision, true);
+    syncChatRevision(profileRevision, true, false);
     await Promise.allSettled([
       loadStatus(),
       loadSummary(),
@@ -186,6 +189,7 @@
     const message = generatedSource
       ? 'The assessment changed. Reloaded questions must be reviewed before adding one.'
       : (error.message || 'This visit changed. Review the latest version before trying again.');
+    if (generatedSource) redactGeneratedQuestionChoices();
     setAppointmentMessage(message, 'conflict');
     reportLoadError('appointment-workflow', error);
     await Promise.allSettled([loadVisits(), loadVisitFollowUps(), loadQuestions()]);
@@ -668,6 +672,7 @@
     const alerts = document.getElementById('alerts-list');
     const search = document.getElementById('bm-search');
     latestProfileRevision = null;
+    redactGeneratedQuestionChoices();
     latestResearchUpdate = null;
     allBiomarkers = [];
     renderLatestResearchUpdate(null);
@@ -698,6 +703,8 @@
       visitsById = new Map();
       appointmentOptions = [];
       appointmentQuestionSources = [];
+      questionLoadEpoch += 1;
+      generatedQuestionsUnavailable = false;
       visitFollowUps = [];
       selectedVisitId = null;
       visitSelectionEpoch += 1;
@@ -3309,24 +3316,26 @@
   function renderVisitSourceQuestions() {
     const container = document.getElementById('visit-source-questions');
     if (!container) return;
-    const generated = appointmentQuestionSources.filter(question => question.source === 'ai');
-    if (!generated.length) {
+    const generated = appointmentQuestionSources.filter(
+      question => question.source === 'ai' && generatedQuestionIsCurrent(question)
+    );
+    if (!generated.length && !generatedQuestionsUnavailable) {
       container.innerHTML = '<div class="empty-state">No generated questions available.</div>';
       return;
     }
-    container.innerHTML = generated.map(question => {
-      const unavailable = question.stale;
-      if (unavailable) {
-        return `<div class="visit-source-question unavailable">
-          <div><strong>Generated question unavailable</strong><span>The assessment changed. Regenerate before adding it.</span></div>
-          <button class="button secondary" disabled>Unavailable</button>
-        </div>`;
-      }
-      return `<div class="visit-source-question" data-source-question-id="${escHtml(question.id)}" data-source-token="${escHtml(question.source_token)}">
+    const currentRows = generated.map(question =>
+      `<div class="visit-source-question" data-source-question-id="${escHtml(question.id)}" data-source-token="${escHtml(question.source_token)}">
         <div><strong>${escHtml(question.text)}</strong><span>Current generated question</span></div>
         <button class="button secondary" onclick="addGeneratedVisitQuestion(this.closest('.visit-source-question'))">Add</button>
-      </div>`;
-    }).join('');
+      </div>`
+    );
+    if (generatedQuestionsUnavailable) {
+      currentRows.push(`<div class="visit-source-question unavailable">
+        <div><strong>Generated questions unavailable</strong><span>Reload the current questions before adding a generated choice.</span></div>
+        <button class="button secondary" onclick="loadQuestions()">Retry</button>
+      </div>`);
+    }
+    container.innerHTML = currentRows.join('');
   }
 
   async function addGeneratedVisitQuestion(row) {
@@ -3694,22 +3703,79 @@
     if (questionsOpen) loadQuestions();
   }
 
+  function generatedQuestionIsCurrent(question) {
+    if (!question || question.source !== 'ai' || question.stale !== false) return false;
+    if (
+      typeof question.id !== 'string' || !question.id.trim()
+      || typeof question.text !== 'string' || !question.text.trim()
+      || typeof question.source_token !== 'string' || !question.source_token.trim()
+      || typeof question.generation_job_id !== 'string' || !question.generation_job_id.trim()
+      || question.source_profile_revision == null
+      || latestProfileRevision == null
+    ) {
+      return false;
+    }
+    return String(question.source_profile_revision) === String(latestProfileRevision);
+  }
+
+  function projectQuestionChoices(questions) {
+    const projected = [];
+    let unavailable = false;
+    for (const question of Array.isArray(questions) ? questions : []) {
+      if (question?.source !== 'ai') {
+        projected.push({ ...question });
+      } else if (generatedQuestionIsCurrent(question)) {
+        projected.push({ ...question });
+      } else {
+        unavailable = true;
+      }
+    }
+    return { items: projected, unavailable };
+  }
+
+  function redactGeneratedQuestionChoices() {
+    questionLoadEpoch += 1;
+    appointmentQuestionSources = appointmentQuestionSources.filter(
+      question => question?.source !== 'ai'
+    );
+    generatedQuestionsUnavailable = true;
+    renderQuestions(appointmentQuestionSources);
+    renderVisitSourceQuestions();
+  }
+
   async function loadQuestions() {
     const requestPhiEpoch = phiEpoch;
+    const requestQuestionEpoch = ++questionLoadEpoch;
+    const requestProfileRevision = latestProfileRevision == null
+      ? null
+      : String(latestProfileRevision);
     try {
       const r = await fetch('/api/questions');
       const qs = await readJsonResponse(r);
-      if (requestPhiEpoch !== phiEpoch) return [];
-      appointmentQuestionSources = Array.isArray(qs) ? qs : [];
-      renderQuestions(qs);
-      if (appointmentDialogOpen) renderVisitSourceQuestions();
+      if (
+        requestPhiEpoch !== phiEpoch
+        || requestQuestionEpoch !== questionLoadEpoch
+        || (
+          requestProfileRevision != null
+          && String(latestProfileRevision) !== requestProfileRevision
+        )
+      ) return [];
+      const projection = projectQuestionChoices(qs);
+      appointmentQuestionSources = projection.items;
+      generatedQuestionsUnavailable = projection.unavailable;
+      renderQuestions(appointmentQuestionSources);
+      renderVisitSourceQuestions();
       reportLoadSuccess('questions');
-      return qs;
+      return appointmentQuestionSources;
     } catch(e) {
+      if (
+        requestPhiEpoch !== phiEpoch
+        || requestQuestionEpoch !== questionLoadEpoch
+      ) return [];
       if (requestPhiEpoch === phiEpoch && shouldEvictClientPhi(e)) {
         evictClientPhi(e);
       } else if (requestPhiEpoch === phiEpoch) {
-        document.getElementById('q-list').innerHTML = loadFailureMarkup('Questions', 'loadQuestions()');
+        redactGeneratedQuestionChoices();
       }
       reportLoadError('questions', e);
       return [];
@@ -3717,8 +3783,9 @@
   }
 
   function renderQuestions(qs) {
-    const stale  = qs.filter(q => q.source === 'ai' && q.stale);
-    const current = qs.filter(q => !(q.source === 'ai' && q.stale));
+    const current = (Array.isArray(qs) ? qs : []).filter(
+      q => q.source !== 'ai' || generatedQuestionIsCurrent(q)
+    );
     const urgent = current.filter(q => !q.asked && q.priority === 'urgent');
     const high   = current.filter(q => !q.asked && q.priority === 'high');
     const medium = current.filter(q => !q.asked && (q.priority === 'medium' || !q.priority));
@@ -3732,20 +3799,18 @@
     }
 
     const qRow = (q) => {
-      const unavailable = q.source === 'ai' && q.stale;
       return `
-      <div class="q-item${q.asked?' asked':''}${q.stale?' stale':''}" data-question-id="${escHtml(q.id)}">
+      <div class="q-item${q.asked?' asked':''}" data-question-id="${escHtml(q.id)}">
         <div class="q-priority-dot ${safeClassToken(q.priority, 'medium')}"></div>
-        <button class="q-checkbox${q.asked?' checked':''}" onclick="toggleQuestion(this.closest('.q-item').dataset.questionId)" aria-label="${q.asked ? 'Mark question as not asked' : 'Mark question as asked'}" ${unavailable ? 'disabled' : ''}>${q.asked?'✓':''}</button>
+        <button class="q-checkbox${q.asked?' checked':''}" onclick="toggleQuestion(this.closest('.q-item').dataset.questionId)" aria-label="${q.asked ? 'Mark question as not asked' : 'Mark question as asked'}">${q.asked?'✓':''}</button>
         <div class="q-text-wrap">
-          <div class="q-text${q.asked?' asked':''}">${unavailable ? 'Generated question unavailable' : escHtml(q.text)}</div>
+          <div class="q-text${q.asked?' asked':''}">${escHtml(q.text)}</div>
           <div class="q-meta">
-            ${unavailable ? '' : `<span class="q-cat ${safeClassToken(q.category, 'Other')}">${escHtml(translateCategory(q.category||'Other'))}</span>`}
-            ${q.stale ? '<span class="q-stale-label">Outdated — the assessment changed</span>' : ''}
-            ${!unavailable && q.rationale ? `<span class="q-rationale">${escHtml(q.rationale)}</span>` : ''}
+            <span class="q-cat ${safeClassToken(q.category, 'Other')}">${escHtml(translateCategory(q.category||'Other'))}</span>
+            ${q.rationale ? `<span class="q-rationale">${escHtml(q.rationale)}</span>` : ''}
           </div>
         </div>
-        <button class="q-delete" onclick="deleteQuestion(this.closest('.q-item').dataset.questionId)" aria-label="Delete question" title="Delete" ${unavailable ? 'disabled' : ''}>✕</button>
+        <button class="q-delete" onclick="deleteQuestion(this.closest('.q-item').dataset.questionId)" aria-label="Delete question" title="Delete">✕</button>
       </div>`;
     };
 
@@ -3757,7 +3822,16 @@
     if (high.length)   { html += grpHdr('Important', 'var(--amber)'); html += high.map(qRow).join(''); }
     if (medium.length) { html += grpHdr('Other', 'var(--text2)'); html += medium.map(qRow).join(''); }
     if (asked.length)  { html += grpHdr('Already asked', 'var(--text2)'); html += asked.map(qRow).join(''); }
-    if (stale.length)  { html += grpHdr('Outdated generated questions', 'var(--amber)'); html += stale.map(qRow).join(''); }
+    if (generatedQuestionsUnavailable) {
+      html += grpHdr('Generated questions unavailable', 'var(--amber)');
+      html += `<div class="q-item stale generated-question-unavailable">
+        <div class="q-text-wrap">
+          <div class="q-text">Generated questions unavailable</div>
+          <div class="q-meta"><span class="q-stale-label">Reload current questions before using a generated choice.</span></div>
+        </div>
+        <button class="button secondary" onclick="loadQuestions()">Retry</button>
+      </div>`;
+    }
     if (!html) html = '<div class="q-empty">No questions yet. Generate suggestions or add your own.</div>';
 
     const list = document.getElementById('q-list');
@@ -3782,7 +3856,7 @@
       const submitted = await readJobSubmission(r);
       const completed = await waitForJob(submitted.job_id);
       if (requestPhiEpoch !== phiEpoch) return;
-      renderQuestions((completed.result || {}).questions || []);
+      await loadQuestions();
       reportLoadSuccess('action');
     } catch(e) {
       reportLoadError('action', e);
@@ -3843,16 +3917,39 @@
   let chatHistoryRevision = null;
   let chatOpen = false;
 
-  function syncChatRevision(revision, forceNotice = false) {
-    if (revision == null) return false;
+  function syncChatRevision(revision, forceNotice = false, reloadQuestions = true) {
+    if (revision == null) {
+      latestProfileRevision = null;
+      chatHistoryRevision = null;
+      chatHistory = [];
+      redactGeneratedQuestionChoices();
+      if (reloadQuestions) loadQuestions();
+      const unavailableMessages = document.getElementById('chat-messages');
+      if (unavailableMessages) {
+        unavailableMessages.innerHTML = `<div class="chat-revision-notice" role="status">
+          Patient record revision unavailable. Prior chat history was cleared.
+        </div>`;
+      }
+      return true;
+    }
     const normalized = String(revision);
     if (chatHistoryRevision == null) {
       chatHistoryRevision = normalized;
       latestProfileRevision = revision;
+      const generatedChoicesNeedAuthority = generatedQuestionsUnavailable
+        || appointmentQuestionSources.some(question => question?.source === 'ai');
+      if (generatedChoicesNeedAuthority) {
+        redactGeneratedQuestionChoices();
+        if (reloadQuestions) loadQuestions();
+      }
       return false;
     }
     const changed = chatHistoryRevision !== normalized;
     latestProfileRevision = revision;
+    if (changed) {
+      redactGeneratedQuestionChoices();
+      if (reloadQuestions) loadQuestions();
+    }
     if (!changed && !forceNotice) return false;
     chatHistoryRevision = normalized;
     chatHistory = [];
@@ -4070,8 +4167,8 @@
       });
       const data = await readJsonResponse(r);
       if (requestPhiEpoch !== phiEpoch) return;
-      chatHistoryRevision = String(data.profile_revision);
-      latestProfileRevision = data.profile_revision;
+      const revisionChanged = syncChatRevision(data.profile_revision);
+      if (revisionChanged) return;
       const completed = await waitForJob(data.job_id);
       if (requestPhiEpoch !== phiEpoch) return;
       const reply = (completed.result || {}).reply;
@@ -4084,7 +4181,7 @@
     } catch(e) {
       if (requestPhiEpoch !== phiEpoch) return;
       if (e.status === 409) {
-        syncChatRevision(e.data?.profile_revision ?? latestProfileRevision, true);
+        syncChatRevision(e.data?.profile_revision, true);
       }
       thinkingDiv.querySelector('.chat-bubble').classList.remove('thinking');
       updateLastMsg(thinkingDiv, `Error: ${e.message}`);

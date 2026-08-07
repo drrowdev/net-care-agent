@@ -85,7 +85,9 @@ incremented when something user-visible or operationally meaningful changes.
   safely migrates nullable legacy patient scaffolding. Resolving an alert now
   advances the generated-context revision so chat, reports/results, summaries,
   and questions cannot retain the unresolved-alert context. Authorization
-  eviction also clears and hides the assessment freshness/source banner.
+  eviction also clears and hides the assessment freshness/source banner, and
+  summary epoch guards prevent auth failures or late responses from repainting
+  that patient-derived projection.
 - **Today-first responsive caregiver workspace.** Replaced the duplicated
   desktop/mobile surfaces with shared **Today**, **Patient**, **Questions**, and
   **Activity** views while retaining the warm green/amber visual identity.

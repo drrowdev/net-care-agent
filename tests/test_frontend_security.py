@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
 from pathlib import Path
+
+import pytest
 
 APP_JS = Path("static/app.js").read_text(encoding="utf-8")
 
@@ -11,6 +15,168 @@ def _function_source(name: str, next_name: str) -> str:
     start = APP_JS.index(f"function {name}")
     end = APP_JS.index(f"function {next_name}", start)
     return APP_JS[start:end]
+
+
+def _executable_function_source(name: str, next_name: str) -> str:
+    source = _function_source(name, next_name).rstrip()
+    if source.endswith("async"):
+        source = source.removesuffix("async").rstrip()
+    start = APP_JS.index(f"function {name}")
+    return f"async {source}" if APP_JS[start - 6 : start] == "async " else source
+
+
+def _run_summary_auth_probe(status: int) -> dict:
+    script = "\n".join(
+        [
+            """
+class FakeClassList {
+  add() {}
+  remove() {}
+  toggle() {}
+  contains() { return false; }
+}
+
+function fakeElement() {
+  return {
+    classList: new FakeClassList(),
+    className: '',
+    dataset: {},
+    disabled: false,
+    hidden: false,
+    innerHTML: '',
+    style: {},
+    textContent: '',
+    value: '',
+    closest() { return null; },
+    remove() {},
+    removeAttribute() {},
+    setAttribute() {},
+  };
+}
+
+const elements = new Map();
+const element = id => {
+  if (!elements.has(id)) elements.set(id, fakeElement());
+  return elements.get(id);
+};
+const document = {
+  body: { children: [], classList: new FakeClassList() },
+  getElementById: element,
+  querySelector() { return null; },
+  querySelectorAll() { return []; },
+};
+
+let selectedTaskId = 'patient-task';
+let currentReportText = 'patient report';
+let pendingSummary = { status: 'current' };
+let currentReceipt = { patient: true };
+let latestProfileRevision = 7;
+let latestResearchUpdate = { trial_count: 1 };
+let patientEvidence = { patient: true };
+let allBiomarkers = [{ patient: true }];
+let chatHistory = [{ patient: true }];
+let chatHistoryRevision = 7;
+let activeDialogSurface = null;
+let chatOpen = true;
+let taskSelectionEpoch = 0;
+let phiEpoch = 0;
+let renderSummaryCalls = 0;
+const loadErrors = [];
+
+function renderLatestResearchUpdate() {}
+function clearReportCopyState() {}
+function updateCharCount() {}
+function loadFailureMarkup() { return 'transient failure'; }
+function reportLoadSuccess() {}
+function reportLoadError(scope, error) { loadErrors.push([scope, error.status]); }
+function renderSummary(data) {
+  renderSummaryCalls += 1;
+  renderFreshness(data);
+}
+function summaryIsStale() { return false; }
+function fmtDate(value) { return value; }
+""",
+            _executable_function_source("readJsonResponse", "readJobSubmission"),
+            _function_source("shouldEvictClientPhi", "restoreDialogFocus"),
+            _function_source("evictClientPhi", "renderLatestResearchUpdate"),
+            _executable_function_source("loadSummary", "renderPendingSummary"),
+            _function_source("renderFreshness", "renderClaimEvidence"),
+            """
+function response(status, data) {
+  return {
+    status,
+    ok: status >= 200 && status < 300,
+    headers: { get() { return null; } },
+    async json() { return data; },
+  };
+}
+
+(async () => {
+  const authStatus = Number(process.argv[1]);
+  const banner = element('freshness-banner');
+  const title = element('freshness-title');
+  const message = element('freshness-message');
+  const summaryBody = element('summary-body');
+  banner.hidden = false;
+  title.textContent = 'Patient-derived freshness';
+  message.textContent = 'Patient-derived source';
+  summaryBody.innerHTML = 'Patient-derived summary';
+
+  let resolveLate;
+  const lateResponse = new Promise(resolve => { resolveLate = resolve; });
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    if (fetchCalls === 1) return lateResponse;
+    return response(authStatus, { error: 'denied' });
+  };
+
+  const lateRequest = loadSummary();
+  const authRequest = loadSummary();
+  await authRequest;
+  resolveLate(response(200, { status: 'current', generated_at: '2026-08-07' }));
+  await lateRequest;
+
+  console.log(JSON.stringify({
+    phiEpoch,
+    hidden: banner.hidden,
+    title: title.textContent,
+    message: message.textContent,
+    summary: summaryBody.innerHTML,
+    renderSummaryCalls,
+    fetchCalls,
+    loadErrors,
+  }));
+})().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
+""",
+        ]
+    )
+    completed = subprocess.run(
+        ["node", "-e", script, str(status)],
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_summary_auth_eviction_cannot_repaint_freshness_or_accept_late_success(status):
+    result = _run_summary_auth_probe(status)
+
+    assert result == {
+        "phiEpoch": 2,
+        "hidden": True,
+        "title": "",
+        "message": "",
+        "summary": '<div class="summary-empty">Patient assessment unavailable.</div>',
+        "renderSummaryCalls": 0,
+        "fetchCalls": 2,
+        "loadErrors": [["summary", status]],
+    }
 
 
 def test_process_file_posts_multipart_to_file_endpoint():
@@ -216,8 +382,11 @@ def test_central_phi_eviction_clears_patient_panels_dialogs_and_histories():
         assert expression in freshness
     summary = _function_source("loadSummary", "renderPendingSummary")
     auth_failure = summary[summary.index("catch(e)") :]
-    assert auth_failure.index("evictClientPhi(e)") < auth_failure.index("return null")
-    assert auth_failure.index("return null") < auth_failure.index("renderFreshness(null, e)")
+    epoch_guard = auth_failure.index("if (requestPhiEpoch !== phiEpoch)")
+    eviction = auth_failure.index("if (shouldEvictClientPhi(e))")
+    repaint = auth_failure.index("renderFreshness(null, e)")
+    assert epoch_guard < auth_failure.index("return null", epoch_guard) < eviction
+    assert eviction < auth_failure.index("return null", eviction) < repaint
     for loader, next_name in (
         ("loadStatus", "renderStatusFailure"),
         ("loadPatientEvidence", "evidenceBadge"),

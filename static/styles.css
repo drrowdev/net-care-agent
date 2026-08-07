@@ -2641,6 +2641,7 @@ body.dialog-open { overflow: hidden; }
 }
 .visit-row-meta,
 .visit-source-label,
+.visit-decision-lifecycle,
 .visit-followup p {
   margin: 3px 0 0;
   color: var(--text2);
@@ -3030,7 +3031,12 @@ body.dialog-open { overflow: hidden; }
   .appointment-tab-panel { padding: 12px; }
   .visit-answer { grid-template-columns: 1fr; align-items: stretch; }
   .visit-answer .button { justify-self: stretch; }
-  .visit-question-order .button { flex: 1; min-width: 110px; }
+  .visit-question-order .button {
+    flex: 1;
+    min-width: 110px;
+    min-height: 44px;
+  }
+  .visit-question-order select { min-height: 44px; }
   .visit-question-order label { flex: 1 1 100%; }
   .visit-form-actions .button { flex: 1 1 130px; }
   .appointment-retry { align-items: stretch; flex-direction: column; padding-bottom: calc(10px + env(safe-area-inset-bottom)); }

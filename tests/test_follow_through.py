@@ -1505,11 +1505,29 @@ def test_model_context_labels_captured_statements_as_unverified(agent, empty_pro
             ],
             "decisions": [
                 {
-                    "id": "decision",
-                    "text": "Continue monitoring",
+                    "id": "decision-active",
+                    "text": "Active decision remains in context",
                     "status": "active",
                     "provenance": agent.capture_provenance(),
-                }
+                },
+                {
+                    "id": "decision-needs-confirmation",
+                    "text": "Unconfirmed decision stays out of context",
+                    "status": "needs_confirmation",
+                    "provenance": agent.capture_provenance(),
+                },
+                {
+                    "id": "decision-superseded",
+                    "text": "Superseded decision stays out of context",
+                    "status": "superseded",
+                    "provenance": agent.capture_provenance(),
+                },
+                {
+                    "id": "decision-retracted",
+                    "text": "Retracted decision stays out of context",
+                    "status": "retracted",
+                    "provenance": agent.capture_provenance(),
+                },
             ],
         }
     ]
@@ -1519,6 +1537,10 @@ def test_model_context_labels_captured_statements_as_unverified(agent, empty_pro
     assert "Caregiver-captured clinician statements (attributed, unverified)" in context
     assert "caregiver-recorded clinician answer" in context
     assert "caregiver-recorded clinician decision" in context
+    assert "Active decision remains in context" in context
+    assert "Unconfirmed decision stays out of context" not in context
+    assert "Superseded decision stays out of context" not in context
+    assert "Retracted decision stays out of context" not in context
 
 
 def test_visit_follow_up_snapshots_decision_and_replays(app_client, agent, empty_profile):

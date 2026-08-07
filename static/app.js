@@ -28,6 +28,7 @@
   let pendingWorkflowIntent = null;
   let workflowMutationPending = false;
   let appointmentDrafts = new Map();
+  let decisionSuccessorConflicts = new Set();
   const failedLoads = new Map();
 
   // ── UI label localization ───────────────────────────────────────────────
@@ -151,7 +152,10 @@
     }
     const priorProfileRevision = latestProfileRevision;
     if (Number.isInteger(data.workflow_revision)) workflowRevision = data.workflow_revision;
-    if (data.visit?.id) visitsById.set(data.visit.id, data.visit);
+    if (data.visit?.id) {
+      visitsById.set(data.visit.id, data.visit);
+      revalidateDecisionSuccessorState(data.visit);
+    }
     if (data.item?.question_snapshots && data.item.id) visitsById.set(data.item.id, data.item);
     if (data.item?.visit_id && data.item.id) {
       visitFollowUps = [
@@ -165,12 +169,17 @@
       && String(data.profile_revision) !== String(priorProfileRevision);
     if (data.profile_revision != null) latestProfileRevision = data.profile_revision;
 
+    const renderedResponseVisit = Boolean(data.visit?.id && workflowIntentCanRender(intent));
+    if (renderedResponseVisit) {
+      renderVisitPreparation();
+      renderAppointmentWorkspace();
+    }
     if (profileChanged) {
       await refreshClinicalWorkflowState(data.profile_revision);
       return;
     }
 
-    if (workflowIntentCanRender(intent)) {
+    if (workflowIntentCanRender(intent) && !renderedResponseVisit) {
       renderVisitPreparation();
       renderAppointmentWorkspace();
     }
@@ -182,6 +191,11 @@
       captureAppointmentDraft();
     }
     clearWorkflowRetry();
+    if (intent.body.supersedes_id) {
+      decisionSuccessorConflicts.add(intent.body.supersedes_id);
+      clearDecisionSuccessorState(intent.visitId);
+      if (appointmentDialogOpen && workflowIntentCanRender(intent)) renderVisitDecisions();
+    }
     const generatedSource = intent.body.source_kind === 'generated';
     const message = generatedSource
       ? 'The assessment changed. Reloaded questions must be reviewed before adding one.'
@@ -706,6 +720,7 @@
       pendingWorkflowIntent = null;
       workflowMutationPending = false;
       appointmentDrafts = new Map();
+      decisionSuccessorConflicts = new Set();
       chatHistory = [];
       chatHistoryRevision = null;
       document.querySelectorAll('.action-feedback').forEach(editor => editor.remove());
@@ -2836,6 +2851,7 @@
       workflowRevision = data.workflow_revision;
       syncChatRevision(data.profile_revision);
       visitsById = new Map((data.items || []).map(item => [item.id, item]));
+      decisionSuccessorConflicts = new Set();
       appointmentOptions = Array.isArray(data.appointments) ? data.appointments : [];
       if (selectedVisitId && !visitsById.has(selectedVisitId)) {
         selectedVisitId = null;
@@ -3089,6 +3105,40 @@
     });
   }
 
+  function activeDecisionSuccessorId(visit, supersedesId) {
+    const target = (visit.decisions || []).find(
+      decision => decision.id === supersedesId && decision.status === 'active'
+    );
+    return target?.id || '';
+  }
+
+  function clearDecisionSuccessorState(visitId) {
+    const draft = appointmentDrafts.get(visitId);
+    if (draft) draft.supersedesId = '';
+    if (!appointmentDialogOpen || selectedVisitId !== visitId) return;
+    const input = document.getElementById('visit-decision-supersedes');
+    if (input) input.value = '';
+    const cancel = document.getElementById('visit-decision-cancel-supersede');
+    if (cancel) cancel.hidden = true;
+    const label = document.getElementById('visit-decision-label');
+    if (label) label.textContent = 'Caregiver-entered decision attributed to the clinician';
+  }
+
+  function revalidateDecisionSuccessorState(visit) {
+    const draft = appointmentDrafts.get(visit.id);
+    const invalidDraft = draft?.supersedesId
+      && !activeDecisionSuccessorId(visit, draft.supersedesId);
+    if (invalidDraft) clearDecisionSuccessorState(visit.id);
+    if (
+      !appointmentDialogOpen
+      || selectedVisitId !== visit.id
+      || invalidDraft
+    ) return;
+    const input = document.getElementById('visit-decision-supersedes');
+    if (!input?.value || activeDecisionSuccessorId(visit, input.value)) return;
+    clearDecisionSuccessorState(visit.id);
+  }
+
   function restoreAppointmentDraft(visit) {
     const draft = appointmentDrafts.get(visit.id);
     const values = draft || {
@@ -3098,6 +3148,8 @@
       editClinician: visit.clinician || '',
       editLocation: visit.location || '',
     };
+    const supersedesId = activeDecisionSuccessorId(visit, values.supersedesId);
+    if (draft && draft.supersedesId && !supersedesId) draft.supersedesId = '';
     const fields = {
       'visit-edit-title': values.editTitle ?? visit.title ?? '',
       'visit-edit-date': values.editDate ?? visit.date ?? '',
@@ -3108,7 +3160,7 @@
       'visit-manual-category': values.manualCategory || 'Other',
       'visit-manual-priority': values.manualPriority || 'medium',
       'visit-decision-text': values.decisionText || '',
-      'visit-decision-supersedes': values.supersedesId || '',
+      'visit-decision-supersedes': supersedesId,
       'visit-followup-text': values.followUpText || '',
       'visit-followup-owner': values.followUpOwner || '',
       'visit-followup-due': values.followUpDue || '',
@@ -3119,7 +3171,7 @@
     });
     const decisionSelect = document.getElementById('visit-followup-decision');
     if (decisionSelect && values.followUpDecision) decisionSelect.value = values.followUpDecision;
-    const superseding = Boolean(values.supersedesId);
+    const superseding = Boolean(supersedesId);
     document.getElementById('visit-decision-cancel-supersede').hidden = !superseding;
     document.getElementById('visit-decision-label').textContent = superseding
       ? 'Correct with a successor decision'
@@ -3524,6 +3576,42 @@
     }
   }
 
+  function decisionLifecyclePresentation(status, correctionBlocked = false) {
+    if (status === 'active') {
+      return {
+        copy: correctionBlocked
+          ? 'Reload this changed decision before creating a correction.'
+          : 'Active decisions can be marked for confirmation, corrected with an immutable successor, or retracted.',
+        controls: `<button class="button secondary" onclick="changeDecisionStatus(this.closest('.visit-decision'),'needs_confirmation')">Needs confirmation</button>
+          ${correctionBlocked ? '' : `<button class="button secondary" onclick="prepareDecisionSuccessor(this.closest('.visit-decision'))">Correct with successor</button>`}
+          <button class="button secondary danger" onclick="changeDecisionStatus(this.closest('.visit-decision'),'retracted')">Retract</button>`,
+      };
+    }
+    if (status === 'needs_confirmation') {
+      return {
+        copy: 'Confirm this decision as active or retract it. Correction is available only after confirmation.',
+        controls: `<button class="button secondary" onclick="changeDecisionStatus(this.closest('.visit-decision'),'active')">Confirm active</button>
+          <button class="button secondary danger" onclick="changeDecisionStatus(this.closest('.visit-decision'),'retracted')">Retract</button>`,
+      };
+    }
+    if (status === 'superseded') {
+      return {
+        copy: 'This superseded decision is immutable history; no further lifecycle actions are available.',
+        controls: '',
+      };
+    }
+    if (status === 'retracted') {
+      return {
+        copy: 'This retracted decision is immutable history; no further lifecycle actions are available.',
+        controls: '',
+      };
+    }
+    return {
+      copy: 'This decision has an unavailable lifecycle state; no actions are available.',
+      controls: '',
+    };
+  }
+
   function renderVisitDecisions() {
     const visit = currentVisit();
     const list = document.getElementById('visit-decision-list');
@@ -3539,27 +3627,30 @@
       return;
     }
     list.innerHTML = decisions.map(decision => {
-      const controls = decision.status === 'active'
-        ? `<button class="button secondary" onclick="changeDecisionStatus(this.closest('.visit-decision'),'needs_confirmation')">Needs confirmation</button>
-           <button class="button secondary" onclick="prepareDecisionSuccessor(this.closest('.visit-decision'))">Correct with successor</button>
-           <button class="button secondary danger" onclick="changeDecisionStatus(this.closest('.visit-decision'),'retracted')">Retract</button>`
-        : decision.status === 'needs_confirmation'
-          ? `<button class="button secondary" onclick="changeDecisionStatus(this.closest('.visit-decision'),'active')">Confirm active</button>
-             <button class="button secondary" onclick="prepareDecisionSuccessor(this.closest('.visit-decision'))">Correct with successor</button>
-             <button class="button secondary danger" onclick="changeDecisionStatus(this.closest('.visit-decision'),'retracted')">Retract</button>`
-          : '';
+      const lifecycle = decisionLifecyclePresentation(
+        decision.status,
+        decisionSuccessorConflicts.has(decision.id)
+      );
       return `<article class="visit-decision" data-decision-id="${escHtml(decision.id)}" data-decision-token="${escHtml(decision.token)}">
         <div class="visit-decision-heading"><strong>${escHtml(decision.text)}</strong><span class="visit-status-badge ${safeClassToken(decision.status, 'active')}">${escHtml(decision.status.replaceAll('_', ' '))}</span></div>
         <p class="capture-provenance">Caregiver-entered · attributed to clinician · unverified</p>
         ${decision.supersedes_id ? `<p class="visit-source-label">Successor to ${escHtml(decision.supersedes_id)}</p>` : ''}
-        ${controls ? `<div class="visit-form-actions">${controls}</div>` : ''}
+        <p class="visit-decision-lifecycle">${escHtml(lifecycle.copy)}</p>
+        ${lifecycle.controls ? `<div class="visit-form-actions">${lifecycle.controls}</div>` : ''}
       </article>`;
     }).join('');
   }
 
   function prepareDecisionSuccessor(row) {
+    const visit = currentVisit();
     const id = row?.dataset.decisionId;
-    if (!id) return;
+    const decision = (visit?.decisions || []).find(item => item.id === id);
+    if (!visit || !decision || decision.status !== 'active' || decisionSuccessorConflicts.has(id)) {
+      if (visit) clearDecisionSuccessorState(visit.id);
+      setAppointmentMessage('Reload this changed decision before creating a correction.', 'conflict');
+      loadVisits();
+      return;
+    }
     document.getElementById('visit-decision-supersedes').value = id;
     document.getElementById('visit-decision-label').textContent = 'Correct with a successor decision';
     document.getElementById('visit-decision-cancel-supersede').hidden = false;

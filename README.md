@@ -346,7 +346,7 @@ The most common loops:
 | Record an oncologist's judgment | **Questions** → **Clinical notes** | Becomes a hard constraint for future runs |
 | Resolve / dismiss an alert | **Patient** → **Active alerts** → **Mark resolved** | Marked resolved, persisted in profile |
 | Generate appointment questions | **Questions** → **Generate questions** | Async result is polled, then the question list is rendered |
-| Prepare and run an appointment | **Questions** → **Appointment workspace** | Create or link a visit, order current generated/manual question snapshots, capture answered/unknown clinician-attributed responses and immutable decisions, and create visit-linked follow-ups in one responsive working mode |
+| Prepare and run an appointment | **Questions** → **Appointment workspace** | Create or link a visit, order current generated/manual question snapshots with phone-sized Move/rank targets, capture answered/unknown clinician-attributed responses, correct only active decisions through immutable successors, and create visit-linked follow-ups in one responsive working mode |
 | Chat with the record | Header → **✦ Ask Claude** | Async result grounded in the full profile; chat remains stateless |
 | Open a trial to discuss | **Today** → **Trial to discuss** | Opens `clinicaltrials.gov/study/<NCT_ID>` in a new tab; the treating team and trial site determine eligibility |
 

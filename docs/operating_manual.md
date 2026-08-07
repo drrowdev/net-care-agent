@@ -400,8 +400,19 @@ python Scripts\seed_test_profile.py               # populate a fake profile
 Every `save_profile` call:
 1. Writes a pre-save **rotating snapshot** (`/home/data/snapshots/profile_<timestamp>.json`)
    with an optional `.sha256` sidecar.  The last 20 snapshots are kept.
-2. Writes a **daily backup** (`/home/data/backups/profile_YYYYMMDD.json`) once per
+2. Atomically replaces `patient_profile.json`. This replacement is the mutation
+   commit point: write or replace failures are reported and the prior profile
+   remains authoritative.
+3. Best-effort maintains `.profile-initialized`. A marker failure is logged with
+   only its error type and does not turn the committed mutation into an API
+   failure. Loading a valid profile repairs an absent marker best-effort.
+4. Writes a **daily backup** (`/home/data/backups/profile_YYYYMMDD.json`) once per
    calendar day and prunes files older than 30 days.
+
+If the profile is missing, recovery candidates are checked before the marker.
+Therefore an absent marker never blocks recovery, and a stale marker never
+causes a default profile to overwrite a valid backup. A marker with no profile
+and no valid recovery candidate still fails closed for operator intervention.
 
 ### Automated recovery on corrupt profile
 

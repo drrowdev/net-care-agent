@@ -3,7 +3,14 @@
 from __future__ import annotations
 
 import datetime
+import json
 import threading
+
+import pytest
+
+
+def _profile_temps(config):
+    return list(config.DATA_DIR.glob(f".{config.PROFILE_PATH.name}.*.tmp"))
 
 
 def test_atomic_write_replaces_target(tmp_path):
@@ -68,6 +75,93 @@ def test_save_profile_uses_atomic_write(agent, tmp_path):
     # Round-trip works
     loaded = agent.load_profile()
     assert loaded["patient"]["sstr_status"] == "positive"
+
+
+def test_save_profile_temp_write_failure_is_precommit_and_cleans_temp(
+    agent, empty_profile, monkeypatch
+):
+    from agent import config, io
+
+    def fail_profile_fsync(_fd):
+        raise OSError("simulated profile temp write failure")
+
+    monkeypatch.setattr(io.os, "fsync", fail_profile_fsync)
+
+    with pytest.raises(OSError, match="temp write failure"):
+        agent.save_profile(empty_profile, clinical_change=False)
+
+    assert not config.PROFILE_PATH.exists()
+    assert not (config.DATA_DIR / ".profile-initialized").exists()
+    assert _profile_temps(config) == []
+
+
+def test_save_profile_replace_failure_is_precommit_and_cleans_temp(
+    agent, empty_profile, monkeypatch
+):
+    from agent import config, io
+
+    def fail_profile_replace(_source, _destination):
+        raise OSError("simulated profile replace failure")
+
+    monkeypatch.setattr(io.os, "replace", fail_profile_replace)
+
+    with pytest.raises(OSError, match="replace failure"):
+        agent.save_profile(empty_profile, clinical_change=False)
+
+    assert not config.PROFILE_PATH.exists()
+    assert not (config.DATA_DIR / ".profile-initialized").exists()
+    assert _profile_temps(config) == []
+
+
+def test_save_profile_marker_failure_is_nonfatal_and_recoverable(
+    agent, empty_profile, monkeypatch, caplog
+):
+    import agent.profile as profile_module
+    from agent import config
+
+    private_error = r"patient-name C:\private\patient_profile.json"
+    real_atomic_write = profile_module.atomic_write_text
+
+    def fail_marker(path, content, encoding="utf-8"):
+        if path.name == ".profile-initialized":
+            raise OSError(private_error)
+        return real_atomic_write(path, content, encoding)
+
+    monkeypatch.setattr(profile_module, "atomic_write_text", fail_marker)
+    empty_profile["patient"]["diagnosis"] = "Committed NET"
+
+    with caplog.at_level("WARNING"):
+        agent.save_profile(empty_profile, clinical_change=False)
+
+    committed = json.loads(config.PROFILE_PATH.read_text(encoding="utf-8"))
+    assert committed["patient"]["diagnosis"] == "Committed NET"
+    assert not (config.DATA_DIR / ".profile-initialized").exists()
+    assert list((config.DATA_DIR / "backups").glob("profile_*.json"))
+    assert any(
+        "profile_initialized_marker_write_failed" in record.message
+        and "after_commit=true" in record.message
+        and "error_type=OSError" in record.message
+        for record in caplog.records
+    )
+    assert private_error not in caplog.text
+
+    config.PROFILE_PATH.unlink()
+    recovered = agent.load_profile()
+    assert recovered["patient"]["diagnosis"] == "Committed NET"
+    assert config.PROFILE_PATH.exists()
+
+
+def test_load_profile_repairs_missing_marker_after_valid_profile(agent, empty_profile):
+    from agent import config
+
+    agent.save_profile(empty_profile, clinical_change=False)
+    marker = config.DATA_DIR / ".profile-initialized"
+    marker.unlink()
+
+    loaded = agent.load_profile()
+
+    assert loaded["profile_revision"] == 0
+    assert marker.read_text(encoding="utf-8") == "initialized\n"
 
 
 def test_atomic_write_uses_unique_sibling_temps(tmp_path, monkeypatch):

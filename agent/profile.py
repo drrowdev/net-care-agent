@@ -23,6 +23,7 @@ from .schema import (
 from .serialize import serialized_mutation
 
 log = logging.getLogger(__name__)
+_INITIALIZED_MARKER_NAME = ".profile-initialized"
 
 
 # ── exceptions ────────────────────────────────────────────────────────────────
@@ -417,6 +418,19 @@ def _quarantine_and_recover(path: Path, raw_bytes: bytes, reason: str) -> dict:
     return normalized
 
 
+def _maintain_initialized_marker() -> None:
+    """Best-effort marker maintenance after an authoritative profile exists."""
+    try:
+        atomic_write_text(config.DATA_DIR / _INITIALIZED_MARKER_NAME, "initialized\n")
+    except Exception as exc:
+        # The profile replace is the commit point. This secondary marker must not
+        # turn an already-committed mutation into an apparent request failure.
+        log.warning(
+            "profile_initialized_marker_write_failed after_commit=true error_type=%s",
+            type(exc).__name__,
+        )
+
+
 def load_profile() -> dict:
     """Load, validate, migrate and return the patient profile.
 
@@ -440,14 +454,20 @@ def load_profile() -> dict:
     path = config.PROFILE_PATH
 
     if path.exists():
-        return _load_validated(path)
+        profile = _load_validated(path)
+        if not (config.DATA_DIR / _INITIALIZED_MARKER_NAME).exists():
+            _maintain_initialized_marker()
+        return profile
 
     # First-run creation — serialize to prevent two simultaneous first requests
     # from both creating (and then one overwriting) a new default profile.
     with serialized_mutation():
         if path.exists():
             # Another process created it between our check and lock acquisition.
-            return _load_validated(path)
+            profile = _load_validated(path)
+            if not (config.DATA_DIR / _INITIALIZED_MARKER_NAME).exists():
+                _maintain_initialized_marker()
+            return profile
         from .recovery import NoRecoveryCandidateError, find_recovery_candidates, recover_profile
 
         if find_recovery_candidates():
@@ -459,8 +479,10 @@ def load_profile() -> dict:
                 ) from exc
             recovered = apply_migrations(recovered)
             recovered = _coerce_none_fields(recovered)
-            return normalize_profile(recovered)
-        initialized_marker = config.DATA_DIR / ".profile-initialized"
+            recovered = normalize_profile(recovered)
+            _maintain_initialized_marker()
+            return recovered
+        initialized_marker = config.DATA_DIR / _INITIALIZED_MARKER_NAME
         if initialized_marker.exists():
             raise CorruptProfileError(
                 "Profile is missing from an initialized data directory and no recovery "
@@ -482,6 +504,11 @@ def save_profile(profile: dict, *, clinical_change: bool = True) -> None:
 
     ``clinical_change=False`` is reserved for bookkeeping-only writes. Those
     writes must not invalidate an otherwise current clinical summary.
+
+    The atomic replacement of ``PROFILE_PATH`` is the commit point. Failures
+    before or during that replacement propagate. Initialization-marker and
+    backup maintenance happen after commit and cannot make a committed save
+    appear unsuccessful.
     """
     if not structural_check(profile):
         raise ValueError(
@@ -523,7 +550,7 @@ def save_profile(profile: dict, *, clinical_change: bool = True) -> None:
             config.PROFILE_PATH,
             json.dumps(profile, indent=2, default=str),
         )
-        atomic_write_text(config.DATA_DIR / ".profile-initialized", "initialized\n")
+        _maintain_initialized_marker()
         # Cheap: only copies once per day, then prunes.
         try:
             backups.daily_backup(config.PROFILE_PATH)

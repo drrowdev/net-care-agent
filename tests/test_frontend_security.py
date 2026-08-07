@@ -78,6 +78,7 @@ let allBiomarkers = [{ patient: true }];
 let chatHistory = [{ patient: true }];
 let chatHistoryRevision = 7;
 let activeDialogSurface = null;
+let lastDialogTrigger = null;
 let chatOpen = true;
 let taskSelectionEpoch = 0;
 let phiEpoch = 0;
@@ -99,6 +100,8 @@ const loadErrors = [];
 function renderLatestResearchUpdate() {}
 function clearReportCopyState() {}
 function updateCharCount() {}
+function setAppointmentMutationBusy() {}
+function updateAppointmentFormValidity() {}
 function loadFailureMarkup() { return 'transient failure'; }
 function reportLoadSuccess() {}
 function reportLoadError(scope, error) { loadErrors.push([scope, error.status]); }
@@ -728,6 +731,427 @@ def test_model_markdown_remains_escape_first_and_protocol_limited():
     assert "javascript:" not in sanitizer
 
 
+def _run_workflow_epoch_probe() -> dict:
+    script = "\n".join(
+        [
+            """
+class FakeClassList {
+  add() {}
+  remove() {}
+  toggle() {}
+}
+function fakeElement() {
+  return {
+    classList: new FakeClassList(),
+    className: '',
+    dataset: {},
+    disabled: false,
+    hidden: false,
+    innerHTML: '',
+    textContent: '',
+    value: '',
+    setAttribute() {},
+  };
+}
+const elements = new Map();
+const element = id => {
+  if (!elements.has(id)) elements.set(id, fakeElement());
+  return elements.get(id);
+};
+const document = {
+  getElementById: element,
+  querySelectorAll() { return []; },
+};
+const navigator = { onLine: true };
+let phiEpoch = 0;
+let visitSelectionEpoch = 4;
+let selectedVisitId = 'visit-a';
+let appointmentDialogOpen = true;
+let workflowRevision = 10;
+let latestProfileRevision = 20;
+let visitsById = new Map([
+  ['visit-a', { id: 'visit-a', token: 'a-original' }],
+  ['visit-b', { id: 'visit-b', token: 'b-original' }],
+]);
+let visitFollowUps = [];
+let pendingWorkflowIntent = null;
+let workflowMutationPending = false;
+let appointmentDrafts = new Map();
+let renderPreparationCalls = 0;
+let renderWorkspaceCalls = 0;
+let successReports = 0;
+let callerCleanupCalls = 0;
+
+function captureAppointmentDraft() {}
+function renderVisitPreparation() { renderPreparationCalls += 1; }
+function renderAppointmentWorkspace() { renderWorkspaceCalls += 1; }
+function reportLoadSuccess() { successReports += 1; }
+function reportLoadError() {}
+async function refreshClinicalWorkflowState() { return true; }
+async function handleWorkflowConflict() { return true; }
+function shouldEvictClientPhi() { return false; }
+function evictClientPhi() {}
+function setAppointmentMutationBusy() {}
+function updateAppointmentFormValidity() {}
+function safeClassToken(value) { return String(value || ''); }
+""",
+            _function_source("setAppointmentMessage", "clearWorkflowRetry"),
+            _function_source("clearWorkflowRetry", "invalidateWorkflowRetryOnDraftChange"),
+            _executable_function_source("workflowIntentCanRender", "refreshClinicalWorkflowState"),
+            _executable_function_source("consumeWorkflowResponse", "handleWorkflowConflict"),
+            _executable_function_source("performWorkflowIntent", "submitWorkflowMutation"),
+            _executable_function_source("readJsonResponse", "readJobSubmission"),
+            """
+function response(data) {
+  return {
+    status: 200,
+    ok: true,
+    headers: { get() { return null; } },
+    async json() { return data; },
+  };
+}
+
+(async () => {
+  let resolveLate;
+  globalThis.fetch = () => new Promise(resolve => { resolveLate = resolve; });
+  const visitAIntent = {
+    method: 'POST',
+    url: '/api/visits/visit-a/questions',
+    body: { source_kind: 'manual', mutation_id: 'mutation-a' },
+    visitId: 'visit-a',
+    requestPhiEpoch: 0,
+    requestVisitEpoch: 4,
+  };
+  const lateRequest = performWorkflowIntent(visitAIntent);
+  await Promise.resolve();
+
+  selectedVisitId = 'visit-b';
+  visitSelectionEpoch = 5;
+  pendingWorkflowIntent = { visitId: 'visit-b', marker: 'keep-b-retry' };
+  element('appointment-retry').hidden = false;
+  element('appointment-status-message').textContent = 'Visit changed.';
+  resolveLate(response({
+    workflow_revision: 999,
+    profile_revision: 999,
+    item: { id: 'visit-a', token: 'a-late', question_snapshots: [] },
+  }));
+  const lateResult = await lateRequest;
+  if (lateResult) callerCleanupCalls += 1;
+  const lateRetryPreserved = pendingWorkflowIntent?.marker === 'keep-b-retry'
+    && element('appointment-retry').hidden === false;
+
+  appointmentDrafts = new Map([['visit-b', { manualQuestion: 'caregiver draft' }]]);
+  globalThis.fetch = async () => { throw new TypeError('offline'); };
+  const offlineIntent = {
+    method: 'POST',
+    url: '/api/visits/visit-b/questions',
+    body: { source_kind: 'manual', mutation_id: 'mutation-b' },
+    visitId: 'visit-b',
+    requestPhiEpoch: 0,
+    requestVisitEpoch: 5,
+  };
+  const offlineResult = await performWorkflowIntent(offlineIntent);
+
+  console.log(JSON.stringify({
+    lateResult,
+    workflowRevision,
+    latestProfileRevision,
+    visitAToken: visitsById.get('visit-a').token,
+    visitBToken: visitsById.get('visit-b').token,
+    renderPreparationCalls,
+    renderWorkspaceCalls,
+    successReports,
+    callerCleanupCalls,
+    lateRetryPreserved,
+    retryPreserved: pendingWorkflowIntent === offlineIntent,
+    offlineRetryVisible: element('appointment-retry').hidden === false,
+    offlineDraft: appointmentDrafts.get('visit-b').manualQuestion,
+    offlineResult,
+  }));
+})().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
+""",
+        ]
+    )
+    completed = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
+def test_late_visit_a_response_cannot_mutate_visit_b_or_trigger_success_cleanup():
+    result = _run_workflow_epoch_probe()
+
+    assert result == {
+        "lateResult": None,
+        "workflowRevision": 10,
+        "latestProfileRevision": 20,
+        "visitAToken": "a-original",
+        "visitBToken": "b-original",
+        "renderPreparationCalls": 0,
+        "renderWorkspaceCalls": 0,
+        "successReports": 0,
+        "callerCleanupCalls": 0,
+        "lateRetryPreserved": True,
+        "retryPreserved": True,
+        "offlineRetryVisible": True,
+        "offlineDraft": "caregiver draft",
+        "offlineResult": None,
+    }
+
+
+def _run_appointment_eviction_probe(status: int) -> dict:
+    script = "\n".join(
+        [
+            """
+class FakeClassList {
+  constructor() { this.values = new Set(); }
+  add(name) { this.values.add(name); }
+  remove(name) { this.values.delete(name); }
+  toggle(name, active) { active ? this.values.add(name) : this.values.delete(name); }
+  contains(name) { return this.values.has(name); }
+}
+function fakeElement() {
+  return {
+    attributes: {},
+    classList: new FakeClassList(),
+    className: '',
+    dataset: {},
+    disabled: false,
+    hidden: false,
+    inert: false,
+    innerHTML: '',
+    style: {},
+    tabIndex: 0,
+    textContent: '',
+    value: '',
+    closest() { return null; },
+    remove() {},
+    removeAttribute(name) { delete this.attributes[name]; },
+    setAttribute(name, value) { this.attributes[name] = value; },
+  };
+}
+const elements = new Map();
+const element = id => {
+  if (!elements.has(id)) elements.set(id, fakeElement());
+  return elements.get(id);
+};
+const appointmentDialog = element('appointment-dialog');
+const focusedControl = { blurred: false, blur() { this.blurred = true; } };
+appointmentDialog.contains = candidate => candidate === focusedControl;
+const background = fakeElement();
+background.inert = true;
+background.attributes['aria-hidden'] = 'true';
+background.dataset.dialogAriaHidden = 'true';
+const appointmentOverlay = element('appointment-overlay');
+appointmentOverlay.classList.add('open');
+appointmentOverlay.attributes['aria-hidden'] = 'false';
+const body = { children: [background, appointmentOverlay], classList: new FakeClassList() };
+body.classList.add('dialog-open');
+const document = {
+  activeElement: focusedControl,
+  body,
+  getElementById: element,
+  querySelectorAll() { return []; },
+};
+
+for (const id of [
+  'visit-list', 'visit-source-questions', 'visit-question-list',
+  'visit-decision-list', 'visit-followup-list'
+]) element(id).innerHTML = `SECRET ${id}`;
+for (const id of [
+  'visit-create-title', 'visit-create-date', 'visit-create-time',
+  'visit-create-clinician', 'visit-create-location',
+  'visit-edit-title', 'visit-edit-date', 'visit-edit-time',
+  'visit-edit-clinician', 'visit-edit-location', 'visit-manual-question',
+  'visit-decision-text', 'visit-decision-supersedes', 'visit-followup-text',
+  'visit-followup-owner', 'visit-followup-due'
+]) element(id).value = `SECRET ${id}`;
+for (const id of [
+  'visit-create-error', 'visit-details-error', 'visit-question-error',
+  'visit-decision-error', 'visit-followup-error'
+]) element(id).textContent = `SECRET ${id}`;
+element('appointment-dialog-title').textContent = 'SECRET title';
+element('appointment-dialog-meta').textContent = 'SECRET clinician and location';
+element('appointment-status-message').textContent = 'SECRET status';
+element('visit-status-badge').textContent = 'SECRET visit state';
+element('appointment-visit-select').innerHTML = '<option>SECRET visit name</option>';
+element('appointment-visit-select').value = 'visit-phi';
+element('visit-source-appointment').innerHTML = '<option>SECRET imported appointment</option>';
+element('visit-source-appointment').value = 'appointment-phi';
+element('visit-followup-decision').innerHTML = '<option>SECRET decision</option>';
+element('visit-followup-decision').value = 'decision-phi';
+element('visit-create-panel').hidden = false;
+element('visit-create-toggle').attributes['aria-expanded'] = 'true';
+element('appointment-retry').hidden = false;
+element('visit-create-retry').hidden = false;
+element('visit-decision-cancel-supersede').hidden = false;
+element('visit-decision-label').textContent = 'SECRET successor';
+for (const name of ['questions', 'decisions', 'followups']) {
+  element(`appointment-tab-${name}`);
+  element(`appointment-panel-${name}`);
+}
+
+let selectedTaskId = 'patient-task';
+let currentReportText = 'patient report';
+let currentReceipt = { patient: true };
+let pendingSummary = { patient: true };
+let latestProfileRevision = 41;
+let latestResearchUpdate = { patient: true };
+let patientEvidence = { patient: true };
+let allBiomarkers = [{ patient: true }];
+let workflowRevision = 17;
+let visitsById = new Map([['visit-phi', { patient: true }]]);
+let appointmentOptions = [{ patient: true }];
+let appointmentQuestionSources = [{ patient: true }];
+let visitFollowUps = [{ patient: true }];
+let selectedVisitId = 'visit-phi';
+let visitSelectionEpoch = 8;
+let appointmentDialogOpen = true;
+let activeAppointmentTab = 'decisions';
+let pendingWorkflowIntent = { patient: true };
+let workflowMutationPending = true;
+let appointmentDrafts = new Map([['visit-phi', { patient: true }]]);
+let chatHistory = [{ patient: true }];
+let chatHistoryRevision = 41;
+let chatOpen = true;
+let taskSelectionEpoch = 2;
+let phiEpoch = 5;
+let lastDialogTrigger = { patient: true };
+let activeDialogSurface = appointmentDialog;
+
+function renderLatestResearchUpdate() {}
+function clearFreshnessProjection() {}
+function clearReportCopyState() {}
+function updateCharCount() {}
+function setAppointmentMutationBusy() {}
+function updateAppointmentFormValidity() {}
+""",
+            _executable_function_source("workflowIntentCanRender", "refreshClinicalWorkflowState"),
+            _executable_function_source("consumeWorkflowResponse", "handleWorkflowConflict"),
+            _function_source("evictClientPhi", "renderLatestResearchUpdate"),
+            """
+(async () => {
+  const authStatus = Number(process.argv[1]);
+  const lateIntent = {
+    visitId: 'visit-phi',
+    requestPhiEpoch: phiEpoch,
+    requestVisitEpoch: visitSelectionEpoch,
+  };
+  evictClientPhi({ status: authStatus });
+  const lateResults = await Promise.all([
+    consumeWorkflowResponse({
+      workflow_revision: 101,
+      profile_revision: 102,
+      visit: { id: 'visit-phi', title: 'SECRET late visit' },
+    }, lateIntent),
+    consumeWorkflowResponse({
+      workflow_revision: 103,
+      profile_revision: 104,
+      item: { id: 'followup-phi', visit_id: 'visit-phi', text: 'SECRET late follow-up' },
+    }, lateIntent),
+    consumeWorkflowResponse({
+      workflow_revision: 105,
+      profile_revision: 106,
+      item: { id: 'visit-phi', question_snapshots: [{ text: 'SECRET late question' }] },
+    }, lateIntent),
+  ]);
+  const projectionIds = [
+    'appointment-dialog-title', 'appointment-dialog-meta',
+    'appointment-status-message', 'visit-status-badge',
+    'appointment-visit-select', 'visit-source-appointment',
+    'visit-followup-decision', 'visit-list', 'visit-source-questions',
+    'visit-question-list', 'visit-decision-list', 'visit-followup-list',
+    'visit-create-error', 'visit-details-error', 'visit-question-error',
+    'visit-decision-error', 'visit-followup-error', 'visit-decision-label'
+  ];
+  const formIds = [
+    'visit-create-title', 'visit-create-date', 'visit-create-time',
+    'visit-create-clinician', 'visit-create-location',
+    'visit-edit-title', 'visit-edit-date', 'visit-edit-time',
+    'visit-edit-clinician', 'visit-edit-location', 'visit-manual-question',
+    'visit-decision-text', 'visit-decision-supersedes', 'visit-followup-text',
+    'visit-followup-owner', 'visit-followup-due'
+  ];
+  console.log(JSON.stringify({
+    lateResults,
+    phiEpoch,
+    workflowRevision,
+    latestProfileRevision,
+    mapsEmpty: visitsById.size === 0
+      && appointmentOptions.length === 0
+      && appointmentQuestionSources.length === 0
+      && visitFollowUps.length === 0,
+    selectionCleared: selectedVisitId === null && appointmentDrafts.size === 0,
+    intentCleared: pendingWorkflowIntent === null && workflowMutationPending === false,
+    projectionsScrubbed: projectionIds.every(id => {
+      const node = element(id);
+      return !`${node.innerHTML} ${node.textContent} ${node.value}`.includes('SECRET');
+    }),
+    formsScrubbed: formIds.every(id => element(id).value === ''),
+    overlayClosed: !appointmentOverlay.classList.contains('open')
+      && appointmentOverlay.attributes['aria-hidden'] === 'true',
+    overlayInert: appointmentOverlay.inert,
+    dialogInert: appointmentDialog.inert,
+    focusBlurred: focusedControl.blurred,
+    refsCleared: activeDialogSurface === null && lastDialogTrigger === null,
+    bodyReset: !body.classList.contains('dialog-open')
+      && background.inert === false
+      && !('aria-hidden' in background.attributes)
+      && !('dialogAriaHidden' in background.dataset),
+    createClosed: element('visit-create-panel').hidden
+      && element('visit-create-toggle').attributes['aria-expanded'] === 'false',
+    retriesHidden: element('appointment-retry').hidden
+      && element('visit-create-retry').hidden,
+    questionsTabReset: element('appointment-tab-questions').attributes['aria-selected']
+      === 'true'
+      && element('appointment-panel-questions').hidden === false
+      && element('appointment-panel-decisions').hidden === true
+      && element('appointment-panel-followups').hidden === true,
+  }));
+})().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
+""",
+        ]
+    )
+    completed = subprocess.run(
+        ["node", "-e", script, str(status)],
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_auth_eviction_scrubs_appointment_phi_and_rejects_all_late_successes(status):
+    result = _run_appointment_eviction_probe(status)
+
+    assert result == {
+        "lateResults": [False, False, False],
+        "phiEpoch": 6,
+        "workflowRevision": None,
+        "latestProfileRevision": None,
+        "mapsEmpty": True,
+        "selectionCleared": True,
+        "intentCleared": True,
+        "projectionsScrubbed": True,
+        "formsScrubbed": True,
+        "overlayClosed": True,
+        "overlayInert": True,
+        "dialogInert": True,
+        "focusBlurred": True,
+        "refsCleared": True,
+        "bodyReset": True,
+        "createClosed": True,
+        "retriesHidden": True,
+        "questionsTabReset": True,
+    }
+
+
 def _run_appointment_behavior_probe() -> dict:
     script = "\n".join(
         [
@@ -869,11 +1293,29 @@ def test_appointment_mutations_use_stable_contracts_and_explicit_retry_only():
 def test_appointment_revision_epoch_conflict_and_eviction_guards_are_complete():
     context = _function_source("workflowIntentCanRender", "refreshClinicalWorkflowState")
     refresh = _function_source("refreshClinicalWorkflowState", "consumeWorkflowResponse")
+    consume = _function_source("consumeWorkflowResponse", "handleWorkflowConflict")
     conflicts = _function_source("handleWorkflowConflict", "performWorkflowIntent")
+    performer = _function_source("performWorkflowIntent", "submitWorkflowMutation")
     eviction = _function_source("evictClientPhi", "renderLatestResearchUpdate")
 
     assert "requestPhiEpoch !== phiEpoch" in context
-    assert "requestVisitEpoch === visitSelectionEpoch" in context
+    assert "requestVisitEpoch !== visitSelectionEpoch" in context
+    assert consume.index("if (!workflowIntentCanRender(intent)) return false") < consume.index(
+        "captureAppointmentDraft()"
+    )
+    assert consume.index("if (!workflowIntentCanRender(intent)) return false") < consume.index(
+        "workflowRevision = data.workflow_revision"
+    )
+    assert "return true" in consume
+    assert conflicts.index("if (!workflowIntentCanRender(intent)) return false") < conflicts.index(
+        "clearWorkflowRetry()"
+    )
+    consumed_guard = performer.index("if (!consumed) return null")
+    assert consumed_guard < performer.index("clearWorkflowRetry()", consumed_guard)
+    catch_source = performer[performer.index("catch (error)") :]
+    assert catch_source.index("if (!workflowIntentCanRender(intent)) return null") < (
+        catch_source.index("error?.status === 409")
+    )
     assert "phiEpoch += 1" in refresh
     assert "taskSelectionEpoch += 1" in refresh
     assert "syncChatRevision(profileRevision, true)" in refresh

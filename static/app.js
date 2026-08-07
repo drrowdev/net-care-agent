@@ -123,13 +123,13 @@
 
   function workflowIntentCanRender(intent) {
     if (intent.requestPhiEpoch !== phiEpoch) return false;
-    if (!intent.visitId) return true;
-    return intent.visitId === selectedVisitId
-      && intent.requestVisitEpoch === visitSelectionEpoch;
+    if (intent.requestVisitEpoch !== visitSelectionEpoch) return false;
+    return !intent.visitId || intent.visitId === selectedVisitId;
   }
 
   async function refreshClinicalWorkflowState(profileRevision) {
     phiEpoch += 1;
+    const refreshPhiEpoch = phiEpoch;
     taskSelectionEpoch += 1;
     syncChatRevision(profileRevision, true);
     await Promise.allSettled([
@@ -140,15 +140,18 @@
       loadVisits(),
       loadVisitFollowUps(),
     ]);
+    if (refreshPhiEpoch !== phiEpoch) return false;
     if (appointmentDialogOpen) {
       setAppointmentMessage('Saved. Clinical content was refreshed for the updated record.', 'success');
     }
+    return true;
   }
 
   async function consumeWorkflowResponse(data, intent) {
-    if (appointmentDialogOpen && workflowIntentCanRender(intent)) {
-      captureAppointmentDraft();
-    }
+    if (!workflowIntentCanRender(intent)) return false;
+    const responseVisitEpoch = visitSelectionEpoch;
+    const responseVisitId = selectedVisitId;
+    if (appointmentDialogOpen) captureAppointmentDraft();
     const priorProfileRevision = latestProfileRevision;
     if (Number.isInteger(data.workflow_revision)) workflowRevision = data.workflow_revision;
     if (data.visit?.id) visitsById.set(data.visit.id, data.visit);
@@ -166,21 +169,21 @@
     if (data.profile_revision != null) latestProfileRevision = data.profile_revision;
 
     if (profileChanged) {
-      await refreshClinicalWorkflowState(data.profile_revision);
-      return;
+      const refreshed = await refreshClinicalWorkflowState(data.profile_revision);
+      return refreshed
+        && responseVisitEpoch === visitSelectionEpoch
+        && responseVisitId === selectedVisitId;
     }
 
-    if (workflowIntentCanRender(intent)) {
-      renderVisitPreparation();
-      renderAppointmentWorkspace();
-    }
+    renderVisitPreparation();
+    renderAppointmentWorkspace();
     reportLoadSuccess('appointment-workflow');
+    return true;
   }
 
   async function handleWorkflowConflict(error, intent) {
-    if (appointmentDialogOpen && workflowIntentCanRender(intent)) {
-      captureAppointmentDraft();
-    }
+    if (!workflowIntentCanRender(intent)) return false;
+    if (appointmentDialogOpen) captureAppointmentDraft();
     clearWorkflowRetry();
     const generatedSource = intent.body.source_kind === 'generated';
     const message = generatedSource
@@ -189,6 +192,7 @@
     setAppointmentMessage(message, 'conflict');
     reportLoadError('appointment-workflow', error);
     await Promise.allSettled([loadVisits(), loadVisitFollowUps(), loadQuestions()]);
+    return true;
   }
 
   async function performWorkflowIntent(intent, explicitRetry = false) {
@@ -204,17 +208,13 @@
         body: JSON.stringify(intent.body),
       });
       const data = await readJsonResponse(response);
+      const consumed = await consumeWorkflowResponse(data, intent);
+      if (!consumed) return null;
       clearWorkflowRetry();
-      await consumeWorkflowResponse(data, intent);
       if (workflowIntentCanRender(intent)) setAppointmentMessage('Saved.', 'success');
       return data;
     } catch (error) {
-      if (intent.requestPhiEpoch !== phiEpoch) {
-        if (error?.status === 401 || error?.status === 403) {
-          reportLoadError('appointment-workflow', error);
-        }
-        return null;
-      }
+      if (!workflowIntentCanRender(intent)) return null;
       if (error?.status === 409) {
         await handleWorkflowConflict(error, intent);
         return null;
@@ -258,16 +258,7 @@
   async function retryWorkflowIntent() {
     const intent = pendingWorkflowIntent;
     if (!intent) return;
-    if (
-      intent.requestPhiEpoch !== phiEpoch
-      || (
-        intent.visitId
-        && (
-          intent.visitId !== selectedVisitId
-          || intent.requestVisitEpoch !== visitSelectionEpoch
-        )
-      )
-    ) {
+    if (!workflowIntentCanRender(intent)) {
       clearWorkflowRetry();
       setAppointmentMessage('The visit changed. Review it before submitting a new request.', 'conflict');
       return;
@@ -685,131 +676,197 @@
 
   function evictClientPhi(error = null) {
     phiEpoch += 1;
-      taskSelectionEpoch += 1;
-      selectedTaskId = null;
-      currentReportText = '';
-      currentReceipt = null;
-      pendingSummary = null;
-      latestProfileRevision = null;
-      latestResearchUpdate = null;
-      patientEvidence = null;
-      allBiomarkers = [];
-      workflowRevision = null;
-      visitsById = new Map();
-      appointmentOptions = [];
-      appointmentQuestionSources = [];
-      visitFollowUps = [];
-      selectedVisitId = null;
-      visitSelectionEpoch += 1;
-      appointmentDialogOpen = false;
-      activeAppointmentTab = 'questions';
-      pendingWorkflowIntent = null;
-      workflowMutationPending = false;
-      appointmentDrafts = new Map();
-      chatHistory = [];
-      chatHistoryRevision = null;
-      document.querySelectorAll('.action-feedback').forEach(editor => editor.remove());
-      renderLatestResearchUpdate(null);
-      clearFreshnessProjection();
+    taskSelectionEpoch += 1;
+    selectedTaskId = null;
+    currentReportText = '';
+    currentReceipt = null;
+    pendingSummary = null;
+    latestProfileRevision = null;
+    latestResearchUpdate = null;
+    patientEvidence = null;
+    allBiomarkers = [];
+    workflowRevision = null;
+    visitsById = new Map();
+    appointmentOptions = [];
+    appointmentQuestionSources = [];
+    visitFollowUps = [];
+    selectedVisitId = null;
+    visitSelectionEpoch += 1;
+    appointmentDialogOpen = false;
+    activeAppointmentTab = 'questions';
+    pendingWorkflowIntent = null;
+    workflowMutationPending = false;
+    appointmentDrafts = new Map();
+    chatHistory = [];
+    chatHistoryRevision = null;
+    document.querySelectorAll('.action-feedback').forEach(editor => editor.remove());
+    renderLatestResearchUpdate(null);
+    clearFreshnessProjection();
 
-      const clear = (id, html = '') => {
-        const element = document.getElementById(id);
-        if (element) element.innerHTML = html;
-      };
-      const patient = document.getElementById('patient-dx');
-      if (patient) patient.textContent = 'Patient data unavailable';
-      clear('patient-meta');
-      clear('tx-list');
-      clear('bm-list');
-      clear('alerts-list');
-      clear('imaging-history');
-      clear('source-history');
-      clear('q-list');
-      clear('visit-list');
-      clear('visit-source-questions');
-      clear('visit-question-list');
-      clear('visit-decision-list');
-      clear('visit-followup-list');
-      clear('judgments-list');
-      clear('symptoms-list');
-      clear('summary-status-inline');
-      clear('summary-updated');
-      clear('summary-body', '<div class="summary-empty">Patient assessment unavailable.</div>');
-      clear('task-list');
-      clear('panel-body', '<div class="report-empty">Activity detail unavailable.</div>');
-      const appointmentOverlay = document.getElementById('appointment-overlay');
-      appointmentOverlay?.classList.remove('open');
-      appointmentOverlay?.setAttribute('aria-hidden', 'true');
-      const appointmentRetry = document.getElementById('appointment-retry');
-      if (appointmentRetry) appointmentRetry.hidden = true;
-      const visitCreateRetry = document.getElementById('visit-create-retry');
-      if (visitCreateRetry) visitCreateRetry.hidden = true;
-      const search = document.getElementById('bm-search');
-      if (search) {
-        search.value = '';
-        search.disabled = true;
-      }
-      const report = document.getElementById('report-panel');
-      report?.classList.add('collapsed');
-      report?.setAttribute('aria-hidden', 'true');
-      clearReportCopyState();
-      const modal = document.getElementById('modal-overlay');
-      modal?.classList.remove('open');
-      modal?.setAttribute('aria-hidden', 'true');
-      clear('modal-body');
-      const chat = document.getElementById('chat-panel');
-      if (chat) {
-        chat.style.display = 'none';
-        chat.setAttribute('aria-hidden', 'true');
-      }
-      chatOpen = false;
-      clear(
-        'chat-messages',
-        `<div class="chat-revision-notice" role="alert">${
-          error?.status === 401 || error?.status === 403
-            ? 'Patient chat was cleared because authorization is unavailable.'
-            : 'Patient chat was cleared because current data could not be loaded.'
-        }</div>`,
-      );
-      const chatInput = document.getElementById('chat-input');
-      if (chatInput) chatInput.value = '';
-      for (const id of [
-        'judgment-input', 'q-add-input', 'sym-name', 'sym-note',
-        'visit-create-title', 'visit-create-date', 'visit-create-time',
-        'visit-create-clinician', 'visit-create-location',
-        'visit-edit-title', 'visit-edit-date', 'visit-edit-time',
-        'visit-edit-clinician', 'visit-edit-location',
-        'visit-manual-question', 'visit-decision-text',
-        'visit-followup-text', 'visit-followup-owner', 'visit-followup-due',
-        'dismiss-text-0', 'dismiss-text-1', 'dismiss-text-2',
-        'dismiss-text-3', 'dismiss-text-4'
-      ]) {
-        const input = document.getElementById(id);
-        if (input) input.value = '';
-      }
-      const severity = document.getElementById('sym-sev');
-      if (severity) severity.value = '';
-      for (const id of [
-        'visit-source-appointment', 'visit-manual-category', 'visit-manual-priority',
-        'visit-followup-decision'
-      ]) {
-        const select = document.getElementById(id);
-        if (select) select.value = '';
-      }
-      document.querySelectorAll(
-        '.judgment-edit-text, .receipt-editor input, .receipt-editor textarea, .receipt-editor select'
-      ).forEach(control => {
-        if ('value' in control) control.value = '';
-        control.closest('.judgment-edit-area, .receipt-editor')?.remove();
-      });
-      const feed = document.getElementById('feed-popover');
-      const backdrop = document.getElementById('feed-backdrop');
-      feed?.classList.remove('visible');
-      feed?.setAttribute('aria-hidden', 'true');
-      backdrop?.classList.remove('visible');
-      const feedText = document.getElementById('feed-textarea');
-      if (feedText) feedText.value = '';
-      updateCharCount();
+    const clear = (id, html = '') => {
+      const element = document.getElementById(id);
+      if (element) element.innerHTML = html;
+    };
+    const patient = document.getElementById('patient-dx');
+    if (patient) patient.textContent = 'Patient data unavailable';
+    clear('patient-meta');
+    clear('tx-list');
+    clear('bm-list');
+    clear('alerts-list');
+    clear('imaging-history');
+    clear('source-history');
+    clear('q-list');
+    clear('visit-list');
+    clear('visit-source-questions');
+    clear('visit-question-list');
+    clear('visit-decision-list');
+    clear('visit-followup-list');
+    clear('judgments-list');
+    clear('symptoms-list');
+    clear('summary-status-inline');
+    clear('summary-updated');
+    clear('summary-body', '<div class="summary-empty">Patient assessment unavailable.</div>');
+    clear('task-list');
+    clear('panel-body', '<div class="report-empty">Activity detail unavailable.</div>');
+
+    const appointmentOverlay = document.getElementById('appointment-overlay');
+    const appointmentDialog = document.getElementById('appointment-dialog');
+    if (
+      appointmentDialog
+      && typeof appointmentDialog.contains === 'function'
+      && appointmentDialog.contains(document.activeElement)
+    ) {
+      document.activeElement?.blur();
+    }
+    appointmentOverlay?.classList.remove('open');
+    appointmentOverlay?.setAttribute('aria-hidden', 'true');
+    if (appointmentOverlay) appointmentOverlay.inert = true;
+    if (appointmentDialog) appointmentDialog.inert = true;
+    const appointmentTitle = document.getElementById('appointment-dialog-title');
+    if (appointmentTitle) appointmentTitle.textContent = 'Appointment unavailable';
+    const appointmentMeta = document.getElementById('appointment-dialog-meta');
+    if (appointmentMeta) appointmentMeta.textContent = '';
+    const appointmentStatus = document.getElementById('appointment-status-message');
+    if (appointmentStatus) {
+      appointmentStatus.textContent = '';
+      appointmentStatus.className = 'appointment-status-message';
+    }
+    const visitStatus = document.getElementById('visit-status-badge');
+    if (visitStatus) {
+      visitStatus.textContent = '';
+      visitStatus.className = 'visit-status-badge';
+    }
+    const visitSelector = document.getElementById('appointment-visit-select');
+    if (visitSelector) {
+      visitSelector.innerHTML = '';
+      visitSelector.value = '';
+    }
+    const sourceSelector = document.getElementById('visit-source-appointment');
+    if (sourceSelector) {
+      sourceSelector.innerHTML =
+        '<option value="">Create without imported appointment</option>';
+      sourceSelector.value = '';
+    }
+    const decisionSelector = document.getElementById('visit-followup-decision');
+    if (decisionSelector) {
+      decisionSelector.innerHTML = '<option value="">No linked decision</option>';
+      decisionSelector.value = '';
+    }
+    const visitCreatePanel = document.getElementById('visit-create-panel');
+    if (visitCreatePanel) visitCreatePanel.hidden = true;
+    document.getElementById('visit-create-toggle')?.setAttribute('aria-expanded', 'false');
+    for (const name of ['questions', 'decisions', 'followups']) {
+      const active = name === 'questions';
+      const tab = document.getElementById(`appointment-tab-${name}`);
+      const panel = document.getElementById(`appointment-panel-${name}`);
+      tab?.classList.toggle('active', active);
+      tab?.setAttribute('aria-selected', String(active));
+      if (tab) tab.tabIndex = active ? 0 : -1;
+      panel?.classList.toggle('active', active);
+      if (panel) panel.hidden = !active;
+    }
+    for (const id of [
+      'appointment-retry', 'visit-create-retry', 'visit-decision-cancel-supersede'
+    ]) {
+      const element = document.getElementById(id);
+      if (element) element.hidden = true;
+    }
+    const decisionLabel = document.getElementById('visit-decision-label');
+    if (decisionLabel) {
+      decisionLabel.textContent = 'Caregiver-entered decision attributed to the clinician';
+    }
+    for (const id of [
+      'visit-create-error', 'visit-details-error', 'visit-question-error',
+      'visit-decision-error', 'visit-followup-error'
+    ]) {
+      const status = document.getElementById(id);
+      if (status) status.textContent = '';
+    }
+
+    const search = document.getElementById('bm-search');
+    if (search) {
+      search.value = '';
+      search.disabled = true;
+    }
+    const report = document.getElementById('report-panel');
+    report?.classList.add('collapsed');
+    report?.setAttribute('aria-hidden', 'true');
+    clearReportCopyState();
+    const modal = document.getElementById('modal-overlay');
+    modal?.classList.remove('open');
+    modal?.setAttribute('aria-hidden', 'true');
+    clear('modal-body');
+    const chat = document.getElementById('chat-panel');
+    if (chat) {
+      chat.style.display = 'none';
+      chat.setAttribute('aria-hidden', 'true');
+    }
+    chatOpen = false;
+    clear(
+      'chat-messages',
+      `<div class="chat-revision-notice" role="alert">${
+        error?.status === 401 || error?.status === 403
+          ? 'Patient chat was cleared because authorization is unavailable.'
+          : 'Patient chat was cleared because current data could not be loaded.'
+      }</div>`,
+    );
+    const chatInput = document.getElementById('chat-input');
+    if (chatInput) chatInput.value = '';
+    for (const id of [
+      'judgment-input', 'q-add-input', 'sym-name', 'sym-note',
+      'visit-create-title', 'visit-create-date', 'visit-create-time',
+      'visit-create-clinician', 'visit-create-location',
+      'visit-edit-title', 'visit-edit-date', 'visit-edit-time',
+      'visit-edit-clinician', 'visit-edit-location',
+      'visit-manual-question', 'visit-decision-text', 'visit-decision-supersedes',
+      'visit-followup-text', 'visit-followup-owner', 'visit-followup-due',
+      'dismiss-text-0', 'dismiss-text-1', 'dismiss-text-2',
+      'dismiss-text-3', 'dismiss-text-4'
+    ]) {
+      const input = document.getElementById(id);
+      if (input) input.value = '';
+    }
+    const severity = document.getElementById('sym-sev');
+    if (severity) severity.value = '';
+    for (const id of ['visit-manual-category', 'visit-manual-priority']) {
+      const select = document.getElementById(id);
+      if (select) select.value = '';
+    }
+    document.querySelectorAll(
+      '.judgment-edit-text, .receipt-editor input, .receipt-editor textarea, .receipt-editor select'
+    ).forEach(control => {
+      if ('value' in control) control.value = '';
+      control.closest('.judgment-edit-area, .receipt-editor')?.remove();
+    });
+    const feed = document.getElementById('feed-popover');
+    const backdrop = document.getElementById('feed-backdrop');
+    feed?.classList.remove('visible');
+    feed?.setAttribute('aria-hidden', 'true');
+    backdrop?.classList.remove('visible');
+    const feedText = document.getElementById('feed-textarea');
+    if (feedText) feedText.value = '';
+    updateCharCount();
+    lastDialogTrigger = null;
     activeDialogSurface = null;
     document.body.classList.remove('dialog-open');
     [...document.body.children].forEach(child => { child.inert = false; });
@@ -819,6 +876,10 @@
         delete child.dataset.dialogAriaHidden;
       }
     });
+    if (appointmentOverlay) appointmentOverlay.inert = true;
+    if (appointmentDialog) appointmentDialog.inert = true;
+    setAppointmentMutationBusy(false);
+    updateAppointmentFormValidity();
   }
 
   function renderLatestResearchUpdate(update) {
@@ -3150,10 +3211,13 @@
     appointmentDialogOpen = true;
     clearWorkflowRetry();
     const overlay = document.getElementById('appointment-overlay');
+    overlay.inert = false;
     overlay.classList.add('open');
     overlay.setAttribute('aria-hidden', 'false');
+    const dialog = document.getElementById('appointment-dialog');
+    dialog.inert = false;
     renderAppointmentWorkspace();
-    activateDialog(document.getElementById('appointment-dialog'), trigger);
+    activateDialog(dialog, trigger);
   }
 
   function closeAppointmentWorkspace() {
@@ -3165,6 +3229,7 @@
     const overlay = document.getElementById('appointment-overlay');
     overlay?.classList.remove('open');
     overlay?.setAttribute('aria-hidden', 'true');
+    if (overlay) overlay.inert = true;
     deactivateDialog(document.getElementById('appointment-dialog'));
   }
 

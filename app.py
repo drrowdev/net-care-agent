@@ -7,6 +7,7 @@ Data persisted to /home/data (Azure Files mount)
 
 import atexit
 import base64
+import copy
 import datetime
 import hashlib
 import io
@@ -110,6 +111,8 @@ _JOB_FIELDS = {
     "report_file",
     "result_file",
     "source_document_id",
+    "profile_revision",
+    "generation_id",
     "retry_guidance",
     "error_code",
     "error",
@@ -388,7 +391,12 @@ def _submit_job(
                 )
             if existing:
                 return None, (
-                    jsonify({"error": "An active job of this type already exists.", "job_id": existing["id"]}),
+                    jsonify(
+                        {
+                            "error": "An active job of this type already exists.",
+                            "job_id": existing["id"],
+                        }
+                    ),
                     409,
                 )
         try:
@@ -424,24 +432,190 @@ def _write_job_result(job_id: str, value: object) -> str:
     return _artifact_ref(path)
 
 
-def _job_response(job: dict, *, include_artifacts: bool = False) -> dict:
+def _job_response(
+    job: dict,
+    *,
+    include_artifacts: bool = False,
+    profile: dict | None = None,
+) -> dict:
     response = dict(job)
+    profile_dependent_report = job.get("type") in {"feed", "digest", "deep-sweep"}
+    profile_dependent_result = job.get("type") in {"chat", "questions", "summary"}
+    report_revision_stale = False
+    if profile_dependent_report and job.get("report_file"):
+        profile = profile or agent.load_profile()
+        report_revision = job.get("profile_revision")
+        report_revision_stale = report_revision is None or str(report_revision) != str(
+            profile.get("profile_revision")
+        )
+    result_revision_stale = False
+    result_same_revision_invalidated = False
+    if profile_dependent_result and job.get("result_file"):
+        profile = profile or agent.load_profile()
+        result_revision = job.get("profile_revision")
+        result_revision_stale = result_revision is None or str(result_revision) != str(
+            profile.get("profile_revision")
+        )
+        if job.get("type") == "summary" and not agent.summary_is_current(profile):
+            result_same_revision_invalidated = not result_revision_stale
+            result_revision_stale = True
+        if job.get("type") == "questions":
+            generation_id = job.get("generation_id")
+            revision_was_stale = result_revision_stale
+            superseded = (
+                generation_id is not None
+                and generation_id != profile.get("questions_generation_id")
+            )
+            questions_invalid = generation_id is None or superseded or any(
+                item.get("stale")
+                for item in profile.get("appointment_questions", [])
+                if isinstance(item, dict)
+                and item.get("source") == "ai"
+                and item.get("generation_job_id") == generation_id
+            )
+            if questions_invalid:
+                result_same_revision_invalidated = not result_revision_stale
+                result_revision_stale = True
+                if superseded and not revision_was_stale:
+                    response["derived_content_stale_reason"] = (
+                        "question_generation_superseded"
+                    )
+    feed_content_stale = False
+    if job.get("type") == "feed" and job.get("source_document_id"):
+        profile = profile or agent.load_profile()
+        receipt = next(
+            (
+                item
+                for item in profile.get("document_imports", [])
+                if item.get("job_id") == job.get("id")
+            ),
+            None,
+        )
+        feed_content_stale = bool(receipt and receipt.get("status") != "active")
+        if feed_content_stale:
+            response["derived_content_stale"] = True
+            response["derived_content_stale_reason"] = "source_document_corrected_or_undone"
+            for field in ("summary", "key_findings", "input_preview"):
+                response.pop(field, None)
+    if report_revision_stale:
+        response["derived_content_stale"] = True
+        if not feed_content_stale:
+            response["derived_content_stale_reason"] = (
+                "freshness_cannot_be_verified"
+                if job.get("profile_revision") is None
+                else "patient_record_changed_after_generation"
+            )
+    if result_revision_stale:
+        response["derived_content_stale"] = True
+        response.setdefault(
+            "derived_content_stale_reason",
+            (
+                "freshness_cannot_be_verified"
+                if job.get("profile_revision") is None
+                else (
+                    "generated_content_invalidated"
+                    if result_same_revision_invalidated
+                    else "patient_record_changed_after_generation"
+                )
+            ),
+        )
     if not include_artifacts:
         return response
+    if job.get("type") == "feed" and job.get("source_document_id"):
+        response["receipt_url"] = f"/api/jobs/{job['id']}/receipt"
     report_ref = job.get("report_file")
     if report_ref:
-        try:
-            response["report"] = safe_artifact_path(DATA_DIR, report_ref, {"reports"}).read_text(
-                encoding="utf-8"
+        if feed_content_stale or report_revision_stale:
+            response["report_stale"] = True
+            response["report_stale_reason"] = (
+                "source_document_corrected_or_undone"
+                if feed_content_stale
+                else (
+                    "freshness_cannot_be_verified"
+                    if job.get("profile_revision") is None
+                    else "patient_record_changed_after_generation"
+                )
             )
-        except (OSError, ValueError):
-            response["artifact_unavailable"] = True
+            response["report_available_for_audit"] = True
+        else:
+            try:
+                response["report"] = safe_artifact_path(
+                    DATA_DIR, report_ref, {"reports"}
+                ).read_text(encoding="utf-8")
+            except (OSError, ValueError):
+                response["artifact_unavailable"] = True
     result_ref = job.get("result_file")
     if result_ref:
         try:
             response["result"] = json.loads(
-                safe_artifact_path(DATA_DIR, result_ref, {"job_results"}).read_text(encoding="utf-8")
+                safe_artifact_path(DATA_DIR, result_ref, {"job_results"}).read_text(
+                    encoding="utf-8"
+                )
             )
+            if job.get("type") in {"questions", "summary", "chat"} and isinstance(
+                response["result"], dict
+            ):
+                profile = agent.load_profile()
+                source_revision = response["result"].get(
+                    "source_profile_revision",
+                    response["result"].get("profile_revision"),
+                )
+                current_revision = profile.get("profile_revision")
+                stale = source_revision is None or str(source_revision) != str(current_revision)
+                if job.get("type") == "summary":
+                    nested_summary = response["result"].get("summary")
+                    stale = (
+                        stale
+                        or not agent.summary_is_current(profile)
+                        or (isinstance(nested_summary, dict) and bool(nested_summary.get("stale")))
+                    )
+                elif job.get("type") == "questions":
+                    generation_id = response["result"].get("generation_id")
+                    stale = (
+                        stale
+                        or generation_id != profile.get("questions_generation_id")
+                        or any(
+                            item.get("stale")
+                            for item in profile.get("appointment_questions", [])
+                            if isinstance(item, dict)
+                            and item.get("source") == "ai"
+                            and item.get("generation_job_id") == generation_id
+                        )
+                    )
+                    stale = stale or any(
+                        item.get("stale")
+                        for item in response["result"].get("questions", [])
+                        if isinstance(item, dict) and item.get("generation_job_id") == generation_id
+                    )
+                else:
+                    stale = stale or source_revision is None
+                if stale:
+                    stale_reason = response.get(
+                        "derived_content_stale_reason",
+                        "patient_record_changed_after_generation",
+                    )
+                    if job.get("type") == "summary":
+                        response["result"] = {
+                            "stale": True,
+                            "stale_reason": stale_reason,
+                            "source_profile_revision": source_revision,
+                            "current_profile_revision": current_revision,
+                        }
+                    elif job.get("type") == "questions":
+                        response["result"]["stale"] = True
+                        response["result"]["stale_reason"] = stale_reason
+                        response["result"]["current_profile_revision"] = current_revision
+                        response["result"]["questions"] = [
+                            {**item, "stale": True, "stale_reason": stale_reason}
+                            for item in response["result"].get("questions", [])
+                        ]
+                    else:
+                        response["result"] = {
+                            "stale": True,
+                            "stale_reason": stale_reason,
+                            "source_profile_revision": source_revision,
+                            "current_profile_revision": current_revision,
+                        }
         except (OSError, ValueError, json.JSONDecodeError):
             response["artifact_unavailable"] = True
     return response
@@ -502,9 +676,9 @@ def _prune_retention() -> None:
             referenced = [job for job in _jobs if job.get(field)]
             for index, job in enumerate(referenced):
                 try:
-                    age = now - datetime.datetime.fromisoformat(
-                        job.get("created_at", "")
-                    ).timestamp()
+                    age = (
+                        now - datetime.datetime.fromisoformat(job.get("created_at", "")).timestamp()
+                    )
                 except (TypeError, ValueError):
                     age = age_days * 86400 + 1
                 if index >= max_count or age > age_days * 86400:
@@ -609,7 +783,7 @@ def _refresh_summary(profile: dict) -> str | None:
         profile["summary_stale"] = True
         return message
 
-    generated["summary_revision"] = int(profile.get("profile_revision") or 0) + 1
+    generated["summary_revision"] = int(profile.get("profile_revision") or 0)
     generated["generated_at_timestamp"] = now_stamp()
     generated["feedback_ids_considered"] = [
         item.get("id")
@@ -622,6 +796,19 @@ def _refresh_summary(profile: dict) -> str | None:
     profile["executive_summary"] = generated
     profile["summary_stale"] = False
     return None
+
+
+def _finalize_generated_alert_dependencies(
+    profile: dict,
+    *,
+    job_id: str,
+    profile_revision: int,
+) -> None:
+    for alert in profile.get("alerts", []):
+        if alert.get("source_job_id") != job_id:
+            continue
+        alert["generation_profile_revision"] = profile_revision
+        agent.sync_alert_system_state(profile, alert)
 
 
 # ── background workers ────────────────────────────────────────────────────────
@@ -666,6 +853,7 @@ def _run_feed_job(
         ):
             _update_job(job_id, {"status": "running", "stage": "intake"})
             profile = agent.load_profile()
+            profile_before_intake = copy.deepcopy(profile)
             previous_trial_ids = set(agent.get_research_ids(profile, "trial"))
             previous_paper_ids = set(agent.get_research_ids(profile, "paper"))
             if raw_bytes is None and filename is None:
@@ -677,6 +865,34 @@ def _run_feed_job(
                     raw_bytes=raw_bytes,
                     filename=filename,
                     media_type=media_type,
+                )
+            receipt_source_id = extracted.get("source_document_id")
+            has_receipt = bool(
+                receipt_source_id
+                and any(
+                    item.get("id") == receipt_source_id
+                    for item in profile.get("source_documents", [])
+                    if isinstance(item, dict)
+                )
+                and any(
+                    item.get("source_document_id") == receipt_source_id
+                    for item in profile.get("documents", [])
+                    if isinstance(item, dict)
+                )
+            )
+            if has_receipt:
+                extracted["source_job_id"] = job_id
+                agent.build_import_record(
+                    profile_before_intake,
+                    profile,
+                    extracted,
+                    job_id=job_id,
+                    text=text,
+                )
+                _finalize_generated_alert_dependencies(
+                    profile,
+                    job_id=job_id,
+                    profile_revision=int(profile.get("profile_revision") or 0) + 1,
                 )
             # Commit intake before research. A later orchestrator/model failure
             # must not lose an already-extracted clinical document.
@@ -708,12 +924,15 @@ def _run_feed_job(
                 },
             )
 
+            extracted["source_job_id"] = job_id
+            extracted["generation_profile_revision"] = int(profile.get("profile_revision") or 0) + 1
             report = agent.run_orchestrator(profile, extracted)
             _update_job(job_id, {"stage": "classifying"})
             profile["treatments_classified"] = agent.classify_treatments(profile)
-            _update_job(job_id, {"stage": "refreshing summary"})
-            summary_error = _refresh_summary(profile)
-            agent.record_latest_research_update(
+            final_revision = int(profile.get("profile_revision") or 0) + 1
+            profile["treatments_classification_revision"] = final_revision
+            profile["treatments_classification_job_id"] = job_id
+            research_update = agent.record_latest_research_update(
                 profile,
                 job_id=job_id,
                 trigger="feed",
@@ -721,7 +940,22 @@ def _run_feed_job(
                 previous_paper_ids=previous_paper_ids,
                 record_empty=False,
             )
+            if research_update and has_receipt:
+                agent.add_derived_research(
+                    profile,
+                    job_id,
+                    trial_ids=research_update.get("trial_ids", []),
+                    paper_ids=research_update.get("paper_ids", []),
+                )
+            _finalize_generated_alert_dependencies(
+                profile,
+                job_id=job_id,
+                profile_revision=final_revision,
+            )
             agent.save_profile(profile)
+            _update_job(job_id, {"stage": "refreshing summary"})
+            summary_error = _refresh_summary(profile)
+            agent.save_profile(profile, clinical_change=False)
             _prune_source_retention()
 
             reports_dir = DATA_DIR / "reports"
@@ -738,6 +972,7 @@ def _run_feed_job(
                     "status": "done",
                     "stage": "done_with_warnings" if summary_error else "done",
                     "report_file": _artifact_ref(rpath),
+                    "profile_revision": profile.get("profile_revision"),
                     "summary_error": summary_error,
                     "finished_at": datetime.datetime.now().isoformat(),
                 },
@@ -771,9 +1006,15 @@ def _run_digest_job(job_id: str):
             # status changes become alerts (and reach the orchestrator) even though the
             # dedup logic would otherwise suppress already-tracked trials.
             try:
-                poll = agent.poll_tracked_trials(profile)
+                final_revision = int(profile.get("profile_revision") or 0) + 1
+                poll = agent.poll_tracked_trials(
+                    profile,
+                    source_job_id=job_id,
+                    generation_profile_revision=final_revision,
+                )
                 if poll["changed"]:
                     _update_job(job_id, {"stage": f"trial updates: {len(poll['changed'])}"})
+                    agent.save_profile(profile)
             except Exception as exc:
                 log.warning("trial_poll_skipped type=%s", type(exc).__name__)
             extracted = {
@@ -785,12 +1026,15 @@ def _run_digest_job(job_id: str):
                     "Comprehensive review: search new NET literature, "
                     "check European trials, review biomarker trends."
                 ),
+                "source_job_id": job_id,
+                "generation_profile_revision": int(profile.get("profile_revision") or 0) + 1,
             }
             report = agent.run_orchestrator(profile, extracted)
             _update_job(job_id, {"stage": "classifying"})
             profile["treatments_classified"] = agent.classify_treatments(profile)
-            _update_job(job_id, {"stage": "refreshing summary"})
-            summary_error = _refresh_summary(profile)
+            final_revision = int(profile.get("profile_revision") or 0) + 1
+            profile["treatments_classification_revision"] = final_revision
+            profile["treatments_classification_job_id"] = job_id
             agent.record_latest_research_update(
                 profile,
                 job_id=job_id,
@@ -799,7 +1043,15 @@ def _run_digest_job(job_id: str):
                 previous_paper_ids=previous_paper_ids,
                 record_empty=True,
             )
+            _finalize_generated_alert_dependencies(
+                profile,
+                job_id=job_id,
+                profile_revision=final_revision,
+            )
             agent.save_profile(profile)
+            _update_job(job_id, {"stage": "refreshing summary"})
+            summary_error = _refresh_summary(profile)
+            agent.save_profile(profile, clinical_change=False)
 
             reports_dir = DATA_DIR / "reports"
             reports_dir.mkdir(parents=True, exist_ok=True)
@@ -815,6 +1067,7 @@ def _run_digest_job(job_id: str):
                     "status": "done",
                     "stage": "done_with_warnings" if summary_error else "done",
                     "report_file": _artifact_ref(rpath),
+                    "profile_revision": profile.get("profile_revision"),
                     "summary_error": summary_error,
                     "finished_at": datetime.datetime.now().isoformat(),
                 },
@@ -834,6 +1087,7 @@ def _run_deepsweep_job(job_id: str):
     try:
         _update_job(job_id, {"status": "running", "stage": "deep-sweep"})
         profile = agent.load_profile()
+        generation_revision = profile.get("profile_revision")
         result = agent.run_deep_sweep(profile)  # non-mutating; profile NOT saved
         report = result["report"]
 
@@ -849,6 +1103,7 @@ def _run_deepsweep_job(job_id: str):
                 "status": "done",
                 "stage": "done",
                 "report_file": _artifact_ref(rpath),
+                "profile_revision": generation_revision,
                 "cost_total": result.get("cost_total"),
                 "finished_at": datetime.datetime.now().isoformat(),
             },
@@ -863,6 +1118,7 @@ def _run_questions_job(job_id: str, appointment_type: str) -> None:
         _update_job(job_id, {"status": "running", "stage": "generating", "started_at": now_stamp()})
         with agent.serialized_mutation():
             profile = agent.load_profile()
+            generation_revision = profile.get("profile_revision")
             new_questions = agent.generate_questions_for_profile(profile, appointment_type)
             existing = profile.get("appointment_questions", [])
             preserved = [q for q in existing if q.get("source") == "manual" or q.get("asked")]
@@ -880,17 +1136,28 @@ def _run_questions_job(job_id: str, appointment_type: str) -> None:
                     if not candidate.get("id") or candidate["id"] in used_ids:
                         candidate["id"] = f"q_{_new_id()}"
                     used_ids.add(candidate["id"])
+                    candidate["generation_job_id"] = job_id
                     merged.append(candidate)
                     seen.add(key)
             profile["appointment_questions"] = merged
+            profile["questions_generation_id"] = job_id
             agent.save_profile(profile, clinical_change=False)
-        result_ref = _write_job_result(job_id, {"questions": merged})
+        result_ref = _write_job_result(
+            job_id,
+            {
+                "questions": merged,
+                "source_profile_revision": generation_revision,
+                "generation_id": job_id,
+            },
+        )
         _update_job(
             job_id,
             {
                 "status": "done",
                 "stage": "done",
                 "result_file": result_ref,
+                "profile_revision": generation_revision,
+                "generation_id": job_id,
                 "finished_at": now_stamp(),
             },
         )
@@ -905,8 +1172,10 @@ def _run_summary_job(job_id: str) -> None:
             profile = agent.load_profile()
             classified_txs = agent.classify_treatments(profile)
             profile["treatments_classified"] = classified_txs
+            profile["treatments_classification_revision"] = profile.get("profile_revision")
+            profile["treatments_classification_job_id"] = job_id
             summary_error = _refresh_summary(profile)
-            agent.save_profile(profile)
+            agent.save_profile(profile, clinical_change=False)
             result = {
                 "summary": profile["executive_summary"],
                 "treatments_classified": classified_txs,
@@ -920,6 +1189,7 @@ def _run_summary_job(job_id: str) -> None:
                 "status": "done",
                 "stage": "done",
                 "result_file": result_ref,
+                "profile_revision": profile.get("profile_revision"),
                 "finished_at": now_stamp(),
             },
         )
@@ -927,18 +1197,36 @@ def _run_summary_job(job_id: str) -> None:
         _fail_job(job_id, exc)
 
 
-def _run_chat_job(job_id: str, user_message: str, history: list) -> None:
+def _run_chat_job(
+    job_id: str,
+    user_message: str,
+    history: list,
+    expected_profile_revision: int,
+) -> None:
     try:
         _update_job(job_id, {"status": "running", "stage": "answering", "started_at": now_stamp()})
         profile = agent.load_profile()
+        generation_revision = profile.get("profile_revision")
+        if str(generation_revision) != str(expected_profile_revision):
+            raise RuntimeError("chat_history_stale")
         reply = agent.handle_chat(profile, user_message, history)
-        result_ref = _write_job_result(job_id, {"reply": reply})
+        current_revision = agent.load_profile().get("profile_revision")
+        if str(current_revision) != str(generation_revision):
+            raise RuntimeError("chat_context_stale")
+        result_ref = _write_job_result(
+            job_id,
+            {
+                "reply": reply,
+                "source_profile_revision": generation_revision,
+            },
+        )
         _update_job(
             job_id,
             {
                 "status": "done",
                 "stage": "done",
                 "result_file": result_ref,
+                "profile_revision": generation_revision,
                 "finished_at": now_stamp(),
             },
         )
@@ -1127,9 +1415,7 @@ def _protect_api():
         return jsonify({"error": "Authentication required."}), 401
     else:
         principal_id = None
-    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not _origin_is_same(
-        hosted=hosted
-    ):
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not _origin_is_same(hosted=hosted):
         return jsonify({"error": "Cross-origin request denied."}), 403
     allowlist = {
         item.strip()
@@ -1299,11 +1585,7 @@ def api_health():
     # eight-day-old backup is protected. Degrade only when the newest backup
     # materially lags the current profile (or is missing).
     backup_out_of_date = profile_status == "ok" and (
-        backup_age is None
-        or (
-            profile_age is not None
-            and backup_age > profile_age + 300
-        )
+        backup_age is None or (profile_age is not None and backup_age > profile_age + 300)
     )
 
     # ── recovery state ────────────────────────────────────────────────────────
@@ -1369,18 +1651,39 @@ def api_health():
 @app.route("/api/status")
 def api_status():
     profile = agent.load_profile()
-    alerts = [a for a in profile.get("alerts", []) if not a.get("resolved")]
-    bms = sorted(profile.get("biomarkers", []), key=lambda x: x.get("date", ""), reverse=True)[:50]
-    imgs = sorted(profile.get("imaging", []), key=lambda x: x.get("date", ""), reverse=True)[:3]
-    docs = sorted(profile.get("documents", []), key=lambda x: x.get("date", ""), reverse=True)[:5]
+    alerts = [
+        {**item, "resolve_token": agent.alert_token(item)} for item in agent.active_alerts(profile)
+    ]
+    bms = sorted(profile.get("biomarkers", []), key=lambda x: x.get("date") or "", reverse=True)[
+        :50
+    ]
+    imgs = sorted(profile.get("imaging", []), key=lambda x: x.get("date") or "", reverse=True)[:3]
+    docs = sorted(agent.active_documents(profile), key=lambda x: x.get("date") or "", reverse=True)[
+        :5
+    ]
+    classification_current = agent.treatment_classification_is_current(profile)
     return jsonify(
         {
             "patient": profile.get("patient", {}),
+            "profile_revision": profile.get("profile_revision"),
             "alerts": alerts,
             "recent_biomarkers": bms,
             "recent_imaging": imgs,
             "recent_documents": docs,
-            "treatments_classified": profile.get("treatments_classified", []),
+            "treatments_classified": (
+                [
+                    {**item, "edit_token": agent.treatment_edit_token(profile, item)}
+                    for item in profile.get("treatments_classified", [])
+                ]
+                if classification_current
+                else []
+            ),
+            "treatments_fallback": (
+                []
+                if classification_current
+                else profile.get("patient", {}).get("current_treatments", [])
+            ),
+            "treatments_classification_current": classification_current,
             "stats": {
                 "trials_tracked": len(profile.get("trials_tracked", [])),
                 "literature_watched": len(profile.get("literature_watched", [])),
@@ -1535,101 +1838,392 @@ def api_deep_sweep():
 
 @app.route("/api/jobs")
 def api_jobs():
+    profile = agent.load_profile()
     with _jobs_lock:
-        return jsonify([_job_response(job) for job in _jobs])
+        return jsonify([_job_response(job, profile=profile) for job in _jobs])
 
 
 @app.route("/api/jobs/<job_id>")
 def api_job(job_id):
+    profile = agent.load_profile()
     with _jobs_lock:
         for j in _jobs:
             if j["id"] == job_id:
-                return jsonify(_job_response(j, include_artifacts=True))
+                return jsonify(_job_response(j, include_artifacts=True, profile=profile))
     return jsonify({"error": "Not found"}), 404
 
 
-@app.route("/api/treatments/delete", methods=["POST"])
-@serialized_profile_mutation
-def api_delete_treatment():
-    data = request.get_json(force=True) or {}
-    text = data.get("text", "").strip()
-    if not text:
-        return jsonify({"error": "No text provided"}), 400
+def _retained_feed_job(job_id: str) -> dict | None:
+    with _jobs_lock:
+        return next(
+            (
+                dict(item)
+                for item in _jobs
+                if item.get("id") == job_id and item.get("type") == "feed"
+            ),
+            None,
+        )
+
+
+def _receipt_error_response(profile: dict, job_id: str, exc: Exception):
+    status = 409 if isinstance(exc, agent.ImportConflict) else 400
+    payload = {
+        "error": str(exc),
+        "code": "import_conflict" if status == 409 else "invalid_receipt_change",
+    }
+    if status == 409:
+        try:
+            payload["receipt"] = agent.public_receipt(profile, job_id)
+        except agent.ReconciliationError:
+            pass
+    return jsonify(payload), status
+
+
+@app.route("/api/jobs/<job_id>/receipt")
+def api_job_receipt(job_id):
+    if _retained_feed_job(job_id) is None:
+        return jsonify({"error": "Feed job not found"}), 404
     profile = agent.load_profile()
-    # Remove from raw treatments list
-    profile["patient"]["current_treatments"] = [
-        t for t in profile["patient"].get("current_treatments", []) if t != text
-    ]
-    # Remove from classified list
-    profile["treatments_classified"] = [
-        t
-        for t in profile.get("treatments_classified", [])
-        if t.get("text") != text and t.get("label") != text
-    ]
+    try:
+        return jsonify(agent.public_receipt(profile, job_id))
+    except agent.ReconciliationError as exc:
+        return jsonify({"error": str(exc)}), 404
+
+
+@app.route("/api/jobs/<job_id>/receipt/changes/<change_id>/correct", methods=["POST"])
+@serialized_profile_mutation
+def api_correct_import_change(job_id, change_id):
+    if _retained_feed_job(job_id) is None:
+        return jsonify({"error": "Feed job not found"}), 404
+    data = request.get_json(force=True) or {}
+    profile = agent.load_profile()
+    try:
+        agent.correct_change(
+            profile,
+            job_id,
+            change_id,
+            receipt_revision=data.get("receipt_revision"),
+            target_token=str(data.get("target_token") or ""),
+            replacement=data.get("replacement"),
+        )
+    except agent.ReconciliationError as exc:
+        return _receipt_error_response(profile, job_id, exc)
     agent.save_profile(profile)
-    return jsonify({"ok": True})
+    return jsonify({"receipt": agent.public_receipt(profile, job_id)})
+
+
+@app.route("/api/jobs/<job_id>/receipt/changes/<change_id>/remove", methods=["POST"])
+@serialized_profile_mutation
+def api_remove_import_change(job_id, change_id):
+    if _retained_feed_job(job_id) is None:
+        return jsonify({"error": "Feed job not found"}), 404
+    data = request.get_json(force=True) or {}
+    profile = agent.load_profile()
+    try:
+        agent.remove_change(
+            profile,
+            job_id,
+            change_id,
+            receipt_revision=data.get("receipt_revision"),
+            target_token=str(data.get("target_token") or ""),
+        )
+    except agent.ReconciliationError as exc:
+        return _receipt_error_response(profile, job_id, exc)
+    agent.save_profile(profile)
+    return jsonify({"receipt": agent.public_receipt(profile, job_id)})
+
+
+@app.route("/api/jobs/<job_id>/receipt/undo", methods=["POST"])
+@serialized_profile_mutation
+def api_undo_import(job_id):
+    if _retained_feed_job(job_id) is None:
+        return jsonify({"error": "Feed job not found"}), 404
+    data = request.get_json(force=True) or {}
+    profile = agent.load_profile()
+    try:
+        agent.undo_import(
+            profile,
+            job_id,
+            receipt_revision=data.get("receipt_revision"),
+            undo_token=str(data.get("undo_token") or ""),
+        )
+    except agent.ReconciliationError as exc:
+        return _receipt_error_response(profile, job_id, exc)
+    agent.save_profile(profile)
+    return jsonify({"receipt": agent.public_receipt(profile, job_id)})
+
+
+@app.route("/api/patient/evidence")
+def api_patient_evidence():
+    """Return path-free imaging and document/source history for the Patient view."""
+    profile = agent.load_profile()
+    imports_by_source = {
+        item.get("source_document_id"): item
+        for item in profile.get("document_imports", [])
+        if item.get("source_document_id")
+    }
+    indexed_source_ids = {
+        item.get("id") for item in profile.get("source_documents", []) if item.get("id")
+    }
+
+    def evidence_projection(item: dict) -> dict:
+        source_id = item.get("source_document_id")
+        projected = {
+            key: item.get(key)
+            for key in (
+                "id",
+                "date",
+                "modality",
+                "findings",
+                "impression",
+                "new_lesions",
+                "type",
+                "summary",
+                "key_findings",
+                "added_at",
+                "excluded_from_clinical_context",
+                "evidence_status",
+            )
+            if key in item
+        }
+        projected["source_document_id"] = source_id
+        if source_id in indexed_source_ids:
+            projected["source_url"] = f"/api/sources/{source_id}"
+        if (
+            source_id in indexed_source_ids
+            and item.get("evidence_status") == "verified"
+            and item.get("evidence_start") is not None
+            and item.get("evidence_end") is not None
+        ):
+            projected["evidence_url"] = (
+                f"/api/evidence/{source_id}?start={item['evidence_start']}"
+                f"&end={item['evidence_end']}"
+            )
+        receipt = imports_by_source.get(source_id)
+        if receipt and _retained_feed_job(receipt.get("job_id", "")):
+            projected["receipt_url"] = f"/api/jobs/{receipt['job_id']}/receipt"
+            projected["receipt_job_id"] = receipt["job_id"]
+            projected["import_status"] = receipt.get("status")
+        return projected
+
+    sources = []
+    for source in sorted(
+        profile.get("source_documents", []),
+        key=lambda item: item.get("ingested_at") or "",
+        reverse=True,
+    ):
+        public = _public_source_metadata(source)
+        receipt = imports_by_source.get(source.get("id"))
+        if receipt:
+            public["document_type"] = receipt.get("document_type")
+            public["document_date"] = receipt.get("document_date")
+            public["document_summary"] = receipt.get("document_summary")
+            public["import_status"] = receipt.get("status")
+            if _retained_feed_job(receipt.get("job_id", "")):
+                public["receipt_url"] = f"/api/jobs/{receipt['job_id']}/receipt"
+                public["receipt_job_id"] = receipt["job_id"]
+        sources.append(public)
+    return jsonify(
+        {
+            "imaging": [
+                evidence_projection(item)
+                for item in sorted(
+                    profile.get("imaging", []),
+                    key=lambda item: item.get("date") or item.get("added_at") or "",
+                    reverse=True,
+                )
+            ],
+            "documents": [
+                evidence_projection(item)
+                for item in sorted(
+                    profile.get("documents", []),
+                    key=lambda item: item.get("added_at") or item.get("date") or "",
+                    reverse=True,
+                )
+            ],
+            "sources": sources,
+        }
+    )
+
+
+@app.route("/api/treatments/delete", methods=["POST"])
+def api_delete_treatment():
+    return (
+        jsonify(
+            {
+                "error": "Text-based treatment deletion is no longer supported. Reload and edit by treatment ID."
+            }
+        ),
+        410,
+    )
+
+
+@app.route("/api/alerts/<alert_id>/resolve", methods=["POST"])
+@serialized_profile_mutation
+def api_resolve_alert(alert_id):
+    data = request.get_json(force=True) or {}
+    expected_token = str(data.get("expected_token") or "")
+    expected_revision = data.get("expected_profile_revision")
+    if not expected_token or expected_revision is None:
+        return (
+            jsonify({"error": "expected_token and expected_profile_revision are required"}),
+            400,
+        )
+    profile = agent.load_profile()
+    alert = next(
+        (item for item in profile.get("alerts", []) if item.get("id") == alert_id),
+        None,
+    )
+    if (
+        alert is None
+        or str(expected_revision) != str(profile.get("profile_revision"))
+        or alert.get("resolved")
+        or alert not in agent.active_alerts(profile)
+        or agent.alert_token(alert) != expected_token
+    ):
+        return (
+            jsonify(
+                {
+                    "error": "The alert changed or is no longer active. Reload alerts before resolving it."
+                }
+            ),
+            409,
+        )
+    alert["resolved"] = True
+    profile["summary_stale"] = True
+    if isinstance(profile.get("executive_summary"), dict):
+        profile["executive_summary"]["stale"] = True
+        profile["executive_summary"]["alert_resolution_pending"] = True
+    timestamp = now_stamp()
+    for question in profile.get("appointment_questions", []):
+        if question.get("source") == "ai" and not question.get("stale"):
+            question["stale"] = True
+            question["stale_reason"] = "active_alert_resolved_after_generation"
+            question["stale_at"] = timestamp
+    agent.save_profile(profile)
+    return jsonify({"ok": True, "profile_revision": profile["profile_revision"]})
 
 
 @app.route("/api/alerts/resolve/<int:idx>", methods=["POST"])
-@serialized_profile_mutation
-def api_resolve_alert(idx):
-    profile = agent.load_profile()
-    alerts = profile.get("alerts", [])
-    unresolved = [a for a in alerts if not a.get("resolved")]
-    if idx < len(unresolved):
-        unresolved[idx]["resolved"] = True
-    agent.save_profile(profile)
-    return jsonify({"ok": True})
+def api_resolve_alert_legacy(idx):
+    return (
+        jsonify(
+            {
+                "error": "Index-based alert resolution is no longer supported. Reload and resolve by alert ID."
+            }
+        ),
+        410,
+    )
 
 
 @app.route("/api/treatments/update", methods=["POST"])
-@serialized_profile_mutation
 def api_treatments_update():
-    """Update a treatment's category or remove it — syncs both classified and raw lists."""
+    return (
+        jsonify(
+            {
+                "error": "Index-based treatment updates are no longer supported. Reload and edit by treatment ID."
+            }
+        ),
+        410,
+    )
+
+
+@app.route("/api/treatments/<treatment_id>", methods=["POST"])
+@serialized_profile_mutation
+def api_treatment_edit(treatment_id):
     data = request.get_json(force=True) or {}
-    action = data.get("action")  # "remove" or "set_category"
-    idx = data.get("idx")
-    category = data.get("category")
-
+    action = data.get("action")
+    expected_token = str(data.get("expected_token") or "")
+    expected_revision = data.get("expected_profile_revision")
+    if action not in {"remove", "complete"} or not expected_token or expected_revision is None:
+        return (
+            jsonify(
+                {
+                    "error": "action, expected_token, and expected_profile_revision are required"
+                }
+            ),
+            400,
+        )
     profile = agent.load_profile()
-    txs = profile.get("treatments_classified", [])
-
-    if idx is None or idx >= len(txs):
-        return jsonify({"error": "Invalid index"}), 400
-
-    tx = txs[idx]
-    tx_text_lower = (tx.get("text") or tx.get("label") or "").lower().strip()
-
+    classified = profile.get("treatments_classified", [])
+    treatment = next((item for item in classified if item.get("id") == treatment_id), None)
+    if (
+        not agent.treatment_classification_is_current(profile)
+        or str(expected_revision) != str(profile.get("profile_revision"))
+        or treatment is None
+        or agent.treatment_edit_token(profile, treatment) != expected_token
+    ):
+        return (
+            jsonify(
+                {
+                    "error": "The treatment changed or classification is outdated. Reload before editing."
+                }
+            ),
+            409,
+        )
+    source_ids = set(treatment.get("source_treatment_ids") or [])
+    records = profile.get("patient", {}).get("current_treatment_records", [])
+    if not source_ids or not any(item.get("id") in source_ids for item in records):
+        return jsonify({"error": "Mapped raw treatment components are unavailable"}), 409
+    overlapping = [
+        item
+        for item in classified
+        if item.get("id") != treatment_id
+        and source_ids & set(item.get("source_treatment_ids") or [])
+    ]
+    if overlapping:
+        return (
+            jsonify(
+                {
+                    "error": "Treatment source mapping overlaps another treatment. Refresh classification before editing."
+                }
+            ),
+            409,
+        )
+    treatment_identities = agent.treatment_identity_set(
+        treatment.get("text") or treatment.get("label") or ""
+    )
+    selected_records = [item for item in records if item.get("id") in source_ids]
+    if len(treatment_identities) != 1 or any(
+        agent.treatment_identity_set(record.get("text", "")) != treatment_identities
+        or not agent.treatment_text_is_certifiable(record.get("text", ""))
+        for record in selected_records
+    ):
+        return (
+            jsonify(
+                {
+                    "error": "Treatment source coverage is not exclusive. Refresh classification before editing."
+                }
+            ),
+            409,
+        )
     if action == "remove":
-        txs.pop(idx)
-        # Also remove from raw current_treatments — match by substring
-        profile["patient"]["current_treatments"] = [
-            t
-            for t in profile["patient"].get("current_treatments", [])
-            if tx_text_lower not in t.lower() and t.lower() not in tx_text_lower
+        profile["patient"]["current_treatment_records"] = [
+            item for item in records if item.get("id") not in source_ids
         ]
-
-    elif action == "set_category" and category:
-        txs[idx]["category"] = category
-        # If marking completed, note the change in raw list by appending a completion marker
-        if category == "completed":
-            raw = profile["patient"].get("current_treatments", [])
-            # Replace matching raw entry with a completed-flagged version
-            updated_raw = []
-            matched = False
-            for t in raw:
-                if not matched and (tx_text_lower in t.lower() or t.lower() in tx_text_lower):
-                    updated_raw.append(f"{t} [completed]")
-                    matched = True
-                else:
-                    updated_raw.append(t)
-            profile["patient"]["current_treatments"] = updated_raw
+        profile["treatments_classified"] = [
+            item for item in classified if item.get("id") != treatment_id
+        ]
     else:
-        return jsonify({"error": "Invalid action"}), 400
-
-    profile["treatments_classified"] = txs
+        for record in records:
+            if record.get("id") in source_ids and "[completed]" not in record.get("text", ""):
+                record["text"] = f"{record.get('text', '').strip()} [completed]"
+        treatment["category"] = "completed"
+    agent.rebuild_raw_treatments(profile)
+    profile["treatments_classification_revision"] = (
+        int(profile.get("profile_revision") or 0) + 1
+    )
+    profile["treatments_classification_job_id"] = "manual-treatment-edit"
     agent.save_profile(profile)
-    return jsonify({"ok": True, "treatments_classified": txs})
+    return jsonify(
+        {
+            "ok": True,
+            "treatments_classified": [
+                {**item, "edit_token": agent.treatment_edit_token(profile, item)}
+                for item in profile.get("treatments_classified", [])
+            ],
+        }
+    )
 
 
 @app.route("/api/trials")
@@ -1646,7 +2240,11 @@ def api_trials():
 def api_trials_poll():
     """On-demand deterministic poll of tracked-trial statuses (P5)."""
     profile = agent.load_profile()
-    result = agent.poll_tracked_trials(profile)
+    result = agent.poll_tracked_trials(
+        profile,
+        source_job_id="manual-trial-poll",
+        generation_profile_revision=int(profile.get("profile_revision") or 0) + 1,
+    )
     if result.get("changed") or result.get("refreshed"):
         agent.save_profile(profile)
     return jsonify(result)
@@ -1686,7 +2284,21 @@ def api_delete_paper(pmid):
 @app.route("/api/questions")
 def api_questions():
     profile = agent.load_profile()
-    questions = profile.get("appointment_questions", [])
+    generation_id = profile.get("questions_generation_id")
+    profile_revision = profile.get("profile_revision")
+    questions = []
+    for stored in profile.get("appointment_questions", []):
+        question = copy.deepcopy(stored)
+        if question.get("source") == "ai" and (
+            not question.get("generation_job_id")
+            or str(question.get("source_profile_revision")) != str(profile_revision)
+            or (not question.get("asked") and question.get("generation_job_id") != generation_id)
+        ):
+            question["stale"] = True
+            question["stale_reason"] = (
+                question.get("stale_reason") or "missing_or_superseded_generation_provenance"
+            )
+        questions.append(question)
     return jsonify(questions)
 
 
@@ -2036,6 +2648,15 @@ def api_dismiss_action(idx):
             400,
         )
     profile = agent.load_profile()
+    if not agent.summary_is_current(profile):
+        return (
+            jsonify(
+                {
+                    "error": "The assessment is stale. Refresh it before reviewing or dismissing actions."
+                }
+            ),
+            409,
+        )
     summary = profile.get("executive_summary", {})
     actions = summary.get("next_actions", [])
     expected_revision = data["summary_revision"]
@@ -2167,7 +2788,7 @@ def api_summary():
     summary = profile.get("executive_summary")
     if not summary:
         return jsonify({"status": "not_generated"})
-    response = dict(summary)
+    response = copy.deepcopy(summary)
     response["profile_revision"] = profile.get("profile_revision")
     response["summary_revision"] = summary.get("summary_revision")
     current_judgment_hash = agent.clinical_judgments_fingerprint(profile)
@@ -2178,12 +2799,10 @@ def api_summary():
         else bool(profile.get("clinical_judgments"))
     )
     response["judgment_context_changed"] = judgment_context_changed
-    response["stale"] = bool(
-        profile.get("summary_stale") or summary.get("stale") or judgment_context_changed
-    )
+    response["stale"] = bool(not agent.summary_is_current(profile) or judgment_context_changed)
     response["profile_updated_at"] = profile.get("profile_updated_at")
     response["recent_documents"] = sorted(
-        profile.get("documents", []),
+        agent.active_documents(profile),
         key=lambda item: item.get("added_at") or item.get("date") or "",
         reverse=True,
     )[:5]
@@ -2239,6 +2858,27 @@ def api_summary():
         if item.get("assessment") in {"corrected", "incorrect", "missed"}
         and item.get("target", "").startswith("summary")
     )
+    if response["stale"]:
+        for field in (
+            "overall_status",
+            "status_confidence",
+            "status_rationale",
+            "key_concern",
+            "summary",
+            "prrt_status",
+            "prrt_rationale",
+            "cga_trend",
+            "cga_trend_detail",
+            "next_actions",
+            "timeline",
+            "best_trial",
+            "claim_evidence",
+        ):
+            response.pop(field, None)
+        response["status"] = "stale"
+        response["content_hidden"] = True
+    else:
+        response["claim_evidence"] = agent.resolve_summary_evidence(profile, response)
     return jsonify(response)
 
 
@@ -2266,13 +2906,32 @@ def api_chat():
     if not isinstance(history, list):
         return jsonify({"error": "Invalid history"}), 400
     history = history[-20:]
-    job, rejection = _submit_job("chat", _run_chat_job, user_message[:10000], history)
+    profile = agent.load_profile()
+    current_revision = int(profile.get("profile_revision") or 0)
+    history_revision = data.get("history_revision")
+    if history and str(history_revision) != str(current_revision):
+        return (
+            jsonify(
+                {
+                    "error": "The patient record changed. Clear the prior chat history before continuing.",
+                    "profile_revision": current_revision,
+                }
+            ),
+            409,
+        )
+    job, rejection = _submit_job(
+        "chat",
+        _run_chat_job,
+        user_message[:10000],
+        history,
+        current_revision,
+    )
     if rejection:
         return rejection
     legacy = _legacy_sync_result(job["id"])
     if legacy is not None:
         return jsonify(legacy), 500 if legacy.get("error") else 200
-    return jsonify({"job_id": job["id"]}), 202
+    return jsonify({"job_id": job["id"], "profile_revision": current_revision}), 202
 
 
 @app.route("/")

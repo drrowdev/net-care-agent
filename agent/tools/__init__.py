@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import datetime
+import re
 
+from ..provenance import new_record_id
 from ..schema import now_stamp
 from .biomarkers import analyze_biomarker_trends
 from .clinical_trials import search_clinical_trials
@@ -109,8 +111,9 @@ TOOLS: list[dict] = [
         "name": "flag_alert",
         "description": (
             "Raise an alert for findings that require action or attention. "
-            "Use for: critical lab values, promising new trials found, PRRT eligibility confirmed, "
-            "urgent treatment considerations, or significant disease progression."
+            "Use for critical values, potentially relevant trial/PRRT screening findings "
+            "requiring clinician confirmation, urgent treatment considerations, or significant "
+            "disease progression. Never claim eligibility, qualification, or a best match."
         ),
         "input_schema": {
             "type": "object",
@@ -216,7 +219,212 @@ def _is_relevant(item: dict, item_type: str) -> bool:
 
 
 # ─── Dispatcher ──────────────────────────────────────────────────────────────
-def execute_tool(name: str, inputs: dict, profile: dict) -> dict:
+_DEFINITIVE_SCREENING_RE = re.compile(
+    r"\b(?:eligib\w*|qualif\w*|inclusion\s+criteria|"
+    r"inclusion\s+requirements?|"
+    r"meets?\s+(?:all\s+)?(?:inclusion|criteria)|"
+    r"satisf(?:y|ies|ied)\s+(?:all\s+)?(?:inclusion\s+)?(?:criteria|requirements?)|"
+    r"(?:should|must|can)\s+be\s+includ\w*|"
+    r"enroll\w*|enrol\w*|"
+    r"(?:one\s+of\s+the\s+)?(?:best|ideal|perfect\w*)[- ]+(?:fit|match\w*)|"
+    r"(?:ideal|suitable)\s+candidate|candidate\s+for|"
+    r"matches?\s+(?:the\s+)?(?:trial\s+)?criteria|"
+    r"(?:good|strong)\s+fit)\b",
+    re.IGNORECASE,
+)
+_NEGATED_SCREENING_RE = re.compile(
+    r"\b(?:not\s+eligible|ineligible|not\s+qualified|unqualified|"
+    r"does\s+not\s+qualify|cannot\s+qualify|"
+    r"(?:patient\s+is\s+)?excluded\s+(?:from|because)|"
+    r"(?:do|should)\s+not\s+enroll|cannot\s+enroll|"
+    r"excludes?\s+enrollment|fails?\s+(?:the\s+)?inclusion)\b",
+    re.IGNORECASE,
+)
+_SCREENING_CONTEXT_RE = re.compile(
+    r"\b(?:trial|study|protocol|prrt|nct\d+|lutathera|"
+    r"lutetium[- ]?177(?:\s+dotatate)?|lu[- ]?177(?:[- ]dotatate)?|"
+    r"177lu(?:[- ]octreotate)?|peptide\s+receptor\s+radionuclide\s+therapy)\b",
+    re.IGNORECASE,
+)
+_SCREENING_ASSERTION_RE = re.compile(
+    r"\b(?:candidate|suitable|fit|match\w*|criteria|eligib\w*|qualif\w*|"
+    r"inclusion|exclusion|enroll\w*|enrol\w*|excellent|compelling|ideal|top|"
+    r"indicat\w*|appropriate|benefit\w*|receive|offer\w*|recommend\w*|advis\w*)\b",
+    re.IGNORECASE,
+)
+_SCREENING_HISTORICAL_RE = re.compile(
+    r"\b(?:(?:was|were|had\s+been)\s+(?:considered\s+)?(?:indicat\w*|appropriate|suitable|"
+    r"eligible|qualified|recommended|advised|a\s+candidate)|"
+    r"(?:prior|previous|historical)\s+(?:note|plan|assessment)\s+(?:said|stated|"
+    r"recorded)?(?:(?![.;]|\b(?:and|but|however|then|now)\b).)*?"
+    r"(?:benefit\w*|candidate|fit|match\w*|indicat\w*))\b",
+    re.IGNORECASE,
+)
+_SCREENING_CLAUSE_SPLIT_RE = re.compile(
+    r"(?:[.;]|\s+[–—-]\s+|,\s*(?:but|and)\s+|\s+(?:but|however)\s+)",
+    re.IGNORECASE,
+)
+_TREATMENT_CHANGE_VERB = (
+    r"(?:start(?:ing)?|stop(?:ping)?|hold(?:ing)?|paus(?:e|ing)|resum(?:e|ing)|"
+    r"switch(?:ing)?|increas(?:e|ing)|decreas(?:e|ing)|redos(?:e|ing)|"
+    r"titrat(?:e|ing)|discontinu(?:e|ing)|withhold(?:ing)?|omit(?:ting)?|"
+    r"skip(?:ping)?|administer(?:ing)?|tak(?:e|ing)|reduc(?:e|ing)|"
+    r"restart(?:ing)?|continu(?:e|ing)|initiat(?:e|ing)|escalat(?:e|ing)|"
+    r"de-escalat(?:e|ing))"
+)
+_TREATMENT_RECOMMENDATION_RE = re.compile(
+    rf"\b(?:recommend\w*|advis\w*|needs?\s*(?::|to)|should|must|"
+    rf"plan(?:\s+is)?\s*(?::|to)|consider(?:ed|ing)?\s+).*?\b"
+    rf"{_TREATMENT_CHANGE_VERB}\b",
+    re.IGNORECASE,
+)
+_TREATMENT_MODAL_PASSIVE_RE = re.compile(
+    r"\b(?:should|must|needs?\s+to)\s+be\s+"
+    r"(?:started|stopped|held|paused|resumed|switched|increased|decreased|"
+    r"redosed|titrated|discontinued|withheld|omitted|skipped|administered|taken|"
+    r"reduced|restarted|continued|initiated|escalated|de-escalated)\b",
+    re.IGNORECASE,
+)
+_TREATMENT_RECOMMENDED_PASSIVE_RE = re.compile(
+    r"\b(?:recommend\w*|advis\w*|consider\w*|plan\w*|needs?)\b.*?"
+    r"\bbe\s+(?:started|stopped|held|paused|resumed|switched|increased|decreased|"
+    r"redosed|titrated|discontinued|withheld|omitted|skipped|administered|taken|"
+    r"reduced|restarted|continued|initiated|escalated|de-escalated)\b",
+    re.IGNORECASE,
+)
+_TREATMENT_RECOMMENDED_OBJECT_RE = re.compile(
+    r"\b(?:recommend\w*|advis\w*|consider\w*|plan\w*|needs?)\b.*?"
+    r"\b(?:started|stopped|held|paused|resumed|switched|increased|decreased|"
+    r"redosed|titrated|discontinued|withheld|omitted|skipped|administered|taken|"
+    r"reduced|restarted|continued|initiated|escalated|de-escalated)\b",
+    re.IGNORECASE,
+)
+_TREATMENT_COMMAND_RE = re.compile(
+    rf"^\s*(?:(?:please|immediately|now)\s+)*(?:do\s+not\s+)?" rf"{_TREATMENT_CHANGE_VERB}\b",
+    re.IGNORECASE,
+)
+_TREATMENT_GERUND_RE = re.compile(
+    r"^\s*(?:starting|stopping|holding|pausing|resuming|switching|increasing|"
+    r"decreasing|redosing|titrating|discontinuing|withholding|omitting|skipping|"
+    r"administering|taking)\b",
+    re.IGNORECASE,
+)
+_TREATMENT_HISTORICAL_RE = re.compile(
+    r"\b(?:was|were|has\s+been|had\s+been)\s+"
+    r"(?:started|stopped|held|paused|resumed|switched|increased|decreased|"
+    r"redosed|titrated|discontinued|withheld|omitted|skipped|administered|taken|"
+    r"reduced|restarted|continued|initiated|escalated|de-escalated)\b",
+    re.IGNORECASE,
+)
+_TREATMENT_NOUN_EVENT_RE = re.compile(
+    r"^\s*(?:start\s+of|hold\s+on)\b.*\b(?:was|were|has\s+been|had\s+been)\b",
+    re.IGNORECASE,
+)
+_TREATMENT_CANCELLED_HISTORY_RE = re.compile(
+    rf"(?:\b(?:plan|recommendation|advice|proposal)\b.*?\b{_TREATMENT_CHANGE_VERB}\b|"
+    rf"^\s*{_TREATMENT_CHANGE_VERB}\b.*?)"
+    r".*?\b(?:was|were|has\s+been|had\s+been)\s+"
+    r"(?:cancelled|canceled|abandoned|withdrawn|postponed|deferred|discontinued)\b",
+    re.IGNORECASE,
+)
+
+
+def _screening_clause_is_historical(clause: str) -> bool:
+    matches = list(_SCREENING_HISTORICAL_RE.finditer(clause))
+    if not matches:
+        return False
+    remainder = list(clause)
+    for match in matches:
+        remainder[match.start() : match.end()] = " " * (match.end() - match.start())
+    return not _SCREENING_ASSERTION_RE.search("".join(remainder))
+
+
+def _screening_safe_alert_text(value: object) -> str:
+    original = str(value or "").strip()
+    treatment_directive = False
+    for clause in (
+        item.strip()
+        for item in re.split(
+            rf"[.;,:]|\s+[-–—]\s+|\b(?:but|then|however)\b|"
+            rf"\band\b(?=\s*{_TREATMENT_CHANGE_VERB}\b)|"
+            r"\band\b(?=[^.;,:]*\b(?:should|must|needs?\s+to)\b)|"
+            r"\band\b(?=\s*(?:recommend\w*|advis\w*|consider\w*|plan\w*|needs?)\b)",
+            original,
+            flags=re.IGNORECASE,
+        )
+        if item.strip()
+    ):
+        if _TREATMENT_CANCELLED_HISTORY_RE.search(clause):
+            continue
+        recommendation = bool(_TREATMENT_RECOMMENDATION_RE.search(clause))
+        recommended_passive = bool(
+            _TREATMENT_RECOMMENDED_PASSIVE_RE.search(clause)
+            or _TREATMENT_RECOMMENDED_OBJECT_RE.search(clause)
+        )
+        modal_passive = bool(_TREATMENT_MODAL_PASSIVE_RE.search(clause))
+        historical = bool(
+            _TREATMENT_HISTORICAL_RE.search(clause) or _TREATMENT_NOUN_EVENT_RE.search(clause)
+        )
+        directive = bool(
+            recommendation
+            or recommended_passive
+            or modal_passive
+            or _TREATMENT_COMMAND_RE.search(clause)
+            or _TREATMENT_GERUND_RE.search(clause)
+        )
+        if directive and (recommendation or recommended_passive or modal_passive or not historical):
+            treatment_directive = True
+            break
+    if treatment_directive:
+        return (
+            "A treatment-change question was identified; contact the treating team and "
+            "confirm before any treatment change."
+        )
+    screening_clauses = [
+        clause.strip() for clause in _SCREENING_CLAUSE_SPLIT_RE.split(original) if clause.strip()
+    ]
+    if _SCREENING_CONTEXT_RE.search(original) and any(
+        _SCREENING_ASSERTION_RE.search(clause) and not _screening_clause_is_historical(clause)
+        for clause in screening_clauses
+    ):
+        return (
+            "Trial or PRRT screening information identified; the treating team and trial "
+            "site must review the complete criteria and enrollment status before action."
+        )
+    if _NEGATED_SCREENING_RE.search(original) or _DEFINITIVE_SCREENING_RE.search(original):
+        return (
+            "Trial or PRRT screening information identified; the treating team and trial "
+            "site must review the complete criteria and enrollment status before action."
+        )
+    text = original
+    replacements = (
+        (r"\beligibility confirmed\b", "potential fit requiring clinician confirmation"),
+        (r"\beligibility\b", "potential fit requiring clinician confirmation"),
+        (r"\beligible\b", "a potential fit"),
+        (r"\bqualif\w*\b", "potential fit"),
+        (
+            r"\b(?:one of the )?(?:best|ideal|perfect\w*)[- ]+match(?:es|ed)?\b",
+            "potentially relevant",
+        ),
+        (r"\bperfectly[- ]matched\b", "potentially relevant"),
+    )
+    for pattern, replacement in replacements:
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+    if text != original and "clinician confirmation" not in text.casefold():
+        text = f"{text} — clinician confirmation required"
+    return text
+
+
+def execute_tool(
+    name: str,
+    inputs: dict,
+    profile: dict,
+    *,
+    source_document_id: str | None = None,
+    source_job_id: str | None = None,
+    generation_profile_revision: int | None = None,
+    dependency_kind: str | None = None,
+) -> dict:
     if name == "search_pubmed":
         result = search_pubmed(inputs["query"], inputs.get("max_results", 6))
         existing_pmids = {p["pmid"] for p in profile.get("literature_watched", [])}
@@ -310,12 +518,23 @@ def execute_tool(name: str, inputs: dict, profile: dict) -> dict:
 
     elif name == "flag_alert":
         alert = {
+            "id": new_record_id("alert"),
             "date": datetime.date.today().isoformat(),
             "priority": inputs["priority"],
-            "message": inputs["message"],
-            "action_required": inputs.get("action_required", ""),
+            "message": _screening_safe_alert_text(inputs["message"]),
+            "action_required": _screening_safe_alert_text(inputs.get("action_required", "")),
             "resolved": False,
             "added_at": now_stamp(),
+            "source_document_id": source_document_id,
+            "source_job_id": source_job_id or "direct-tool-call",
+            "generation_profile_revision": (
+                generation_profile_revision
+                if generation_profile_revision is not None
+                else profile.get("profile_revision")
+            ),
+            "source_dependency_active": True,
+            "dependency_kind": dependency_kind
+            or ("source" if source_document_id else "profile_snapshot"),
         }
         profile["alerts"].append(alert)
         return {"status": "alert_flagged", **alert}

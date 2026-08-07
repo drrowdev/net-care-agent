@@ -14,6 +14,7 @@ from .profile import build_patient_context
 from .provenance import (
     anchor_source_quote,
     attach_evidence,
+    new_record_id,
     preserve_source_document,
     remove_source_document,
 )
@@ -141,7 +142,7 @@ def _persist_symptoms(
         if dup:
             continue
         item = {
-            "id": f"sym_ai_{doc_date.replace('-', '')}_{len(existing)}",
+            "id": new_record_id("symptom"),
             "date": doc_date,
             "added_at": now_stamp(),
             "symptom": name,
@@ -187,6 +188,7 @@ def _persist_appointments(
         if dup:
             continue
         item = {
+            "id": new_record_id("appointment"),
             "date": date,
             "description": desc,
             "type": (a.get("type") or "").strip().lower() or "appointment",
@@ -356,6 +358,7 @@ def _run_intake_impl(
         # analysis rather than silently believing it was ingested.
         profile.setdefault("alerts", []).append(
             {
+                "id": new_record_id("alert"),
                 "priority": "urgent",
                 "message": (
                     "A fed document could NOT be structurally extracted — its "
@@ -371,6 +374,7 @@ def _run_intake_impl(
                 "added_at": now_stamp(),
                 "source": "intake_extraction_failure",
                 "source_document_id": source_document_id,
+                "dependency_kind": "durable",
             }
         )
         extracted["extraction_failed"] = True
@@ -414,6 +418,7 @@ def _run_intake_impl(
 
     profile["documents"].append(
         {
+            "id": new_record_id("document"),
             "date": doc_date,
             "type": extracted.get("document_type", "other"),
             "summary": extracted.get("summary", ""),
@@ -421,6 +426,7 @@ def _run_intake_impl(
             "raw_text": text[:3000],
             "added_at": source_document["ingested_at"],
             "source_document_id": source_document_id,
+            "excluded_from_clinical_context": False,
             "evidence": document_evidence,
         }
     )
@@ -443,11 +449,17 @@ def _run_intake_impl(
         if triple in existing_triples:
             continue
         existing_triples.add(triple)
+        bm["id"] = new_record_id("biomarker")
         bm["added_at"] = now_stamp()
         profile["biomarkers"].append(attach_evidence(bm, text, source_document_id))
 
     if extracted.get("imaging_findings"):
-        img = {**extracted["imaging_findings"], "date": doc_date, "added_at": now_stamp()}
+        img = {
+            **extracted["imaging_findings"],
+            "id": new_record_id("imaging"),
+            "date": doc_date,
+            "added_at": now_stamp(),
+        }
         profile["imaging"].append(attach_evidence(img, text, source_document_id))
 
     if extracted.get("ki67_update") is not None:
@@ -485,6 +497,8 @@ def _run_intake_impl(
         )
         if not is_duplicate:
             existing.append(tx)
+            profile_mod.invalidate_treatment_classification(profile)
+            profile_mod.sync_treatment_records(profile)
 
     return profile, extracted
 

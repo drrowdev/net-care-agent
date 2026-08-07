@@ -9,6 +9,85 @@ incremented when something user-visible or operationally meaningful changes.
 ## [Unreleased]
 
 ### Added
+- **Scoped document reconciliation and correction.** Every retained feed job now
+  opens its own profile-backed receipt showing exact additions, old-to-new
+  updates, conflicts/no-ops, immutable source identity/time, and verified,
+  missing, or invalid evidence. Caregivers can correct or remove an extracted
+  value and can atomically undo that document's direct structured changes.
+  Target-level compare-and-swap checks allow unrelated later edits but reject
+  changed affected facts with `409`; source bytes/text and append-only audit
+  history remain intact. No global review inbox, unread count, or acknowledgement
+  was introduced.
+  Full-row CAS now detects later alert resolution/clinical row edits, identical
+  corrections are byte-for-byte no-ops, and undo audit snapshots preserve
+  distinct before/after values.
+- **Claim-level and Patient evidence.** Key assessment claims and actions now
+  resolve only server-validated evidence-catalog IDs to exact authenticated
+  source spans; missing and invented references are labelled explicitly. Patient
+  now includes progressive imaging and document/source history with receipt and
+  source links, without exposing storage paths.
+  Document-only legacy history remains visible even without a source index.
+  Source-dependent clinical alerts are retained but deactivated after correction
+  or undo.
+- **Caregiver safety and accessibility hardening.** Processing status is now
+  `Processing`, `Idle`, or `Unavailable`, separate from assessment freshness.
+  PRRT is presented as potential fit and trials as items to discuss, not
+  definitive eligibility or matching; missing DOTATATE is no longer
+  automatically the top action. Dialogs trap focus and inert the background,
+  feed tabs support arrow/Home/End keys, mobile controls meet 44px targets,
+  badges/secondary text have stronger contrast, empty submissions show inline
+  validation, and failed loads leave terminal retry states instead of indefinite
+  Connecting/Loading placeholders.
+  Stale summaries/actions/PRRT screening, superseded generated questions, and
+  corrected feed reports are withheld from current UI/model contexts while their
+  audit artifacts remain stored. Receipt mutation controls are dirty-checked,
+  disabled while pending, and late responses cannot overwrite another job panel.
+  Feed/digest/deep-sweep reports and chat results now carry profile-revision
+  dependencies; profile-derived alerts carry job/revision dependencies and
+  expire from active contexts after later clinical changes. Receipt system-field
+  synchronization preserves correction→undo while caregiver alert resolution
+  still conflicts. Screening claim sanitization is polarity-neutral and replaces
+  the full assertion rather than retaining definitive inclusion/enrollment text.
+  Summary generation now runs after feed/digest clinical state commits and saves
+  as derived-only at the same effective revision, preserving active alerts.
+  In-tab chat history is profile-revision bound and cleared/rejected on mismatch.
+  Alert resolution uses stable schema-v4 IDs plus semantic token/revision CAS,
+  stales dependent summaries/questions, and cannot resolve a reordered row.
+  Treatment imperatives are replaced wholesale with treating-team confirmation
+  wording while factual past treatment history remains unchanged. Submitted-job
+  activation also participates in the task-selection epoch protocol.
+  Schema v5 adds durable/source/profile-snapshot alert lifecycles and
+  treatment-classification revision identity. Durable ingestion/trial alerts
+  survive unrelated revisions and document undo; source/snapshot conclusions
+  follow their declared dependencies. Classification rejects empty, partial,
+  extra, or collapsed-distinct output and every consumer visibly falls back to
+  raw treatments whenever classification is stale or fails.
+  Stale summary responses now preempt open action-feedback editors; open
+  report/result panels revalidate on revision/task polling, clear copy state, and
+  show source-correction/profile-change/unverifiable-legacy reasons accurately.
+  Successful receipt mutations retain the authoritative receipt through detail
+  refresh failure. Status/auth failures clear rendered status-derived PHI and
+  client caches instead of leaving prior patient data visible.
+  Hard loader/auth failures now evict PHI across reports, receipts, chat,
+  feedback, modals, feed text, patient projections, and filters; missing selected
+  tasks cannot resurrect cached content. Generated-alert containment covers
+  recommendation/need/plan/gerund and embedded-colon treatment directives plus
+  candidate/fit/indication/benefit assertions while preserving explicit
+  historical passive facts and containing mixed historical/live clauses.
+  Schema v6 adds stable treatment source/component mappings and
+  ID/token/revision CAS so composite edits preserve siblings. Lossless
+  classification recognizes common NET surgical therapies and rejects mixed
+  recognized/unknown compounds before mappings can be edited.
+  Schema v7 extends that invariant to unidentified residual therapy content,
+  including transition narratives, and the mutation endpoint independently
+  verifies exclusive component coverage. It also sanitizes source-less legacy
+  generated alerts, snapshot-binds them instead of making them durable, and
+  safely migrates nullable legacy patient scaffolding. Resolving an alert now
+  advances the generated-context revision so chat, reports/results, summaries,
+  and questions cannot retain the unresolved-alert context. Authorization
+  eviction also clears and hides the assessment freshness/source banner, and
+  summary epoch guards prevent auth failures or late responses from repainting
+  that patient-derived projection.
 - **Today-first responsive caregiver workspace.** Replaced the duplicated
   desktop/mobile surfaces with shared **Today**, **Patient**, **Questions**, and
   **Activity** views while retaining the warm green/amber visual identity.

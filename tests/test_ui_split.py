@@ -60,6 +60,45 @@ def test_generic_review_flow_is_replaced_by_latest_research_additions():
     assert "Mark reviewed" not in HTML
 
 
+def test_patient_has_progressive_imaging_and_source_history():
+    assert 'id="imaging-history"' in HTML
+    assert 'id="source-history"' in HTML
+    assert "Loading imaging history" in HTML
+    assert "Loading source history" in HTML
+    assert "evidence-history-row" in CSS
+    assert "source-history-row" in CSS
+
+
+def test_empty_submission_controls_have_inline_errors_and_disabled_defaults():
+    for button_id in (
+        "btn-feed",
+        "q-add-btn",
+        "judgment-add-btn",
+        "sym-add-btn",
+        "chat-send-btn",
+    ):
+        assert re.search(rf'id="{button_id}"[^>]*disabled', HTML)
+    for error_id in (
+        "feed-form-error",
+        "q-form-error",
+        "judgment-form-error",
+        "sym-form-error",
+        "chat-form-error",
+    ):
+        assert f'id="{error_id}"' in HTML
+        assert 'aria-live="polite"' in HTML
+
+
+def test_mobile_controls_and_overflow_guards_are_explicit():
+    assert ".header-actions .button {" in CSS
+    assert "min-width: 44px;" in CSS
+    assert "min-height: 44px;" in CSS
+    assert ".judgment-action {" in CSS
+    assert ".modal-close { min-width: 44px; min-height: 44px; }" in CSS
+    assert "overflow-x: hidden;" in CSS
+    assert "overflow-wrap: anywhere;" in CSS
+
+
 @pytest.fixture
 def client(monkeypatch, tmp_path):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))

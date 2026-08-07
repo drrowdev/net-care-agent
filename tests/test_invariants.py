@@ -65,3 +65,16 @@ def test_feed_and_digest_jobs_acquire_mutating_lock():
     src = (REPO / "app.py").read_text(encoding="utf-8")
     assert src.count("with agent.serialized_mutation(") >= 2
     assert "@serialized_profile_mutation" in src
+
+
+def test_model_contexts_never_read_unfiltered_documents():
+    for relative in (
+        "agent/chat.py",
+        "agent/classify.py",
+        "agent/questions.py",
+        "agent/orchestrator.py",
+        "agent/exec_summary.py",
+    ):
+        source = (REPO / relative).read_text(encoding="utf-8")
+        assert 'profile.get("documents"' not in source
+        assert "profile.get('documents'" not in source

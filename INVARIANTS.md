@@ -51,7 +51,11 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
   (`high|medium|low`), `status_rationale, key_concern, summary, prrt_status`
   (`eligible|likely_eligible|pending_dotatate|not_eligible|unknown`),
   `prrt_rationale, cga_trend` (`rising|stable|falling|insufficient_data`),
-  `cga_trend_detail, next_actions[], timeline[], best_trial, generated_at`.
+  `cga_trend_detail, next_actions[], timeline[], best_trial, claim_evidence,
+  generated_at`. `claim_evidence` and `next_actions[].evidence_ids` may contain
+  only opaque IDs from the server-built verified evidence catalog. Unknown IDs
+  are invalid, and an empty list means no exact source span. PRRT/trial values
+  are screening support for clinician discussion, never definitive eligibility.
 - **questions** JSON array items: `text, category`
   (`Treatment|Diagnostics|Symptoms|Trials|Monitoring|Other`), `priority`
   (`urgent|high|medium`), `rationale`. Enums stay English; `text`/`rationale`
@@ -76,6 +80,63 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
 - Feedback writes are serialized review-state mutations. `missed`, `incorrect`,
   and `corrected` feedback may mark the current summary stale, but feedback never
   mutates clinical facts or becomes a clinical judgment implicitly.
+- Document receipt correction/removal/undo is a clinical mutation under
+  `serialized_mutation`. It uses target-level compare-and-swap fingerprints:
+  unrelated profile revisions are allowed, but any changed affected target or
+  later document claim returns atomic `409` before mutation.
+- Receipt undo never deletes immutable source bytes/text and never restores a
+  whole-profile snapshot. It reverses only direct extraction effects, preserves
+  append-only before/after history, and excludes the document from active
+  clinical prompts. Orchestration research additions are derived output and are
+  not silently deleted.
+- Compare-and-swap fingerprints cover the complete semantic collection row.
+  Later resolution or mutation of an imported alert/fact must return `409`;
+  schema-added legacy defaults may be canonicalized only when they do not alter
+  clinical meaning.
+- Identical corrections are rejected before any mutation, save, audit event, or
+  provenance invalidation.
+- Stale generated content is audit history, not current context: stale/revision-
+  mismatched summaries are omitted from chat and `/api/summary`; question
+  generations use persisted generation IDs; corrected feed reports are retained
+  but hidden; source-dependent alerts are inactive after correction/undo.
+- All profile-dependent artifacts carry dependency identity: report jobs store a
+  PHI-free profile revision; chat/question/summary results store source revision
+  and generation identity. Missing/mismatched legacy dependencies are stale.
+- Every generated alert carries origin job + profile revision; feed alerts also
+  carry source-document dependency. System dependency-field synchronization may
+  update receipt effective values, but must never mask caregiver mutations such
+  as `resolved`.
+- Eligibility/qualification/inclusion/enrollment/best-fit alert assertions are
+  replaced wholesale by polarity-neutral screening-review language; never infer
+  positive or negative fit from string sanitization.
+- Treatment-change directives in alerts (`start/stop/hold/pause/resume/switch/
+  dose-change/discontinue/withhold/skip/administer/take`) are replaced wholesale
+  by treating-team confirmation wording. Factual past-tense treatment history is
+  preserved.
+- Alert resolution uses stable ID + full semantic token + expected profile
+  revision under `serialized_mutation`; index resolution is forbidden. It is a
+  bookkeeping save that explicitly stales dependent summaries/questions.
+- Chat history is revision-bound on both client and server. Nonempty mismatched
+  history returns `409`; workers revalidate before sending history to the model.
+- Clinical mutations commit once at their final effective revision. Summary
+  generation/persistence is derived-only and must see alerts tagged to that same
+  revision.
+- Treatment classification is current only when its revision equals
+  `profile_revision`. Raw mutation invalidates before save. Output must cover all
+  raw treatment components, contain no extras, and not collapse distinct drugs.
+  Every consumer falls back to raw `current_treatments` when stale/failing.
+- Classification identity is canonical treatment identity, never action/status,
+  dose, route, schedule, or formulation noise. Output identity set must exactly
+  equal raw identity set, with exactly one row per identity. Stable raw component
+  IDs and classified source mappings back ID/token/revision CAS edits; composite
+  siblings must survive.
+- Alert dependency kinds are explicit: `durable` ignores unrelated revisions and
+  survives document undo until resolved; `source` follows source invalidation;
+  `profile_snapshot` requires exact generation revision. Producers stamp the
+  lifecycle deliberately; future revisions are never generically active.
+- Hard status/tasks/summary/evidence or authorization failure centrally evicts
+  all client-side patient PHI caches and rendered/dialog content. An authoritative
+  receipt may survive only a non-auth post-save detail-refresh failure.
 - **`save_profile` guards structural validity.** Calling `save_profile` with a
   non-dict, string patient, or non-list collection raises `ValueError`
   immediately.  Field-level type issues (out-of-range values, bad enum literals)
@@ -124,6 +185,9 @@ distributed queue and adding distributed coordination.
   Reports/results remain separate artifacts and are expanded only by
   `GET /api/jobs/<id>`, never embedded in `jobs.json` or the job list. Existing
   legacy records are not rewritten; do not weaken their retention protection.
+  Artifact freshness is computed only in the authenticated job-detail response;
+  only the numeric profile revision may be added to `jobs.json`/`GET /api/jobs`;
+  no PHI or generated content is added.
 
 ## 5. Authentication, containment, and retention
 - Flask exempts `/api/health` and `/api/live`; all other hosted `/api/*` routes
@@ -142,6 +206,9 @@ distributed queue and adding distributed coordination.
 - Job errors and job-runner logs must not contain input text, model output,
   traceback, prompts, or PHI. Keep all operational logs access-controlled;
   lower-level storage/recovery `OSError` logs may contain filesystem paths.
+- `GET /api/jobs/<id>/receipt` and `/api/patient/evidence` remain authenticated
+  and no-store. Public projections may include source IDs and URLs but never
+  indexed filesystem paths.
 - Retention removes only completed expired/excess jobs and their indexed
   reports/results, unindexed old/excess reports, and unreferenced source
   directories. Profile-referenced sources are protected. Pruning is

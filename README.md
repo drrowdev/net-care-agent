@@ -131,7 +131,7 @@ All patient state lives in a single JSON file at `${DATA_DIR}/patient_profile.js
 
 ```
 {
-  "schema_version": 1,
+  "schema_version": 7,
   "profile_revision": 42,
   "profile_updated_at": "2026-07-10T16:51:49",
   "profile_saved_at": "2026-07-10T16:52:03",
@@ -142,11 +142,12 @@ All patient state lives in a single JSON file at `${DATA_DIR}/patient_profile.js
   "treatments":  [ {name, status, start_date, end_date, ...}, ... ],
   "documents":   [ {date, type, summary, key_findings, source_document_id, raw_text}, ... ],
   "source_documents": [ {id, ingested_at, source: {path, sha256, length}, text: {...}}, ... ],
+  "document_imports": [ {job_id, source_document_id, status, receipt_revision, changes: [...]}, ... ],
   "trials":      [ {nct_id, title, status, ...}, ... ],
   "papers":      [ {pmid, title, journal, date}, ... ],
-  "alerts":      [ {priority, action, created, resolved}, ... ],
+  "alerts":      [ {priority, action, resolved, source_document_id, source_dependency_active}, ... ],
   "judgments":   [ {category, text, scope, status, review_after, valid_until, supersedes}, ... ],
-  "questions":   [ {id, text, category, priority, asked}, ... ],
+  "questions":   [ {id, text, category, priority, asked, generation_job_id, stale}, ... ],
   "feedback":    [ {target, item_id, assessment, note, outcome, timestamps}, ... ],
   "exec_summary": { "summary_revision": 42, "stale": false, ... },
   "latest_research_update": {
@@ -166,6 +167,21 @@ Every clinical-content save advances `profile_revision`; bookkeeping-only saves
 (for example marking a question asked) update `profile_saved_at` without
 invalidating the summary. Summary freshness compares the clinical revision with
 `executive_summary.summary_revision`, independent of clinical dates.
+Schema v3 also carries generation identity for AI questions. Legacy generated
+questions without that identity migrate to explicit stale history rather than
+appearing current.
+Schema v4 deterministically backfills stable IDs for legacy alerts so resolution
+uses ID + semantic token + profile revision instead of list position.
+Schema v5 adds explicit alert dependency lifecycles and treatment-classification
+revision/job identity. Legacy classifications become stale and fall back to raw
+`current_treatments`; alerts migrate to durable/source/profile-snapshot rules.
+Schema v6 backfills stable raw treatment component/source IDs. Classified rows
+map explicitly to those components so ID/token/revision CAS edits preserve
+unaffected parts of composite entries.
+Schema v7 sanitizes source-less legacy generated alerts and binds them to the
+profile snapshot that was current at migration; only recognized ingestion and
+trial-status producers remain durable. Treatment certification also rejects any
+unidentified residual therapy content before editable mappings become current.
 
 A daily backup is written to `${DATA_DIR}/backups/profile_YYYYMMDD.json`
 (retention: 30 days).
@@ -183,6 +199,10 @@ result bodies live in separate artifacts and are read only from
 response. Retention pruning runs at startup/job admission and is best-effort:
 age/count limits do not securely erase backups/provider copies, and source
 directories still referenced by the profile are deliberately protected.
+Profile-dependent feed/digest/deep-sweep reports and chat/question/summary
+results carry a PHI-free profile revision or generation identity. After the
+record changes, authenticated job detail retains only an explicit outdated/audit
+state and withholds the prior clinical content.
 
 ## Safety notes
 
@@ -218,6 +238,8 @@ directories still referenced by the profile are deliberately protected.
 │   ├── pdf_extract_helper.py # child-only pdfplumber entry point
 │   ├── judgments.py      # clinical-judgment context formatter
 │   ├── intake.py         # extract structured medical data from text
+│   ├── evidence.py       # validated claim-level source-span catalog/resolution
+│   ├── reconciliation.py # per-document receipts + compare-and-swap correction/undo
 │   ├── orchestrator.py   # agentic loop driving the tools
 │   ├── verify.py         # deterministic PMID/NCT existence verifier (report backstop)
 │   ├── trials_poll.py    # deterministic tracked-trial status poller
@@ -260,7 +282,9 @@ sequenceDiagram
     U->>API: poll GET /api/jobs/<id>
     W->>I: run_intake(text, profile)
     I-->>W: structured extract (biomarkers, treatments, ...)
-    W->>J: save_profile (atomic + daily backup)
+    W->>J: save profile + job-scoped reconciliation receipt
+    U->>API: GET /api/jobs/<id>/receipt
+    API-->>U: exact additions/changes/conflicts + source spans
     W->>O: run_orchestrator(profile, extracted)
     loop until end_turn or 12 iterations
         O->>T: tool_use (search_pubmed, ...)
@@ -300,12 +324,14 @@ The most common loops:
 | Review current priorities | **Today** | Shows assessment freshness, the key concern, and task-oriented next actions before supporting detail |
 | See newly discovered research | **Today** → **Latest research additions** | Shows the exact net-new trials and papers from the latest digest or document analysis; opening either list highlights those records |
 | Add a clinical document | Header → **Add document** → paste text or upload file | Queued on the independent feed executor; PDF parsing is child-only, then intake → orchestrator → exec summary |
+| Reconcile or correct an import | **Activity** → select that feed job | Shows only that document's additions, old → new changes, conflicts, and evidence; correct/remove a value or safely undo the document's direct structured changes |
+| Review imaging and source history | **Patient** → **Imaging history** / **Documents and sources** | Opens exact authenticated evidence spans, immutable source text, and retained import receipts without exposing storage paths |
 | Run a research-only sweep | **Activity** → **Run digest** | Orchestrator runs without new input; new trials/papers added |
 | Record an oncologist's judgment | **Questions** → **Clinical notes** | Becomes a hard constraint for future runs |
 | Resolve / dismiss an alert | **Patient** → **Active alerts** → **Mark resolved** | Marked resolved, persisted in profile |
 | Generate appointment questions | **Questions** → **Generate questions** | Async result is polled, then the question list is rendered |
 | Chat with the record | Header → **✦ Ask Claude** | Async result grounded in the full profile; chat remains stateless |
-| Open a trial | **Today** → “Best matched trial” | Opens `clinicaltrials.gov/study/<NCT_ID>` in a new tab |
+| Open a trial to discuss | **Today** → **Trial to discuss** | Opens `clinicaltrials.gov/study/<NCT_ID>` in a new tab; the treating team and trial site determine eligibility |
 
 ## Keeping docs current
 

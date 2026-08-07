@@ -5,7 +5,13 @@ from __future__ import annotations
 from . import config
 from .judgments import CLINICAL_JUDGMENTS_OVERRIDE, get_clinical_judgments_context
 from .llm import cached_system, client, first_text
-from .profile import build_patient_context
+from .profile import (
+    active_alerts,
+    active_documents,
+    build_patient_context,
+    current_treatment_records,
+    summary_is_current,
+)
 
 
 def build_chat_system(profile: dict) -> str:
@@ -58,7 +64,7 @@ def build_chat_system(profile: dict) -> str:
     ]
 
     summary = profile.get("executive_summary", {})
-    if summary and summary.get("overall_status"):
+    if summary_is_current(profile) and summary.get("overall_status"):
         lines += [
             "── CURRENT ASSESSMENT ──",
             f"Overall status: {summary.get('overall_status')}",
@@ -79,7 +85,7 @@ def build_chat_system(profile: dict) -> str:
                     lines.append(f"  Rationale: {a.get('rationale', '')}")
             lines.append("")
 
-    treatments = profile.get("treatments_classified") or []
+    treatments = current_treatment_records(profile)
     if treatments:
         lines.append("── TREATMENTS ──")
         for t in treatments:
@@ -109,7 +115,7 @@ def build_chat_system(profile: dict) -> str:
             )
         lines.append("")
 
-    documents = profile.get("documents", [])
+    documents = active_documents(profile)
     if documents:
         lines.append(f"── DOCUMENTS ({len(documents)} entries, most recent first) ──")
         for d in sorted(documents, key=lambda x: x.get("date", ""), reverse=True):
@@ -164,7 +170,7 @@ def build_chat_system(profile: dict) -> str:
         lines.append(judgments)
         lines.append("")
 
-    alerts = [a for a in profile.get("alerts", []) if not a.get("resolved")]
+    alerts = active_alerts(profile)
     if alerts:
         lines.append("── ACTIVE ALERTS ──")
         for a in alerts:

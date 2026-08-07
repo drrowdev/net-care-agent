@@ -7,6 +7,7 @@ import re
 
 import requests
 
+from .provenance import new_record_id
 from .schema import now_stamp
 
 
@@ -84,9 +85,19 @@ def _material_eligibility_change(old: object, new: object) -> bool:
     )
 
 
-def _append_alert(profile: dict, *, priority: str, message: str, action: str, today: str) -> None:
+def _append_alert(
+    profile: dict,
+    *,
+    priority: str,
+    message: str,
+    action: str,
+    today: str,
+    source_job_id: str,
+    generation_profile_revision: int,
+) -> None:
     profile.setdefault("alerts", []).append(
         {
+            "id": new_record_id("alert"),
             "priority": priority,
             "message": message,
             "action_required": action,
@@ -94,14 +105,28 @@ def _append_alert(profile: dict, *, priority: str, message: str, action: str, to
             "date": today,
             "added_at": now_stamp(),
             "source": "trial_status_poll",
+            "source_job_id": source_job_id,
+            "generation_profile_revision": generation_profile_revision,
+            "source_dependency_active": True,
+            "dependency_kind": "durable",
         }
     )
 
 
-def poll_tracked_trials(profile: dict) -> dict:
+def poll_tracked_trials(
+    profile: dict,
+    *,
+    source_job_id: str = "manual-trial-poll",
+    generation_profile_revision: int | None = None,
+) -> dict:
     """Refresh tracked registry fields, preserving every prior value in history."""
     tracked = profile.get("trials_tracked", [])
     today = datetime.date.today().isoformat()
+    dependency_revision = (
+        generation_profile_revision
+        if generation_profile_revision is not None
+        else int(profile.get("profile_revision") or 0)
+    )
     changed: list[dict] = []
 
     for trial in tracked:
@@ -171,6 +196,8 @@ def poll_tracked_trials(profile: dict) -> dict:
                     f"close an option. {trial.get('url', '')}"
                 ),
                 today=today,
+                source_job_id=source_job_id,
+                generation_profile_revision=dependency_revision,
             )
 
         if material_eligibility:
@@ -183,6 +210,8 @@ def poll_tracked_trials(profile: dict) -> dict:
                     "trial coordinator and treating oncologist."
                 ),
                 today=today,
+                source_job_id=source_job_id,
+                generation_profile_revision=dependency_revision,
             )
 
         changed.append(

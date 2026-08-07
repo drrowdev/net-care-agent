@@ -19,10 +19,11 @@ the Azure Files mount at `/home/data/patient_profile.json`. There is one user
                 │ gunicorn (1 worker) → Flask    │
                 │     │                          │
                 │     ├─ /api/feed (feed queue)  │
-                │     ├─ /api/jobs (polling)     │
+                │     ├─ /api/jobs + receipts    │
                 │     ├─ /api/summary + feedback │
                 │     ├─ /api/status + research  │
                 │     ├─ /api/sources + evidence │
+                │     ├─ /api/patient/evidence   │
                 │     ├─ /api/feedback           │
                 │     ├─ /api/chat (general q.)  │
                 │     ├─ /api/health             │
@@ -113,6 +114,83 @@ traversal-safe roots. New job errors and job-runner logs use safe codes/types
 rather than input, model output, or traceback. Legacy records are not rewritten,
 and protected lower-level storage/recovery logs may include OS error paths.
 
+Every successful intake commit also appends one `document_imports[]` audit record
+to the profile before orchestration begins. `GET /api/jobs/<id>/receipt` exposes
+that feed-job-only receipt while the job remains retained; it shows additions,
+old-to-new scalar updates, conflicts/no-ops, and exact evidence state without
+putting PHI in the job list. If orchestration or summary generation later fails,
+the already-committed receipt remains available with the intake data.
+
+Receipt correction/removal and whole-document undo are serialized profile
+mutations. Each request carries the receipt revision plus a canonical target
+fingerprint. The server compares only affected targets, so unrelated later
+profile revisions may proceed; a changed affected row/scalar/treatment or a later
+document claim returns atomic `409 import_conflict` with a refreshed receipt and
+no partial mutation. Undo reverses direct extraction effects only. The immutable
+source and append-only before/after history remain, and the document is excluded
+from downstream clinical context. Research discovered during orchestration is
+listed as derived receipt output but is not deleted.
+
+Feed-derived clinical alerts carry their source document and job dependency.
+Correction/removal/undo deactivates those alerts atomically without deleting
+their audit record. Full semantic-row CAS catches later alert resolution and
+other mutations; schema-added legacy defaults are canonicalized so they do not
+create false conflicts. Generated summaries, questions, and feed reports remain
+stored, but revision/generation/source invalidation hides stale conclusions from
+chat, Today, Questions, and Activity until regenerated.
+Digest/deep-sweep reports and chat results also record their source profile
+revision; revisionless legacy artifacts are conservatively outdated. Job-list
+metadata exposes only the safe revision/stale state, never report bodies.
+Every newly generated alert records its source/origin job and generation profile
+revision. Feed alerts additionally record source-document dependency. System-
+owned dependency updates are mirrored into receipt effective state so they do
+not create false CAS conflicts; caregiver changes such as resolving an alert
+remain conflicting mutations.
+Alert lifetime is explicit: `durable` ingestion/trial-status alerts remain until
+resolved, `source` alerts remain until source correction/undo or resolution, and
+`profile_snapshot` alerts require their exact generation revision. Digest
+trial-poll mutations commit before fallible orchestration/classification so
+durable alerts survive downstream failure.
+Alert resolution is serialized by stable alert ID, semantic token, and expected
+profile revision; index-based resolution returns `410`. Resolution advances the
+clinical revision because generated contexts may have consumed the alert. This
+invalidates prior chat history, in-flight chat responses, reports/results,
+summaries, and generated questions while durable/source-scoped sibling alerts
+remain active under their own lifecycle.
+
+Clinical jobs establish one effective revision: feed/digest commit clinical
+mutations and finalized alert dependencies first, then generate/save the summary
+as derived bookkeeping at that same revision. Manual summary refresh is also
+derived-only. Chat history carries a profile revision; mismatched history is
+rejected synchronously with `409` and revalidated in the worker.
+
+Treatment classification carries revision/job identity. Raw treatment mutation
+invalidates it before the first save; output must cover every raw treatment
+component bidirectionally with no ungrounded extras or collapsed distinct drugs.
+When stale/failing, all consumers use the raw `current_treatments` fallback.
+Schema v6 stores deterministic raw source/component records and maps every
+classified row to component IDs. Manual remove/complete uses treatment ID +
+semantic token + expected profile revision; composite siblings survive, and
+stale/missing/changed mappings return `409`.
+Classification certification strips recognized identities and permits only
+known status/action/dose/schedule modifiers in the residual text. Unknown drugs,
+procedures, or transition targets fail closed. Transition narratives are split
+only when each side has one certified identity, and the edit endpoint rechecks
+exclusive component coverage before any destructive mutation.
+
+Schema v7 remediates released legacy alerts: generated source-less rows are
+deterministically sanitized and bound to their migration-time profile snapshot,
+while only explicitly recognized ingestion-failure and trial-status producers
+remain durable. Receipt effective values are synchronized in the same migration.
+Nullable legacy patient scaffolding is coerced before treatment-record backfill;
+non-null invalid structural types still follow quarantine/recovery.
+
+Executive-summary prompts receive an opaque catalog of verified source-span IDs.
+The model may select only those IDs for named claims and actions; Flask resolves
+them to authenticated `/api/evidence/<id>` links. Missing selections remain
+explicitly `missing`, and invented/unknown IDs are labelled `invalid` rather than
+silently attached to a nearby source.
+
 Web and CLI research runs share one canonical NCT/PMID diff. Each digest stores
 the exact additions in `latest_research_update`; a feed run replaces that
 snapshot only when it adds research. `GET /api/status` rejects malformed IDs,
@@ -149,7 +227,7 @@ only with exact `APP_ORIGIN` or canonical HTTPS `WEBSITE_HOSTNAME`.
 | Decision | Why |
 |---|---|
 | JSON file, not Postgres | Single patient, single writer; auditable diffs; trivial backup. |
-| Vanilla SPA, not React | Caregiver runs the UI on a phone occasionally — zero build pipeline beats lighter frameworks. The split SPA uses one responsive Today/Patient/Questions/Activity shell on every screen size. `static/index.html` owns semantic markup and dialogs, `static/app.js` owns API state/rendering, and `static/styles.css` provides the green/amber desktop rail and fixed phone navigation. |
+| Vanilla SPA, not React | Caregiver runs the UI on a phone occasionally — zero build pipeline beats lighter frameworks. The split SPA uses one responsive Today/Patient/Questions/Activity shell on every screen size. `static/index.html` owns semantic markup and dialogs, `static/app.js` owns API state/rendering, receipt reconciliation, focus/inert behavior, and load states, and `static/styles.css` provides the green/amber desktop rail and fixed phone navigation. |
 | Flask + gunicorn, not FastAPI/Containers | App Service runs Python natively; no Docker needed; rapid `az webapp deploy` cycle. |
 | No MSAL | Single user. App Service Easy Auth gates hosted APIs except health/liveness. Local API bypass is explicit (`ALLOW_LOCAL_AUTH_BYPASS=1`), never implicit. |
 | Per-agent model env vars | Lets us downgrade exec_summary or chat to Haiku independently for cost without touching code. |
@@ -170,6 +248,13 @@ only with exact `APP_ORIGIN` or canonical HTTPS `WEBSITE_HOSTNAME`.
 | Treatment duplicates | `agent.intake._treatment_similarity` synonym dedup (Somatuline = lanreotide) |
 | Oncologist disagreement with AI | `clinical_judgments` injected verbatim into orchestrator + exec summary system prompts as hard constraints |
 | Unsupported extraction evidence | Intake validates normalized model quotes against immutable source text, then stores the exact source span or explicit `missing`/`invalid` status |
+| Stale import correction or undo | Target-level compare-and-swap fingerprints and later-claim checks return atomic `409`; no whole-profile snapshot is restored |
+| Incorrect import removed from active care context | Direct facts are reversed, the document is marked excluded from clinical prompts, and immutable source/audit history remains visible |
+| Invented summary evidence link | Only server-built evidence catalog IDs resolve; unknown IDs are visibly `invalid` and absent IDs are `missing` |
+| Stale generated conclusions after correction | Revision-aware summary hiding, question generation IDs, source-dependent alert invalidation, and hidden feed reports retain audit artifacts without presenting them as current |
+| Wrong alert resolved after reorder | Stable alert IDs + semantic token + expected revision under the mutation lock; stale/missing targets return `409` |
+| Old chat contaminates corrected record | Client clears history on profile revision change; server rejects mismatched `history_revision` with `409` |
+| Cached PHI after auth/load failure | Central client eviction clears every patient-bearing cache, panel, dialog, chat turn, receipt/report, filter, and open feedback surface; non-auth receipt refresh is the only fallback exception |
 | Source traversal / browser caching | Auth-gated `/api/sources/<id>[/<artifact>]` and `/api/evidence/<id>` resolve only indexed paths below `DATA_DIR`, reject traversal, and return `no-store` |
 | Stale clinical judgment | Only active, nonexpired, non-review-due judgments constrain agents; all others are visibly framed as needing clinician review |
 | Storage account deletion | `AzureBackupProtectionLock` (CanNotDelete) on the resource group, auto-applied by Azure Backup |
@@ -188,6 +273,9 @@ at startup and job submission. Source pruning runs only at startup or after jobs
 under the serialized profile mutation lock and protects every source ID still
 indexed by the profile. It is best-effort, is not secure deletion, and does not purge
 snapshots, backups, soft-delete/version history, or provider copies.
+Reconciliation audit records are part of `patient_profile.json` and therefore
+follow profile backup/recovery rather than job-artifact pruning. The job-scoped
+receipt endpoint is intentionally available only while its feed job is retained.
 
 The complete production runtime dependency closure and setuptools build
 requirement are exactly pinned from local metadata. Direct development

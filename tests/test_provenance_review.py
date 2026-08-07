@@ -355,8 +355,10 @@ def test_legacy_document_and_summary_freshness_payload(client, agent):
     response = client.get("/api/summary")
     assert response.status_code == 200
     payload = response.get_json()
-    assert payload["status_confidence"] == "medium"
-    assert payload["status_rationale"] == "Imaging is old."
+    assert payload["status"] == "stale"
+    assert payload["content_hidden"] is True
+    assert "status_confidence" not in payload
+    assert "status_rationale" not in payload
     assert payload["profile_revision"] == 7
     assert payload["summary_revision"] == 6
     assert payload["stale"] is True
@@ -455,6 +457,33 @@ def test_stale_action_dismissal_is_rejected_without_mutation(client, agent):
     assert stale_action.status_code == 409
     stored = agent.load_profile()
     assert stored["executive_summary"]["next_actions"] == [{"action": "Discuss current option"}]
+    assert stored.get("feedback", []) == []
+
+
+def test_current_revision_action_is_rejected_when_summary_flag_is_stale(client, agent):
+    profile = agent.load_profile()
+    profile["profile_revision"] = 5
+    profile["summary_stale"] = True
+    profile["executive_summary"] = {
+        "summary_revision": 5,
+        "stale": True,
+        "next_actions": [{"action": "Obsolete action"}],
+    }
+    agent.save_profile(profile, clinical_change=False)
+
+    response = client.post(
+        "/api/summary/dismiss-action/0",
+        json={
+            "feedback": "Should not apply",
+            "expected_action": "Obsolete action",
+            "summary_revision": 5,
+        },
+    )
+
+    assert response.status_code == 409
+    assert "stale" in response.get_json()["error"].lower()
+    stored = agent.load_profile()
+    assert stored["executive_summary"]["next_actions"] == [{"action": "Obsolete action"}]
     assert stored.get("feedback", []) == []
 
 

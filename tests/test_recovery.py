@@ -658,6 +658,36 @@ def test_migration_persisted_to_disk_on_first_load(tmp_path, monkeypatch):
     assert on_disk["custom_field"] == 42
 
 
+def test_legacy_null_patient_scaffolding_loads_and_persists_safely(tmp_path, monkeypatch):
+    import agent.backups as bk
+    import agent.config as cfg
+    from agent.migrations import CURRENT_SCHEMA_VERSION
+    from agent.profile import load_profile
+
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "PROFILE_PATH", tmp_path / "patient_profile.json")
+    monkeypatch.setattr(bk, "BACKUPS_DIR", tmp_path / "backups")
+    legacy = {
+        "schema_version": 1,
+        "profile_revision": 2,
+        "patient": None,
+        "alerts": [{"message": "Document extraction failed", "resolved": False}],
+        "appointment_questions": None,
+        "document_imports": None,
+    }
+    _write_profile(tmp_path, json.dumps(legacy).encode())
+
+    loaded = load_profile()
+    on_disk = json.loads((tmp_path / "patient_profile.json").read_bytes())
+
+    assert loaded["schema_version"] == CURRENT_SCHEMA_VERSION
+    assert isinstance(loaded["patient"], dict)
+    assert loaded["patient"]["current_treatment_records"] == []
+    assert on_disk["schema_version"] == CURRENT_SCHEMA_VERSION
+    assert isinstance(on_disk["patient"], dict)
+    assert on_disk["alerts"][0]["dependency_kind"] == "profile_snapshot"
+
+
 def test_second_load_leaves_file_unchanged(tmp_path, monkeypatch):
     """After migration is persisted on first load, the second load does NOT
     rewrite the file — bytes and mtime are identical."""

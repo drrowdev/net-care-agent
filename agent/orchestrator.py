@@ -33,9 +33,9 @@ You have up to 12 tool iterations. Plan before your first call, and re-plan afte
 TOOL DECISION CRITERIA
 - analyze_biomarker_trends: run for every marker with a new reading (priority: CgA, NSE, 5-HIAA, hemoglobin, creatinine/GFR). Judge against the reference range AND the longitudinal trend, never the latest value alone.
 - search_pubmed: run 1-3 targeted searches when the new document contains a significant finding, treatment change, or open clinical question. Use specific MeSH-style terms tied to this patient's situation (finding-specific, treatment-specific, or grade-transformation queries as warranted) — never broad queries like "cancer treatment". Prefer papers from the last 3 years. If recent symptoms match a known side-effect profile of an active treatment, add one management-focused search (e.g. "lanreotide-induced diarrhea management"). Skip literature search entirely for routine labs with no significant change.
-- search_clinical_trials: run only when clinically meaningful — new eligibility-relevant data, treatment progression, or no trial search in the past 2 weeks. [[REGION_FILTER]] Candidate directions worth considering when the data supports them: alpha-PRRT (e.g. Ac-225 DOTATATE), PRRT retreatment, targeted agents for progressive NET — but let the patient's actual data and the oncologist's judgments drive the queries, not this list. Never surface trials the oncologist has ruled out.
+- search_clinical_trials: run only when clinically meaningful — new screening-relevant data, treatment progression, or no trial search in the past 2 weeks. [[REGION_FILTER]] Candidate directions worth considering when the data supports them: alpha-PRRT (e.g. Ac-225 DOTATATE), PRRT retreatment, targeted agents for progressive NET — but let the patient's actual data and the oncologist's judgments drive the queries, not this list. Never surface trials the oncologist has ruled out. Never state that the patient is eligible, qualifies, or is a best match; only the treating team and trial site can confirm eligibility.
 - generate_appointment_questions: call once, near the end, ONLY if today's findings materially change what should be discussed at the next appointment.
-- flag_alert: only for findings requiring action within 2 weeks. Include specific action text, not just "discuss with doctor". Never alert on anything the clinical judgments mark as non-urgent.
+- flag_alert: only for findings requiring action within 2 weeks. Include specific action text, not just "discuss with doctor". Never alert on anything the clinical judgments mark as non-urgent. PRRT/trial alerts must say potential fit or screening relevance and require clinician confirmation; never assert eligibility or qualification.
 
 DEDUPLICATION: The trigger message lists already-tracked PMIDs and NCT IDs. Check every result against these lists; do not re-surface tracked items as "new" (you may reference one briefly if today's finding changes its relevance — say so explicitly).
 
@@ -139,7 +139,14 @@ def run_orchestrator(profile: dict, extracted: dict) -> str:
         tool_results = []
         for block in resp.content:
             if getattr(block, "type", None) == "tool_use":
-                result = execute_tool(block.name, block.input, profile)
+                result = execute_tool(
+                    block.name,
+                    block.input,
+                    profile,
+                    source_document_id=extracted.get("source_document_id"),
+                    source_job_id=extracted.get("source_job_id"),
+                    generation_profile_revision=extracted.get("generation_profile_revision"),
+                )
                 tool_results.append(
                     {
                         "type": "tool_result",

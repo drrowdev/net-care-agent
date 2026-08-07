@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
 from pathlib import Path
+
+import pytest
 
 APP_JS = Path("static/app.js").read_text(encoding="utf-8")
 
@@ -11,6 +15,168 @@ def _function_source(name: str, next_name: str) -> str:
     start = APP_JS.index(f"function {name}")
     end = APP_JS.index(f"function {next_name}", start)
     return APP_JS[start:end]
+
+
+def _executable_function_source(name: str, next_name: str) -> str:
+    source = _function_source(name, next_name).rstrip()
+    if source.endswith("async"):
+        source = source.removesuffix("async").rstrip()
+    start = APP_JS.index(f"function {name}")
+    return f"async {source}" if APP_JS[start - 6 : start] == "async " else source
+
+
+def _run_summary_auth_probe(status: int) -> dict:
+    script = "\n".join(
+        [
+            """
+class FakeClassList {
+  add() {}
+  remove() {}
+  toggle() {}
+  contains() { return false; }
+}
+
+function fakeElement() {
+  return {
+    classList: new FakeClassList(),
+    className: '',
+    dataset: {},
+    disabled: false,
+    hidden: false,
+    innerHTML: '',
+    style: {},
+    textContent: '',
+    value: '',
+    closest() { return null; },
+    remove() {},
+    removeAttribute() {},
+    setAttribute() {},
+  };
+}
+
+const elements = new Map();
+const element = id => {
+  if (!elements.has(id)) elements.set(id, fakeElement());
+  return elements.get(id);
+};
+const document = {
+  body: { children: [], classList: new FakeClassList() },
+  getElementById: element,
+  querySelector() { return null; },
+  querySelectorAll() { return []; },
+};
+
+let selectedTaskId = 'patient-task';
+let currentReportText = 'patient report';
+let pendingSummary = { status: 'current' };
+let currentReceipt = { patient: true };
+let latestProfileRevision = 7;
+let latestResearchUpdate = { trial_count: 1 };
+let patientEvidence = { patient: true };
+let allBiomarkers = [{ patient: true }];
+let chatHistory = [{ patient: true }];
+let chatHistoryRevision = 7;
+let activeDialogSurface = null;
+let chatOpen = true;
+let taskSelectionEpoch = 0;
+let phiEpoch = 0;
+let renderSummaryCalls = 0;
+const loadErrors = [];
+
+function renderLatestResearchUpdate() {}
+function clearReportCopyState() {}
+function updateCharCount() {}
+function loadFailureMarkup() { return 'transient failure'; }
+function reportLoadSuccess() {}
+function reportLoadError(scope, error) { loadErrors.push([scope, error.status]); }
+function renderSummary(data) {
+  renderSummaryCalls += 1;
+  renderFreshness(data);
+}
+function summaryIsStale() { return false; }
+function fmtDate(value) { return value; }
+""",
+            _executable_function_source("readJsonResponse", "readJobSubmission"),
+            _function_source("shouldEvictClientPhi", "restoreDialogFocus"),
+            _function_source("evictClientPhi", "renderLatestResearchUpdate"),
+            _executable_function_source("loadSummary", "renderPendingSummary"),
+            _function_source("renderFreshness", "renderClaimEvidence"),
+            """
+function response(status, data) {
+  return {
+    status,
+    ok: status >= 200 && status < 300,
+    headers: { get() { return null; } },
+    async json() { return data; },
+  };
+}
+
+(async () => {
+  const authStatus = Number(process.argv[1]);
+  const banner = element('freshness-banner');
+  const title = element('freshness-title');
+  const message = element('freshness-message');
+  const summaryBody = element('summary-body');
+  banner.hidden = false;
+  title.textContent = 'Patient-derived freshness';
+  message.textContent = 'Patient-derived source';
+  summaryBody.innerHTML = 'Patient-derived summary';
+
+  let resolveLate;
+  const lateResponse = new Promise(resolve => { resolveLate = resolve; });
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    if (fetchCalls === 1) return lateResponse;
+    return response(authStatus, { error: 'denied' });
+  };
+
+  const lateRequest = loadSummary();
+  const authRequest = loadSummary();
+  await authRequest;
+  resolveLate(response(200, { status: 'current', generated_at: '2026-08-07' }));
+  await lateRequest;
+
+  console.log(JSON.stringify({
+    phiEpoch,
+    hidden: banner.hidden,
+    title: title.textContent,
+    message: message.textContent,
+    summary: summaryBody.innerHTML,
+    renderSummaryCalls,
+    fetchCalls,
+    loadErrors,
+  }));
+})().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
+""",
+        ]
+    )
+    completed = subprocess.run(
+        ["node", "-e", script, str(status)],
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_summary_auth_eviction_cannot_repaint_freshness_or_accept_late_success(status):
+    result = _run_summary_auth_probe(status)
+
+    assert result == {
+        "phiEpoch": 2,
+        "hidden": True,
+        "title": "",
+        "message": "",
+        "summary": '<div class="summary-empty">Patient assessment unavailable.</div>',
+        "renderSummaryCalls": 0,
+        "fetchCalls": 2,
+        "loadErrors": [["summary", status]],
+    }
 
 
 def test_process_file_posts_multipart_to_file_endpoint():
@@ -91,6 +257,17 @@ def test_summary_refresh_preserves_open_action_feedback():
     assert "summary_revision: el?.dataset.summaryRevision || null" in dismiss
 
 
+def test_stale_summary_preempts_open_action_feedback_immediately():
+    loader = _function_source("loadSummary", "renderPendingSummary")
+    assert "const responseStale =" in loader
+    assert "editor && responseStale" in loader
+    assert "editor.querySelectorAll('button, input')" in loader
+    assert "editor.remove()" in loader
+    assert "pendingSummary = null" in loader
+    assert "renderSummary(d)" in loader
+    assert "editor && sameRevision" in loader
+
+
 def test_escape_closes_only_the_topmost_open_surface():
     assert APP_JS.count("document.addEventListener('keydown'") == 1
     handler_start = APP_JS.index("document.addEventListener('keydown'")
@@ -98,6 +275,30 @@ def test_escape_closes_only_the_topmost_open_surface():
     handler = APP_JS[handler_start:handler_end]
     assert "modal-overlay" in handler
     assert handler.count("return;") >= 4
+
+
+def test_dialogs_trap_focus_and_make_background_inert():
+    focus = _function_source("dialogFocusable", "setBackgroundInert")
+    inert = _function_source("setBackgroundInert", "activateDialog")
+    trap = _function_source("trapDialogFocus", "loadFailureMarkup")
+    assert "button:not([disabled])" in focus
+    assert "child.inert = true" in inert
+    assert "child.inert = false" in inert
+    assert "event.key !== 'Tab'" in trap
+    assert "event.shiftKey" in trap
+    assert "activateDialog(pop, trigger)" in APP_JS
+    assert "activateDialog(overlay.querySelector('.modal'), trigger)" in APP_JS
+    assert "activateDialog(report, lastDialogTrigger)" in APP_JS
+    assert "activateDialog(panel, trigger)" in APP_JS
+
+
+def test_feed_tabs_support_roving_arrow_home_and_end_keys():
+    source = _function_source("handleFeedTabKeydown", "updateCharCount")
+    for key in ("ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp", "Home", "End"):
+        assert key in source
+    switcher = _function_source("switchTab", "handleFeedTabKeydown")
+    assert "textButton.tabIndex" in switcher
+    assert "fileButton.tabIndex" in switcher
 
 
 def test_load_failures_distinguish_auth_offline_and_retry_states():
@@ -116,6 +317,295 @@ def test_load_failures_distinguish_auth_offline_and_retry_states():
         "loadSymptoms()",
     ):
         assert loader in retry
+    assert "updateHeaderStatus(null, e)" in APP_JS
+    assert "loadFailureMarkup('Assessment'" in APP_JS
+    assert "loadFailureMarkup('Processing activity'" in APP_JS
+    assert "loadFailureMarkup('Imaging history'" in APP_JS
+
+
+def test_status_failure_clears_all_status_derived_phi_and_caches():
+    failure = _function_source("renderStatusFailure", "renderLatestResearchUpdate")
+    for expression in (
+        "latestProfileRevision = null",
+        "latestResearchUpdate = null",
+        "allBiomarkers = []",
+        "renderLatestResearchUpdate(null)",
+        "patientMeta.innerHTML = ''",
+        "search.value = ''",
+        "search.disabled = true",
+    ):
+        assert expression in failure
+    evidence = _function_source("loadPatientEvidence", "evidenceBadge")
+    assert "patientEvidence = null" in evidence
+    assert evidence.index("const evidence = await") < evidence.index("requestPhiEpoch !== phiEpoch")
+    assert evidence.index("requestPhiEpoch !== phiEpoch") < evidence.index(
+        "patientEvidence = evidence"
+    )
+
+
+def test_central_phi_eviction_clears_patient_panels_dialogs_and_histories():
+    eviction = _function_source("evictClientPhi", "renderLatestResearchUpdate")
+    for expression in (
+        "taskSelectionEpoch += 1",
+        "selectedTaskId = null",
+        "currentReportText = ''",
+        "currentReceipt = null",
+        "pendingSummary = null",
+        "chatHistory = []",
+        "chatHistoryRevision = null",
+        "clearFreshnessProjection()",
+        "document.querySelectorAll('.action-feedback')",
+        "clear('panel-body'",
+        "clear('summary-body'",
+        "'chat-messages'",
+        "feedText.value = ''",
+        "clearReportCopyState()",
+        "'judgment-input'",
+        "'q-add-input'",
+        "'sym-name'",
+        "'sym-note'",
+        "severity.value = ''",
+        ".judgment-edit-text",
+        ".receipt-editor input",
+    ):
+        assert expression in eviction
+    freshness = _function_source("clearFreshnessProjection", "renderClaimEvidence")
+    assert "\n  function clearFreshnessProjection" in APP_JS
+    assert "\n    function clearFreshnessProjection" not in _function_source(
+        "renderFreshness", "renderClaimEvidence"
+    )
+    for expression in (
+        "title.textContent = ''",
+        "message.textContent = ''",
+        "banner.hidden = true",
+    ):
+        assert expression in freshness
+    summary = _function_source("loadSummary", "renderPendingSummary")
+    auth_failure = summary[summary.index("catch(e)") :]
+    epoch_guard = auth_failure.index("if (requestPhiEpoch !== phiEpoch)")
+    eviction = auth_failure.index("if (shouldEvictClientPhi(e))")
+    repaint = auth_failure.index("renderFreshness(null, e)")
+    assert epoch_guard < auth_failure.index("return null", epoch_guard) < eviction
+    assert eviction < auth_failure.index("return null", eviction) < repaint
+    for loader, next_name in (
+        ("loadStatus", "renderStatusFailure"),
+        ("loadPatientEvidence", "evidenceBadge"),
+        ("loadSummary", "renderPendingSummary"),
+        ("loadTasks", "renderTasks"),
+    ):
+        assert "evictClientPhi(" in _function_source(loader, next_name)
+    submission = _function_source("readJobSubmission", "waitForJob")
+    json_reader = _function_source("readJsonResponse", "readJobSubmission")
+    assert json_reader.index("response.status === 401") < json_reader.index("response.json()")
+    assert submission.index("response.status === 401") < submission.index("response.json()")
+    assert "evictClientPhi(error)" in submission
+    mutation = _function_source("submitReceiptMutation", "receiptRefreshFailureMarkup")
+    assert "evictClientPhi(authError)" in mutation
+    assert mutation.index("response.status === 401") < mutation.index("response.json()")
+    close = _function_source("closePanel", "receiptValueSummary")
+    assert "const requestPhiEpoch = phiEpoch" in close
+    assert "requestPhiEpoch === phiEpoch" in close
+    questions = _function_source("generateQuestions", "addQuestion")
+    assert "const requestPhiEpoch = phiEpoch" in questions
+    assert "requestPhiEpoch !== phiEpoch" in questions
+    for handler, next_name in (
+        ("addJudgment", "deleteJudgment"),
+        ("addSymptom", "deleteSymptom"),
+        ("addQuestion", "toggleQuestion"),
+    ):
+        source = _function_source(handler, next_name)
+        assert "const requestPhiEpoch = phiEpoch" in source
+        assert "requestPhiEpoch !== phiEpoch" in source
+
+
+def test_missing_selected_task_evicts_instead_of_restoring_cached_receipt():
+    selection = _function_source("selectTask", "formatReport")
+    missing = selection[selection.index("if (!task)") : selection.index("if (task.status")]
+    assert "evictClientPhi(missingError)" in missing
+    assert "receiptRefreshFailureMarkup" not in missing
+
+
+def test_processing_status_never_claims_clinical_freshness():
+    header = _function_source("updateHeaderStatus", "closePanel")
+    assert "Processing ${running.length}" in header
+    assert "lbl.textContent = 'Idle'" in header
+    assert "lbl.textContent = 'Unavailable'" in header
+    assert "Up to date" not in APP_JS
+
+
+def test_receipt_is_job_scoped_and_has_no_global_review_flow():
+    selector = _function_source("selectTask", "formatReport")
+    assert "task.receipt_url" in selector
+    assert "renderReceipt(receipt)" in selector
+    assert "/receipt/changes/" in APP_JS
+    assert "/receipt/undo" in APP_JS
+    assert "/api/changes" not in APP_JS
+    assert "Mark reviewed" not in APP_JS
+
+
+def test_corrected_receipt_renders_effective_value_without_relabelling_original_evidence():
+    receipt = _function_source("renderReceipt", "receiptFieldInput")
+    assert "change.effective_value" in receipt
+    assert "Caregiver correction" in receipt
+    assert "Original extraction span (before correction)" in receipt
+
+
+def test_receipt_editor_save_stays_disabled_until_clinical_value_changes():
+    editor = _function_source("startReceiptCorrection", "parsedReceiptInput")
+    assert 'class="button primary receipt-save"' in editor
+    assert "disabled>Save correction" in editor
+    assert "const initial = JSON.stringify" in editor
+    assert "save.disabled =" in editor
+
+
+def test_receipt_mutation_response_is_correlated_to_originating_job_and_revision():
+    mutation = _function_source("submitReceiptMutation", "selectTask")
+    assert "receiptMutationPending" in mutation
+    assert "const originJobId = currentReceipt.job_id" in mutation
+    assert "const originReceiptRevision = currentReceipt.receipt_revision" in mutation
+    assert "selectedTaskId === originJobId" in mutation
+    assert "currentReceipt?.job_id === originJobId" in mutation
+    assert "currentReceipt?.receipt_revision === originReceiptRevision" in mutation
+    assert "pendingWasDisabled" in mutation
+    assert "const refreshSelectedJob =" in mutation
+    assert "await selectTask(originJobId, originSelectionEpoch, data.receipt)" in mutation
+    assert "data.receipt" in mutation
+    assert "const originSelectionEpoch = taskSelectionEpoch" in mutation
+    assert "taskSelectionEpoch === originSelectionEpoch" in mutation
+
+
+def test_stale_job_result_is_hidden_in_activity_panel():
+    detail = _function_source("selectTask", "formatReport")
+    assert "if (task.result.stale)" in detail
+    assert "const staleCopy = staleTaskCopy(task)" in detail
+    assert "Regenerate it before use" in detail
+    assert "if (task.report_stale)" in detail
+    assert "staleTaskCopy({" in detail
+    tasks = _function_source("renderTasks", "updateHeaderStatus")
+    assert "t.derived_content_stale" in tasks
+    assert "prior analysis hidden" in tasks
+    assert "!task.derived_content_stale && task.key_findings" in detail
+
+
+def test_open_task_is_revalidated_and_copy_state_cleared():
+    loader = _function_source("loadTasks", "renderTasks")
+    assert "revalidateOpenTask(tasks)" in loader
+    stale = _function_source("staleTaskCopy", "clearReportCopyState")
+    assert "source_document_corrected_or_undone" in stale
+    assert "patient_record_changed_after_generation" not in stale
+    assert "freshness_cannot_be_verified" in stale
+    revalidate = _function_source("revalidateOpenTask", "updateHeaderStatus")
+    assert "task?.derived_content_stale" in revalidate
+    assert "clearReportCopyState()" in revalidate
+    copy = _function_source("clearReportCopyState", "revalidateOpenTask")
+    assert "currentReportText = ''" in copy
+    assert "copy.disabled = true" in copy
+
+
+def test_receipt_success_survives_detail_refresh_failure():
+    helper = _function_source("receiptRefreshFailureMarkup", "selectTask")
+    assert "Correction saved successfully." in helper
+    assert "Retry detail refresh" in helper
+    selection = _function_source("selectTask", "formatReport")
+    assert "fallbackReceipt = null" in selection
+    assert "receiptRefreshFailureMarkup(fallbackReceipt" in selection
+    assert "Saved. Refreshing activity detail" in selection
+    assert "if (error?.status === 401 || error?.status === 403)" in selection
+    assert "evictClientPhi(error)" in selection
+    assert "shouldEvictClientPhi(error) && !fallbackReceipt" in selection
+
+
+def test_task_selection_epoch_guards_every_async_panel_update():
+    selection = _function_source("selectTask", "formatReport")
+    assert "const selectionEpoch = expectedEpoch == null ? ++taskSelectionEpoch" in selection
+    assert "currentReceipt = fallbackReceipt" in selection
+    assert "Loading activity detail" in selection
+    assert selection.count("selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id") >= 7
+    assert "const detailResponse = await fetch" in selection
+    assert "const receiptResponse = await fetch" in selection
+
+
+def test_stale_task_copy_maps_reason_and_type_without_source_mislabeling():
+    copy = _function_source("staleTaskCopy", "clearReportCopyState")
+    assert "Deep-sweep report" in copy
+    assert "Digest report" in copy
+    assert "Document analysis" in copy
+    assert "The source document was corrected or undone." in copy
+    assert "The patient record changed after this task was generated." in copy
+    assert "This retained legacy task has no source profile revision." in copy
+    assert "Generated content was invalidated by a review-state change." in copy
+    assert "A newer appointment-question generation replaced this result." in copy
+
+
+def test_submitted_task_activation_reserves_and_checks_selection_epoch():
+    activation = _function_source("activateSubmittedTask", "showFeedError")
+    assert "const activationEpoch = ++taskSelectionEpoch" in activation
+    assert "await loadTasks()" in activation
+    assert "await selectTask(id, activationEpoch)" in activation
+    assert activation.count("activationEpoch !== taskSelectionEpoch || selectedTaskId !== id") >= 3
+
+
+def test_chat_history_is_bound_to_profile_revision_and_visibly_cleared():
+    sync = _function_source("syncChatRevision", "toggleChat")
+    assert "chatHistoryRevision" in sync
+    assert "Patient record changed. Prior chat history was cleared" in sync
+    sender = APP_JS[APP_JS.index("function sendChat") :]
+    assert "history_revision: chatHistoryRevision" in sender
+    assert "if (e.status === 409)" in sender
+
+
+def test_alert_resolution_uses_stable_id_token_and_revision():
+    sidebar = _function_source("renderSidebar", "resolveAlert")
+    assert "data-alert-id" in sidebar
+    assert "data-resolve-token" in sidebar
+    resolver = _function_source("resolveAlert", "loadPatientEvidence")
+    assert "/api/alerts/${encodeURIComponent(alertId)}/resolve" in resolver
+    assert "expected_token: expectedToken" in resolver
+    assert "expected_profile_revision: latestProfileRevision" in resolver
+    assert "syncChatRevision(result.profile_revision, true)" in resolver
+
+
+def test_patient_history_joins_documents_and_keeps_orphaned_legacy_records():
+    history = _function_source("renderPatientEvidence", "toggleImagingHistory")
+    assert "const documents = patientEvidence.documents || []" in history
+    assert "const sourcesById = new Map" in history
+    assert "history_kind: 'document'" in history
+    assert "Legacy document record" in history
+    assert "source.source_url" in history
+
+
+def test_claim_evidence_and_decision_support_wording_are_non_definitive():
+    summary = _function_source("renderSummary", "removeItem")
+    assert "POTENTIAL FIT" in summary
+    assert "MAY FIT" in summary
+    assert "Trial to discuss" in summary
+    assert "Best matched trial" not in APP_JS
+    assert "PRRT: ELIGIBLE" not in APP_JS
+    assert "renderClaimEvidence" in summary
+    assert "d.claim_evidence?.claims?.cga_trend_detail" in summary
+    assert "Prior generated assessment is hidden" in summary
+
+
+def test_empty_form_handlers_surface_inline_feedback():
+    cases = (
+        ("addQuestion", "toggleQuestion", "q-form-error"),
+        ("addJudgment", "deleteJudgment", "judgment-form-error"),
+        ("addSymptom", "deleteSymptom", "sym-form-error"),
+    )
+    for name, next_name, error_id in cases:
+        source = _function_source(name, next_name)
+        assert error_id in source
+        assert "if (!" in source
+    chat = APP_JS[APP_JS.index("function sendChat") :]
+    assert "chat-form-error" in chat
+    assert "if (!text)" in chat
+    feed = _function_source("feedText", "submitFeed")
+    assert "Paste clinical text before processing" in feed
+    parser = _function_source("parsedReceiptInput", "saveReceiptCorrection")
+    assert "if (!input.value.trim()) return null" in parser
+    fields = _function_source("receiptFieldInput", "startReceiptCorrection")
+    assert "field === 'severity'" in fields
+    assert "field === 'new_lesions'" in fields
 
 
 def test_latest_research_update_labels_only_exact_batch_records():
@@ -130,6 +620,26 @@ def test_latest_research_update_labels_only_exact_batch_records():
     assert "new-research-badge" in modal
     assert "orderedItems" in modal
     assert "/api/changes" not in APP_JS
+
+
+def test_stale_treatment_classification_visibly_falls_back_to_raw_entries():
+    sidebar = _function_source("renderSidebar", "resolveAlert")
+    assert "d.treatments_fallback?.length" in sidebar
+    assert "d.treatments_classification_current === false" in sidebar
+    assert "Classification outdated — showing raw treatment entries." in sidebar
+
+
+def test_treatment_actions_use_stable_id_token_and_profile_revision():
+    sidebar = _function_source("renderSidebar", "resolveAlert")
+    assert "data-treatment-id" in sidebar
+    assert "data-edit-token" in sidebar
+    assert "editTreatment(this,'complete')" in sidebar
+    assert "editTreatment(this,'remove')" in sidebar
+    editor = _function_source("editTreatment", "generateSummary")
+    assert "/api/treatments/${encodeURIComponent(treatmentId)}" in editor
+    assert "expected_token: expectedToken" in editor
+    assert "expected_profile_revision: latestProfileRevision" in editor
+    assert "/api/treatments/update" not in editor
 
 
 def test_latest_research_update_refreshes_after_missed_job_transitions():

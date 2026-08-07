@@ -9,6 +9,7 @@ from . import config
 from .judgments import CLINICAL_JUDGMENTS_OVERRIDE, get_clinical_judgments_context
 from .llm import client, first_text, is_timeout_error, strip_code_fences
 from .profile import (
+    active_alerts,
     build_patient_context,
     get_output_language,
     get_patient_summary,
@@ -153,7 +154,7 @@ def generate_questions_for_profile(
                     "content": (
                         f"Generate appointment questions for a {appointment_type} visit.\n\n"
                         f"Patient profile:\n{get_patient_summary(profile)}\n\n"
-                        f"Active alerts: {json.dumps([a for a in profile.get('alerts', []) if not a.get('resolved')], default=str)}\n\n"
+                        f"Active alerts: {json.dumps(active_alerts(profile), default=str)}\n\n"
                         f"Most recent imaging: {json.dumps(profile.get('imaging', [])[-2:], default=str)}\n\n"
                         f"Recent biomarkers: {json.dumps(profile.get('biomarkers', [])[-6:], default=str)}\n\n"
                         f"IMPORTANT — Clinical judgments from previous consultations (do not generate questions about things already addressed):\n"
@@ -178,6 +179,8 @@ def generate_questions_for_profile(
                 "source": "ai",
                 "asked": False,
                 "created_at": today,
+                "source_profile_revision": profile.get("profile_revision"),
+                "stale": False,
             }
             for i, q in enumerate(questions)
             if q.get("text")

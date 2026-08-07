@@ -13,11 +13,14 @@ from .exec_summary import generate_executive_summary  # noqa: F401  (kept for ca
 from .intake import run_intake
 from .orchestrator import run_orchestrator
 from .profile import (
+    active_alerts,
     get_patient_summary,
     get_research_ids,
+    invalidate_treatment_classification,
     load_profile,
     record_latest_research_update,
     save_profile,
+    sync_treatment_records,
 )
 from .serialize import serialized_mutation
 
@@ -50,6 +53,7 @@ def cmd_feed(args) -> None:
 
     with serialized_mutation():
         profile = load_profile()
+        job_id = f"cli-feed-{datetime.datetime.now():%Y%m%d%H%M%S}"
         previous_trial_ids = set(get_research_ids(profile, "trial"))
         previous_paper_ids = set(get_research_ids(profile, "paper"))
         profile, extracted = run_intake(
@@ -59,15 +63,32 @@ def cmd_feed(args) -> None:
             filename=filename,
             media_type="text/plain",
         )
+        extracted["source_job_id"] = job_id
+        intake_revision = int(profile.get("profile_revision") or 0) + 1
+        for alert in profile.get("alerts", []):
+            if alert.get("source_document_id") != extracted.get("source_document_id"):
+                continue
+            alert["source_job_id"] = job_id
+            alert["generation_profile_revision"] = intake_revision
+            alert["source_dependency_active"] = True
+        save_profile(profile)
+        extracted["generation_profile_revision"] = int(profile.get("profile_revision") or 0) + 1
         report = run_orchestrator(profile, extracted)
+        profile["treatments_classified"] = classify_treatments(profile)
         record_latest_research_update(
             profile,
-            job_id=f"cli-feed-{datetime.datetime.now():%Y%m%d%H%M%S}",
+            job_id=job_id,
             trigger="feed",
             previous_trial_ids=previous_trial_ids,
             previous_paper_ids=previous_paper_ids,
             record_empty=False,
         )
+        final_revision = int(profile.get("profile_revision") or 0) + 1
+        profile["treatments_classification_revision"] = final_revision
+        profile["treatments_classification_job_id"] = job_id
+        for alert in profile.get("alerts", []):
+            if alert.get("source_job_id") == job_id:
+                alert["generation_profile_revision"] = final_revision
         save_profile(profile)
     _print_and_save_report(report, "feed")
 
@@ -86,17 +107,27 @@ def cmd_digest(args) -> None:
     }
     with serialized_mutation():
         profile = load_profile()
+        job_id = f"cli-digest-{datetime.datetime.now():%Y%m%d%H%M%S}"
+        extracted["source_job_id"] = job_id
+        extracted["generation_profile_revision"] = int(profile.get("profile_revision") or 0) + 1
         previous_trial_ids = set(get_research_ids(profile, "trial"))
         previous_paper_ids = set(get_research_ids(profile, "paper"))
         report = run_orchestrator(profile, extracted)
+        profile["treatments_classified"] = classify_treatments(profile)
         record_latest_research_update(
             profile,
-            job_id=f"cli-digest-{datetime.datetime.now():%Y%m%d%H%M%S}",
+            job_id=job_id,
             trigger="digest",
             previous_trial_ids=previous_trial_ids,
             previous_paper_ids=previous_paper_ids,
             record_empty=True,
         )
+        final_revision = int(profile.get("profile_revision") or 0) + 1
+        profile["treatments_classification_revision"] = final_revision
+        profile["treatments_classification_job_id"] = job_id
+        for alert in profile.get("alerts", []):
+            if alert.get("source_job_id") == job_id:
+                alert["generation_profile_revision"] = final_revision
         save_profile(profile)
     _print_and_save_report(report, "digest")
 
@@ -104,7 +135,7 @@ def cmd_digest(args) -> None:
 def cmd_status(args) -> None:
     profile = load_profile()
     print(get_patient_summary(profile))
-    unresolved = [a for a in profile.get("alerts", []) if not a.get("resolved")]
+    unresolved = active_alerts(profile)
     if unresolved:
         print(
             f"\n⚠  {len(unresolved)} unresolved alert(s) — run `status` to review, "
@@ -144,8 +175,14 @@ def cmd_update_profile(args) -> None:
         profile["patient"].update(updates)
         if tx_raw:
             profile["patient"].setdefault("current_treatments", []).append(tx_raw)
-        profile["treatments_classified"] = classify_treatments(profile)
+            invalidate_treatment_classification(profile)
+            sync_treatment_records(profile)
         save_profile(profile)
+        job_id = f"cli-update-{datetime.datetime.now():%Y%m%d%H%M%S}"
+        profile["treatments_classified"] = classify_treatments(profile)
+        profile["treatments_classification_revision"] = profile.get("profile_revision")
+        profile["treatments_classification_job_id"] = job_id
+        save_profile(profile, clinical_change=False)
     print("\n✓  Profile updated.")
     print(get_patient_summary(profile))
 

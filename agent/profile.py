@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -64,6 +65,7 @@ DEFAULT_PROFILE: dict = {
         "sstr_status": None,
         "sstr_score": None,
         "current_treatments": [],
+        "current_treatment_records": [],
         "allergies": [],
         "comorbidities": [],
         "oncologist": None,
@@ -78,14 +80,18 @@ DEFAULT_PROFILE: dict = {
     "appointments": [],
     "documents": [],
     "source_documents": [],
+    "document_imports": [],
     "trials_tracked": [],
     "literature_watched": [],
     "alerts": [],
     "symptoms": [],
     "clinical_judgments": [],
     "appointment_questions": [],
+    "questions_generation_id": None,
     "feedback": [],
     "latest_research_update": None,
+    "treatments_classification_revision": None,
+    "treatments_classification_job_id": None,
 }
 
 _NCT_ID_RE = re.compile(r"NCT\d{8}")
@@ -522,13 +528,164 @@ def save_profile(profile: dict, *, clinical_change: bool = True) -> None:
             log.warning("daily_backup raised: %s", e)
 
 
+def active_documents(profile: dict) -> list[dict]:
+    """Return documents whose extracted clinical content is still active."""
+    return [
+        item
+        for item in profile.get("documents", [])
+        if not item.get("excluded_from_clinical_context")
+    ]
+
+
+def active_alerts(profile: dict) -> list[dict]:
+    """Return unresolved alerts whose clinical source dependency remains valid."""
+    revision = profile.get("profile_revision")
+    active = []
+    for item in profile.get("alerts", []):
+        if item.get("resolved"):
+            continue
+        kind = item.get("dependency_kind") or "profile_snapshot"
+        if kind == "source" and not item.get("source_dependency_active", True):
+            continue
+        if kind == "profile_snapshot" and str(item.get("generation_profile_revision")) != str(
+            revision
+        ):
+            continue
+        active.append(item)
+    return active
+
+
+def invalidate_treatment_classification(profile: dict) -> None:
+    """Mark derived treatment categories stale without deleting their audit value."""
+    profile["treatments_classification_revision"] = None
+    profile["treatments_classification_job_id"] = None
+
+
+def sync_treatment_records(profile: dict) -> list[dict]:
+    """Deterministically map raw/composite treatment strings to stable components."""
+    patient = profile.setdefault("patient", {})
+    records = []
+    occurrences: dict[str, int] = {}
+    for source_order, raw in enumerate(patient.get("current_treatments") or []):
+        text = str(raw)
+        occurrence = occurrences.get(text, 0)
+        occurrences[text] = occurrence + 1
+        source_digest = hashlib.sha256(f"{text}:{occurrence}".encode()).hexdigest()[:20]
+        source_id = f"txsrc_{source_digest}"
+        from .classify import split_treatment_components
+
+        components = split_treatment_components(text)
+        for component_order, component in enumerate(components):
+            digest = hashlib.sha256(
+                f"{source_id}:{component_order}:{component}".encode()
+            ).hexdigest()[:20]
+            records.append(
+                {
+                    "id": f"tx_{digest}",
+                    "source_entry_id": source_id,
+                    "source_order": source_order,
+                    "component_order": component_order,
+                    "text": component,
+                    "source_text": text,
+                }
+            )
+    patient["current_treatment_records"] = records
+    return records
+
+
+def rebuild_raw_treatments(profile: dict) -> list[str]:
+    """Rebuild raw entries after component-safe edits without dropping siblings."""
+    records = profile.setdefault("patient", {}).get("current_treatment_records") or []
+    grouped: dict[str, list[dict]] = {}
+    for record in sorted(
+        records,
+        key=lambda item: (item.get("source_order", 0), item.get("component_order", 0)),
+    ):
+        grouped.setdefault(record.get("source_entry_id") or record.get("id"), []).append(record)
+    raw = [" plus ".join(item.get("text", "") for item in group) for group in grouped.values()]
+    profile["patient"]["current_treatments"] = [item for item in raw if item.strip()]
+    return profile["patient"]["current_treatments"]
+
+
+def treatment_edit_token(profile: dict, classified: dict) -> str:
+    """CAS token covering one classified row and its mapped raw components."""
+    source_ids = set(classified.get("source_treatment_ids") or [])
+    records = [
+        item
+        for item in profile.get("patient", {}).get("current_treatment_records", [])
+        if item.get("id") in source_ids
+    ]
+    canonical = json.dumps(
+        {"classified": classified, "records": records},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def treatment_classification_is_current(profile: dict) -> bool:
+    revision = profile.get("treatments_classification_revision")
+    return revision is not None and str(revision) == str(profile.get("profile_revision"))
+
+
+def current_treatment_records(profile: dict) -> list[dict]:
+    """Return current classification or a lossless raw-treatment fallback."""
+    if treatment_classification_is_current(profile):
+        return list(profile.get("treatments_classified") or [])
+    return [
+        {
+            "text": text,
+            "label": text,
+            "category": "unclassified",
+            "date": None,
+            "classification_stale": True,
+        }
+        for text in profile.get("patient", {}).get("current_treatments", [])
+    ]
+
+
+def alert_token(alert: dict) -> str:
+    """Return a semantic compare-and-swap token for one alert."""
+    canonical = json.dumps(
+        {key: value for key, value in alert.items() if key != "resolve_token"},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def summary_is_current(profile: dict) -> bool:
+    """Return whether generated summary content is safe to reuse as current."""
+    summary = profile.get("executive_summary")
+    if not isinstance(summary, dict) or not summary:
+        return False
+    if profile.get("summary_stale") or summary.get("stale"):
+        return False
+    revision = summary.get("summary_revision")
+    if revision is None or str(revision) != str(profile.get("profile_revision")):
+        return False
+    stored_judgment_hash = summary.get("judgment_context_hash")
+    if stored_judgment_hash is None and profile.get("clinical_judgments"):
+        return False
+    if stored_judgment_hash is not None:
+        from .judgments import clinical_judgments_fingerprint
+
+        if stored_judgment_hash != clinical_judgments_fingerprint(profile):
+            return False
+    return True
+
+
 def get_patient_summary(profile: dict) -> str:
     """Concise text summary of the patient's current state, used as LLM context."""
     p = profile["patient"]
     bms = sorted(profile.get("biomarkers", []), key=lambda x: x.get("date", ""), reverse=True)[:6]
-    docs = sorted(profile.get("documents", []), key=lambda x: x.get("date", ""), reverse=True)[:3]
+    docs = sorted(active_documents(profile), key=lambda x: x.get("date", ""), reverse=True)[:3]
     imgs = sorted(profile.get("imaging", []), key=lambda x: x.get("date", ""), reverse=True)[:2]
-    active_alerts = [a for a in profile.get("alerts", []) if not a.get("resolved")]
+    current_alerts = active_alerts(profile)
 
     lines = [
         "═══ PATIENT PROFILE ═══",
@@ -557,7 +714,8 @@ def get_patient_summary(profile: dict) -> str:
     if imgs:
         for i in imgs:
             lines.append(
-                f"  {i.get('date', '')}  {i.get('modality', '?')}: {i.get('impression', '')[:120]}"
+                f"  {i.get('date', '')}  {i.get('modality', '?')}: "
+                f"{(i.get('impression') or i.get('findings') or '')[:120]}"
             )
     else:
         lines.append("  None recorded")
@@ -593,11 +751,11 @@ def get_patient_summary(profile: dict) -> str:
         "",
         f"Tracked trials     : {len(profile.get('trials_tracked', []))}",
         f"Tracked literature : {len(profile.get('literature_watched', []))} papers",
-        f"Active alerts      : {len(active_alerts)}",
+        f"Active alerts      : {len(current_alerts)}",
     ]
-    if active_alerts:
+    if current_alerts:
         lines.append("")
-        for a in active_alerts:
+        for a in current_alerts:
             lines.append(f"  ⚠  [{a['priority'].upper()}] {a['message']}")
 
     return "\n".join(lines)

@@ -57,3 +57,36 @@ def test_valid_json_passes_through(agent, empty_profile):
     # generated_at must be re-stamped to today (not the dummy 'ignored')
     assert out["generated_at"] != "ignored"
     assert len(out["generated_at"]) == 10  # YYYY-MM-DD
+
+
+def test_exec_summary_context_uses_raw_treatments_when_classification_stale(agent, empty_profile):
+    empty_profile["profile_revision"] = 5
+    empty_profile["patient"]["current_treatments"] = ["raw sunitinib"]
+    empty_profile["treatments_classified"] = [{"text": "stale lanreotide", "category": "active"}]
+    empty_profile["treatments_classification_revision"] = 4
+    captured = {}
+    payload = {
+        "overall_status": "insufficient_data",
+        "status_confidence": "low",
+        "status_rationale": "Sparse data.",
+        "key_concern": "None established.",
+        "summary": "Review current record.",
+        "prrt_status": "unknown",
+        "prrt_rationale": "Not assessed.",
+        "cga_trend": "insufficient_data",
+        "cga_trend_detail": "No trend.",
+        "next_actions": [],
+        "timeline": [],
+        "best_trial": None,
+        "claim_evidence": {},
+    }
+
+    def handler(**kwargs):
+        captured["content"] = kwargs["messages"][0]["content"]
+        return llm_text(json.dumps(payload))
+
+    with patch_llm(agent, handler):
+        agent.generate_executive_summary(empty_profile)
+
+    assert "raw sunitinib" in captured["content"]
+    assert "stale lanreotide" not in captured["content"]

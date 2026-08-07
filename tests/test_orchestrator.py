@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests._llm_fake import llm_text, patch_llm
+
 
 def test_region_filter_with_configured_regions(agent):
     profile = {"patient": {"regions_of_interest": ["Germany", "Switzerland"]}}
@@ -38,3 +40,30 @@ def test_region_filter_drops_empty_strings(agent):
     assert 'country=""' not in out
     assert 'country="Germany"' in out
     assert 'country="Switzerland"' in out
+
+
+def test_orchestrator_context_falls_back_to_raw_treatments_when_classification_stale(
+    agent, empty_profile
+):
+    empty_profile["profile_revision"] = 4
+    empty_profile["patient"]["current_treatments"] = ["raw capecitabine"]
+    empty_profile["treatments_classified"] = [{"text": "stale lanreotide", "category": "active"}]
+    empty_profile["treatments_classification_revision"] = 3
+    captured = {}
+
+    def handler(**kwargs):
+        captured["system"] = str(kwargs["system"])
+        return llm_text("Grounded report " + ("x" * 350))
+
+    with patch_llm(agent, handler):
+        agent.run_orchestrator(
+            empty_profile,
+            {
+                "document_type": "doctor_note",
+                "summary": "No treatment inference",
+                "key_findings": [],
+            },
+        )
+
+    assert "raw capecitabine" in captured["system"]
+    assert "stale lanreotide" not in captured["system"]

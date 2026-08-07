@@ -44,12 +44,18 @@ def test_unversioned_migration_records_log_entry():
     assert "_migration_log" in result
     log = result["_migration_log"]
     assert isinstance(log, list)
-    assert len(log) == 1
+    assert len(log) == 7
     entry = log[0]
     assert entry["id"] == "0001_add_schema_version"
     assert "applied_at" in entry
     # Timestamp must not be "backfilled" for an unversioned profile.
     assert entry["applied_at"] != "backfilled"
+    assert log[1]["id"] == "0002_add_document_imports"
+    assert log[2]["id"] == "0003_add_generated_content_provenance"
+    assert log[3]["id"] == "0004_add_stable_alert_ids"
+    assert log[4]["id"] == "0005_add_dependency_lifecycles"
+    assert log[5]["id"] == "0006_add_stable_treatment_records"
+    assert log[6]["id"] == "0007_harden_legacy_generated_alerts"
 
 
 def test_already_current_fast_path_no_change():
@@ -177,3 +183,233 @@ def test_forward_schema_version_passes_through_unchanged():
     assert result is data  # same object, no copy
     assert result == original  # no mutation whatsoever
     assert "_migration_log" not in result
+
+
+def test_v1_adds_empty_document_import_ledger_without_clinical_inference():
+    from agent.migrations import apply_migrations
+
+    data = {"schema_version": 1, "patient": {"diagnosis": "NET"}}
+    result = apply_migrations(data)
+
+    assert result["schema_version"] == 7
+    assert result["document_imports"] == []
+    assert result["patient"]["diagnosis"] == "NET"
+    assert result["patient"]["current_treatment_records"] == []
+
+
+def test_v2_conservatively_stales_legacy_ai_questions_without_generation_identity():
+    from agent.migrations import apply_migrations
+
+    data = {
+        "schema_version": 2,
+        "patient": {"diagnosis": "NET"},
+        "appointment_questions": [
+            {"id": "legacy-ai", "text": "Old generated question", "source": "ai"},
+            {"id": "manual", "text": "Caregiver question", "source": "manual"},
+        ],
+    }
+
+    result = apply_migrations(data)
+
+    assert result["schema_version"] == 7
+    assert result["questions_generation_id"] is None
+    assert result["appointment_questions"][0]["stale"] is True
+    assert (
+        result["appointment_questions"][0]["stale_reason"] == "legacy_missing_generation_provenance"
+    )
+    assert "stale" not in result["appointment_questions"][1]
+
+
+def test_v3_deterministically_backfills_stable_alert_ids():
+    from agent.migrations import apply_migrations
+
+    source = {
+        "schema_version": 3,
+        "patient": {"diagnosis": "NET"},
+        "alerts": [
+            {"message": "First", "resolved": False},
+            {"message": "First", "resolved": False},
+            {"id": "existing", "message": "Existing", "resolved": False},
+        ],
+    }
+
+    first = apply_migrations(copy.deepcopy(source))
+    second = apply_migrations(copy.deepcopy(source))
+
+    assert first["schema_version"] == 7
+    assert first["alerts"][0]["id"].startswith("alert_legacy_")
+    assert first["alerts"][1]["id"].startswith("alert_legacy_")
+    assert first["alerts"][0]["id"] != first["alerts"][1]["id"]
+    assert first["alerts"][2]["id"] == "existing"
+    assert [item["id"] for item in first["alerts"]] == [item["id"] for item in second["alerts"]]
+
+
+def test_v4_migrates_alert_lifetimes_and_invalidates_legacy_classification():
+    from agent.migrations import apply_migrations
+
+    data = {
+        "schema_version": 4,
+        "patient": {"current_treatments": ["lanreotide"]},
+        "treatments_classified": [{"text": "lanreotide", "category": "active"}],
+        "alerts": [
+            {"id": "intake", "source": "intake_extraction_failure"},
+            {"id": "trial", "source": "trial_status_poll"},
+            {"id": "source", "source_document_id": "doc_" + "a" * 32},
+            {"id": "snapshot", "generation_profile_revision": 4},
+            {"id": "legacy"},
+        ],
+        "document_imports": [
+            {
+                "job_id": "feed",
+                "changes": [
+                    {
+                        "target": {"collection": "alerts", "record_id": "intake"},
+                        "effective_value": {
+                            "id": "intake",
+                            "source": "intake_extraction_failure",
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+
+    result = apply_migrations(data)
+
+    assert result["schema_version"] == 7
+    assert result["treatments_classification_revision"] is None
+    assert result["treatments_classification_job_id"] is None
+    assert [item["dependency_kind"] for item in result["alerts"]] == [
+        "durable",
+        "durable",
+        "source",
+        "profile_snapshot",
+        "profile_snapshot",
+    ]
+    assert (
+        result["document_imports"][0]["changes"][0]["effective_value"]["dependency_kind"]
+        == "durable"
+    )
+
+
+def test_v5_backfills_stable_composite_treatment_records_and_stales_classification():
+    from agent.migrations import apply_migrations
+
+    source = {
+        "schema_version": 5,
+        "patient": {
+            "current_treatments": ["lanreotide plus everolimus"],
+        },
+        "treatments_classified": [
+            {"text": "lanreotide", "category": "active"},
+            {"text": "everolimus", "category": "active"},
+        ],
+        "treatments_classification_revision": 5,
+        "treatments_classification_job_id": "legacy",
+    }
+
+    first = apply_migrations(copy.deepcopy(source))
+    second = apply_migrations(copy.deepcopy(source))
+
+    assert first["schema_version"] == 7
+    records = first["patient"]["current_treatment_records"]
+    assert [item["text"] for item in records] == ["lanreotide", "everolimus"]
+    assert len({item["id"] for item in records}) == 2
+    assert len({item["source_entry_id"] for item in records}) == 1
+    assert [item["id"] for item in records] == [
+        item["id"] for item in second["patient"]["current_treatment_records"]
+    ]
+    assert first["treatments_classification_revision"] is None
+    assert first["treatments_classification_job_id"] is None
+
+
+def test_v6_legacy_generated_alerts_are_sanitized_and_snapshot_bound():
+    from agent.migrations import apply_migrations
+
+    source = {
+        "schema_version": 6,
+        "profile_revision": 8,
+        "patient": {"diagnosis": "NET"},
+        "alerts": [
+            {
+                "id": "legacy-treatment",
+                "message": "Hold PRRT now",
+                "action_required": "The patient should receive Lutathera",
+                "dependency_kind": "durable",
+                "resolved": False,
+            },
+            {
+                "id": "operational",
+                "source": "intake_extraction_failure",
+                "message": "Document extraction failed",
+                "dependency_kind": "durable",
+                "resolved": False,
+            },
+        ],
+        "document_imports": [
+            {
+                "changes": [
+                    {
+                        "target": {
+                            "collection": "alerts",
+                            "record_id": "legacy-treatment",
+                        },
+                        "effective_value": {
+                            "id": "legacy-treatment",
+                            "message": "Hold PRRT now",
+                            "dependency_kind": "durable",
+                        },
+                    }
+                ]
+            }
+        ],
+    }
+
+    first = apply_migrations(copy.deepcopy(source))
+    second = apply_migrations(copy.deepcopy(source))
+
+    legacy = first["alerts"][0]
+    assert legacy["dependency_kind"] == "profile_snapshot"
+    assert legacy["generation_profile_revision"] == 8
+    assert "confirm before any treatment change" in legacy["message"]
+    assert "must review the complete criteria" in legacy["action_required"]
+    assert first["alerts"][1]["dependency_kind"] == "durable"
+    assert first["alerts"][1]["message"] == "Document extraction failed"
+    effective = first["document_imports"][0]["changes"][0]["effective_value"]
+    assert effective["message"] == legacy["message"]
+    assert effective["dependency_kind"] == "profile_snapshot"
+    assert effective["generation_profile_revision"] == 8
+    assert first["alerts"] == second["alerts"]
+    assert first["document_imports"] == second["document_imports"]
+
+    from agent.profile import active_alerts
+
+    assert [item["id"] for item in active_alerts(first)] == [
+        "legacy-treatment",
+        "operational",
+    ]
+    first["profile_revision"] = 9
+    assert [item["id"] for item in active_alerts(first)] == ["operational"]
+
+
+def test_v1_null_scaffolding_migrates_deterministically_without_inventing_clinical_data():
+    from agent.migrations import apply_migrations
+
+    source = {
+        "schema_version": 1,
+        "profile_revision": 2,
+        "patient": None,
+        "alerts": [{"message": "Document extraction failed", "resolved": False}],
+        "appointment_questions": None,
+        "document_imports": None,
+    }
+
+    first = apply_migrations(copy.deepcopy(source))
+    second = apply_migrations(copy.deepcopy(source))
+
+    assert first["schema_version"] == 7
+    assert first["patient"] == {"current_treatment_records": []}
+    assert first["document_imports"] == []
+    assert first["alerts"][0]["dependency_kind"] == "profile_snapshot"
+    assert first["patient"] == second["patient"]
+    assert first["alerts"] == second["alerts"]

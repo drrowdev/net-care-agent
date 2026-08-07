@@ -18,7 +18,8 @@ available at every screen size:
 
 - **Today** — assessment freshness, key concern, next actions, and the latest
   net-new trials and research papers.
-- **Patient** — profile snapshot, treatments, biomarkers, alerts, and symptoms.
+- **Patient** — profile snapshot, treatments, biomarkers, alerts, symptoms,
+  imaging history, and immutable document/source history.
 - **Questions** — appointment questions and clinical notes from the treating
   team.
 - **Activity** — digest/deep-sweep controls, processing status, and reports.
@@ -27,6 +28,17 @@ If an API request is unauthorized, forbidden, offline, or otherwise fails, the
 page shows an explicit error and retry action instead of replacing the patient
 record with empty states. The phone layout keeps these same views in a fixed
 bottom navigation bar.
+Failed status/evidence loads also clear previously rendered patient metadata,
+research additions, treatment/results/alert rows, search caches, and filters so
+old PHI is not left looking current in the browser.
+Authorization failure additionally clears open reports/receipts, chat turns and
+revision, summary feedback, tracked-item dialogs, and clinical text still in the
+feed dialog. A missing selected activity is treated the same way.
+
+The header reports processing only: **Processing N**, **Idle**, or
+**Unavailable**. It never claims the clinical assessment is current. Assessment
+freshness appears separately on **Today**, where profile and assessment
+revisions are compared.
 
 ## 1. Feed a clinical document
 
@@ -55,6 +67,18 @@ link back to exact verified quotes where available. The summary's **Evidence**
 links open only authenticated, no-cache source/span endpoints and never reveal a
 filesystem path.
 
+As soon as intake commits, the selected feed job shows a **Document
+reconciliation** receipt above its research report. This is scoped only to that
+document—there is no global review inbox or acknowledgement count. The receipt
+shows:
+
+- the document filename/type, ingestion time, and immutable source link;
+- each structured addition, old → new scalar update, conflict, and exact
+  duplicate/no-op;
+- verified exact-span evidence links, or a clear **No exact source** /
+  **Invalid source quote** label;
+- read-only trials/papers discovered later by orchestration.
+
 The server returns `202` with a job ID. The UI polls active work every three
 seconds and loads the
 report only from that individual job after completion. If the analysis discovers
@@ -68,6 +92,75 @@ browser tab is hidden).
 Feed has its own bounded queue (one active + two queued by default), independent
 of other AI work. If full, the API returns `429` with `Retry-After` (10 seconds
 by default) and creates no job record; retry after that delay.
+
+### Correct or undo one document
+
+Use the selected feed job's reconciliation receipt when intake extracted a value
+incorrectly:
+
+1. Select **Correct value** beside the affected imported fact, edit only the
+   offered clinical fields, and save. Or select **Remove imported value** to
+   remove that fact from active structured state.
+2. To reverse all still-active direct extraction effects, select **Undo document
+   changes**. The original source and audit history remain available; research
+   findings are not silently deleted.
+3. The assessment becomes stale after any correction/removal/undo. Review the
+   Patient record, then explicitly refresh the assessment.
+
+Source-dependent alerts are retained but removed from **Active alerts**.
+Generated appointment questions move to an **Outdated generated questions**
+section, and the prior assessment/feed report is hidden in Today/Activity. This
+prevents old actions, PRRT screening, or trial language from being reused while
+preserving the audit trail. Regenerate each artifact after confirming the
+corrected Patient record.
+If correction saves but Activity detail cannot refresh, the authoritative saved
+receipt remains visible with **Correction saved successfully** and a retry
+button. Open feedback editors and report/result panels are immediately replaced
+when stale state is detected; old actions/reports cannot remain copyable.
+Digest/deep-sweep reports and chat answers are also labelled outdated and hidden
+after any later clinical revision. Alert resolution advances that revision
+because those artifacts may have consumed the alert: prior chat turns clear,
+in-flight replies are rejected, open reports/results become outdated, and
+assessments/generated questions become stale. Durable or source-scoped sibling
+alerts remain active under their declared lifecycle. Alerts resolve by stable
+identity; if the alert changed while open, the UI reloads it instead of
+resolving another row.
+
+Chat history is bound to the patient profile revision. Correction, undo, or any
+other clinical revision clears prior in-tab turns with a visible notice. The
+server rejects stale history with `409`, so an old answer cannot be resent into a
+new-record conversation.
+
+Treatment categories appear only when classification is bound to the current
+clinical revision. If classification fails or raw treatments change, Patient
+shows **Classification outdated — showing raw treatment entries** and every
+agent receives the raw list. Refresh the assessment to classify again; treatment
+data is never omitted.
+Treatment remove/complete actions use stable mapped component identities. For a
+composite raw entry such as `lanreotide plus everolimus`, removing/completing one
+row preserves the other component. Concurrent reorder/change returns `409`
+instead of mutating the shifted row.
+Transition prose such as `switched from lanreotide to everolimus` is editable
+only when both sides can be mapped exclusively. Any unidentified drug,
+procedure, or residual therapy phrase keeps classification outdated and the raw
+entry visible rather than allowing a partial destructive edit.
+
+Alert lifetime follows its declared dependency. Ingestion-failure and
+trial-status alerts are durable until resolved. Feed-source alerts deactivate
+when that source is corrected/undone. Digest/profile-snapshot conclusions
+deactivate after a later clinical revision. Document undo preserves durable
+alerts for explicit resolution.
+
+The server compares only the affected rows/scalars/treatment values. Unrelated
+later profile changes do not block the correction. If an affected value changed
+or a later document also supports it, the server returns `409` before changing
+anything and the receipt shows the conflict. Reload the receipt and review the
+newer source; do not retry blindly. Whole-document undo is all-or-nothing—one
+conflicting target means no part of the document is rolled back.
+
+Receipt access follows normal feed-job retention. Its audit record remains in
+`patient_profile.json` and backups, but legacy imports created before schema v2
+do not receive retroactive editable receipts.
 
 ## 2. Run a research-only digest
 
@@ -134,6 +227,8 @@ visible but is no longer a hard constraint until a clinician reactivates it.
 1. UI → **Patient** → **Active alerts**.
 2. Click **Mark resolved** on the card.
 3. The alert is marked `resolved=true` in the profile but kept for audit.
+4. Prior chat turns clear and open generated reports/results become outdated;
+   regenerate only after reviewing the remaining active alerts.
 
 ## 5. Generate appointment questions
 
@@ -150,11 +245,17 @@ artifact. Manual additions remain synchronous profile mutations.
 
 Regeneration preserves already-asked AI questions and all manual questions,
 while deduplicating newly generated questions by normalized text.
+Each generation has an identity. Superseded or legacy AI questions without
+generation provenance remain visible as **Outdated** history and are not
+presented as current appointment preparation.
 
 ## 5b. Record review feedback
 
 The **Today** view shows confidence, rationale, profile/summary revisions,
-freshness, generation time, and evidence links. A prominent warning appears
+freshness, generation time, and claim-level evidence links. Each key claim and
+next action links only to exact authenticated source spans selected from the
+server's verified catalog; missing/invalid support is labelled rather than
+invented. A prominent warning appears
 when newer patient data needs assessment. Use **Report something missed or
 incorrect** to record a prominent `missed` review item. This only appends
 structured feedback; it never edits patient facts or silently creates a clinical
@@ -203,6 +304,12 @@ Click **new trials** or **new papers** to open the complete tracked list. Record
 from the latest batch appear first with a green **New** label. No review,
 acknowledgement, or clearing action is required; manually entered and
 document-derived clinical information does not create a generic unread count.
+
+PRRT labels are screening descriptions such as **potential fit** or **may fit**,
+not eligibility decisions. The tracked trial highlighted on Today is a **Trial
+to discuss**, not a best match. The treating team and trial site confirm
+candidacy/eligibility. Missing DOTATATE/receptor imaging is shown as a data gap
+and is not automatically promoted above documented clinical priorities.
 
 ## 6. Chat with the record
 

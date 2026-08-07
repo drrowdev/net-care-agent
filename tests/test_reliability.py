@@ -64,7 +64,7 @@ def _hold_process_lock(data_dir: str, ready, release) -> None:
 
     with serialized_mutation():
         ready.set()
-        release.wait(5)
+        release.wait(20)
 
 
 def test_serialized_mutation_blocks_another_process(agent):
@@ -79,24 +79,33 @@ def test_serialized_mutation_blocks_another_process(agent):
         args=(str(config.DATA_DIR), ready, release),
     )
     process.start()
-    assert ready.wait(5)
-
     entered = threading.Event()
+    thread = None
+    try:
+        # Windows spawn can exceed five seconds on a busy CI/dev host.
+        assert ready.wait(20)
 
-    def enter_parent():
-        with serialized_mutation():
-            entered.set()
+        def enter_parent():
+            with serialized_mutation():
+                entered.set()
 
-    thread = threading.Thread(target=enter_parent)
-    thread.start()
-    time.sleep(0.1)
-    assert not entered.is_set()
+        thread = threading.Thread(target=enter_parent)
+        thread.start()
+        time.sleep(0.1)
+        assert not entered.is_set()
 
-    release.set()
-    process.join(5)
-    thread.join(5)
-    assert process.exitcode == 0
-    assert entered.is_set()
+        release.set()
+        process.join(10)
+        thread.join(10)
+        assert process.exitcode == 0
+        assert entered.is_set()
+    finally:
+        release.set()
+        if process.is_alive():
+            process.terminate()
+        process.join(10)
+        if thread is not None:
+            thread.join(10)
 
 
 # ── P12: rotating_snapshot ───────────────────────────────────────────────────

@@ -106,6 +106,8 @@ def test_poll_detects_status_change_and_alerts(agent):
     assert profile["trials_tracked"][0]["status_history"][0]["from"] == "RECRUITING"
     alerts = [a for a in profile["alerts"] if a.get("source") == "trial_status_poll"]
     assert len(alerts) == 1 and alerts[0]["priority"] == "high"
+    assert alerts[0]["dependency_kind"] == "durable"
+    assert alerts[0]["source_job_id"] == "manual-trial-poll"
 
 
 @responses.activate

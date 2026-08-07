@@ -28,12 +28,14 @@ Design notes
 from __future__ import annotations
 
 import datetime
+import hashlib
+import json
 import logging
 from typing import Any
 
 log = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 1
+CURRENT_SCHEMA_VERSION: int = 7
 
 # Append-only ordered registry of migrations.  Never reorder entries.
 _REGISTRY: list[dict[str, Any]] = []
@@ -59,6 +61,168 @@ def _m0001_add_schema_version(data: dict) -> dict:
     stamps the version.
     """
     data["schema_version"] = 1
+    return data
+
+
+@_migration("0002_add_document_imports", to_version=2)
+def _m0002_add_document_imports(data: dict) -> dict:
+    """v1 → v2: add the audit ledger for document reconciliation receipts."""
+    if not isinstance(data.get("document_imports"), list):
+        data["document_imports"] = []
+    data["schema_version"] = 2
+    return data
+
+
+@_migration("0003_add_generated_content_provenance", to_version=3)
+def _m0003_add_generated_content_provenance(data: dict) -> dict:
+    """v2 → v3: conservatively stale legacy AI questions without generation identity."""
+    data.setdefault("questions_generation_id", None)
+    for question in data.get("appointment_questions") or []:
+        if (
+            isinstance(question, dict)
+            and question.get("source") == "ai"
+            and not question.get("generation_job_id")
+        ):
+            question["stale"] = True
+            question["stale_reason"] = "legacy_missing_generation_provenance"
+    data["schema_version"] = 3
+    return data
+
+
+@_migration("0004_add_stable_alert_ids", to_version=4)
+def _m0004_add_stable_alert_ids(data: dict) -> dict:
+    """v3 → v4: deterministically identify legacy alerts for CAS-safe resolution."""
+    for index, alert in enumerate(data.get("alerts") or []):
+        if not isinstance(alert, dict) or alert.get("id"):
+            continue
+        canonical = json.dumps(alert, sort_keys=True, separators=(",", ":"), default=str)
+        digest = hashlib.sha256(f"{index}:{canonical}".encode()).hexdigest()[:24]
+        alert["id"] = f"alert_legacy_{digest}"
+    data["schema_version"] = 4
+    return data
+
+
+@_migration("0005_add_dependency_lifecycles", to_version=5)
+def _m0005_add_dependency_lifecycles(data: dict) -> dict:
+    """v4 → v5: classify alert lifetime and invalidate legacy treatment classification."""
+    data.setdefault("treatments_classification_revision", None)
+    data.setdefault("treatments_classification_job_id", None)
+    for alert in data.get("alerts") or []:
+        if not isinstance(alert, dict) or alert.get("dependency_kind"):
+            continue
+        if alert.get("source") in {"intake_extraction_failure", "trial_status_poll"}:
+            alert["dependency_kind"] = "durable"
+        elif alert.get("source_document_id"):
+            alert["dependency_kind"] = "source"
+        elif alert.get("generation_profile_revision") is not None:
+            alert["dependency_kind"] = "profile_snapshot"
+        else:
+            alert["dependency_kind"] = "profile_snapshot"
+            alert["generation_profile_revision"] = int(data.get("profile_revision") or 0)
+        for receipt in data.get("document_imports") or []:
+            if not isinstance(receipt, dict):
+                continue
+            for change in receipt.get("changes") or []:
+                if (
+                    isinstance(change, dict)
+                    and change.get("target", {}).get("collection") == "alerts"
+                    and change.get("target", {}).get("record_id") == alert.get("id")
+                    and isinstance(change.get("effective_value"), dict)
+                ):
+                    change["effective_value"]["dependency_kind"] = alert["dependency_kind"]
+    data["schema_version"] = 5
+    return data
+
+
+@_migration("0006_add_stable_treatment_records", to_version=6)
+def _m0006_add_stable_treatment_records(data: dict) -> dict:
+    """v5 → v6: backfill deterministic raw treatment component identities."""
+    patient = data.get("patient")
+    if patient is None:
+        patient = {}
+        data["patient"] = patient
+    elif not isinstance(patient, dict):
+        raise TypeError("migration 0006 requires patient to be a dict or null")
+    records = []
+    occurrences: dict[str, int] = {}
+    for source_order, raw in enumerate(patient.get("current_treatments") or []):
+        text = str(raw)
+        occurrence = occurrences.get(text, 0)
+        occurrences[text] = occurrence + 1
+        source_digest = hashlib.sha256(f"{text}:{occurrence}".encode()).hexdigest()[:20]
+        source_id = f"txsrc_{source_digest}"
+        from .classify import split_treatment_components
+
+        components = split_treatment_components(text)
+        for component_order, component in enumerate(components):
+            digest = hashlib.sha256(
+                f"{source_id}:{component_order}:{component}".encode()
+            ).hexdigest()[:20]
+            records.append(
+                {
+                    "id": f"tx_{digest}",
+                    "source_entry_id": source_id,
+                    "source_order": source_order,
+                    "component_order": component_order,
+                    "text": component,
+                    "source_text": text,
+                }
+            )
+    patient["current_treatment_records"] = records
+    data["treatments_classification_revision"] = None
+    data["treatments_classification_job_id"] = None
+    data["schema_version"] = 6
+    return data
+
+
+@_migration("0007_harden_legacy_generated_alerts", to_version=7)
+def _m0007_harden_legacy_generated_alerts(data: dict) -> dict:
+    """v6 → v7: contain legacy generated claims and remove fail-open lifetimes."""
+    from .tools import _screening_safe_alert_text
+
+    durable_sources = {"intake_extraction_failure", "trial_status_poll"}
+    revision = int(data.get("profile_revision") or 0)
+    alerts_by_id = {}
+    for alert in data.get("alerts") or []:
+        if not isinstance(alert, dict):
+            continue
+        alert["message"] = _screening_safe_alert_text(alert.get("message", ""))
+        alert["action_required"] = _screening_safe_alert_text(alert.get("action_required", ""))
+        if alert.get("source") in durable_sources:
+            alert["dependency_kind"] = "durable"
+        elif alert.get("source_document_id"):
+            alert["dependency_kind"] = "source"
+        elif alert.get("dependency_kind") == "durable":
+            alert["dependency_kind"] = "profile_snapshot"
+            alert["generation_profile_revision"] = revision
+        elif alert.get("dependency_kind") == "profile_snapshot":
+            alert.setdefault("generation_profile_revision", revision)
+        if alert.get("id"):
+            alerts_by_id[alert["id"]] = alert
+
+    for receipt in data.get("document_imports") or []:
+        if not isinstance(receipt, dict):
+            continue
+        for change in receipt.get("changes") or []:
+            if not isinstance(change, dict):
+                continue
+            target = change.get("target") or {}
+            if target.get("collection") != "alerts":
+                continue
+            alert = alerts_by_id.get(target.get("record_id"))
+            effective = change.get("effective_value")
+            if alert is None or not isinstance(effective, dict):
+                continue
+            for key in (
+                "message",
+                "action_required",
+                "dependency_kind",
+                "generation_profile_revision",
+                "source_dependency_active",
+            ):
+                if key in alert:
+                    effective[key] = alert[key]
+    data["schema_version"] = 7
     return data
 
 

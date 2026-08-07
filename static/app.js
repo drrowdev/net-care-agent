@@ -1284,7 +1284,11 @@
       reportLoadSuccess('summary');
       return d;
     } catch(e) {
-      if (requestPhiEpoch === phiEpoch && shouldEvictClientPhi(e)) {
+      if (requestPhiEpoch !== phiEpoch) {
+        reportLoadError('summary', e);
+        return null;
+      }
+      if (shouldEvictClientPhi(e)) {
         evictClientPhi(e);
         reportLoadError('summary', e);
         return null;

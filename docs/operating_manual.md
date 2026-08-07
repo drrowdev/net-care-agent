@@ -272,15 +272,18 @@ working record; on a phone it opens as a full-height sheet.
    or late response cannot restore the old text, metadata, token, or Add action.
    Manual drafts and already accepted visit snapshots remain visible, with the
    latter retaining their generated-snapshot provenance.
-4. Pin questions and use Move/rank controls. The complete order is saved
-   atomically after the server verifies the visit plus every question ID/token;
-   a conflict cannot leave a partially reordered list.
+4. Pin questions and use Move/rank controls. On a phone these controls retain
+   full-size touch targets and wrap without horizontal scrolling. The complete
+   order is saved atomically after the server verifies the visit plus every
+   question ID/token; a conflict cannot leave a partially reordered list.
 5. During the visit, record either an answered response with text or explicitly
    unknown. Every captured answer is labelled
    **Caregiver-entered · attributed to clinician · unverified**.
-6. In **Decisions**, record what the clinician said. Decision text is immutable:
-   corrections create a successor, while lifecycle controls can mark active,
-   needs confirmation, superseded, or retracted. Every row carries the same
+6. In **Decisions**, record what the clinician said. Decision text is immutable.
+   An active decision can be marked **Needs confirmation**, corrected through an
+   immutable successor, or retracted. A decision needing confirmation can only be
+   confirmed active or retracted; confirm it before creating a correction.
+   Superseded and retracted rows are read-only history. Every row carries the same
    caregiver-entered/clinician-attributed/unverified label and is not promoted to
    verified evidence or a hard clinical judgment.
 7. In **Follow-ups**, create a resulting caregiver action, optionally linked to

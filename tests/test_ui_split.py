@@ -122,6 +122,12 @@ def test_mobile_controls_and_overflow_guards_are_explicit():
     assert ".visit-answer { grid-template-columns: 1fr;" in CSS
     assert ".visit-form-grid.compact { grid-template-columns: 1fr;" in CSS
     assert ".appointment-tab { flex: 1;" in CSS
+    assert re.search(
+        r"\.visit-question-order \.button \{[^}]*min-height: 44px;",
+        CSS,
+        re.DOTALL,
+    )
+    assert ".visit-question-order select { min-height: 44px; }" in CSS
 
 
 def test_questions_view_contains_one_shared_appointment_workspace():

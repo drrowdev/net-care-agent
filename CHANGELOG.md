@@ -24,6 +24,12 @@ incremented when something user-visible or operationally meaningful changes.
   responses show only a generic retry state without prior text, metadata,
   priority styling, acceptance tokens, or Add controls, while manual drafts and
   accepted visit snapshots remain intact.
+- **Appointment decision controls and phone targets.** Decision actions now match
+  the server lifecycle: only active decisions offer immutable successor
+  correction, needs-confirmation decisions offer confirm/retract, and terminal
+  decisions remain read-only history. At 360px, Move/rank controls retain at
+  least 44px targets, visible keyboard focus, wrapping, and no horizontal
+  overflow without enlarging their desktop presentation.
 - **Mutation replay identity and immutable results.** Layer 2 and alert-resolution
   idempotency is now bound to endpoint, operation, target, and the complete
   accepted request, including CAS/source tokens. Unsupported fields are rejected

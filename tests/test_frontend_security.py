@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 APP_JS = Path("static/app.js").read_text(encoding="utf-8")
+CSS = Path("static/styles.css").read_text(encoding="utf-8")
 
 
 def _function_source(name: str, next_name: str) -> str:
@@ -1256,6 +1257,106 @@ async function submitWorkflowMutation(url, body, visitId, method) {
     return json.loads(completed.stdout)
 
 
+def _run_decision_lifecycle_probe() -> dict:
+    script = "\n".join(
+        [
+            """
+const decisions = ['active', 'needs_confirmation', 'superseded', 'retracted'].map(status => ({
+  id: `decision-${status}`,
+  text: `${status} decision`,
+  status,
+  token: `token-${status}`,
+}));
+const visit = { id: 'visit-1', decisions };
+const elements = new Map([
+  ['visit-decision-list', { innerHTML: '' }],
+  ['visit-followup-decision', { innerHTML: '' }],
+  ['visit-decision-text', { value: '' }],
+  ['visit-decision-supersedes', { value: '' }],
+  ['visit-decision-cancel-supersede', { hidden: true }],
+  ['visit-decision-label', { textContent: '' }],
+]);
+const document = {
+  getElementById(id) { return elements.get(id) || null; },
+  querySelectorAll() { return []; },
+};
+const appointmentDrafts = new Map([['visit-1', {
+  decisionText: 'Corrected decision wording',
+  supersedesId: 'decision-active',
+}]]);
+let appointmentDialogOpen = true;
+let selectedVisitId = 'visit-1';
+const decisionSuccessorConflicts = new Set();
+function currentVisit() { return visit; }
+function updateAppointmentFormValidity() {}
+function toggleVisitAnswerText() {}
+function safeClassToken(value, fallback = '') {
+  return /^[a-z0-9_-]+$/i.test(String(value || '')) ? String(value) : fallback;
+}
+function escHtml(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+""",
+            _function_source("activeDecisionSuccessorId", "restoreAppointmentDraft"),
+            _function_source("restoreAppointmentDraft", "openAppointmentWorkspace"),
+            _function_source("decisionLifecyclePresentation", "renderVisitDecisions"),
+            _function_source("renderVisitDecisions", "prepareDecisionSuccessor"),
+            """
+renderVisitDecisions();
+decisionSuccessorConflicts.add('decision-active');
+renderVisitDecisions();
+const conflictedHtml = elements.get('visit-decision-list').innerHTML;
+decisionSuccessorConflicts.clear();
+renderVisitDecisions();
+restoreAppointmentDraft(visit);
+const activeDraft = {
+  supersedesId: elements.get('visit-decision-supersedes').value,
+  correctionLabel: elements.get('visit-decision-label').textContent,
+  cancelHidden: elements.get('visit-decision-cancel-supersede').hidden,
+};
+const changedVisit = {
+  ...visit,
+  decisions: decisions.map(decision => decision.id === 'decision-active'
+    ? { ...decision, status: 'needs_confirmation' }
+    : decision),
+};
+revalidateDecisionSuccessorState(changedVisit);
+const immediateInvalidation = {
+  supersedesId: elements.get('visit-decision-supersedes').value,
+  correctionLabel: elements.get('visit-decision-label').textContent,
+  cancelHidden: elements.get('visit-decision-cancel-supersede').hidden,
+  storedSupersedesId: appointmentDrafts.get('visit-1').supersedesId,
+};
+restoreAppointmentDraft(changedVisit);
+const nonActiveDraft = {
+  supersedesId: elements.get('visit-decision-supersedes').value,
+  correctionLabel: elements.get('visit-decision-label').textContent,
+  cancelHidden: elements.get('visit-decision-cancel-supersede').hidden,
+  decisionText: elements.get('visit-decision-text').value,
+  storedSupersedesId: appointmentDrafts.get('visit-1').supersedesId,
+};
+console.log(JSON.stringify({
+  lifecycle: Object.fromEntries(decisions.map(({ status }) => [
+    status,
+    decisionLifecyclePresentation(status),
+  ])),
+  html: elements.get('visit-decision-list').innerHTML,
+  followupOptions: elements.get('visit-followup-decision').innerHTML,
+  conflictedHtml,
+  activeDraft,
+  immediateInvalidation,
+  nonActiveDraft,
+}));
+""",
+        ]
+    )
+    completed = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
 def test_appointment_order_is_atomic_and_stale_generated_text_is_redacted_at_runtime():
     result = _run_appointment_behavior_probe()
     assert result["ordered"] == ["q-3", "q-1", "q-2"]
@@ -1711,6 +1812,132 @@ def test_generated_question_choices_fail_closed_across_revision_and_reload_paths
     ]
 
 
+def test_decision_controls_match_the_server_lifecycle_matrix_at_runtime():
+    result = _run_decision_lifecycle_probe()
+    lifecycle = result["lifecycle"]
+
+    assert "Needs confirmation" in lifecycle["active"]["controls"]
+    assert "Correct with successor" in lifecycle["active"]["controls"]
+    assert "Retract" in lifecycle["active"]["controls"]
+    assert "Confirm active" in lifecycle["needs_confirmation"]["controls"]
+    assert "Retract" in lifecycle["needs_confirmation"]["controls"]
+    assert "Correct with successor" not in lifecycle["needs_confirmation"]["controls"]
+    assert lifecycle["superseded"]["controls"] == ""
+    assert lifecycle["retracted"]["controls"] == ""
+    assert "only after confirmation" in lifecycle["needs_confirmation"]["copy"]
+    assert "immutable history" in lifecycle["superseded"]["copy"]
+    assert "immutable history" in lifecycle["retracted"]["copy"]
+
+    assert result["html"].count("Correct with successor") == 1
+    assert result["html"].count("Confirm active") == 1
+    assert result["html"].count(">Retract</button>") == 2
+    assert "decision-active" in result["followupOptions"]
+    assert "decision-needs_confirmation" in result["followupOptions"]
+    assert "decision-superseded" not in result["followupOptions"]
+    assert "decision-retracted" not in result["followupOptions"]
+    assert "Correct with successor" not in result["conflictedHtml"]
+    assert "Reload this changed decision" in result["conflictedHtml"]
+    assert result["activeDraft"] == {
+        "supersedesId": "decision-active",
+        "correctionLabel": "Correct with a successor decision",
+        "cancelHidden": False,
+    }
+    assert result["immediateInvalidation"] == {
+        "supersedesId": "",
+        "correctionLabel": "Caregiver-entered decision attributed to the clinician",
+        "cancelHidden": True,
+        "storedSupersedesId": "",
+    }
+    assert result["nonActiveDraft"] == {
+        "supersedesId": "",
+        "correctionLabel": "Caregiver-entered decision attributed to the clinician",
+        "cancelHidden": True,
+        "decisionText": "Corrected decision wording",
+        "storedSupersedesId": "",
+    }
+    consume = _function_source("consumeWorkflowResponse", "handleWorkflowConflict")
+    assert "revalidateDecisionSuccessorState(data.visit)" in consume
+    assert "renderAppointmentWorkspace()" in consume
+    assert consume.index("revalidateDecisionSuccessorState(data.visit)") < consume.index(
+        "if (profileChanged)"
+    )
+    assert consume.index("renderAppointmentWorkspace()") < consume.index("if (profileChanged)")
+    conflicts = _function_source("handleWorkflowConflict", "performWorkflowIntent")
+    assert "decisionSuccessorConflicts.add(intent.body.supersedes_id)" in conflicts
+    assert "renderVisitDecisions()" in conflicts
+    successor = _function_source("prepareDecisionSuccessor", "cancelDecisionSuccessor")
+    assert "decision.status !== 'active'" in successor
+    assert "decisionSuccessorConflicts.has(id)" in successor
+    assert "loadVisits()" in successor
+
+
+def test_narrow_appointment_order_controls_render_without_overflow_and_keep_focus():
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    markup = """
+      <main class="appointment-dialog">
+        <div class="appointment-dialog-body">
+          <section class="appointment-tab-panel active">
+            <article class="visit-question">
+              <div class="visit-question-order">
+                <button class="button secondary" data-control="move-up">Move up</button>
+                <button class="button secondary" data-control="move-down">Move down</button>
+                <label><span>Rank</span><select data-control="rank"><option>1</option></select></label>
+              </div>
+            </article>
+          </section>
+        </div>
+      </main>
+    """
+
+    with playwright_api.sync_playwright() as playwright:
+        executable = Path(playwright.chromium.executable_path)
+        if not executable.exists():
+            pytest.skip("Installed Playwright browser is unavailable")
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 360, "height": 800})
+        page.set_content(markup)
+        page.add_style_tag(content=CSS)
+
+        controls = page.locator(".visit-question-order .button, .visit-question-order select")
+        narrow_heights = controls.evaluate_all(
+            "(items) => items.map(item => item.getBoundingClientRect().height)"
+        )
+        overflow = page.evaluate(
+            """() => ({
+              document: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+              dialog: document.querySelector('.appointment-dialog').scrollWidth
+                - document.querySelector('.appointment-dialog').clientWidth,
+              question: document.querySelector('.visit-question').scrollWidth
+                - document.querySelector('.visit-question').clientWidth,
+            })"""
+        )
+        assert len(narrow_heights) == 3
+        assert all(height >= 44 for height in narrow_heights)
+        assert overflow == {"document": 0, "dialog": 0, "question": 0}
+
+        page.keyboard.press("Tab")
+        assert page.evaluate("document.activeElement.dataset.control") == "move-up"
+        page.keyboard.press("Tab")
+        assert page.evaluate("document.activeElement.dataset.control") == "move-down"
+        page.keyboard.press("Tab")
+        assert page.evaluate("document.activeElement.dataset.control") == "rank"
+        focus = page.evaluate(
+            """() => {
+              const style = getComputedStyle(document.activeElement);
+              return { style: style.outlineStyle, width: parseFloat(style.outlineWidth) };
+            }"""
+        )
+        assert focus["style"] != "none"
+        assert focus["width"] >= 3
+
+        page.set_viewport_size({"width": 1024, "height": 800})
+        desktop_heights = controls.evaluate_all(
+            "(items) => items.map(item => item.getBoundingClientRect().height)"
+        )
+        assert all(35 <= height < 44 for height in desktop_heights)
+        browser.close()
+
+
 def test_appointment_mutations_use_stable_contracts_and_explicit_retry_only():
     mutation = _function_source("newMutationId", "setAppointmentMessage")
     intent = _function_source("createWorkflowIntent", "workflowIntentCanRender")
@@ -1792,6 +2019,7 @@ def test_appointment_revision_epoch_conflict_and_eviction_guards_are_complete():
         "pendingWorkflowIntent = null",
         "workflowMutationPending = false",
         "appointmentDrafts = new Map()",
+        "decisionSuccessorConflicts = new Set()",
         "clear('visit-list')",
         "clear('visit-question-list')",
         "clear('visit-decision-list')",

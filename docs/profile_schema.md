@@ -12,6 +12,7 @@ All sub-models accept **extra** fields (forward-compat) and treat every document
 {
   'schema_version': int,
   'profile_revision': int,
+  'workflow_revision': int,
   'profile_updated_at': str | None,
   'profile_saved_at': str | None,
   'summary_stale': bool,
@@ -34,6 +35,8 @@ All sub-models accept **extra** fields (forward-compat) and treat every document
   'appointment_questions': list[Question],
   'questions_generation_id': str | None,
   'feedback': list[Feedback],
+  'caregiver_actions': list[CaregiverAction],
+  'visits': list[Visit],
   'executive_summary': ExecutiveSummary | None,
   'latest_research_update': ResearchUpdate | None,
 }
@@ -163,6 +166,8 @@ Every fed document, kept for audit and downstream re-analysis.
 | `source_dependency_active` | `bool` |  |
 | `source_invalidated_at` | `str \| None` |  |
 | `inactive_reason` | `str \| None` |  |
+| `resolution` | `Any] \| None` |  |
+| `history` | `ForwardRef('list[WorkflowAuditEvent]')` |  |
 | `added_at` | `str \| None` | Timestamp when the item first entered the patient profile. |
 
 ## `treatments_classified[]`
@@ -345,6 +350,128 @@ Immutable before/after record for a caregiver correction, removal, or undo.
 | `outcome` | `str \| None` |  |
 | `created_at` | `str` |  |
 | `updated_at` | `str` |  |
+
+## `caregiver_actions[]`
+
+Durable caregiver-owned follow-up independent of generated artifacts.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `str` |  |
+| `origin_snapshot` | `ActionOriginSnapshot` |  |
+| `text` | `str` |  |
+| `owner` | `str \| None` |  |
+| `due_date` | `str \| None` |  |
+| `status` | `'open' \| 'in_progress' \| 'completed' \| 'cancelled'` |  |
+| `outcome` | `ActionOutcome \| None` |  |
+| `visit_id` | `str \| None` |  |
+| `decision_id` | `str \| None` |  |
+| `alert_id` | `str \| None` |  |
+| `created_at` | `str` |  |
+| `updated_at` | `str` |  |
+| `completed_at` | `str \| None` |  |
+| `cancelled_at` | `str \| None` |  |
+| `history` | `list[WorkflowAuditEvent]` |  |
+
+## `caregiver_actions[].origin_snapshot`
+
+Immutable source snapshot captured when a caregiver accepts an action.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `kind` | `'manual' \| 'executive_summary_action' \| 'alert' \| 'visit_decision'` |  |
+| `source_id` | `str \| None` |  |
+| `source_job_id` | `str \| None` |  |
+| `source_profile_revision` | `int \| None` |  |
+| `generation_id` | `str \| None` |  |
+| `text` | `str` |  |
+| `snapshot` | `Any]` |  |
+
+## `caregiver_actions[].outcome`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `kind` | `'administrative' \| 'caregiver_reported' \| 'clinician_attributed'` |  |
+| `text` | `str` |  |
+| `recorded_at` | `str` |  |
+| `provenance` | `dict[str, str]` |  |
+
+## `visits[]`
+
+Caregiver working record, optionally linked to an imported appointment.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `str` |  |
+| `title` | `str` |  |
+| `date` | `str \| None` |  |
+| `time` | `str \| None` |  |
+| `clinician` | `str \| None` |  |
+| `location` | `str \| None` |  |
+| `status` | `'planned' \| 'in_progress' \| 'completed' \| 'cancelled'` |  |
+| `source_appointment_id` | `str \| None` |  |
+| `question_snapshots` | `list[VisitQuestionSnapshot]` |  |
+| `decisions` | `list[VisitDecision]` |  |
+| `follow_up_ids` | `list[str]` |  |
+| `created_at` | `str` |  |
+| `updated_at` | `str` |  |
+| `completed_at` | `str \| None` |  |
+| `cancelled_at` | `str \| None` |  |
+| `history` | `list[WorkflowAuditEvent]` |  |
+
+## `visits[].question_snapshots[]`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `str` |  |
+| `text` | `str` |  |
+| `category` | `str \| None` |  |
+| `priority` | `str \| None` |  |
+| `rationale` | `str \| None` |  |
+| `source_kind` | `'manual' \| 'generated'` |  |
+| `source_question_id` | `str \| None` |  |
+| `source_generation_id` | `str \| None` |  |
+| `source_profile_revision` | `int \| None` |  |
+| `pinned` | `bool` |  |
+| `order` | `int` |  |
+| `answer` | `VisitAnswer \| None` |  |
+| `created_at` | `str` |  |
+
+## `visits[].question_snapshots[].answer`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `status` | `'answered' \| 'unknown'` |  |
+| `text` | `str \| None` |  |
+| `recorded_at` | `str` |  |
+| `provenance` | `CaptureProvenance` |  |
+
+## `visits[].decisions[]`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `str` |  |
+| `text` | `str` |  |
+| `status` | `'active' \| 'superseded' \| 'retracted' \| 'needs_confirmation'` |  |
+| `provenance` | `CaptureProvenance` |  |
+| `supersedes_id` | `str \| None` |  |
+| `created_at` | `str` |  |
+| `updated_at` | `str` |  |
+
+## `workflow_history[]`
+
+Append-only mutation event supporting idempotent target-level updates.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `str` |  |
+| `mutation_id` | `str` |  |
+| `operation` | `str` |  |
+| `at` | `str` |  |
+| `request_hash` | `str` |  |
+| `before_token` | `str \| None` |  |
+| `after_token` | `str \| None` |  |
+| `changes` | `Any]` |  |
 
 ## `executive_summary`
 

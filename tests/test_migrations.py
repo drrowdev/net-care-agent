@@ -44,7 +44,7 @@ def test_unversioned_migration_records_log_entry():
     assert "_migration_log" in result
     log = result["_migration_log"]
     assert isinstance(log, list)
-    assert len(log) == 7
+    assert len(log) == 8
     entry = log[0]
     assert entry["id"] == "0001_add_schema_version"
     assert "applied_at" in entry
@@ -56,6 +56,7 @@ def test_unversioned_migration_records_log_entry():
     assert log[4]["id"] == "0005_add_dependency_lifecycles"
     assert log[5]["id"] == "0006_add_stable_treatment_records"
     assert log[6]["id"] == "0007_harden_legacy_generated_alerts"
+    assert log[7]["id"] == "0008_add_follow_through_foundation"
 
 
 def test_already_current_fast_path_no_change():
@@ -191,7 +192,7 @@ def test_v1_adds_empty_document_import_ledger_without_clinical_inference():
     data = {"schema_version": 1, "patient": {"diagnosis": "NET"}}
     result = apply_migrations(data)
 
-    assert result["schema_version"] == 7
+    assert result["schema_version"] == 8
     assert result["document_imports"] == []
     assert result["patient"]["diagnosis"] == "NET"
     assert result["patient"]["current_treatment_records"] == []
@@ -211,7 +212,7 @@ def test_v2_conservatively_stales_legacy_ai_questions_without_generation_identit
 
     result = apply_migrations(data)
 
-    assert result["schema_version"] == 7
+    assert result["schema_version"] == 8
     assert result["questions_generation_id"] is None
     assert result["appointment_questions"][0]["stale"] is True
     assert (
@@ -236,7 +237,7 @@ def test_v3_deterministically_backfills_stable_alert_ids():
     first = apply_migrations(copy.deepcopy(source))
     second = apply_migrations(copy.deepcopy(source))
 
-    assert first["schema_version"] == 7
+    assert first["schema_version"] == 8
     assert first["alerts"][0]["id"].startswith("alert_legacy_")
     assert first["alerts"][1]["id"].startswith("alert_legacy_")
     assert first["alerts"][0]["id"] != first["alerts"][1]["id"]
@@ -276,7 +277,7 @@ def test_v4_migrates_alert_lifetimes_and_invalidates_legacy_classification():
 
     result = apply_migrations(data)
 
-    assert result["schema_version"] == 7
+    assert result["schema_version"] == 8
     assert result["treatments_classification_revision"] is None
     assert result["treatments_classification_job_id"] is None
     assert [item["dependency_kind"] for item in result["alerts"]] == [
@@ -311,7 +312,7 @@ def test_v5_backfills_stable_composite_treatment_records_and_stales_classificati
     first = apply_migrations(copy.deepcopy(source))
     second = apply_migrations(copy.deepcopy(source))
 
-    assert first["schema_version"] == 7
+    assert first["schema_version"] == 8
     records = first["patient"]["current_treatment_records"]
     assert [item["text"] for item in records] == ["lanreotide", "everolimus"]
     assert len({item["id"] for item in records}) == 2
@@ -407,9 +408,41 @@ def test_v1_null_scaffolding_migrates_deterministically_without_inventing_clinic
     first = apply_migrations(copy.deepcopy(source))
     second = apply_migrations(copy.deepcopy(source))
 
-    assert first["schema_version"] == 7
+    assert first["schema_version"] == 8
     assert first["patient"] == {"current_treatment_records": []}
     assert first["document_imports"] == []
     assert first["alerts"][0]["dependency_kind"] == "profile_snapshot"
     assert first["patient"] == second["patient"]
     assert first["alerts"] == second["alerts"]
+
+
+def test_v7_adds_follow_through_defaults_and_deterministic_summary_action_ids():
+    from agent.migrations import apply_migrations
+
+    source = {
+        "schema_version": 7,
+        "profile_revision": 12,
+        "patient": {"diagnosis": "NET"},
+        "executive_summary": {
+            "summary_revision": 12,
+            "next_actions": [
+                {"action": "Ask the treating team about timing"},
+                {"action": "Ask the treating team about timing"},
+            ],
+        },
+        "alerts": [{"id": "done", "resolved": True}],
+    }
+
+    first = apply_migrations(copy.deepcopy(source))
+    second = apply_migrations(copy.deepcopy(source))
+
+    assert first == second
+    assert first["schema_version"] == 8
+    assert first["workflow_revision"] == 0
+    assert first["caregiver_actions"] == []
+    assert first["visits"] == []
+    ids = [item["id"] for item in first["executive_summary"]["next_actions"]]
+    assert ids[0].startswith("sumact_")
+    assert ids[0] != ids[1]
+    assert first["alerts"][0]["history"] == []
+    assert first["alerts"][0]["resolution"]["outcome_kind"] == "legacy_unknown"

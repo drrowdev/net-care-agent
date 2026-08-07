@@ -9,6 +9,17 @@ incremented when something user-visible or operationally meaningful changes.
 ## [Unreleased]
 
 ### Added
+- **Durable caregiver follow-through backend.** Schema v8 adds independent
+  workflow revisioning, accepted/generated action snapshots, visit working
+  records with ordered question snapshots, explicit unknowns, caregiver-entered
+  clinician-attributed decisions/answers, structured outcomes, and append-only
+  mutation audit. Stable target tokens and idempotency keys allow unrelated
+  workflow edits while stale targets return `409`; administrative bookkeeping
+  no longer stales clinical artifacts, while new clinical capture and alert
+  resolution still invalidate every revision-bound generated context. Alert
+  resolution can atomically record an outcome/link a follow-up or decision
+  without changing sibling alerts. No appointment UI, generic review inbox,
+  autonomous treatment instruction, database, or scheduler is introduced.
 - **Scoped document reconciliation and correction.** Every retained feed job now
   opens its own profile-backed receipt showing exact additions, old-to-new
   updates, conflicts/no-ops, immutable source identity/time, and verified,

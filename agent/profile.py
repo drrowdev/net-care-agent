@@ -54,6 +54,7 @@ class CorruptProfileError(ProfileLoadError):
 DEFAULT_PROFILE: dict = {
     "schema_version": CURRENT_SCHEMA_VERSION,
     "profile_revision": 0,
+    "workflow_revision": 0,
     "profile_updated_at": None,
     "summary_stale": True,
     "patient": {
@@ -89,6 +90,8 @@ DEFAULT_PROFILE: dict = {
     "appointment_questions": [],
     "questions_generation_id": None,
     "feedback": [],
+    "caregiver_actions": [],
+    "visits": [],
     "latest_research_update": None,
     "treatments_classification_revision": None,
     "treatments_classification_job_id": None,
@@ -757,6 +760,73 @@ def get_patient_summary(profile: dict) -> str:
         lines.append("")
         for a in current_alerts:
             lines.append(f"  ⚠  [{a['priority'].upper()}] {a['message']}")
+
+    captured = []
+    for visit in profile.get("visits", []):
+        if not isinstance(visit, dict):
+            continue
+        for question in visit.get("question_snapshots", []):
+            answer = question.get("answer") if isinstance(question, dict) else None
+            if not isinstance(answer, dict):
+                continue
+            captured.append(
+                {
+                    "kind": "answer",
+                    "visit": visit.get("title") or "Visit",
+                    "question": question.get("text") or "",
+                    "status": answer.get("status"),
+                    "text": answer.get("text"),
+                }
+            )
+        for decision in visit.get("decisions", []):
+            if isinstance(decision, dict) and decision.get("status") == "active":
+                captured.append(
+                    {
+                        "kind": "decision",
+                        "visit": visit.get("title") or "Visit",
+                        "text": decision.get("text") or "",
+                    }
+                )
+    for action in profile.get("caregiver_actions", []):
+        outcome = action.get("outcome") if isinstance(action, dict) else None
+        if not isinstance(outcome, dict) or outcome.get("kind") not in {
+            "caregiver_reported",
+            "clinician_attributed",
+        }:
+            continue
+        captured.append(
+            {
+                "kind": "action_outcome",
+                "action": action.get("text") or "Follow-up",
+                "attribution": outcome.get("kind"),
+                "text": outcome.get("text") or "",
+            }
+        )
+    if captured:
+        lines += [
+            "",
+            "─── Caregiver-captured clinician statements (attributed, unverified) ───",
+        ]
+        for item in captured[-12:]:
+            if item["kind"] == "answer":
+                answer = "explicitly unknown" if item["status"] == "unknown" else item["text"]
+                lines.append(
+                    f"  [{item['visit']}] Q: {item['question'][:180]} — "
+                    f"caregiver-recorded clinician answer: {str(answer)[:300]}"
+                )
+            else:
+                if item["kind"] == "decision":
+                    lines.append(
+                        f"  [{item['visit']}] caregiver-recorded clinician decision: "
+                        f"{item['text'][:400]}"
+                    )
+                else:
+                    label = (
+                        "caregiver-recorded clinician outcome"
+                        if item["attribution"] == "clinician_attributed"
+                        else "caregiver-reported outcome"
+                    )
+                    lines.append(f"  [{item['action'][:180]}] {label}: {item['text'][:400]}")
 
     return "\n".join(lines)
 

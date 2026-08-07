@@ -761,6 +761,175 @@ def serialized_profile_mutation(func):
     return wrapped
 
 
+def _workflow_request() -> dict:
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        raise agent.FollowThroughError("A JSON object is required")
+    return data
+
+
+def _workflow_error(exc: Exception):
+    if isinstance(exc, agent.FollowThroughConflict):
+        return jsonify({"error": str(exc), "code": "workflow_conflict"}), 409
+    if isinstance(exc, KeyError):
+        return jsonify({"error": str(exc.args[0]), "code": "not_found"}), 404
+    return jsonify({"error": str(exc), "code": "invalid_workflow_request"}), 400
+
+
+def _save_workflow_mutation(profile: dict, *, clinical_change: bool, reason: str) -> None:
+    agent.increment_workflow_revision(profile)
+    if clinical_change:
+        agent.invalidate_generated_context(profile, reason)
+    agent.save_profile(profile, clinical_change=clinical_change)
+
+
+def _idempotent_resource(profile: dict, mutation_id: str, data: dict):
+    replay = agent.check_idempotency(profile, mutation_id, data)
+    if replay is None:
+        return None
+    collection, record = replay
+    projected = (
+        agent.public_action(record)
+        if collection == "caregiver_actions"
+        else agent.public_visit(record)
+        if collection == "visits"
+        else {**copy.deepcopy(record), "resolve_token": agent.alert_token(record)}
+    )
+    return collection, projected
+
+
+def _outcome_from_request(value: object) -> dict:
+    if not isinstance(value, dict):
+        raise agent.FollowThroughError("outcome must be an object")
+    kind = agent.validate_status(value.get("kind"), agent.OUTCOME_KINDS, "outcome kind")
+    text = agent.validate_text(value.get("text"), "outcome.text", limit=2000)
+    if kind == "clinician_attributed":
+        provenance = agent.capture_provenance()
+    elif kind == "caregiver_reported":
+        provenance = {
+            "capture_method": "caregiver_entered",
+            "attributed_to": "patient_or_caregiver",
+            "source_verification": "unverified",
+        }
+    else:
+        provenance = {
+            "capture_method": "caregiver_entered",
+            "attributed_to": "caregiver",
+            "source_verification": "not_applicable",
+        }
+    return {
+        "kind": kind,
+        "text": text,
+        "recorded_at": now_stamp(),
+        "provenance": provenance,
+    }
+
+
+def _new_action(
+    profile: dict,
+    data: dict,
+    *,
+    mutation_id: str,
+    visit_id: str | None = None,
+    decision: dict | None = None,
+    alert_id: str | None = None,
+    history_mutation_id: str | None = None,
+) -> dict:
+    origin_kind = data.get("origin_kind") or ("visit_decision" if decision else "manual")
+    if origin_kind not in {"manual", "executive_summary_action", "alert", "visit_decision"}:
+        raise agent.FollowThroughError("Invalid origin_kind")
+    if origin_kind == "executive_summary_action":
+        source_id = str(data.get("source_id") or "")
+        source = agent.find_summary_action(profile, source_id, data.get("expected_source_token"))
+        text = agent.validate_follow_up_text(source.get("action") or source.get("text"))
+        origin = {
+            "kind": origin_kind,
+            "source_id": source_id,
+            "source_job_id": profile.get("executive_summary", {}).get("job_id"),
+            "source_profile_revision": profile.get("executive_summary", {}).get(
+                "summary_revision"
+            ),
+            "generation_id": profile.get("executive_summary", {}).get("generation_id"),
+            "text": text,
+            "snapshot": copy.deepcopy(source),
+        }
+    elif origin_kind == "visit_decision":
+        if not isinstance(decision, dict):
+            raise agent.FollowThroughError("A valid visit decision is required")
+        text = agent.validate_follow_up_text(data.get("text"))
+        origin = {
+            "kind": origin_kind,
+            "source_id": decision.get("id"),
+            "source_job_id": None,
+            "source_profile_revision": profile.get("profile_revision"),
+            "generation_id": None,
+            "text": decision.get("text"),
+            "snapshot": copy.deepcopy(decision),
+        }
+    elif origin_kind == "alert":
+        text = agent.validate_follow_up_text(data.get("text"))
+        alert = agent.find_record(profile.get("alerts", []), alert_id or "", "Alert")
+        origin = {
+            "kind": origin_kind,
+            "source_id": alert.get("id"),
+            "source_job_id": alert.get("source_job_id"),
+            "source_profile_revision": alert.get("generation_profile_revision"),
+            "generation_id": None,
+            "text": alert.get("action_required") or alert.get("message") or "",
+            "snapshot": {
+                key: copy.deepcopy(alert.get(key))
+                for key in (
+                    "id",
+                    "priority",
+                    "message",
+                    "action_required",
+                    "source_job_id",
+                    "generation_profile_revision",
+                    "dependency_kind",
+                )
+            },
+        }
+    else:
+        text = agent.validate_follow_up_text(data.get("text"))
+        origin = {
+            "kind": "manual",
+            "source_id": None,
+            "source_job_id": None,
+            "source_profile_revision": None,
+            "generation_id": None,
+            "text": text,
+            "snapshot": {},
+        }
+    timestamp = now_stamp()
+    action = {
+        "id": agent.new_workflow_id("act"),
+        "origin_snapshot": origin,
+        "text": text,
+        "owner": agent.validate_owner(data.get("owner")),
+        "due_date": agent.validate_date(data.get("due_date"), "due_date"),
+        "status": "open",
+        "outcome": None,
+        "visit_id": visit_id,
+        "decision_id": decision.get("id") if isinstance(decision, dict) else None,
+        "alert_id": alert_id,
+        "created_at": timestamp,
+        "updated_at": timestamp,
+        "completed_at": None,
+        "cancelled_at": None,
+        "history": [],
+    }
+    agent.append_history(
+        action,
+        operation="created",
+        mutation_id=history_mutation_id or mutation_id,
+        payload=data,
+        before_token=None,
+        changes={"status": {"before": None, "after": "open"}},
+    )
+    profile.setdefault("caregiver_actions", []).append(action)
+    return action
+
+
 def _refresh_summary(profile: dict) -> str | None:
     """Refresh the summary in-place, preserving prior content on LLM failure."""
     generated = agent.generate_executive_summary(profile)
@@ -784,6 +953,7 @@ def _refresh_summary(profile: dict) -> str | None:
         return message
 
     generated["summary_revision"] = int(profile.get("profile_revision") or 0)
+    agent.ensure_summary_action_ids(generated)
     generated["generated_at_timestamp"] = now_stamp()
     generated["feedback_ids_considered"] = [
         item.get("id")
@@ -2046,6 +2216,824 @@ def api_patient_evidence():
     )
 
 
+@app.route("/api/follow-ups")
+def api_follow_ups():
+    profile = agent.load_profile()
+    return jsonify(
+        {
+            "items": [agent.public_action(item) for item in profile.get("caregiver_actions", [])],
+            "workflow_revision": profile.get("workflow_revision", 0),
+            "profile_revision": profile.get("profile_revision", 0),
+        }
+    )
+
+
+@app.route("/api/follow-ups", methods=["POST"])
+@serialized_profile_mutation
+def api_follow_ups_add():
+    try:
+        data = _workflow_request()
+        mutation_id = agent.validate_mutation_id(data.get("mutation_id"))
+        profile = agent.load_profile()
+        replay = _idempotent_resource(profile, mutation_id, data)
+        if replay is not None:
+            collection, projected = replay
+            if collection != "caregiver_actions":
+                raise agent.FollowThroughConflict(
+                    "mutation_id was already used for a different workflow resource"
+                )
+            return jsonify(
+                {
+                    "item": projected,
+                    "idempotent_replay": True,
+                    "workflow_revision": profile.get("workflow_revision", 0),
+                    "profile_revision": profile.get("profile_revision", 0),
+                }
+            )
+        allowed = {
+            "mutation_id",
+            "origin_kind",
+            "source_id",
+            "expected_source_token",
+            "text",
+            "owner",
+            "due_date",
+        }
+        if set(data) - allowed:
+            raise agent.FollowThroughError("Unsupported follow-up field")
+        action = _new_action(profile, data, mutation_id=mutation_id)
+        _save_workflow_mutation(
+            profile, clinical_change=False, reason="caregiver_follow_up_created"
+        )
+        return (
+            jsonify(
+                {
+                    "item": agent.public_action(action),
+                    "workflow_revision": profile["workflow_revision"],
+                    "profile_revision": profile["profile_revision"],
+                }
+            ),
+            201,
+        )
+    except (agent.FollowThroughError, KeyError) as exc:
+        return _workflow_error(exc)
+
+
+@app.route("/api/follow-ups/<action_id>", methods=["PATCH"])
+@serialized_profile_mutation
+def api_follow_ups_edit(action_id):
+    try:
+        data = _workflow_request()
+        mutation_id = agent.validate_mutation_id(data.get("mutation_id"))
+        profile = agent.load_profile()
+        replay = _idempotent_resource(profile, mutation_id, data)
+        if replay is not None:
+            collection, projected = replay
+            if collection != "caregiver_actions" or projected.get("id") != action_id:
+                raise agent.FollowThroughConflict(
+                    "mutation_id was already used for a different workflow resource"
+                )
+            return jsonify(
+                {
+                    "item": projected,
+                    "idempotent_replay": True,
+                    "workflow_revision": profile.get("workflow_revision", 0),
+                    "profile_revision": profile.get("profile_revision", 0),
+                }
+            )
+        action = agent.find_record(
+            profile.get("caregiver_actions", []), action_id, "Follow-up"
+        )
+        agent.validate_expected_token(action, data.get("expected_token"))
+        allowed = {"mutation_id", "expected_token", "owner", "due_date", "status", "outcome"}
+        if set(data) - allowed:
+            raise agent.FollowThroughError("Unsupported follow-up field")
+        before = copy.deepcopy(action)
+        before_token = agent.semantic_token(action)
+        if "owner" in data:
+            action["owner"] = agent.validate_owner(data.get("owner"))
+        if "due_date" in data:
+            action["due_date"] = agent.validate_date(data.get("due_date"), "due_date")
+        target_status = action.get("status") or "open"
+        if "status" in data:
+            target_status = agent.validate_status(data.get("status"), agent.ACTION_STATUSES)
+            if not agent.action_transition_allowed(action.get("status") or "open", target_status):
+                raise agent.FollowThroughConflict("The follow-up lifecycle transition is not allowed")
+            if (action.get("status") or "open") in {"completed", "cancelled"}:
+                raise agent.FollowThroughConflict(
+                    "Completed or cancelled follow-up outcomes are immutable"
+                )
+        outcome = None
+        if "outcome" in data:
+            outcome = _outcome_from_request(data.get("outcome"))
+        is_terminal_transition = (
+            target_status in {"completed", "cancelled"}
+            and target_status != (action.get("status") or "open")
+        )
+        if is_terminal_transition and outcome is None:
+            raise agent.FollowThroughError(
+                "A completion or cancellation outcome is required"
+            )
+        if outcome is not None and not is_terminal_transition:
+            raise agent.FollowThroughError(
+                "An outcome can only be recorded when completing or cancelling a follow-up"
+            )
+        timestamp = now_stamp()
+        action["status"] = target_status
+        if outcome is not None:
+            action["outcome"] = outcome
+        if is_terminal_transition and target_status == "completed":
+            action["completed_at"] = timestamp
+        elif is_terminal_transition and target_status == "cancelled":
+            action["cancelled_at"] = timestamp
+        if agent.semantic_token(before) == agent.semantic_token(action):
+            raise agent.FollowThroughError("The follow-up update does not change anything")
+        action["updated_at"] = timestamp
+        agent.append_history(
+            action,
+            operation="updated",
+            mutation_id=mutation_id,
+            payload=data,
+            before_token=before_token,
+            changes={
+                key: {"before": before.get(key), "after": action.get(key)}
+                for key in ("owner", "due_date", "status", "outcome")
+                if before.get(key) != action.get(key)
+            },
+        )
+        clinical_change = agent.clinical_outcome(outcome)
+        _save_workflow_mutation(
+            profile,
+            clinical_change=clinical_change,
+            reason="caregiver_follow_up_clinical_outcome",
+        )
+        return jsonify(
+            {
+                "item": agent.public_action(action),
+                "workflow_revision": profile["workflow_revision"],
+                "profile_revision": profile["profile_revision"],
+            }
+        )
+    except (agent.FollowThroughError, KeyError) as exc:
+        return _workflow_error(exc)
+
+
+@app.route("/api/visits")
+def api_visits():
+    profile = agent.load_profile()
+    return jsonify(
+        {
+            "items": [agent.public_visit(item) for item in profile.get("visits", [])],
+            "workflow_revision": profile.get("workflow_revision", 0),
+            "profile_revision": profile.get("profile_revision", 0),
+        }
+    )
+
+
+@app.route("/api/visits", methods=["POST"])
+@serialized_profile_mutation
+def api_visits_add():
+    try:
+        data = _workflow_request()
+        mutation_id = agent.validate_mutation_id(data.get("mutation_id"))
+        profile = agent.load_profile()
+        replay = _idempotent_resource(profile, mutation_id, data)
+        if replay is not None:
+            collection, projected = replay
+            if collection != "visits":
+                raise agent.FollowThroughConflict(
+                    "mutation_id was already used for a different workflow resource"
+                )
+            return jsonify(
+                {
+                    "item": projected,
+                    "idempotent_replay": True,
+                    "workflow_revision": profile.get("workflow_revision", 0),
+                    "profile_revision": profile.get("profile_revision", 0),
+                }
+            )
+        allowed = {
+            "mutation_id",
+            "title",
+            "date",
+            "time",
+            "clinician",
+            "location",
+            "status",
+            "source_appointment_id",
+        }
+        if set(data) - allowed:
+            raise agent.FollowThroughError("Unsupported visit field")
+        source_id = agent.validate_optional_text(
+            data.get("source_appointment_id"),
+            "source_appointment_id",
+            limit=100,
+            single_line=True,
+        )
+        if source_id and not any(
+            item.get("id") == source_id for item in profile.get("appointments", [])
+        ):
+            raise KeyError("Source appointment not found")
+        timestamp = now_stamp()
+        status = (
+            agent.validate_status(data.get("status"), agent.VISIT_STATUSES)
+            if data.get("status")
+            else "planned"
+        )
+        visit = {
+            "id": agent.new_workflow_id("visit"),
+            "title": agent.validate_text(data.get("title"), "title", limit=200),
+            "date": agent.validate_date(data.get("date"), "date"),
+            "time": agent.validate_optional_text(
+                data.get("time"), "time", limit=40, single_line=True
+            ),
+            "clinician": agent.validate_optional_text(
+                data.get("clinician"), "clinician", limit=200, single_line=True
+            ),
+            "location": agent.validate_optional_text(
+                data.get("location"), "location", limit=300, single_line=True
+            ),
+            "status": status,
+            "source_appointment_id": source_id,
+            "question_snapshots": [],
+            "decisions": [],
+            "follow_up_ids": [],
+            "created_at": timestamp,
+            "updated_at": timestamp,
+            "completed_at": timestamp if status == "completed" else None,
+            "cancelled_at": timestamp if status == "cancelled" else None,
+            "history": [],
+        }
+        agent.append_history(
+            visit,
+            operation="created",
+            mutation_id=mutation_id,
+            payload=data,
+            before_token=None,
+            changes={"status": {"before": None, "after": status}},
+        )
+        profile.setdefault("visits", []).append(visit)
+        _save_workflow_mutation(profile, clinical_change=False, reason="visit_created")
+        return (
+            jsonify(
+                {
+                    "item": agent.public_visit(visit),
+                    "workflow_revision": profile["workflow_revision"],
+                    "profile_revision": profile["profile_revision"],
+                }
+            ),
+            201,
+        )
+    except (agent.FollowThroughError, KeyError) as exc:
+        return _workflow_error(exc)
+
+
+@app.route("/api/visits/<visit_id>", methods=["PATCH"])
+@serialized_profile_mutation
+def api_visits_edit(visit_id):
+    try:
+        data = _workflow_request()
+        mutation_id = agent.validate_mutation_id(data.get("mutation_id"))
+        profile = agent.load_profile()
+        replay = _idempotent_resource(profile, mutation_id, data)
+        if replay is not None:
+            collection, projected = replay
+            if collection != "visits" or projected.get("id") != visit_id:
+                raise agent.FollowThroughConflict(
+                    "mutation_id was already used for a different workflow resource"
+                )
+            return jsonify(
+                {
+                    "item": projected,
+                    "idempotent_replay": True,
+                    "workflow_revision": profile.get("workflow_revision", 0),
+                    "profile_revision": profile.get("profile_revision", 0),
+                }
+            )
+        visit = agent.find_record(profile.get("visits", []), visit_id, "Visit")
+        agent.validate_expected_token(visit, data.get("expected_token"))
+        allowed = {
+            "mutation_id",
+            "expected_token",
+            "title",
+            "date",
+            "time",
+            "clinician",
+            "location",
+            "status",
+        }
+        if set(data) - allowed:
+            raise agent.FollowThroughError("Unsupported visit field")
+        before = copy.deepcopy(visit)
+        before_token = agent.semantic_token(visit)
+        if "title" in data:
+            visit["title"] = agent.validate_text(data.get("title"), "title", limit=200)
+        if "date" in data:
+            visit["date"] = agent.validate_date(data.get("date"), "date")
+        for field, limit in (("time", 40), ("clinician", 200), ("location", 300)):
+            if field in data:
+                visit[field] = agent.validate_optional_text(
+                    data.get(field), field, limit=limit, single_line=True
+                )
+        if "status" in data:
+            target = agent.validate_status(data.get("status"), agent.VISIT_STATUSES)
+            if not agent.visit_transition_allowed(visit.get("status") or "planned", target):
+                raise agent.FollowThroughConflict("The visit lifecycle transition is not allowed")
+            visit["status"] = target
+            if target != before.get("status"):
+                timestamp = now_stamp()
+                if target == "completed":
+                    visit["completed_at"] = timestamp
+                elif target == "cancelled":
+                    visit["cancelled_at"] = timestamp
+        if agent.semantic_token(before) == agent.semantic_token(visit):
+            raise agent.FollowThroughError("The visit update does not change anything")
+        visit["updated_at"] = now_stamp()
+        agent.append_history(
+            visit,
+            operation="updated",
+            mutation_id=mutation_id,
+            payload=data,
+            before_token=before_token,
+            changes={
+                key: {"before": before.get(key), "after": visit.get(key)}
+                for key in ("title", "date", "time", "clinician", "location", "status")
+                if before.get(key) != visit.get(key)
+            },
+        )
+        _save_workflow_mutation(profile, clinical_change=False, reason="visit_updated")
+        return jsonify(
+            {
+                "item": agent.public_visit(visit),
+                "workflow_revision": profile["workflow_revision"],
+                "profile_revision": profile["profile_revision"],
+            }
+        )
+    except (agent.FollowThroughError, KeyError) as exc:
+        return _workflow_error(exc)
+
+
+@app.route("/api/visits/<visit_id>/questions", methods=["POST"])
+@serialized_profile_mutation
+def api_visit_questions_add(visit_id):
+    try:
+        data = _workflow_request()
+        mutation_id = agent.validate_mutation_id(data.get("mutation_id"))
+        profile = agent.load_profile()
+        replay = _idempotent_resource(profile, mutation_id, data)
+        if replay is not None:
+            collection, projected = replay
+            if collection != "visits" or projected.get("id") != visit_id:
+                raise agent.FollowThroughConflict(
+                    "mutation_id was already used for a different workflow resource"
+                )
+            return jsonify(
+                {
+                    "visit": projected,
+                    "idempotent_replay": True,
+                    "workflow_revision": profile.get("workflow_revision", 0),
+                    "profile_revision": profile.get("profile_revision", 0),
+                }
+            )
+        visit = agent.find_record(profile.get("visits", []), visit_id, "Visit")
+        agent.validate_expected_token(visit, data.get("expected_visit_token"))
+        allowed = {
+            "mutation_id",
+            "expected_visit_token",
+            "source_kind",
+            "source_question_id",
+            "expected_source_token",
+            "text",
+            "category",
+            "priority",
+            "rationale",
+            "pinned",
+            "order",
+        }
+        if set(data) - allowed:
+            raise agent.FollowThroughError("Unsupported visit question field")
+        source_kind = str(data.get("source_kind") or "")
+        if source_kind not in {"manual", "generated"}:
+            raise agent.FollowThroughError("source_kind must be manual or generated")
+        if source_kind == "generated":
+            source = agent.find_question(
+                profile,
+                str(data.get("source_question_id") or ""),
+                data.get("expected_source_token"),
+            )
+            text = source.get("text") or ""
+            category = source.get("category")
+            priority = source.get("priority")
+            rationale = source.get("rationale")
+            source_id = source.get("id")
+            generation_id = source.get("generation_job_id")
+            source_revision = source.get("source_profile_revision")
+        else:
+            text = agent.validate_text(data.get("text"), "text", limit=1000)
+            category = agent.validate_optional_text(
+                data.get("category"), "category", limit=100, single_line=True
+            )
+            priority = agent.validate_optional_text(
+                data.get("priority"), "priority", limit=40, single_line=True
+            )
+            rationale = agent.validate_optional_text(
+                data.get("rationale"), "rationale", limit=1000
+            )
+            source_id = None
+            generation_id = None
+            source_revision = None
+        order = data.get("order", len(visit.get("question_snapshots", [])))
+        if not isinstance(order, int) or isinstance(order, bool) or not 0 <= order <= 10000:
+            raise agent.FollowThroughError("order must be an integer from 0 to 10000")
+        pinned = data.get("pinned", False)
+        if not isinstance(pinned, bool):
+            raise agent.FollowThroughError("pinned must be true or false")
+        before_token = agent.semantic_token(visit)
+        question = {
+            "id": agent.new_workflow_id("vq"),
+            "text": text,
+            "category": category,
+            "priority": priority,
+            "rationale": rationale,
+            "source_kind": source_kind,
+            "source_question_id": source_id,
+            "source_generation_id": generation_id,
+            "source_profile_revision": source_revision,
+            "pinned": pinned,
+            "order": order,
+            "answer": None,
+            "created_at": now_stamp(),
+        }
+        visit.setdefault("question_snapshots", []).append(question)
+        visit["updated_at"] = now_stamp()
+        agent.append_history(
+            visit,
+            operation="question_added",
+            mutation_id=mutation_id,
+            payload=data,
+            before_token=before_token,
+            changes={"question_id": question["id"], "source_kind": source_kind},
+        )
+        _save_workflow_mutation(profile, clinical_change=False, reason="visit_question_added")
+        return (
+            jsonify(
+                {
+                    "visit": agent.public_visit(visit),
+                    "workflow_revision": profile["workflow_revision"],
+                    "profile_revision": profile["profile_revision"],
+                }
+            ),
+            201,
+        )
+    except (agent.FollowThroughError, KeyError) as exc:
+        return _workflow_error(exc)
+
+
+@app.route("/api/visits/<visit_id>/questions/<question_id>", methods=["PATCH"])
+@serialized_profile_mutation
+def api_visit_questions_edit(visit_id, question_id):
+    try:
+        data = _workflow_request()
+        mutation_id = agent.validate_mutation_id(data.get("mutation_id"))
+        profile = agent.load_profile()
+        replay = _idempotent_resource(profile, mutation_id, data)
+        if replay is not None:
+            collection, projected = replay
+            if collection != "visits" or projected.get("id") != visit_id:
+                raise agent.FollowThroughConflict(
+                    "mutation_id was already used for a different workflow resource"
+                )
+            return jsonify(
+                {
+                    "visit": projected,
+                    "idempotent_replay": True,
+                    "workflow_revision": profile.get("workflow_revision", 0),
+                    "profile_revision": profile.get("profile_revision", 0),
+                }
+            )
+        visit = agent.find_record(profile.get("visits", []), visit_id, "Visit")
+        question = agent.find_record(
+            visit.get("question_snapshots", []), question_id, "Visit question"
+        )
+        agent.validate_expected_token(question, data.get("expected_token"))
+        allowed = {"mutation_id", "expected_token", "pinned", "order", "answer"}
+        if set(data) - allowed:
+            raise agent.FollowThroughError("Unsupported visit question field")
+        before = copy.deepcopy(question)
+        before_token = agent.semantic_token(question)
+        if "pinned" in data:
+            if not isinstance(data["pinned"], bool):
+                raise agent.FollowThroughError("pinned must be true or false")
+            question["pinned"] = data["pinned"]
+        if "order" in data:
+            if (
+                not isinstance(data["order"], int)
+                or isinstance(data["order"], bool)
+                or not 0 <= data["order"] <= 10000
+            ):
+                raise agent.FollowThroughError("order must be an integer from 0 to 10000")
+            question["order"] = data["order"]
+        clinical_change = False
+        if "answer" in data:
+            answer_data = data.get("answer")
+            if not isinstance(answer_data, dict):
+                raise agent.FollowThroughError("answer must be an object")
+            if set(answer_data) - {"status", "text"}:
+                raise agent.FollowThroughError("Answer provenance is server-owned")
+            status = agent.validate_status(
+                answer_data.get("status"), {"answered", "unknown"}, "answer status"
+            )
+            if status == "answered":
+                text = agent.validate_text(answer_data.get("text"), "answer.text", limit=4000)
+            else:
+                if answer_data.get("text") not in (None, ""):
+                    raise agent.FollowThroughError("Unknown answers cannot include answer text")
+                text = None
+            question["answer"] = {
+                "status": status,
+                "text": text,
+                "recorded_at": now_stamp(),
+                "provenance": agent.capture_provenance(),
+            }
+            clinical_change = True
+        if agent.semantic_token(before) == agent.semantic_token(question):
+            raise agent.FollowThroughError("The visit question update does not change anything")
+        visit["updated_at"] = now_stamp()
+        agent.append_history(
+            visit,
+            operation="question_updated",
+            mutation_id=mutation_id,
+            payload=data,
+            before_token=before_token,
+            changes={
+                key: {"before": before.get(key), "after": question.get(key)}
+                for key in ("pinned", "order", "answer")
+                if before.get(key) != question.get(key)
+            },
+        )
+        _save_workflow_mutation(
+            profile,
+            clinical_change=clinical_change,
+            reason="visit_clinician_answer_captured",
+        )
+        return jsonify(
+            {
+                "visit": agent.public_visit(visit),
+                "workflow_revision": profile["workflow_revision"],
+                "profile_revision": profile["profile_revision"],
+            }
+        )
+    except (agent.FollowThroughError, KeyError) as exc:
+        return _workflow_error(exc)
+
+
+@app.route("/api/visits/<visit_id>/decisions", methods=["POST"])
+@serialized_profile_mutation
+def api_visit_decisions_add(visit_id):
+    try:
+        data = _workflow_request()
+        mutation_id = agent.validate_mutation_id(data.get("mutation_id"))
+        profile = agent.load_profile()
+        replay = _idempotent_resource(profile, mutation_id, data)
+        if replay is not None:
+            collection, projected = replay
+            if collection != "visits" or projected.get("id") != visit_id:
+                raise agent.FollowThroughConflict(
+                    "mutation_id was already used for a different workflow resource"
+                )
+            return jsonify(
+                {
+                    "visit": projected,
+                    "idempotent_replay": True,
+                    "workflow_revision": profile.get("workflow_revision", 0),
+                    "profile_revision": profile.get("profile_revision", 0),
+                }
+            )
+        visit = agent.find_record(profile.get("visits", []), visit_id, "Visit")
+        agent.validate_expected_token(visit, data.get("expected_visit_token"))
+        if set(data) - {"mutation_id", "expected_visit_token", "text", "supersedes_id"}:
+            raise agent.FollowThroughError("Decision provenance is server-owned")
+        before_token = agent.semantic_token(visit)
+        supersedes_id = agent.validate_optional_text(
+            data.get("supersedes_id"),
+            "supersedes_id",
+            limit=100,
+            single_line=True,
+        )
+        prior = None
+        if supersedes_id:
+            prior = agent.find_record(
+                visit.get("decisions", []), supersedes_id, "Superseded decision"
+            )
+            if prior.get("status") != "active":
+                raise agent.FollowThroughConflict("Only an active decision can be superseded")
+        timestamp = now_stamp()
+        decision = {
+            "id": agent.new_workflow_id("dec"),
+            "text": agent.validate_text(data.get("text"), "text", limit=4000),
+            "status": "active",
+            "provenance": agent.capture_provenance(),
+            "supersedes_id": supersedes_id,
+            "created_at": timestamp,
+            "updated_at": timestamp,
+        }
+        if prior is not None:
+            prior["status"] = "superseded"
+            prior["updated_at"] = timestamp
+        visit.setdefault("decisions", []).append(decision)
+        visit["updated_at"] = timestamp
+        agent.append_history(
+            visit,
+            operation="decision_added",
+            mutation_id=mutation_id,
+            payload=data,
+            before_token=before_token,
+            changes={
+                "decision_id": decision["id"],
+                "supersedes_id": supersedes_id,
+            },
+        )
+        _save_workflow_mutation(
+            profile,
+            clinical_change=True,
+            reason="visit_clinician_decision_captured",
+        )
+        return (
+            jsonify(
+                {
+                    "visit": agent.public_visit(visit),
+                    "workflow_revision": profile["workflow_revision"],
+                    "profile_revision": profile["profile_revision"],
+                }
+            ),
+            201,
+        )
+    except (agent.FollowThroughError, KeyError) as exc:
+        return _workflow_error(exc)
+
+
+@app.route("/api/visits/<visit_id>/decisions/<decision_id>", methods=["PATCH"])
+@serialized_profile_mutation
+def api_visit_decisions_edit(visit_id, decision_id):
+    try:
+        data = _workflow_request()
+        mutation_id = agent.validate_mutation_id(data.get("mutation_id"))
+        profile = agent.load_profile()
+        replay = _idempotent_resource(profile, mutation_id, data)
+        if replay is not None:
+            collection, projected = replay
+            if collection != "visits" or projected.get("id") != visit_id:
+                raise agent.FollowThroughConflict(
+                    "mutation_id was already used for a different workflow resource"
+                )
+            return jsonify(
+                {
+                    "visit": projected,
+                    "idempotent_replay": True,
+                    "workflow_revision": profile.get("workflow_revision", 0),
+                    "profile_revision": profile.get("profile_revision", 0),
+                }
+            )
+        if set(data) - {"mutation_id", "expected_token", "status"}:
+            raise agent.FollowThroughError("Decision text is immutable; add a successor instead")
+        visit = agent.find_record(profile.get("visits", []), visit_id, "Visit")
+        decision = agent.find_record(visit.get("decisions", []), decision_id, "Decision")
+        agent.validate_expected_token(decision, data.get("expected_token"))
+        status = agent.validate_status(data.get("status"), agent.DECISION_STATUSES)
+        current = decision.get("status") or "active"
+        allowed = {
+            "active": {"active", "superseded", "retracted", "needs_confirmation"},
+            "needs_confirmation": {"needs_confirmation", "active", "superseded", "retracted"},
+            "superseded": {"superseded"},
+            "retracted": {"retracted"},
+        }
+        if status not in allowed.get(current, set()):
+            raise agent.FollowThroughConflict("The decision lifecycle transition is not allowed")
+        if status == current:
+            raise agent.FollowThroughError("The decision update does not change anything")
+        before_token = agent.semantic_token(decision)
+        decision["status"] = status
+        decision["updated_at"] = now_stamp()
+        visit["updated_at"] = decision["updated_at"]
+        agent.append_history(
+            visit,
+            operation="decision_status_changed",
+            mutation_id=mutation_id,
+            payload=data,
+            before_token=before_token,
+            changes={"decision_id": decision_id, "status": {"before": current, "after": status}},
+        )
+        _save_workflow_mutation(
+            profile,
+            clinical_change=True,
+            reason="visit_clinician_decision_lifecycle_changed",
+        )
+        return jsonify(
+            {
+                "visit": agent.public_visit(visit),
+                "workflow_revision": profile["workflow_revision"],
+                "profile_revision": profile["profile_revision"],
+            }
+        )
+    except (agent.FollowThroughError, KeyError) as exc:
+        return _workflow_error(exc)
+
+
+@app.route("/api/visits/<visit_id>/follow-ups", methods=["POST"])
+@serialized_profile_mutation
+def api_visit_follow_ups_add(visit_id):
+    try:
+        data = _workflow_request()
+        mutation_id = agent.validate_mutation_id(data.get("mutation_id"))
+        profile = agent.load_profile()
+        replay = _idempotent_resource(profile, mutation_id, data)
+        if replay is not None:
+            collection, projected = replay
+            if collection != "visits" or projected.get("id") != visit_id:
+                raise agent.FollowThroughConflict(
+                    "mutation_id was already used for a different workflow resource"
+                )
+            event = next(
+                (
+                    item
+                    for item in projected.get("history", [])
+                    if item.get("mutation_id") == mutation_id
+                ),
+                {},
+            )
+            action_id = (event.get("changes") or {}).get("follow_up_id")
+            action = next(
+                (
+                    agent.public_action(item)
+                    for item in profile.get("caregiver_actions", [])
+                    if item.get("id") == action_id
+                ),
+                None,
+            )
+            return jsonify(
+                {
+                    "visit": projected,
+                    "item": action,
+                    "idempotent_replay": True,
+                    "workflow_revision": profile.get("workflow_revision", 0),
+                    "profile_revision": profile.get("profile_revision", 0),
+                }
+            )
+        visit = agent.find_record(profile.get("visits", []), visit_id, "Visit")
+        agent.validate_expected_token(visit, data.get("expected_visit_token"))
+        allowed = {
+            "mutation_id",
+            "expected_visit_token",
+            "decision_id",
+            "origin_kind",
+            "text",
+            "owner",
+            "due_date",
+        }
+        if set(data) - allowed:
+            raise agent.FollowThroughError("Unsupported visit follow-up field")
+        decision = None
+        if data.get("decision_id"):
+            decision = agent.find_record(
+                visit.get("decisions", []), str(data["decision_id"]), "Decision"
+            )
+        before_token = agent.semantic_token(visit)
+        action = _new_action(
+            profile,
+            data,
+            mutation_id=mutation_id,
+            visit_id=visit_id,
+            decision=decision,
+            history_mutation_id=f"internal-{agent.semantic_token([mutation_id, 'action'])[:32]}",
+        )
+        visit.setdefault("follow_up_ids", []).append(action["id"])
+        visit["updated_at"] = now_stamp()
+        agent.append_history(
+            visit,
+            operation="follow_up_created",
+            mutation_id=mutation_id,
+            payload=data,
+            before_token=before_token,
+            changes={"follow_up_id": action["id"], "decision_id": action.get("decision_id")},
+        )
+        _save_workflow_mutation(
+            profile, clinical_change=False, reason="visit_follow_up_created"
+        )
+        return (
+            jsonify(
+                {
+                    "visit": agent.public_visit(visit),
+                    "item": agent.public_action(action),
+                    "workflow_revision": profile["workflow_revision"],
+                    "profile_revision": profile["profile_revision"],
+                }
+            ),
+            201,
+        )
+    except (agent.FollowThroughError, KeyError) as exc:
+        return _workflow_error(exc)
+
+
 @app.route("/api/treatments/delete", methods=["POST"])
 def api_delete_treatment():
     return (
@@ -2061,47 +3049,155 @@ def api_delete_treatment():
 @app.route("/api/alerts/<alert_id>/resolve", methods=["POST"])
 @serialized_profile_mutation
 def api_resolve_alert(alert_id):
-    data = request.get_json(force=True) or {}
-    expected_token = str(data.get("expected_token") or "")
-    expected_revision = data.get("expected_profile_revision")
-    if not expected_token or expected_revision is None:
-        return (
-            jsonify({"error": "expected_token and expected_profile_revision are required"}),
-            400,
-        )
-    profile = agent.load_profile()
-    alert = next(
-        (item for item in profile.get("alerts", []) if item.get("id") == alert_id),
-        None,
-    )
-    if (
-        alert is None
-        or str(expected_revision) != str(profile.get("profile_revision"))
-        or alert.get("resolved")
-        or alert not in agent.active_alerts(profile)
-        or agent.alert_token(alert) != expected_token
-    ):
-        return (
-            jsonify(
+    try:
+        data = _workflow_request()
+        expected_token = str(data.get("expected_token") or "")
+        expected_revision = data.get("expected_profile_revision")
+        if not expected_token or expected_revision is None:
+            raise agent.FollowThroughError(
+                "expected_token and expected_profile_revision are required"
+            )
+        mutation_id = data.get("mutation_id")
+        if mutation_id is None:
+            mutation_id = f"alert-resolve-{agent.semantic_token([alert_id, expected_token])[:32]}"
+        else:
+            mutation_id = agent.validate_mutation_id(mutation_id)
+        profile = agent.load_profile()
+        replay = agent.check_idempotency(profile, mutation_id, data)
+        if replay is not None:
+            collection, record = replay
+            if collection != "alerts" or record.get("id") != alert_id:
+                raise agent.FollowThroughConflict(
+                    "mutation_id was already used for a different workflow resource"
+                )
+            linked = next(
+                (
+                    agent.public_action(item)
+                    for item in profile.get("caregiver_actions", [])
+                    if item.get("id") == (record.get("resolution") or {}).get("follow_up_id")
+                ),
+                None,
+            )
+            return jsonify(
                 {
-                    "error": "The alert changed or is no longer active. Reload alerts before resolving it."
+                    "ok": True,
+                    "alert": {**copy.deepcopy(record), "resolve_token": agent.alert_token(record)},
+                    "follow_up": linked,
+                    "idempotent_replay": True,
+                    "workflow_revision": profile.get("workflow_revision", 0),
+                    "profile_revision": profile.get("profile_revision", 0),
                 }
-            ),
-            409,
+            )
+        alert = agent.find_record(profile.get("alerts", []), alert_id, "Alert")
+        kind = alert.get("dependency_kind") or "profile_snapshot"
+        if (
+            alert.get("resolved")
+            or alert not in agent.active_alerts(profile)
+            or agent.alert_token(alert) != expected_token
+            or (
+                kind == "profile_snapshot"
+                and str(expected_revision) != str(profile.get("profile_revision"))
+            )
+        ):
+            raise agent.FollowThroughConflict(
+                "The alert changed or is no longer active. Reload alerts before resolving it."
+            )
+        outcome = (
+            _outcome_from_request(data.get("outcome"))
+            if "outcome" in data
+            else {
+                "kind": "administrative",
+                "text": "Marked resolved",
+                "recorded_at": now_stamp(),
+                "provenance": {
+                    "capture_method": "caregiver_entered",
+                    "attributed_to": "caregiver",
+                    "source_verification": "not_applicable",
+                },
+            }
         )
-    alert["resolved"] = True
-    profile["summary_stale"] = True
-    if isinstance(profile.get("executive_summary"), dict):
-        profile["executive_summary"]["stale"] = True
-        profile["executive_summary"]["alert_resolution_pending"] = True
-    timestamp = now_stamp()
-    for question in profile.get("appointment_questions", []):
-        if question.get("source") == "ai" and not question.get("stale"):
-            question["stale"] = True
-            question["stale_reason"] = "active_alert_resolved_after_generation"
-            question["stale_at"] = timestamp
-    agent.save_profile(profile)
-    return jsonify({"ok": True, "profile_revision": profile["profile_revision"]})
+        visit_id = agent.validate_optional_text(
+            data.get("visit_id"), "visit_id", limit=100, single_line=True
+        )
+        decision_id = agent.validate_optional_text(
+            data.get("decision_id"), "decision_id", limit=100, single_line=True
+        )
+        if visit_id:
+            visit = agent.find_record(profile.get("visits", []), visit_id, "Visit")
+            if decision_id:
+                agent.find_record(visit.get("decisions", []), decision_id, "Decision")
+        elif decision_id:
+            raise agent.FollowThroughError("decision_id requires visit_id")
+        follow_up_id = agent.validate_optional_text(
+            data.get("follow_up_id"), "follow_up_id", limit=100, single_line=True
+        )
+        follow_up = None
+        if follow_up_id:
+            follow_up = agent.find_record(
+                profile.get("caregiver_actions", []), follow_up_id, "Follow-up"
+            )
+        if "follow_up" in data:
+            if follow_up_id:
+                raise agent.FollowThroughError(
+                    "Use either follow_up_id or an inline follow_up, not both"
+                )
+            follow_up_data = data.get("follow_up")
+            if not isinstance(follow_up_data, dict):
+                raise agent.FollowThroughError("follow_up must be an object")
+            follow_up_payload = {
+                **follow_up_data,
+                "origin_kind": "alert",
+                "mutation_id": mutation_id,
+            }
+            follow_up = _new_action(
+                profile,
+                follow_up_payload,
+                mutation_id=mutation_id,
+                alert_id=alert_id,
+                history_mutation_id=(
+                    f"internal-{agent.semantic_token([mutation_id, 'alert-action'])[:32]}"
+                ),
+            )
+            follow_up_id = follow_up["id"]
+        before_token = agent.alert_token(alert)
+        timestamp = now_stamp()
+        alert["resolved"] = True
+        alert["resolution"] = {
+            "status": "resolved",
+            "resolved_at": timestamp,
+            "outcome_kind": outcome["kind"],
+            "outcome_text": outcome["text"],
+            "provenance": outcome["provenance"],
+            "follow_up_id": follow_up_id,
+            "visit_id": visit_id,
+            "decision_id": decision_id,
+        }
+        agent.append_history(
+            alert,
+            operation="resolved",
+            mutation_id=mutation_id,
+            payload=data,
+            before_token=before_token,
+            changes={"resolved": {"before": False, "after": True}, "resolution": alert["resolution"]},
+        )
+        if isinstance(profile.get("executive_summary"), dict):
+            profile["executive_summary"]["alert_resolution_pending"] = True
+        _save_workflow_mutation(
+            profile,
+            clinical_change=True,
+            reason="active_alert_resolved_after_generation",
+        )
+        return jsonify(
+            {
+                "ok": True,
+                "alert": {**copy.deepcopy(alert), "resolve_token": agent.alert_token(alert)},
+                "follow_up": agent.public_action(follow_up) if follow_up else None,
+                "workflow_revision": profile["workflow_revision"],
+                "profile_revision": profile["profile_revision"],
+            }
+        )
+    except (agent.FollowThroughError, KeyError) as exc:
+        return _workflow_error(exc)
 
 
 @app.route("/api/alerts/resolve/<int:idx>", methods=["POST"])
@@ -2298,6 +3394,7 @@ def api_questions():
             question["stale_reason"] = (
                 question.get("stale_reason") or "missing_or_superseded_generation_provenance"
             )
+        question["source_token"] = agent.question_source_token(stored)
         questions.append(question)
     return jsonify(questions)
 
@@ -2879,6 +3976,7 @@ def api_summary():
         response["content_hidden"] = True
     else:
         response["claim_evidence"] = agent.resolve_summary_evidence(profile, response)
+        response["next_actions"] = agent.project_summary_actions(summary)
     return jsonify(response)
 
 

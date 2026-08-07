@@ -450,6 +450,7 @@ def _semantic_value(value: Any) -> Any:
             if item is not None
             and not (key == "source_dependency_active" and item is True)
             and not (key == "excluded_from_clinical_context" and item is False)
+            and not (key == "history" and item == [])
         }
     if isinstance(value, list):
         return [_semantic_value(item) for item in value]

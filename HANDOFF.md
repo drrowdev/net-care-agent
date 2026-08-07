@@ -88,13 +88,14 @@ net-care-agent/
 │   ├── job_runtime.py    # Bounded executors, safe artifacts, PDF subprocess
 │   ├── pdf_extract_helper.py # Child-only pdfplumber entry point
 │   ├── judgments.py      # Renders clinical_judgments into the system prompt
+│   ├── follow_through.py # Durable actions/visits, validation, CAS + audit
 │   ├── intake.py         # Document → structured JSON (single Claude call)
 │   ├── orchestrator.py   # The only agentic loop; max 12 tool-use iterations
 │   ├── classify.py       # Treatment dedup (Somatuline = lanreotide etc.)
 │   ├── exec_summary.py   # JSON executive summary generator
 │   ├── questions.py      # Appointment questions (language configurable via patient.language)
 │   ├── chat.py           # /api/chat handler (pure function, no state)
-│   ├── cli.py            # `python net_agent.py {feed|digest|status|update-profile}`
+│   ├── cli.py            # feed/digest/status/resolve-alert/update-profile
 │   └── tools/            # PubMed, CT.gov, biomarker_trend, flag_alert + dispatcher
 │
 ├── static/               # 3-file SPA (do not add a build pipeline)

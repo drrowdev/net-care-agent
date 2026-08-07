@@ -20,8 +20,8 @@ available at every screen size:
   net-new trials and research papers.
 - **Patient** — profile snapshot, treatments, biomarkers, alerts, symptoms,
   imaging history, and immutable document/source history.
-- **Questions** — appointment questions and clinical notes from the treating
-  team.
+- **Questions** — appointment questions, visit working mode, and clinical notes
+  from the treating team.
 - **Activity** — digest/deep-sweep controls, processing status, and reports.
 
 If an API request is unauthorized, forbidden, offline, or otherwise fails, the
@@ -252,45 +252,50 @@ Each generation has an identity. Superseded or legacy AI questions without
 generation provenance remain visible as **Outdated** history and are not
 presented as current appointment preparation.
 
-## 5d. Durable follow-through and visit records (backend foundation)
+## 5d. Prepare and run an appointment
 
-The schema and authenticated HTTP APIs are available for the later appointment
-working-mode UI; this release does not add that UI yet.
+Open **Questions** → **Appointment workspace**. Desktop and phone use the same
+working record; on a phone it opens as a full-height sheet.
 
-- `GET/POST /api/follow-ups` and `PATCH /api/follow-ups/<id>` manage durable
-  caregiver actions. Accepting a generated assessment action uses its current
-  opaque ID and semantic token; the server snapshots the visible action and
-  provenance so it survives later assessment revisions.
-- `GET/POST /api/visits` and `PATCH /api/visits/<id>` manage working visit
-  records linked optionally to an intake-imported appointment.
-- Nested visit question endpoints snapshot a generated/manual question and
-  record order/pin state. An answer is either `answered` or explicitly
-  `unknown`.
-- Nested decision endpoints append immutable statements and expose
-  `active|superseded|retracted|needs_confirmation`; corrections create a
-  successor instead of rewriting what was captured.
-- `POST /api/visits/<id>/follow-ups` creates a durable resulting action and
-  links it to the visit/decision in one atomic save.
+1. Create a visit, or select a current imported appointment to prefill its
+   bounded date/time/clinician/location fields. The imported fact remains
+   separate and receipt-correctable; the working visit links it by stable ID.
+2. Open the visit and edit its title/details. Use **Start visit**, **Complete**,
+   or **Cancel visit** for the explicit lifecycle.
+3. In **Questions**, add a current generated question or type a manual caregiver
+   question. Generated acceptance sends only its stable ID/token—the browser
+   never copies generated text back as the source. Outdated or revisionless
+   generated rows show only a generic unavailable state; their prior text is not
+   displayed. Already accepted visit snapshots remain visible for audit with
+   their generated-snapshot provenance.
+4. Pin questions and use Move/rank controls. The complete order is saved
+   atomically after the server verifies the visit plus every question ID/token;
+   a conflict cannot leave a partially reordered list.
+5. During the visit, record either an answered response with text or explicitly
+   unknown. Every captured answer is labelled
+   **Caregiver-entered · attributed to clinician · unverified**.
+6. In **Decisions**, record what the clinician said. Decision text is immutable:
+   corrections create a successor, while lifecycle controls can mark active,
+   needs confirmation, superseded, or retracted. Every row carries the same
+   caregiver-entered/clinician-attributed/unverified label and is not promoted to
+   verified evidence or a hard clinical judgment.
+7. In **Follow-ups**, create a resulting caregiver action, optionally linked to
+   a decision, using contact/ask/discuss/confirm wording. Visit-linked follow-ups
+   are displayed read-only here; general task editing remains outside this
+   appointment slice.
 
-Every new mutation uses a client `mutation_id` and the addressed record's
-semantic token. Exact retries return the original mutation result, including its
-original item tokens, links, and revision values, without another save. A reused
-mutation ID with a different endpoint, operation, target, token, or payload
-returns `409`; unsupported request fields return `400` before replay lookup.
-Legacy alert clients may omit `mutation_id`, in which case the server derives a
-deterministic, client-inaccessible ID from the alert and expected token. There is no
-delete-by-index/text route and no generic reviewed/unread/acknowledgement state.
+Each request has one mutation ID and target token. An explicit retry after an
+ambiguous connection failure reuses only that exact unchanged request. A `409`
+never retries automatically: the workspace keeps eligible caregiver draft text,
+reloads authoritative tokens, and explains that the visit or assessment changed.
+Drafts remain only in memory.
 
-Owner, due date, ordering, pinning, and administrative lifecycle changes update
-only `workflow_revision`. Captured answers, clinician-attributed decisions,
-clinical outcomes, and alert resolution also advance `profile_revision`, clear
-revision-bound chat, and stale generated artifacts.
-
-Caregiver capture is always stored and presented as
-**caregiver-entered, clinician-attributed, unverified**. It is not immutable
-source evidence and is not silently promoted to the hard-constraint clinical
-judgment lifecycle. Follow-ups must use contact/ask/discuss/confirm wording with
-the treating team; autonomous treatment directives are rejected.
+Pin/order/visit bookkeeping changes only `workflow_revision`. Captured answers
+and clinician-attributed decisions also advance `profile_revision`, clear
+revision-bound chat, and revalidate summaries, generated questions, and open
+activity detail. Authorization failure clears all appointment PHI, drafts,
+dialogs, caches, retry requests, and late responses. A transient offline failure
+keeps the current draft for explicit retry.
 
 ## 5b. Record review feedback
 

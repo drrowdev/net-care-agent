@@ -404,6 +404,30 @@ def _safe_result_snapshot(
             and isinstance(question_id, str)
             and contains_id(snapshot.get("visit"), "question_snapshots", question_id)
         )
+    if endpoint == "PATCH /api/visits/<visit_id>/questions/order":
+        visit_id = target.removeprefix("visit:").removesuffix(":question_order")
+        expected_order = ((event.get("changes") or {}).get("order") or {}).get("after")
+        visit = snapshot.get("visit")
+        return (
+            collection == "visits"
+            and record.get("id") == visit_id
+            and set(snapshot) == {"visit", "workflow_revision", "profile_revision"}
+            and valid_item(visit, Visit, visit_id)
+            and isinstance(expected_order, list)
+            and all(isinstance(item, str) and item for item in expected_order)
+            and len(set(expected_order)) == len(expected_order)
+            and isinstance(visit, dict)
+            and [
+                question.get("id") if isinstance(question, dict) else None
+                for question in visit.get("question_snapshots", [])
+            ]
+            == expected_order
+            and [
+                question.get("order") if isinstance(question, dict) else None
+                for question in visit.get("question_snapshots", [])
+            ]
+            == list(range(len(expected_order)))
+        )
     if endpoint == "PATCH /api/visits/<visit_id>/questions/<question_id>":
         parts = target.split(":", 2)
         return (

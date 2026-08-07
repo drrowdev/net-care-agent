@@ -27,6 +27,17 @@ incremented when something user-visible or operationally meaningful changes.
   not block snapshot/backup recovery or permit duplicate initialization.
 
 ### Added
+- **Responsive appointment working mode.** Questions now includes visit
+  preparation and one focused desktop/phone workspace for current generated or
+  manual question snapshots, atomic pin/rank ordering, answered versus explicitly
+  unknown clinician-attributed capture, immutable decision successors/lifecycle,
+  and visit-linked resulting follow-ups. Imported appointment choices are
+  limited to active/linkable bounded projections, stale generated question text
+  is withheld, and every caregiver capture is visibly labelled
+  caregiver-entered, clinician-attributed, and unverified. Stable target tokens,
+  one-intent mutation IDs, profile/workflow revision handling, visit/PHI epochs,
+  offline draft preservation, conflict reloads, focus trapping, and narrow-phone
+  controls prevent stale or late responses from repainting the active visit.
 - **Durable caregiver follow-through backend.** Schema v8 adds independent
   workflow revisioning, accepted/generated action snapshots, visit working
   records with ordered question snapshots, explicit unknowns, caregiver-entered
@@ -36,7 +47,7 @@ incremented when something user-visible or operationally meaningful changes.
   no longer stales clinical artifacts, while new clinical capture and alert
   resolution still invalidate every revision-bound generated context. Alert
   resolution can atomically record an outcome/link a follow-up or decision
-  without changing sibling alerts. No appointment UI, generic review inbox,
+  without changing sibling alerts. No generic review inbox,
   autonomous treatment instruction, database, or scheduler is introduced.
   Generated summary actions and questions are now acceptable only from an
   explicitly current, fully identified generation with an exact source token;

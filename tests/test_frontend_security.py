@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -80,6 +81,18 @@ let activeDialogSurface = null;
 let chatOpen = true;
 let taskSelectionEpoch = 0;
 let phiEpoch = 0;
+let workflowRevision = 3;
+let visitsById = new Map([['visit-phi', { patient: true }]]);
+let appointmentOptions = [{ patient: true }];
+let appointmentQuestionSources = [{ patient: true }];
+let visitFollowUps = [{ patient: true }];
+let selectedVisitId = 'visit-phi';
+let visitSelectionEpoch = 0;
+let appointmentDialogOpen = true;
+let activeAppointmentTab = 'decisions';
+let pendingWorkflowIntent = { patient: true };
+let workflowMutationPending = true;
+let appointmentDrafts = new Map([['visit-phi', { patient: true }]]);
 let renderSummaryCalls = 0;
 const loadErrors = [];
 
@@ -713,3 +726,224 @@ def test_model_markdown_remains_escape_first_and_protocol_limited():
     sanitizer = _function_source("mdSanitizeUrl", "mdInline")
     assert "/^(https?:\\/\\/|mailto:|tel:|#|\\/)/i" in sanitizer
     assert "javascript:" not in sanitizer
+
+
+def _run_appointment_behavior_probe() -> dict:
+    script = "\n".join(
+        [
+            """
+let selectedVisitId = 'visit-1';
+let visitsById = new Map([['visit-1', {
+  id: 'visit-1',
+  token: 'visit-token',
+  question_snapshots: [
+    { id: 'q-1', token: 'token-1', pinned: false, order: 0, created_at: '1' },
+    { id: 'q-2', token: 'token-2', pinned: false, order: 1, created_at: '2' },
+    { id: 'q-3', token: 'token-3', pinned: false, order: 2, created_at: '3' },
+  ],
+}]]);
+let appointmentQuestionSources = [
+  { id: 'stale', source: 'ai', stale: true, text: 'STALE PATIENT TEXT', rationale: 'SECRET' },
+  { id: 'current', source: 'ai', stale: false, text: 'Current question', source_token: 'source-token' },
+];
+class FakeClassList {
+  constructor() { this.values = new Set(); }
+  toggle(name, active) { active ? this.values.add(name) : this.values.delete(name); }
+  contains(name) { return this.values.has(name); }
+}
+function fakeTabElement() {
+  return {
+    classList: new FakeClassList(),
+    hidden: false,
+    tabIndex: -1,
+    attributes: {},
+    setAttribute(name, value) { this.attributes[name] = value; },
+  };
+}
+const elements = new Map([['visit-source-questions', { innerHTML: '' }]]);
+for (const name of ['questions', 'decisions', 'followups']) {
+  elements.set(`appointment-tab-${name}`, fakeTabElement());
+  elements.set(`appointment-panel-${name}`, fakeTabElement());
+}
+const document = { getElementById(id) { return elements.get(id) || null; } };
+const submissions = [];
+let activeAppointmentTab = 'questions';
+function captureAppointmentDraft() {}
+function escHtml(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+async function submitWorkflowMutation(url, body, visitId, method) {
+  submissions.push({ url, body, visitId, method });
+}
+""",
+            _function_source("currentVisit", "visitStatusLabel"),
+            _function_source("sortedVisitQuestions", "linkableAppointment"),
+            _executable_function_source("persistVisitQuestionOrder", "reorderedQuestionList"),
+            _executable_function_source("reorderedQuestionList", "moveVisitQuestion"),
+            _executable_function_source("renderVisitSourceQuestions", "addGeneratedVisitQuestion"),
+            _function_source("switchAppointmentTab", "handleAppointmentTabKeydown"),
+            """
+(async () => {
+  const ordered = reorderedQuestionList('q-3', 0);
+  await persistVisitQuestionOrder(ordered);
+  renderVisitSourceQuestions();
+  switchAppointmentTab('decisions');
+  console.log(JSON.stringify({
+    ordered: ordered.map(item => item.id),
+    submission: submissions[0],
+    staleRedacted: !elements.get('visit-source-questions').innerHTML.includes('STALE PATIENT TEXT')
+      && !elements.get('visit-source-questions').innerHTML.includes('SECRET'),
+    currentVisible: elements.get('visit-source-questions').innerHTML.includes('Current question'),
+    activeTab: activeAppointmentTab,
+    decisionSelected: elements.get('appointment-tab-decisions').attributes['aria-selected'],
+    decisionPanelHidden: elements.get('appointment-panel-decisions').hidden,
+    questionsPanelHidden: elements.get('appointment-panel-questions').hidden,
+  }));
+})().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
+""",
+        ]
+    )
+    completed = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
+def test_appointment_order_is_atomic_and_stale_generated_text_is_redacted_at_runtime():
+    result = _run_appointment_behavior_probe()
+    assert result["ordered"] == ["q-3", "q-1", "q-2"]
+    assert result["submission"] == {
+        "url": "/api/visits/visit-1/questions/order",
+        "body": {
+            "expected_visit_token": "visit-token",
+            "questions": [
+                {"id": "q-3", "expected_token": "token-3"},
+                {"id": "q-1", "expected_token": "token-1"},
+                {"id": "q-2", "expected_token": "token-2"},
+            ],
+        },
+        "visitId": "visit-1",
+        "method": "PATCH",
+    }
+    assert result["staleRedacted"] is True
+    assert result["currentVisible"] is True
+    assert result["activeTab"] == "decisions"
+    assert result["decisionSelected"] == "true"
+    assert result["decisionPanelHidden"] is False
+    assert result["questionsPanelHidden"] is True
+
+
+def test_appointment_mutations_use_stable_contracts_and_explicit_retry_only():
+    mutation = _function_source("newMutationId", "setAppointmentMessage")
+    intent = _function_source("createWorkflowIntent", "workflowIntentCanRender")
+    performer = _function_source("performWorkflowIntent", "submitWorkflowMutation")
+    retry = _function_source("retryWorkflowIntent", "readJsonResponse")
+    invalidation = _function_source(
+        "invalidateWorkflowRetryOnDraftChange", "setAppointmentMutationBusy"
+    )
+    generated = _function_source("addGeneratedVisitQuestion", "addManualVisitQuestion")
+    ordering = _function_source("persistVisitQuestionOrder", "reorderedQuestionList")
+
+    assert "crypto?.randomUUID" in mutation
+    assert "mutation_id: newMutationId()" in intent
+    assert "workflowMutationPending" in performer
+    assert "setAppointmentMutationBusy(true)" in performer
+    assert "response.status === 409" not in performer
+    assert "error?.status === 409" in performer
+    assert "performWorkflowIntent(intent, true)" in retry
+    assert "clearWorkflowRetry()" in invalidation
+    assert "The draft changed" in invalidation
+    assert "addEventListener('input', handleAppointmentDraftChange)" in APP_JS
+    assert "expected_source_token: sourceToken" in generated
+    assert "source_question_id: sourceId" in generated
+    assert "text:" not in generated
+    assert "/questions/order" in ordering
+    assert "questions: ordered.map" in ordering
+    assert "/questions/${encodeURIComponent" not in ordering
+
+
+def test_appointment_revision_epoch_conflict_and_eviction_guards_are_complete():
+    context = _function_source("workflowIntentCanRender", "refreshClinicalWorkflowState")
+    refresh = _function_source("refreshClinicalWorkflowState", "consumeWorkflowResponse")
+    conflicts = _function_source("handleWorkflowConflict", "performWorkflowIntent")
+    eviction = _function_source("evictClientPhi", "renderLatestResearchUpdate")
+
+    assert "requestPhiEpoch !== phiEpoch" in context
+    assert "requestVisitEpoch === visitSelectionEpoch" in context
+    assert "phiEpoch += 1" in refresh
+    assert "taskSelectionEpoch += 1" in refresh
+    assert "syncChatRevision(profileRevision, true)" in refresh
+    assert "loadSummary()" in refresh
+    assert "loadTasks()" in refresh
+    assert "loadVisits()" in refresh
+    assert "loadVisitFollowUps()" in refresh
+    assert "loadQuestions()" in conflicts
+    assert "performWorkflowIntent" not in conflicts
+
+    for expression in (
+        "workflowRevision = null",
+        "visitsById = new Map()",
+        "appointmentOptions = []",
+        "appointmentQuestionSources = []",
+        "visitFollowUps = []",
+        "selectedVisitId = null",
+        "visitSelectionEpoch += 1",
+        "appointmentDialogOpen = false",
+        "pendingWorkflowIntent = null",
+        "workflowMutationPending = false",
+        "appointmentDrafts = new Map()",
+        "clear('visit-list')",
+        "clear('visit-question-list')",
+        "clear('visit-decision-list')",
+        "clear('visit-followup-list')",
+    ):
+        assert expression in eviction
+
+
+def test_appointment_loops_use_arrays_and_live_drafts_survive_rerenders():
+    assert not re.search(r"for \(const [^)]+ of \(", APP_JS)
+    retry_clear = _function_source("clearWorkflowRetry", "invalidateWorkflowRetryOnDraftChange")
+    assert "['appointment-retry', 'visit-create-retry']" in retry_clear
+    tabs = _function_source("switchAppointmentTab", "handleAppointmentTabKeydown")
+    assert "['questions', 'decisions', 'followups']" in tabs
+
+    capture = _function_source("captureAppointmentDraft", "restoreAppointmentDraft")
+    restore = _function_source("restoreAppointmentDraft", "openAppointmentWorkspace")
+    consume = _function_source("consumeWorkflowResponse", "handleWorkflowConflict")
+    assert "querySelectorAll('#visit-question-list .visit-question')" in capture
+    assert "answers[row.dataset.visitQuestionId]" in capture
+    assert "answers," in capture
+    assert "Object.entries(values.answers || {})" in restore
+    assert "toggleVisitAnswerText(status)" in restore
+    assert "captureAppointmentDraft()" in consume
+    assert "addEventListener('change', handleAppointmentDraftChange)" in APP_JS
+
+
+def test_appointment_provenance_and_stale_source_wording_are_fixed():
+    assert APP_JS.count("Caregiver-entered · attributed to clinician · unverified") >= 2
+    source_picker = _function_source("renderVisitSourceQuestions", "addGeneratedVisitQuestion")
+    assert "Generated question unavailable" in source_picker
+    assert "The assessment changed" in source_picker
+    unavailable = source_picker[
+        source_picker.index("if (unavailable)") : source_picker.index(
+            'return `<div class="visit-source-question"', source_picker.index("if (unavailable)")
+        )
+    ]
+    assert "question.text" not in unavailable
+    assert "question.rationale" not in unavailable
+    accepted = _function_source("renderVisitQuestions", "toggleVisitAnswerText")
+    assert "Generated snapshot · generation" in accepted
+    assert "Manual caregiver question" in accepted
+
+
+def test_appointment_flows_never_call_deferred_or_legacy_routes():
+    assert "/api/visits/${encodeURIComponent(visit.id)}/follow-ups" in APP_JS
+    assert "visitFollowUps.filter" in APP_JS
+    assert "/api/alerts/resolve/" not in APP_JS
+    assert "/api/follow-ups/" not in APP_JS
+    assert "Save as follow-up" not in APP_JS
+    assert "follow-up filters" not in APP_JS

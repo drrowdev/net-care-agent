@@ -16,6 +16,18 @@
   let taskSelectionEpoch = 0;
   let latestProfileRevision = null;
   let phiEpoch = 0;
+  let workflowRevision = null;
+  let visitsById = new Map();
+  let appointmentOptions = [];
+  let appointmentQuestionSources = [];
+  let visitFollowUps = [];
+  let selectedVisitId = null;
+  let visitSelectionEpoch = 0;
+  let appointmentDialogOpen = false;
+  let activeAppointmentTab = 'questions';
+  let pendingWorkflowIntent = null;
+  let workflowMutationPending = false;
+  let appointmentDrafts = new Map();
   const failedLoads = new Map();
 
   // ── UI label localization ───────────────────────────────────────────────
@@ -49,6 +61,219 @@
     } catch (_) {
       return '';
     }
+  }
+
+  function newMutationId() {
+    if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+    return `mutation-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
+
+  function setAppointmentMessage(message, tone = '') {
+    const status = document.getElementById('appointment-status-message');
+    if (!status) return;
+    status.textContent = message || '';
+    status.className = `appointment-status-message${tone ? ` ${safeClassToken(tone)}` : ''}`;
+  }
+
+  function clearWorkflowRetry() {
+    pendingWorkflowIntent = null;
+    for (const id of ['appointment-retry', 'visit-create-retry']) {
+      const retry = document.getElementById(id);
+      if (retry) retry.hidden = true;
+    }
+  }
+
+  function invalidateWorkflowRetryOnDraftChange() {
+    if (!pendingWorkflowIntent) return;
+    const createIntent = !pendingWorkflowIntent.visitId;
+    clearWorkflowRetry();
+    if (createIntent) {
+      setFormError('visit-create-error', 'Draft changed. Submit it as a new visit request.');
+    }
+    setAppointmentMessage(
+      'The draft changed. Submit it as a new request after reviewing the latest visit.',
+      'conflict',
+    );
+  }
+
+  function setAppointmentMutationBusy(busy) {
+    document.querySelectorAll(
+      '#appointment-dialog .button, #visit-create-panel .button'
+    ).forEach(control => {
+      if (busy) {
+        control.dataset.workflowWasDisabled = String(control.disabled);
+        control.disabled = true;
+      } else if ('workflowWasDisabled' in control.dataset) {
+        control.disabled = control.dataset.workflowWasDisabled === 'true';
+        delete control.dataset.workflowWasDisabled;
+      }
+    });
+  }
+
+  function createWorkflowIntent(url, body, visitId = selectedVisitId) {
+    return {
+      method: 'POST',
+      url,
+      body: { ...body, mutation_id: newMutationId() },
+      visitId: visitId || null,
+      requestPhiEpoch: phiEpoch,
+      requestVisitEpoch: visitSelectionEpoch,
+    };
+  }
+
+  function workflowIntentCanRender(intent) {
+    if (intent.requestPhiEpoch !== phiEpoch) return false;
+    if (!intent.visitId) return true;
+    return intent.visitId === selectedVisitId
+      && intent.requestVisitEpoch === visitSelectionEpoch;
+  }
+
+  async function refreshClinicalWorkflowState(profileRevision) {
+    phiEpoch += 1;
+    taskSelectionEpoch += 1;
+    syncChatRevision(profileRevision, true);
+    await Promise.allSettled([
+      loadStatus(),
+      loadSummary(),
+      loadQuestions(),
+      loadTasks(),
+      loadVisits(),
+      loadVisitFollowUps(),
+    ]);
+    if (appointmentDialogOpen) {
+      setAppointmentMessage('Saved. Clinical content was refreshed for the updated record.', 'success');
+    }
+  }
+
+  async function consumeWorkflowResponse(data, intent) {
+    if (appointmentDialogOpen && workflowIntentCanRender(intent)) {
+      captureAppointmentDraft();
+    }
+    const priorProfileRevision = latestProfileRevision;
+    if (Number.isInteger(data.workflow_revision)) workflowRevision = data.workflow_revision;
+    if (data.visit?.id) visitsById.set(data.visit.id, data.visit);
+    if (data.item?.question_snapshots && data.item.id) visitsById.set(data.item.id, data.item);
+    if (data.item?.visit_id && data.item.id) {
+      visitFollowUps = [
+        ...visitFollowUps.filter(item => item.id !== data.item.id),
+        data.item,
+      ];
+    }
+
+    const profileChanged = data.profile_revision != null
+      && priorProfileRevision != null
+      && String(data.profile_revision) !== String(priorProfileRevision);
+    if (data.profile_revision != null) latestProfileRevision = data.profile_revision;
+
+    if (profileChanged) {
+      await refreshClinicalWorkflowState(data.profile_revision);
+      return;
+    }
+
+    if (workflowIntentCanRender(intent)) {
+      renderVisitPreparation();
+      renderAppointmentWorkspace();
+    }
+    reportLoadSuccess('appointment-workflow');
+  }
+
+  async function handleWorkflowConflict(error, intent) {
+    if (appointmentDialogOpen && workflowIntentCanRender(intent)) {
+      captureAppointmentDraft();
+    }
+    clearWorkflowRetry();
+    const generatedSource = intent.body.source_kind === 'generated';
+    const message = generatedSource
+      ? 'The assessment changed. Reloaded questions must be reviewed before adding one.'
+      : (error.message || 'This visit changed. Review the latest version before trying again.');
+    setAppointmentMessage(message, 'conflict');
+    reportLoadError('appointment-workflow', error);
+    await Promise.allSettled([loadVisits(), loadVisitFollowUps(), loadQuestions()]);
+  }
+
+  async function performWorkflowIntent(intent, explicitRetry = false) {
+    if (workflowMutationPending) return null;
+    workflowMutationPending = true;
+    setAppointmentMutationBusy(true);
+    if (!explicitRetry) clearWorkflowRetry();
+    setAppointmentMessage(explicitRetry ? 'Retrying the unchanged request…' : 'Saving…', 'saving');
+    try {
+      const response = await fetch(intent.url, {
+        method: intent.method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(intent.body),
+      });
+      const data = await readJsonResponse(response);
+      clearWorkflowRetry();
+      await consumeWorkflowResponse(data, intent);
+      if (workflowIntentCanRender(intent)) setAppointmentMessage('Saved.', 'success');
+      return data;
+    } catch (error) {
+      if (intent.requestPhiEpoch !== phiEpoch) {
+        if (error?.status === 401 || error?.status === 403) {
+          reportLoadError('appointment-workflow', error);
+        }
+        return null;
+      }
+      if (error?.status === 409) {
+        await handleWorkflowConflict(error, intent);
+        return null;
+      }
+      if (error instanceof TypeError || navigator.onLine === false) {
+        pendingWorkflowIntent = intent;
+        const retry = document.getElementById(
+          intent.visitId ? 'appointment-retry' : 'visit-create-retry'
+        );
+        if (retry) retry.hidden = false;
+        if (!intent.visitId) {
+          setFormError('visit-create-error', 'Connection lost. Your draft is still available.');
+        }
+        setAppointmentMessage('Connection lost. Your draft is still available.', 'offline');
+        reportLoadError('appointment-workflow', error);
+        return null;
+      }
+      if (shouldEvictClientPhi(error)) {
+        evictClientPhi(error);
+        reportLoadError('appointment-workflow', error);
+        return null;
+      }
+      setAppointmentMessage(error?.message || 'The request could not be saved.', 'error');
+      reportLoadError('appointment-workflow', error);
+      return null;
+    } finally {
+      workflowMutationPending = false;
+      if (intent.requestPhiEpoch === phiEpoch || appointmentDialogOpen) {
+        setAppointmentMutationBusy(false);
+        updateAppointmentFormValidity();
+      }
+    }
+  }
+
+  async function submitWorkflowMutation(url, body, visitId = selectedVisitId, method = 'POST') {
+    const intent = createWorkflowIntent(url, body, visitId);
+    intent.method = method;
+    return performWorkflowIntent(intent);
+  }
+
+  async function retryWorkflowIntent() {
+    const intent = pendingWorkflowIntent;
+    if (!intent) return;
+    if (
+      intent.requestPhiEpoch !== phiEpoch
+      || (
+        intent.visitId
+        && (
+          intent.visitId !== selectedVisitId
+          || intent.requestVisitEpoch !== visitSelectionEpoch
+        )
+      )
+    ) {
+      clearWorkflowRetry();
+      setAppointmentMessage('The visit changed. Review it before submitting a new request.', 'conflict');
+      return;
+    }
+    const result = await performWorkflowIntent(intent, true);
+    finalizeRetriedWorkflowIntent(intent, result);
   }
 
   async function readJsonResponse(response) {
@@ -251,6 +476,7 @@
     if (judgment) setFormError('judgment-form-error', '');
     if (symptom) setFormError('sym-form-error', '');
     if (chat) setFormError('chat-form-error', '');
+    updateAppointmentFormValidity();
   }
 
   function renderAppState() {
@@ -298,6 +524,8 @@
       loadJudgments(),
       loadSymptoms(),
       loadPatientEvidence(),
+      loadVisits(),
+      loadVisitFollowUps(),
     ]);
   }
 
@@ -319,6 +547,8 @@
     if (name === 'questions') {
       loadQuestions();
       loadJudgments();
+      loadVisits();
+      loadVisitFollowUps();
     } else if (name === 'patient') {
       loadStatus();
       loadSymptoms();
@@ -343,6 +573,9 @@
     if (document.hidden) return;
     const refreshes = [loadTasks(), loadStatus()];
     if (activeView === 'today') refreshes.push(loadSummary());
+    if (activeView === 'questions' || appointmentDialogOpen) {
+      refreshes.push(loadVisits(), loadVisitFollowUps(), loadQuestions());
+    }
     Promise.allSettled(refreshes);
   }
 
@@ -461,6 +694,18 @@
       latestResearchUpdate = null;
       patientEvidence = null;
       allBiomarkers = [];
+      workflowRevision = null;
+      visitsById = new Map();
+      appointmentOptions = [];
+      appointmentQuestionSources = [];
+      visitFollowUps = [];
+      selectedVisitId = null;
+      visitSelectionEpoch += 1;
+      appointmentDialogOpen = false;
+      activeAppointmentTab = 'questions';
+      pendingWorkflowIntent = null;
+      workflowMutationPending = false;
+      appointmentDrafts = new Map();
       chatHistory = [];
       chatHistoryRevision = null;
       document.querySelectorAll('.action-feedback').forEach(editor => editor.remove());
@@ -480,6 +725,11 @@
       clear('imaging-history');
       clear('source-history');
       clear('q-list');
+      clear('visit-list');
+      clear('visit-source-questions');
+      clear('visit-question-list');
+      clear('visit-decision-list');
+      clear('visit-followup-list');
       clear('judgments-list');
       clear('symptoms-list');
       clear('summary-status-inline');
@@ -487,6 +737,13 @@
       clear('summary-body', '<div class="summary-empty">Patient assessment unavailable.</div>');
       clear('task-list');
       clear('panel-body', '<div class="report-empty">Activity detail unavailable.</div>');
+      const appointmentOverlay = document.getElementById('appointment-overlay');
+      appointmentOverlay?.classList.remove('open');
+      appointmentOverlay?.setAttribute('aria-hidden', 'true');
+      const appointmentRetry = document.getElementById('appointment-retry');
+      if (appointmentRetry) appointmentRetry.hidden = true;
+      const visitCreateRetry = document.getElementById('visit-create-retry');
+      if (visitCreateRetry) visitCreateRetry.hidden = true;
       const search = document.getElementById('bm-search');
       if (search) {
         search.value = '';
@@ -516,16 +773,29 @@
       );
       const chatInput = document.getElementById('chat-input');
       if (chatInput) chatInput.value = '';
-      for (const id of (
+      for (const id of [
         'judgment-input', 'q-add-input', 'sym-name', 'sym-note',
+        'visit-create-title', 'visit-create-date', 'visit-create-time',
+        'visit-create-clinician', 'visit-create-location',
+        'visit-edit-title', 'visit-edit-date', 'visit-edit-time',
+        'visit-edit-clinician', 'visit-edit-location',
+        'visit-manual-question', 'visit-decision-text',
+        'visit-followup-text', 'visit-followup-owner', 'visit-followup-due',
         'dismiss-text-0', 'dismiss-text-1', 'dismiss-text-2',
         'dismiss-text-3', 'dismiss-text-4'
-      )) {
+      ]) {
         const input = document.getElementById(id);
         if (input) input.value = '';
       }
       const severity = document.getElementById('sym-sev');
       if (severity) severity.value = '';
+      for (const id of [
+        'visit-source-appointment', 'visit-manual-category', 'visit-manual-priority',
+        'visit-followup-decision'
+      ]) {
+        const select = document.getElementById(id);
+        if (select) select.value = '';
+      }
       document.querySelectorAll(
         '.judgment-edit-text, .receipt-editor input, .receipt-editor textarea, .receipt-editor select'
       ).forEach(control => {
@@ -2296,6 +2566,10 @@
   document.addEventListener('keydown', (e) => {
     if (trapDialogFocus(e)) return;
     if (e.key !== 'Escape') return;
+    if (appointmentDialogOpen) {
+      closeAppointmentWorkspace();
+      return;
+    }
     const pop = document.getElementById('feed-popover');
     if (pop?.classList.contains('visible')) {
       toggleFeedPopover(false);
@@ -2527,6 +2801,888 @@
     pollingInterval = setTimeout(poll, 3000);
   }
 
+  // ── Appointment working mode ────────────────────────────────────────────
+  function currentVisit() {
+    return selectedVisitId ? visitsById.get(selectedVisitId) || null : null;
+  }
+
+  function visitStatusLabel(status) {
+    return {
+      planned: 'Planned',
+      in_progress: 'In progress',
+      completed: 'Completed',
+      cancelled: 'Cancelled',
+    }[status] || 'Planned';
+  }
+
+  function sortedVisitQuestions(visit) {
+    return [...(visit?.question_snapshots || [])].sort((a, b) => {
+      if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1;
+      const order = Number(a.order || 0) - Number(b.order || 0);
+      return order || String(a.created_at || '').localeCompare(String(b.created_at || ''));
+    });
+  }
+
+  function linkableAppointment(id) {
+    return appointmentOptions.find(item => item.id === id) || null;
+  }
+
+  async function loadVisits() {
+    const requestPhiEpoch = phiEpoch;
+    try {
+      const data = await readJsonResponse(await fetch('/api/visits'));
+      if (requestPhiEpoch !== phiEpoch) return [];
+      if (appointmentDialogOpen) captureAppointmentDraft();
+      workflowRevision = data.workflow_revision;
+      syncChatRevision(data.profile_revision);
+      visitsById = new Map((data.items || []).map(item => [item.id, item]));
+      appointmentOptions = Array.isArray(data.appointments) ? data.appointments : [];
+      if (selectedVisitId && !visitsById.has(selectedVisitId)) {
+        selectedVisitId = null;
+        visitSelectionEpoch += 1;
+        closeAppointmentWorkspace();
+      }
+      renderAppointmentOptions();
+      renderVisitPreparation();
+      if (appointmentDialogOpen) renderAppointmentWorkspace();
+      reportLoadSuccess('visits');
+      return data.items || [];
+    } catch (error) {
+      if (requestPhiEpoch === phiEpoch && shouldEvictClientPhi(error)) {
+        evictClientPhi(error);
+      } else if (requestPhiEpoch === phiEpoch) {
+        const list = document.getElementById('visit-list');
+        if (list) list.innerHTML = loadFailureMarkup('Appointments', 'loadVisits()');
+      }
+      reportLoadError('visits', error);
+      return [];
+    }
+  }
+
+  async function loadVisitFollowUps() {
+    const requestPhiEpoch = phiEpoch;
+    try {
+      const data = await readJsonResponse(await fetch('/api/follow-ups'));
+      if (requestPhiEpoch !== phiEpoch) return [];
+      workflowRevision = data.workflow_revision;
+      syncChatRevision(data.profile_revision);
+      visitFollowUps = Array.isArray(data.items) ? data.items : [];
+      if (appointmentDialogOpen) renderVisitFollowUps();
+      reportLoadSuccess('visit-follow-ups');
+      return visitFollowUps;
+    } catch (error) {
+      if (requestPhiEpoch === phiEpoch && shouldEvictClientPhi(error)) {
+        evictClientPhi(error);
+      } else if (requestPhiEpoch === phiEpoch && appointmentDialogOpen) {
+        const list = document.getElementById('visit-followup-list');
+        if (list) list.innerHTML = loadFailureMarkup('Visit follow-ups', 'loadVisitFollowUps()');
+      }
+      reportLoadError('visit-follow-ups', error);
+      return [];
+    }
+  }
+
+  function renderAppointmentOptions() {
+    const select = document.getElementById('visit-source-appointment');
+    if (!select) return;
+    const current = select.value;
+    select.innerHTML = '<option value="">Create without imported appointment</option>'
+      + appointmentOptions.map(item => {
+        const label = [
+          item.date ? fmtDate(item.date) : 'Date pending',
+          item.description || item.type || item.with || 'Imported appointment',
+        ].filter(Boolean).join(' · ');
+        return `<option value="${escHtml(item.id)}">${escHtml(label)}</option>`;
+      }).join('');
+    if (appointmentOptions.some(item => item.id === current)) select.value = current;
+  }
+
+  function renderVisitPreparation() {
+    const list = document.getElementById('visit-list');
+    if (!list) return;
+    const visits = [...visitsById.values()].sort((a, b) => {
+      const terminalA = ['completed', 'cancelled'].includes(a.status) ? 1 : 0;
+      const terminalB = ['completed', 'cancelled'].includes(b.status) ? 1 : 0;
+      return terminalA - terminalB
+        || String(a.date || '9999-12-31').localeCompare(String(b.date || '9999-12-31'))
+        || String(b.updated_at || '').localeCompare(String(a.updated_at || ''));
+    });
+    if (!visits.length) {
+      list.innerHTML = '<div class="empty-state">No visit workspace yet. Create one for the next appointment.</div>';
+      return;
+    }
+    list.innerHTML = visits.map(visit => {
+      const source = linkableAppointment(visit.source_appointment_id);
+      const details = [
+        visit.date ? fmtDate(visit.date) : 'Date pending',
+        visit.time,
+        visit.clinician,
+        visit.location,
+      ].filter(Boolean).map(escHtml).join(' · ');
+      return `<article class="visit-row" data-visit-id="${escHtml(visit.id)}" data-visit-token="${escHtml(visit.token)}">
+        <div class="visit-row-main">
+          <div class="visit-row-title">${escHtml(visit.title)}</div>
+          <div class="visit-row-meta">${details || 'Visit details not set'}</div>
+          ${source ? `<div class="visit-source-label">Linked imported appointment · ${escHtml(source.description || source.type || source.date || '')}</div>` : ''}
+        </div>
+        <span class="visit-status-badge ${safeClassToken(visit.status, 'planned')}">${escHtml(visitStatusLabel(visit.status))}</span>
+        <button class="button secondary visit-open-button" onclick="openAppointmentWorkspace(this, this.closest('.visit-row').dataset.visitId)">Open appointment</button>
+      </article>`;
+    }).join('');
+  }
+
+  function toggleVisitCreateForm(force) {
+    const panel = document.getElementById('visit-create-panel');
+    const button = document.getElementById('visit-create-toggle');
+    const show = typeof force === 'boolean' ? force : panel.hidden;
+    panel.hidden = !show;
+    button.setAttribute('aria-expanded', String(show));
+    if (show) document.getElementById('visit-create-title')?.focus();
+    else setFormError('visit-create-error', '');
+  }
+
+  function prefillVisitFromAppointment() {
+    const sourceId = document.getElementById('visit-source-appointment')?.value;
+    const source = linkableAppointment(sourceId);
+    if (!source) return;
+    document.getElementById('visit-create-title').value =
+      source.description || source.type || 'Clinical appointment';
+    document.getElementById('visit-create-date').value = source.date || '';
+    document.getElementById('visit-create-time').value = source.time || '';
+    document.getElementById('visit-create-clinician').value = source.with || '';
+    document.getElementById('visit-create-location').value = source.location || '';
+    updateAppointmentFormValidity();
+  }
+
+  function updateAppointmentFormValidity() {
+    const createTitle = (document.getElementById('visit-create-title')?.value || '').trim();
+    const manualQuestion = (document.getElementById('visit-manual-question')?.value || '').trim();
+    const decision = (document.getElementById('visit-decision-text')?.value || '').trim();
+    const followUp = (document.getElementById('visit-followup-text')?.value || '').trim();
+    const createButton = document.getElementById('visit-create-submit');
+    const questionButton = document.getElementById('visit-manual-question-submit');
+    const decisionButton = document.getElementById('visit-decision-submit');
+    const followUpButton = document.getElementById('visit-followup-submit');
+    if (createButton) createButton.disabled = !createTitle;
+    if (questionButton) questionButton.disabled = !manualQuestion;
+    if (decisionButton) decisionButton.disabled = !decision;
+    if (followUpButton) followUpButton.disabled = !followUp;
+    if (createTitle) setFormError('visit-create-error', '');
+    if (manualQuestion) setFormError('visit-question-error', '');
+    if (decision) setFormError('visit-decision-error', '');
+    if (followUp) setFormError('visit-followup-error', '');
+  }
+
+  function visitCreateBody() {
+    return {
+      title: (document.getElementById('visit-create-title')?.value || '').trim(),
+      date: document.getElementById('visit-create-date')?.value || null,
+      time: (document.getElementById('visit-create-time')?.value || '').trim() || null,
+      clinician: (document.getElementById('visit-create-clinician')?.value || '').trim() || null,
+      location: (document.getElementById('visit-create-location')?.value || '').trim() || null,
+      source_appointment_id: document.getElementById('visit-source-appointment')?.value || null,
+    };
+  }
+
+  function completeVisitCreation(result) {
+    if (!result?.item?.id) return;
+    for (const id of [
+      'visit-create-title', 'visit-create-date', 'visit-create-time',
+      'visit-create-clinician', 'visit-create-location', 'visit-source-appointment'
+    ]) {
+      const input = document.getElementById(id);
+      if (input) input.value = '';
+    }
+    toggleVisitCreateForm(false);
+    updateAppointmentFormValidity();
+    openAppointmentWorkspace(document.getElementById('visit-create-toggle'), result.item.id);
+  }
+
+  function finalizeRetriedWorkflowIntent(intent, result) {
+    if (!result) return;
+    if (result.item?.question_snapshots && !intent.visitId) {
+      completeVisitCreation(result);
+      return;
+    }
+    const visitId = intent.visitId;
+    if (intent.url.endsWith('/questions') && intent.body.source_kind === 'manual') {
+      document.getElementById('visit-manual-question').value = '';
+      const draft = appointmentDrafts.get(visitId);
+      if (draft) draft.manualQuestion = '';
+      setFormError('visit-question-error', '');
+    } else if (intent.url.endsWith('/decisions')) {
+      document.getElementById('visit-decision-text').value = '';
+      cancelDecisionSuccessor();
+      const draft = appointmentDrafts.get(visitId);
+      if (draft) {
+        draft.decisionText = '';
+        draft.supersedesId = '';
+      }
+      setFormError('visit-decision-error', '');
+    } else if (intent.url.endsWith('/follow-ups')) {
+      for (const id of [
+        'visit-followup-text', 'visit-followup-owner',
+        'visit-followup-due', 'visit-followup-decision'
+      ]) {
+        const input = document.getElementById(id);
+        if (input) input.value = '';
+      }
+      const draft = appointmentDrafts.get(visitId);
+      if (draft) {
+        draft.followUpText = '';
+        draft.followUpOwner = '';
+        draft.followUpDue = '';
+        draft.followUpDecision = '';
+      }
+      setFormError('visit-followup-error', '');
+    } else if (
+      intent.method === 'PATCH'
+      && intent.url === `/api/visits/${encodeURIComponent(visitId)}`
+    ) {
+      appointmentDrafts.delete(visitId);
+      renderAppointmentWorkspace();
+    }
+    updateAppointmentFormValidity();
+  }
+
+  async function createVisit() {
+    const body = visitCreateBody();
+    if (!body.title) {
+      setFormError('visit-create-error', 'Enter a visit title.');
+      updateAppointmentFormValidity();
+      return;
+    }
+    const result = await submitWorkflowMutation('/api/visits', body, null);
+    completeVisitCreation(result);
+  }
+
+  function captureAppointmentDraft() {
+    if (!selectedVisitId) return;
+    const prior = appointmentDrafts.get(selectedVisitId) || {};
+    const answers = { ...(prior.answers || {}) };
+    document.querySelectorAll('#visit-question-list .visit-question').forEach(row => {
+      const status = row.querySelector('.visit-answer-status');
+      const text = row.querySelector('.visit-answer-text');
+      if (row.dataset.visitQuestionId && status && text) {
+        answers[row.dataset.visitQuestionId] = {
+          status: status.value,
+          text: text.value,
+        };
+      }
+    });
+    appointmentDrafts.set(selectedVisitId, {
+      editTitle: document.getElementById('visit-edit-title')?.value || '',
+      editDate: document.getElementById('visit-edit-date')?.value || '',
+      editTime: document.getElementById('visit-edit-time')?.value || '',
+      editClinician: document.getElementById('visit-edit-clinician')?.value || '',
+      editLocation: document.getElementById('visit-edit-location')?.value || '',
+      manualQuestion: document.getElementById('visit-manual-question')?.value || '',
+      manualCategory: document.getElementById('visit-manual-category')?.value || 'Other',
+      manualPriority: document.getElementById('visit-manual-priority')?.value || 'medium',
+      decisionText: document.getElementById('visit-decision-text')?.value || '',
+      supersedesId: document.getElementById('visit-decision-supersedes')?.value || '',
+      followUpText: document.getElementById('visit-followup-text')?.value || '',
+      followUpDecision: document.getElementById('visit-followup-decision')?.value || '',
+      followUpOwner: document.getElementById('visit-followup-owner')?.value || '',
+      followUpDue: document.getElementById('visit-followup-due')?.value || '',
+      answers,
+    });
+  }
+
+  function restoreAppointmentDraft(visit) {
+    const draft = appointmentDrafts.get(visit.id);
+    const values = draft || {
+      editTitle: visit.title || '',
+      editDate: visit.date || '',
+      editTime: visit.time || '',
+      editClinician: visit.clinician || '',
+      editLocation: visit.location || '',
+    };
+    const fields = {
+      'visit-edit-title': values.editTitle ?? visit.title ?? '',
+      'visit-edit-date': values.editDate ?? visit.date ?? '',
+      'visit-edit-time': values.editTime ?? visit.time ?? '',
+      'visit-edit-clinician': values.editClinician ?? visit.clinician ?? '',
+      'visit-edit-location': values.editLocation ?? visit.location ?? '',
+      'visit-manual-question': values.manualQuestion || '',
+      'visit-manual-category': values.manualCategory || 'Other',
+      'visit-manual-priority': values.manualPriority || 'medium',
+      'visit-decision-text': values.decisionText || '',
+      'visit-decision-supersedes': values.supersedesId || '',
+      'visit-followup-text': values.followUpText || '',
+      'visit-followup-owner': values.followUpOwner || '',
+      'visit-followup-due': values.followUpDue || '',
+    };
+    Object.entries(fields).forEach(([id, value]) => {
+      const input = document.getElementById(id);
+      if (input) input.value = value;
+    });
+    const decisionSelect = document.getElementById('visit-followup-decision');
+    if (decisionSelect && values.followUpDecision) decisionSelect.value = values.followUpDecision;
+    const superseding = Boolean(values.supersedesId);
+    document.getElementById('visit-decision-cancel-supersede').hidden = !superseding;
+    document.getElementById('visit-decision-label').textContent = superseding
+      ? 'Correct with a successor decision'
+      : 'Caregiver-entered decision attributed to the clinician';
+    Object.entries(values.answers || {}).forEach(([questionId, answer]) => {
+      const row = [...document.querySelectorAll('#visit-question-list .visit-question')]
+        .find(item => item.dataset.visitQuestionId === questionId);
+      const status = row?.querySelector('.visit-answer-status');
+      const text = row?.querySelector('.visit-answer-text');
+      if (!status || !text) return;
+      status.value = answer.status === 'unknown' ? 'unknown' : 'answered';
+      text.value = answer.text || '';
+      toggleVisitAnswerText(status);
+    });
+    updateAppointmentFormValidity();
+  }
+
+  function openAppointmentWorkspace(trigger, visitId) {
+    const visit = visitsById.get(visitId);
+    if (!visit) {
+      setAppointmentMessage('The visit is no longer available.', 'conflict');
+      loadVisits();
+      return;
+    }
+    if (selectedVisitId && selectedVisitId !== visitId) captureAppointmentDraft();
+    selectedVisitId = visitId;
+    visitSelectionEpoch += 1;
+    appointmentDialogOpen = true;
+    clearWorkflowRetry();
+    const overlay = document.getElementById('appointment-overlay');
+    overlay.classList.add('open');
+    overlay.setAttribute('aria-hidden', 'false');
+    renderAppointmentWorkspace();
+    activateDialog(document.getElementById('appointment-dialog'), trigger);
+  }
+
+  function closeAppointmentWorkspace() {
+    if (!appointmentDialogOpen) return;
+    captureAppointmentDraft();
+    appointmentDialogOpen = false;
+    visitSelectionEpoch += 1;
+    clearWorkflowRetry();
+    const overlay = document.getElementById('appointment-overlay');
+    overlay?.classList.remove('open');
+    overlay?.setAttribute('aria-hidden', 'true');
+    deactivateDialog(document.getElementById('appointment-dialog'));
+  }
+
+  function closeAppointmentFromBackdrop(event) {
+    if (event?.target === document.getElementById('appointment-overlay')) {
+      closeAppointmentWorkspace();
+    }
+  }
+
+  function selectVisitInWorkspace(visitId) {
+    if (!visitsById.has(visitId) || visitId === selectedVisitId) return;
+    captureAppointmentDraft();
+    selectedVisitId = visitId;
+    visitSelectionEpoch += 1;
+    clearWorkflowRetry();
+    renderAppointmentWorkspace();
+    setAppointmentMessage('Visit changed.', 'success');
+  }
+
+  function switchAppointmentTab(name) {
+    if (!['questions', 'decisions', 'followups'].includes(name)) return;
+    captureAppointmentDraft();
+    activeAppointmentTab = name;
+    for (const tabName of ['questions', 'decisions', 'followups']) {
+      const active = tabName === name;
+      const tab = document.getElementById(`appointment-tab-${tabName}`);
+      const panel = document.getElementById(`appointment-panel-${tabName}`);
+      tab.classList.toggle('active', active);
+      tab.setAttribute('aria-selected', String(active));
+      tab.tabIndex = active ? 0 : -1;
+      panel.classList.toggle('active', active);
+      panel.hidden = !active;
+    }
+  }
+
+  function handleAppointmentTabKeydown(event) {
+    const names = ['questions', 'decisions', 'followups'];
+    const tabs = names.map(name => document.getElementById(`appointment-tab-${name}`));
+    const current = tabs.indexOf(document.activeElement);
+    if (current < 0) return;
+    let next = current;
+    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') next = (current + 1) % tabs.length;
+    else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') next = (current - 1 + tabs.length) % tabs.length;
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = tabs.length - 1;
+    else return;
+    event.preventDefault();
+    switchAppointmentTab(names[next]);
+    tabs[next].focus();
+  }
+
+  function renderAppointmentWorkspace() {
+    if (!appointmentDialogOpen) return;
+    const visit = currentVisit();
+    if (!visit) return;
+    document.getElementById('appointment-dialog-title').textContent = visit.title || 'Visit';
+    document.getElementById('appointment-dialog-meta').textContent = [
+      visit.date ? fmtDate(visit.date) : 'Date pending',
+      visit.time,
+      visit.clinician,
+      visit.location,
+    ].filter(Boolean).join(' · ');
+    const status = document.getElementById('visit-status-badge');
+    status.textContent = visitStatusLabel(visit.status);
+    status.className = `visit-status-badge ${safeClassToken(visit.status, 'planned')}`;
+
+    const selector = document.getElementById('appointment-visit-select');
+    if (selector) {
+      selector.innerHTML = [...visitsById.values()].map(item =>
+        `<option value="${escHtml(item.id)}">${escHtml(item.title)} · ${escHtml(visitStatusLabel(item.status))}</option>`
+      ).join('');
+      selector.value = visit.id;
+    }
+
+    document.getElementById('visit-start-button').hidden = visit.status !== 'planned';
+    document.getElementById('visit-complete-button').hidden =
+      !['planned', 'in_progress'].includes(visit.status);
+    document.getElementById('visit-cancel-button').hidden =
+      !['planned', 'in_progress'].includes(visit.status);
+
+    renderVisitSourceQuestions();
+    renderVisitQuestions();
+    renderVisitDecisions();
+    renderVisitFollowUps();
+    restoreAppointmentDraft(visit);
+    switchAppointmentTab(activeAppointmentTab);
+  }
+
+  async function saveVisitDetails() {
+    const visit = currentVisit();
+    if (!visit) return;
+    const title = (document.getElementById('visit-edit-title')?.value || '').trim();
+    if (!title) {
+      setFormError('visit-details-error', 'Enter a visit title.');
+      return;
+    }
+    const body = {
+      expected_token: visit.token,
+      title,
+      date: document.getElementById('visit-edit-date')?.value || null,
+      time: (document.getElementById('visit-edit-time')?.value || '').trim() || null,
+      clinician: (document.getElementById('visit-edit-clinician')?.value || '').trim() || null,
+      location: (document.getElementById('visit-edit-location')?.value || '').trim() || null,
+    };
+    const unchanged = body.title === visit.title
+      && body.date === (visit.date || null)
+      && body.time === (visit.time || null)
+      && body.clinician === (visit.clinician || null)
+      && body.location === (visit.location || null);
+    if (unchanged) {
+      setFormError('visit-details-error', 'Change at least one visit detail before saving.');
+      return;
+    }
+    const result = await submitWorkflowMutation(
+      `/api/visits/${encodeURIComponent(visit.id)}`,
+      body,
+      visit.id,
+      'PATCH',
+    );
+    if (result) {
+      appointmentDrafts.delete(visit.id);
+      setFormError('visit-details-error', '');
+      renderAppointmentWorkspace();
+    }
+  }
+
+  async function changeVisitStatus(targetStatus) {
+    const visit = currentVisit();
+    if (!visit) return;
+    const result = await submitWorkflowMutation(
+      `/api/visits/${encodeURIComponent(visit.id)}`,
+      { expected_token: visit.token, status: targetStatus },
+      visit.id,
+      'PATCH',
+    );
+    if (result) {
+      appointmentDrafts.delete(visit.id);
+      renderAppointmentWorkspace();
+    }
+  }
+
+  function renderVisitSourceQuestions() {
+    const container = document.getElementById('visit-source-questions');
+    if (!container) return;
+    const generated = appointmentQuestionSources.filter(question => question.source === 'ai');
+    if (!generated.length) {
+      container.innerHTML = '<div class="empty-state">No generated questions available.</div>';
+      return;
+    }
+    container.innerHTML = generated.map(question => {
+      const unavailable = question.stale;
+      if (unavailable) {
+        return `<div class="visit-source-question unavailable">
+          <div><strong>Generated question unavailable</strong><span>The assessment changed. Regenerate before adding it.</span></div>
+          <button class="button secondary" disabled>Unavailable</button>
+        </div>`;
+      }
+      return `<div class="visit-source-question" data-source-question-id="${escHtml(question.id)}" data-source-token="${escHtml(question.source_token)}">
+        <div><strong>${escHtml(question.text)}</strong><span>Current generated question</span></div>
+        <button class="button secondary" onclick="addGeneratedVisitQuestion(this.closest('.visit-source-question'))">Add</button>
+      </div>`;
+    }).join('');
+  }
+
+  async function addGeneratedVisitQuestion(row) {
+    const visit = currentVisit();
+    const sourceId = row?.dataset.sourceQuestionId;
+    const sourceToken = row?.dataset.sourceToken;
+    if (!visit || !sourceId || !sourceToken) return;
+    await submitWorkflowMutation(
+      `/api/visits/${encodeURIComponent(visit.id)}/questions`,
+      {
+        expected_visit_token: visit.token,
+        source_kind: 'generated',
+        source_question_id: sourceId,
+        expected_source_token: sourceToken,
+        pinned: false,
+        order: visit.question_snapshots.length,
+      },
+      visit.id,
+    );
+  }
+
+  async function addManualVisitQuestion() {
+    const visit = currentVisit();
+    const text = (document.getElementById('visit-manual-question')?.value || '').trim();
+    if (!visit || !text) {
+      setFormError('visit-question-error', 'Enter a manual caregiver question.');
+      updateAppointmentFormValidity();
+      return;
+    }
+    const result = await submitWorkflowMutation(
+      `/api/visits/${encodeURIComponent(visit.id)}/questions`,
+      {
+        expected_visit_token: visit.token,
+        source_kind: 'manual',
+        text,
+        category: document.getElementById('visit-manual-category')?.value || 'Other',
+        priority: document.getElementById('visit-manual-priority')?.value || 'medium',
+        pinned: false,
+        order: visit.question_snapshots.length,
+      },
+      visit.id,
+    );
+    if (result) {
+      document.getElementById('visit-manual-question').value = '';
+      const draft = appointmentDrafts.get(visit.id);
+      if (draft) draft.manualQuestion = '';
+      setFormError('visit-question-error', '');
+      updateAppointmentFormValidity();
+    }
+  }
+
+  function renderVisitQuestions() {
+    const visit = currentVisit();
+    const list = document.getElementById('visit-question-list');
+    if (!visit || !list) return;
+    const questions = sortedVisitQuestions(visit);
+    if (!questions.length) {
+      list.innerHTML = '<div class="empty-state">Add questions before or during the appointment.</div>';
+      return;
+    }
+    list.innerHTML = questions.map((question, index) => {
+      const sameGroup = questions.filter(item => Boolean(item.pinned) === Boolean(question.pinned));
+      const groupIndex = sameGroup.findIndex(item => item.id === question.id);
+      const sourceLabel = question.source_kind === 'generated'
+        ? `Generated snapshot · generation ${question.source_generation_id || 'unavailable'} · record revision ${question.source_profile_revision ?? 'unavailable'}`
+        : 'Manual caregiver question';
+      const answer = question.answer;
+      return `<article class="visit-question" data-visit-question-id="${escHtml(question.id)}" data-question-token="${escHtml(question.token)}">
+        <div class="visit-question-heading">
+          <span class="visit-question-rank">${index + 1}</span>
+          <div><strong>${escHtml(question.text)}</strong><span>${escHtml(sourceLabel)}</span></div>
+          <button class="icon-button visit-pin-button ${question.pinned ? 'pinned' : ''}" onclick="toggleVisitQuestionPin(this.closest('.visit-question'))" aria-label="${question.pinned ? 'Unpin' : 'Pin'} question" title="${question.pinned ? 'Unpin' : 'Pin'}">${question.pinned ? '★' : '☆'}</button>
+        </div>
+        <div class="visit-question-order">
+          <button class="button secondary" onclick="moveVisitQuestion(this.closest('.visit-question'),-1)" ${groupIndex === 0 ? 'disabled' : ''}>Move up</button>
+          <button class="button secondary" onclick="moveVisitQuestion(this.closest('.visit-question'),1)" ${groupIndex === sameGroup.length - 1 ? 'disabled' : ''}>Move down</button>
+          <label><span>Rank</span><select onchange="rankVisitQuestion(this.closest('.visit-question'),Number(this.value))">${sameGroup.map((item, rank) => `<option value="${rank}" ${item.id === question.id ? 'selected' : ''}>${rank + 1}</option>`).join('')}</select></label>
+        </div>
+        ${answer ? `<div class="visit-answer captured">
+          <strong>${answer.status === 'unknown' ? 'Clinician answer explicitly unknown' : 'Captured answer'}</strong>
+          ${answer.text ? `<p>${escHtml(answer.text)}</p>` : ''}
+          <span class="capture-provenance">Caregiver-entered · attributed to clinician · unverified</span>
+        </div>` : `<div class="visit-answer">
+          <label><span>Answer status</span><select class="visit-answer-status" onchange="toggleVisitAnswerText(this)"><option value="answered">Answered</option><option value="unknown">Explicitly unknown</option></select></label>
+          <label class="visit-answer-text-label"><span>Clinician-attributed answer</span><textarea class="visit-answer-text" maxlength="4000" rows="3"></textarea></label>
+          <button class="button primary" onclick="saveVisitAnswer(this.closest('.visit-question'))">Save answer</button>
+        </div>`}
+      </article>`;
+    }).join('');
+  }
+
+  function toggleVisitAnswerText(select) {
+    const row = select.closest('.visit-question');
+    const text = row?.querySelector('.visit-answer-text');
+    const label = row?.querySelector('.visit-answer-text-label');
+    const unknown = select.value === 'unknown';
+    if (text) {
+      text.disabled = unknown;
+      if (unknown) text.value = '';
+    }
+    if (label) label.hidden = unknown;
+  }
+
+  async function toggleVisitQuestionPin(row) {
+    const visit = currentVisit();
+    const id = row?.dataset.visitQuestionId;
+    const token = row?.dataset.questionToken;
+    const question = visit?.question_snapshots.find(item => item.id === id);
+    if (!visit || !question || !token) return;
+    await submitWorkflowMutation(
+      `/api/visits/${encodeURIComponent(visit.id)}/questions/${encodeURIComponent(id)}`,
+      { expected_token: token, pinned: !question.pinned },
+      visit.id,
+      'PATCH',
+    );
+  }
+
+  async function persistVisitQuestionOrder(ordered) {
+    const visit = currentVisit();
+    if (!visit || ordered.length !== visit.question_snapshots.length) return;
+    const currentIds = sortedVisitQuestions(visit).map(question => question.id);
+    if (currentIds.every((id, index) => id === ordered[index]?.id)) return;
+    await submitWorkflowMutation(
+      `/api/visits/${encodeURIComponent(visit.id)}/questions/order`,
+      {
+        expected_visit_token: visit.token,
+        questions: ordered.map(question => ({
+          id: question.id,
+          expected_token: question.token,
+        })),
+      },
+      visit.id,
+      'PATCH',
+    );
+  }
+
+  function reorderedQuestionList(questionId, destination) {
+    const visit = currentVisit();
+    const all = sortedVisitQuestions(visit);
+    const question = all.find(item => item.id === questionId);
+    if (!question) return all;
+    const pinned = all.filter(item => item.pinned);
+    const unpinned = all.filter(item => !item.pinned);
+    const group = question.pinned ? pinned : unpinned;
+    const sourceIndex = group.findIndex(item => item.id === questionId);
+    const target = Math.max(0, Math.min(destination, group.length - 1));
+    if (sourceIndex === target) return all;
+    group.splice(sourceIndex, 1);
+    group.splice(target, 0, question);
+    return [...pinned, ...unpinned];
+  }
+
+  async function moveVisitQuestion(row, delta) {
+    const visit = currentVisit();
+    const question = visit?.question_snapshots.find(
+      item => item.id === row?.dataset.visitQuestionId
+    );
+    if (!question) return;
+    const group = sortedVisitQuestions(visit).filter(
+      item => Boolean(item.pinned) === Boolean(question.pinned)
+    );
+    const current = group.findIndex(item => item.id === question.id);
+    await persistVisitQuestionOrder(reorderedQuestionList(question.id, current + delta));
+  }
+
+  async function rankVisitQuestion(row, rank) {
+    const id = row?.dataset.visitQuestionId;
+    if (!id || !Number.isInteger(rank)) return;
+    await persistVisitQuestionOrder(reorderedQuestionList(id, rank));
+  }
+
+  async function saveVisitAnswer(row) {
+    const visit = currentVisit();
+    const questionId = row?.dataset.visitQuestionId;
+    const expectedToken = row?.dataset.questionToken;
+    const status = row?.querySelector('.visit-answer-status')?.value;
+    const text = (row?.querySelector('.visit-answer-text')?.value || '').trim();
+    if (!visit || !questionId || !expectedToken) return;
+    if (status === 'answered' && !text) {
+      setFormError('visit-question-error', 'Enter the clinician-attributed answer.');
+      return;
+    }
+    const result = await submitWorkflowMutation(
+      `/api/visits/${encodeURIComponent(visit.id)}/questions/${encodeURIComponent(questionId)}`,
+      {
+        expected_token: expectedToken,
+        answer: { status, text: status === 'answered' ? text : null },
+      },
+      visit.id,
+      'PATCH',
+    );
+    if (result) {
+      const draft = appointmentDrafts.get(visit.id);
+      if (draft?.answers) delete draft.answers[questionId];
+    }
+  }
+
+  function renderVisitDecisions() {
+    const visit = currentVisit();
+    const list = document.getElementById('visit-decision-list');
+    const select = document.getElementById('visit-followup-decision');
+    if (!visit || !list || !select) return;
+    const decisions = [...(visit.decisions || [])].reverse();
+    select.innerHTML = '<option value="">No linked decision</option>' + (visit.decisions || [])
+      .filter(item => ['active', 'needs_confirmation'].includes(item.status))
+      .map(item => `<option value="${escHtml(item.id)}">${escHtml(item.text.slice(0, 100))}</option>`)
+      .join('');
+    if (!decisions.length) {
+      list.innerHTML = '<div class="empty-state">No clinician-attributed decisions captured.</div>';
+      return;
+    }
+    list.innerHTML = decisions.map(decision => {
+      const controls = decision.status === 'active'
+        ? `<button class="button secondary" onclick="changeDecisionStatus(this.closest('.visit-decision'),'needs_confirmation')">Needs confirmation</button>
+           <button class="button secondary" onclick="prepareDecisionSuccessor(this.closest('.visit-decision'))">Correct with successor</button>
+           <button class="button secondary danger" onclick="changeDecisionStatus(this.closest('.visit-decision'),'retracted')">Retract</button>`
+        : decision.status === 'needs_confirmation'
+          ? `<button class="button secondary" onclick="changeDecisionStatus(this.closest('.visit-decision'),'active')">Confirm active</button>
+             <button class="button secondary" onclick="prepareDecisionSuccessor(this.closest('.visit-decision'))">Correct with successor</button>
+             <button class="button secondary danger" onclick="changeDecisionStatus(this.closest('.visit-decision'),'retracted')">Retract</button>`
+          : '';
+      return `<article class="visit-decision" data-decision-id="${escHtml(decision.id)}" data-decision-token="${escHtml(decision.token)}">
+        <div class="visit-decision-heading"><strong>${escHtml(decision.text)}</strong><span class="visit-status-badge ${safeClassToken(decision.status, 'active')}">${escHtml(decision.status.replaceAll('_', ' '))}</span></div>
+        <p class="capture-provenance">Caregiver-entered · attributed to clinician · unverified</p>
+        ${decision.supersedes_id ? `<p class="visit-source-label">Successor to ${escHtml(decision.supersedes_id)}</p>` : ''}
+        ${controls ? `<div class="visit-form-actions">${controls}</div>` : ''}
+      </article>`;
+    }).join('');
+  }
+
+  function prepareDecisionSuccessor(row) {
+    const id = row?.dataset.decisionId;
+    if (!id) return;
+    document.getElementById('visit-decision-supersedes').value = id;
+    document.getElementById('visit-decision-label').textContent = 'Correct with a successor decision';
+    document.getElementById('visit-decision-cancel-supersede').hidden = false;
+    document.getElementById('visit-decision-text').focus();
+    captureAppointmentDraft();
+  }
+
+  function cancelDecisionSuccessor() {
+    document.getElementById('visit-decision-supersedes').value = '';
+    document.getElementById('visit-decision-label').textContent =
+      'Caregiver-entered decision attributed to the clinician';
+    document.getElementById('visit-decision-cancel-supersede').hidden = true;
+    captureAppointmentDraft();
+  }
+
+  async function addVisitDecision() {
+    const visit = currentVisit();
+    const text = (document.getElementById('visit-decision-text')?.value || '').trim();
+    if (!visit || !text) {
+      setFormError('visit-decision-error', 'Enter the clinician-attributed decision.');
+      updateAppointmentFormValidity();
+      return;
+    }
+    const supersedesId = document.getElementById('visit-decision-supersedes')?.value || null;
+    const result = await submitWorkflowMutation(
+      `/api/visits/${encodeURIComponent(visit.id)}/decisions`,
+      {
+        expected_visit_token: visit.token,
+        text,
+        supersedes_id: supersedesId,
+      },
+      visit.id,
+    );
+    if (result) {
+      document.getElementById('visit-decision-text').value = '';
+      cancelDecisionSuccessor();
+      const draft = appointmentDrafts.get(visit.id);
+      if (draft) {
+        draft.decisionText = '';
+        draft.supersedesId = '';
+      }
+      setFormError('visit-decision-error', '');
+      updateAppointmentFormValidity();
+    }
+  }
+
+  async function changeDecisionStatus(row, status) {
+    const visit = currentVisit();
+    const id = row?.dataset.decisionId;
+    const token = row?.dataset.decisionToken;
+    if (!visit || !id || !token) return;
+    await submitWorkflowMutation(
+      `/api/visits/${encodeURIComponent(visit.id)}/decisions/${encodeURIComponent(id)}`,
+      { expected_token: token, status },
+      visit.id,
+      'PATCH',
+    );
+  }
+
+  function renderVisitFollowUps() {
+    const visit = currentVisit();
+    const list = document.getElementById('visit-followup-list');
+    if (!visit || !list) return;
+    const items = visitFollowUps.filter(item =>
+      item.visit_id === visit.id || (visit.follow_up_ids || []).includes(item.id)
+    );
+    if (!items.length) {
+      list.innerHTML = '<div class="empty-state">No resulting follow-ups for this visit.</div>';
+      return;
+    }
+    list.innerHTML = items.map(item => `<article class="visit-followup" data-followup-id="${escHtml(item.id)}">
+      <div class="visit-decision-heading"><strong>${escHtml(item.text)}</strong><span class="visit-status-badge ${safeClassToken(item.status, 'open')}">${escHtml(item.status.replaceAll('_', ' '))}</span></div>
+      <p>${escHtml([item.owner && `Owner: ${item.owner}`, item.due_date && `Due ${fmtDate(item.due_date)}`].filter(Boolean).join(' · ') || 'Owner and due date not set')}</p>
+      ${item.decision_id ? `<p class="visit-source-label">Linked to visit decision ${escHtml(item.decision_id)}</p>` : ''}
+      ${item.outcome?.text ? `<p>${escHtml(item.outcome.text)}</p>` : ''}
+    </article>`).join('');
+  }
+
+  async function createVisitFollowUp() {
+    const visit = currentVisit();
+    const text = (document.getElementById('visit-followup-text')?.value || '').trim();
+    if (!visit || !text) {
+      setFormError('visit-followup-error', 'Enter a follow-up using contact, ask, discuss, or confirm wording.');
+      updateAppointmentFormValidity();
+      return;
+    }
+    if (/^(start|stop|hold|pause|resume|switch|increase|decrease|administer|take|skip|discontinue|withhold)\b/i.test(text)) {
+      setFormError('visit-followup-error', 'Use contact, ask, discuss, or confirm wording with the treating team.');
+      return;
+    }
+    const decisionId = document.getElementById('visit-followup-decision')?.value || null;
+    const result = await submitWorkflowMutation(
+      `/api/visits/${encodeURIComponent(visit.id)}/follow-ups`,
+      {
+        expected_visit_token: visit.token,
+        decision_id: decisionId,
+        origin_kind: decisionId ? 'visit_decision' : 'manual',
+        text,
+        owner: (document.getElementById('visit-followup-owner')?.value || '').trim() || null,
+        due_date: document.getElementById('visit-followup-due')?.value || null,
+      },
+      visit.id,
+    );
+    if (result) {
+      for (const id of [
+        'visit-followup-text', 'visit-followup-owner',
+        'visit-followup-due', 'visit-followup-decision'
+      ]) {
+        const input = document.getElementById(id);
+        if (input) input.value = '';
+      }
+      const draft = appointmentDrafts.get(visit.id);
+      if (draft) {
+        draft.followUpText = '';
+        draft.followUpOwner = '';
+        draft.followUpDue = '';
+        draft.followUpDecision = '';
+      }
+      setFormError('visit-followup-error', '');
+      updateAppointmentFormValidity();
+    }
+  }
+
   // ── Questions ────────────────────────────────────────────────────────────
   let questionsOpen = true;
 
@@ -2544,11 +3700,17 @@
       const r = await fetch('/api/questions');
       const qs = await readJsonResponse(r);
       if (requestPhiEpoch !== phiEpoch) return [];
+      appointmentQuestionSources = Array.isArray(qs) ? qs : [];
       renderQuestions(qs);
+      if (appointmentDialogOpen) renderVisitSourceQuestions();
       reportLoadSuccess('questions');
       return qs;
     } catch(e) {
-      document.getElementById('q-list').innerHTML = loadFailureMarkup('Questions', 'loadQuestions()');
+      if (requestPhiEpoch === phiEpoch && shouldEvictClientPhi(e)) {
+        evictClientPhi(e);
+      } else if (requestPhiEpoch === phiEpoch) {
+        document.getElementById('q-list').innerHTML = loadFailureMarkup('Questions', 'loadQuestions()');
+      }
       reportLoadError('questions', e);
       return [];
     }
@@ -2564,25 +3726,28 @@
 
     const badge = document.getElementById('q-count-badge');
     if (badge) {
-      const unasked = qs.filter(q => !q.asked).length;
+      const unasked = current.filter(q => !q.asked).length;
       badge.textContent = unasked;
       badge.hidden = unasked === 0;
     }
 
-    const qRow = (q) => `
+    const qRow = (q) => {
+      const unavailable = q.source === 'ai' && q.stale;
+      return `
       <div class="q-item${q.asked?' asked':''}${q.stale?' stale':''}" data-question-id="${escHtml(q.id)}">
         <div class="q-priority-dot ${safeClassToken(q.priority, 'medium')}"></div>
-        <button class="q-checkbox${q.asked?' checked':''}" onclick="toggleQuestion(this.closest('.q-item').dataset.questionId)" aria-label="${q.asked ? 'Mark question as not asked' : 'Mark question as asked'}">${q.asked?'✓':''}</button>
+        <button class="q-checkbox${q.asked?' checked':''}" onclick="toggleQuestion(this.closest('.q-item').dataset.questionId)" aria-label="${q.asked ? 'Mark question as not asked' : 'Mark question as asked'}" ${unavailable ? 'disabled' : ''}>${q.asked?'✓':''}</button>
         <div class="q-text-wrap">
-          <div class="q-text${q.asked?' asked':''}">${escHtml(q.text)}</div>
+          <div class="q-text${q.asked?' asked':''}">${unavailable ? 'Generated question unavailable' : escHtml(q.text)}</div>
           <div class="q-meta">
-            <span class="q-cat ${safeClassToken(q.category, 'Other')}">${escHtml(translateCategory(q.category||'Other'))}</span>
-            ${q.stale ? '<span class="q-stale-label">Outdated — regenerate after record correction</span>' : ''}
-            ${q.rationale ? `<span class="q-rationale">${escHtml(q.rationale)}</span>` : ''}
+            ${unavailable ? '' : `<span class="q-cat ${safeClassToken(q.category, 'Other')}">${escHtml(translateCategory(q.category||'Other'))}</span>`}
+            ${q.stale ? '<span class="q-stale-label">Outdated — the assessment changed</span>' : ''}
+            ${!unavailable && q.rationale ? `<span class="q-rationale">${escHtml(q.rationale)}</span>` : ''}
           </div>
         </div>
-        <button class="q-delete" onclick="deleteQuestion(this.closest('.q-item').dataset.questionId)" aria-label="Delete question" title="Delete">✕</button>
+        <button class="q-delete" onclick="deleteQuestion(this.closest('.q-item').dataset.questionId)" aria-label="Delete question" title="Delete" ${unavailable ? 'disabled' : ''}>✕</button>
       </div>`;
+    };
 
     const grpHdr = (label, color) =>
       `<div style="font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:.12em;color:${color};padding:8px 16px 2px;border-bottom:1px solid var(--border)">${label}</div>`;
@@ -2940,9 +4105,27 @@
   loadJudgments();
   loadSymptoms();
   loadPatientEvidence();
+  loadVisits();
+  loadVisitFollowUps();
   ['q-add-input', 'judgment-input', 'sym-name', 'chat-input'].forEach(id => {
     document.getElementById(id)?.addEventListener('input', updateFormValidity);
   });
+  [
+    'visit-create-title', 'visit-manual-question',
+    'visit-decision-text', 'visit-followup-text'
+  ].forEach(id => {
+    document.getElementById(id)?.addEventListener('input', updateAppointmentFormValidity);
+  });
+  const createSurface = document.getElementById('visit-create-panel');
+  createSurface?.addEventListener('input', invalidateWorkflowRetryOnDraftChange);
+  createSurface?.addEventListener('change', invalidateWorkflowRetryOnDraftChange);
+  const appointmentSurface = document.getElementById('appointment-dialog');
+  const handleAppointmentDraftChange = () => {
+    invalidateWorkflowRetryOnDraftChange();
+    captureAppointmentDraft();
+  };
+  appointmentSurface?.addEventListener('input', handleAppointmentDraftChange);
+  appointmentSurface?.addEventListener('change', handleAppointmentDraftChange);
   updateFormValidity();
   startPolling();
   const requestedView = window.location.hash.replace('#', '');

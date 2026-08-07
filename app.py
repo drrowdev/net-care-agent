@@ -128,6 +128,17 @@ _SAFE_JOB_ERRORS = {
 _INTERRUPTED_GUIDANCE = (
     "This job was interrupted by a server restart. Re-submit the same request to retry."
 )
+_MAX_LINKABLE_APPOINTMENTS = 100
+_MAX_VISIT_QUESTION_REORDER_ITEMS = 200
+_APPOINTMENT_PROJECTION_FIELDS = (
+    "id",
+    "date",
+    "time",
+    "with",
+    "location",
+    "description",
+    "type",
+)
 
 
 def _get_executor(feed: bool = False) -> BoundedExecutor:
@@ -826,6 +837,110 @@ def _idempotent_result(
     if result is not None:
         result["idempotent_replay"] = True
     return result
+
+
+def _semantic_import_value(value):
+    if isinstance(value, dict):
+        return {
+            key: _semantic_import_value(item)
+            for key, item in sorted(value.items())
+            if item is not None
+            and not (key == "source_dependency_active" and item is True)
+            and not (key == "excluded_from_clinical_context" and item is False)
+            and not (key == "history" and item == [])
+        }
+    if isinstance(value, list):
+        return [_semantic_import_value(item) for item in value]
+    return value
+
+
+def _source_record_is_linkable(record: object) -> bool:
+    if not isinstance(record, dict):
+        return False
+    status = str(record.get("status") or "").strip().lower()
+    return not (
+        record.get("excluded_from_clinical_context") is True
+        or record.get("active") is False
+        or record.get("source_dependency_active") is False
+        or status in {"inactive", "excluded", "removed", "undone", "deleted"}
+        or record.get("inactive_reason")
+        or record.get("excluded_at")
+        or record.get("removed_at")
+        or record.get("deleted_at")
+    )
+
+
+def _linkable_appointment_projections(profile: dict) -> list[dict]:
+    """Return a bounded, provenance-free projection of current imported appointments."""
+    source_documents = {
+        item.get("id")
+        for item in profile.get("source_documents", []) or []
+        if _source_record_is_linkable(item)
+        and isinstance(item.get("id"), str)
+        and item["id"].strip()
+    }
+    active_documents = {
+        item.get("source_document_id")
+        for item in profile.get("documents", []) or []
+        if _source_record_is_linkable(item)
+        and isinstance(item.get("source_document_id"), str)
+        and item["source_document_id"].strip()
+    }
+    imports_by_source: dict[str, list[dict]] = {}
+    for item in profile.get("document_imports", []) or []:
+        source_id = item.get("source_document_id") if isinstance(item, dict) else None
+        if (
+            isinstance(source_id, str)
+            and source_id.strip()
+            and _source_record_is_linkable(item)
+            and item.get("status") in {"active", "corrected", "partially_removed"}
+        ):
+            imports_by_source.setdefault(source_id, []).append(item)
+
+    projected = []
+    seen_ids = set()
+    for appointment in profile.get("appointments", []) or []:
+        if not isinstance(appointment, dict):
+            continue
+        appointment_id = appointment.get("id")
+        source_id = appointment.get("source_document_id")
+        if (
+            not isinstance(appointment_id, str)
+            or not appointment_id.strip()
+            or appointment_id in seen_ids
+            or not isinstance(source_id, str)
+            or not source_id.strip()
+            or source_id not in source_documents
+            or source_id not in active_documents
+        ):
+            continue
+        current_value = _semantic_import_value(appointment)
+        linked_change = any(
+            isinstance(change, dict)
+            and change.get("category") == "appointments"
+            and change.get("source_document_id") == source_id
+            and change.get("state") in {"active", "corrected"}
+            and isinstance(change.get("target"), dict)
+            and change["target"].get("kind") == "collection"
+            and change["target"].get("collection") == "appointments"
+            and change["target"].get("record_id") == appointment_id
+            and _semantic_import_value(change.get("effective_value")) == current_value
+            for import_record in imports_by_source.get(source_id, [])
+            for change in import_record.get("changes", []) or []
+        )
+        if not linked_change:
+            continue
+        projected.append(
+            {
+                key: appointment.get(key)
+                for key in _APPOINTMENT_PROJECTION_FIELDS
+                if key in appointment
+            }
+        )
+        seen_ids.add(appointment_id)
+        if len(projected) >= _MAX_LINKABLE_APPOINTMENTS:
+            break
+    return projected
 
 
 def _outcome_from_request(value: object) -> dict:
@@ -2424,6 +2539,7 @@ def api_visits():
     return jsonify(
         {
             "items": [agent.public_visit(item) for item in profile.get("visits", [])],
+            "appointments": _linkable_appointment_projections(profile),
             "workflow_revision": profile.get("workflow_revision", 0),
             "profile_revision": profile.get("profile_revision", 0),
         }
@@ -2466,9 +2582,10 @@ def api_visits_add():
             limit=100,
             single_line=True,
         )
-        if source_id and not any(
-            item.get("id") == source_id for item in profile.get("appointments", [])
-        ):
+        linkable_appointments = {
+            item["id"]: item for item in _linkable_appointment_projections(profile)
+        }
+        if source_id and source_id not in linkable_appointments:
             raise KeyError("Source appointment not found")
         timestamp = now_stamp()
         status = (
@@ -2731,6 +2848,132 @@ def api_visit_questions_add(visit_id):
             jsonify(result),
             201,
         )
+    except (agent.FollowThroughError, KeyError) as exc:
+        return _workflow_error(exc)
+
+
+@app.route("/api/visits/<visit_id>/questions/order", methods=["PATCH"])
+@serialized_profile_mutation
+def api_visit_questions_reorder(visit_id):
+    try:
+        data = _workflow_request()
+        mutation_id = agent.validate_mutation_id(data.get("mutation_id"))
+        _reject_unsupported_fields(
+            data,
+            {"mutation_id", "expected_visit_token", "questions"},
+            "Unsupported visit question order field",
+        )
+        endpoint = "PATCH /api/visits/<visit_id>/questions/order"
+        target = f"visit:{visit_id}:question_order"
+        profile = agent.load_profile()
+        replay = _idempotent_result(
+            profile,
+            mutation_id,
+            data,
+            endpoint=endpoint,
+            operation="questions_reordered",
+            target=target,
+        )
+        if replay is not None:
+            return jsonify(replay)
+
+        visit = agent.find_record(profile.get("visits", []), visit_id, "Visit")
+        agent.validate_expected_token(visit, data.get("expected_visit_token"))
+        requested = data.get("questions")
+        if not isinstance(requested, list):
+            raise agent.FollowThroughError("questions must be an array")
+        if len(requested) > _MAX_VISIT_QUESTION_REORDER_ITEMS:
+            raise agent.FollowThroughError(
+                f"questions must contain at most {_MAX_VISIT_QUESTION_REORDER_ITEMS} items"
+            )
+
+        current_questions = visit.get("question_snapshots", [])
+        if not isinstance(current_questions, list):
+            raise agent.FollowThroughConflict(
+                "The visit questions changed. Reload before reordering."
+            )
+        if not requested:
+            if current_questions:
+                raise agent.FollowThroughError(
+                    "questions must include every current visit question"
+                )
+            raise agent.FollowThroughError("The visit question order does not change anything")
+
+        requested_ids = []
+        requested_tokens = {}
+        for item in requested:
+            if not isinstance(item, dict):
+                raise agent.FollowThroughError("Each question order item must be an object")
+            _reject_unsupported_fields(
+                item,
+                {"id", "expected_token"},
+                "Unsupported question order item field",
+            )
+            question_id = agent.validate_text(item.get("id"), "question id", limit=100)
+            if question_id != item.get("id"):
+                raise agent.FollowThroughError("question id must not have surrounding whitespace")
+            if question_id in requested_tokens:
+                raise agent.FollowThroughError("Question IDs must be unique")
+            requested_ids.append(question_id)
+            requested_tokens[question_id] = item.get("expected_token")
+
+        current_by_id = {}
+        for question in current_questions:
+            question_id = question.get("id") if isinstance(question, dict) else None
+            if (
+                not isinstance(question_id, str)
+                or not question_id.strip()
+                or question_id in current_by_id
+            ):
+                raise agent.FollowThroughConflict(
+                    "The visit questions changed. Reload before reordering."
+                )
+            current_by_id[question_id] = question
+        if set(requested_ids) != set(current_by_id) or len(requested_ids) != len(current_by_id):
+            raise agent.FollowThroughConflict(
+                "The visit questions changed. Reload before reordering."
+            )
+        for question_id in requested_ids:
+            agent.validate_expected_token(
+                current_by_id[question_id],
+                requested_tokens[question_id],
+            )
+
+        before_order = [question["id"] for question in current_questions]
+        already_normalized = all(
+            question.get("order") == index for index, question in enumerate(current_questions)
+        )
+        if requested_ids == before_order and already_normalized:
+            raise agent.FollowThroughError("The visit question order does not change anything")
+
+        before_token = agent.semantic_token(visit)
+        ordered_questions = [current_by_id[question_id] for question_id in requested_ids]
+        for index, question in enumerate(ordered_questions):
+            question["order"] = index
+        visit["question_snapshots"] = ordered_questions
+        visit["updated_at"] = now_stamp()
+        event = agent.append_history(
+            visit,
+            endpoint=endpoint,
+            operation="questions_reordered",
+            target=target,
+            mutation_id=mutation_id,
+            payload=data,
+            before_token=before_token,
+            changes={"order": {"before": before_order, "after": requested_ids}},
+        )
+        result = _save_workflow_mutation(
+            profile,
+            clinical_change=False,
+            reason="visit_questions_reordered",
+            event=event,
+            response_factory=lambda: {
+                "visit": agent.public_visit(visit),
+                "workflow_revision": profile["workflow_revision"],
+                "profile_revision": profile["profile_revision"],
+            },
+        )
+        return jsonify(result)
     except (agent.FollowThroughError, KeyError) as exc:
         return _workflow_error(exc)
 

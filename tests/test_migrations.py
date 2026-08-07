@@ -444,5 +444,31 @@ def test_v7_adds_follow_through_defaults_and_deterministic_summary_action_ids():
     ids = [item["id"] for item in first["executive_summary"]["next_actions"]]
     assert ids[0].startswith("sumact_")
     assert ids[0] != ids[1]
+    assert first["summary_stale"] is True
+    assert first["executive_summary"]["stale"] is True
+    assert first["executive_summary"]["stale_reason"] == "legacy_missing_generation_provenance"
     assert first["alerts"][0]["history"] == []
     assert first["alerts"][0]["resolution"]["outcome_kind"] == "legacy_unknown"
+
+
+def test_v7_preserves_fully_identified_current_summary():
+    from agent.migrations import apply_migrations
+
+    source = {
+        "schema_version": 7,
+        "profile_revision": 12,
+        "summary_stale": False,
+        "patient": {"diagnosis": "NET"},
+        "executive_summary": {
+            "generation_id": "summary-job-current",
+            "summary_revision": 12,
+            "stale": False,
+            "next_actions": [{"action": "Ask the treating team about timing"}],
+        },
+    }
+
+    result = apply_migrations(source)
+
+    assert result["summary_stale"] is False
+    assert result["executive_summary"]["stale"] is False
+    assert result["executive_summary"]["generation_id"] == "summary-job-current"

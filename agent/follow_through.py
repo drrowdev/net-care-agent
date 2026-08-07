@@ -162,11 +162,54 @@ def ensure_summary_action_ids(summary: dict) -> dict:
 def project_summary_actions(summary: dict) -> list[dict]:
     projected = copy.deepcopy(summary)
     ensure_summary_action_ids(projected)
-    return [
-        {**action, "source_token": semantic_token(action)}
-        for action in projected.get("next_actions") or []
-        if isinstance(action, dict)
-    ]
+    actions = []
+    for action in projected.get("next_actions") or []:
+        if not isinstance(action, dict):
+            continue
+        source = {
+            **action,
+            "source_profile_revision": projected.get("summary_revision"),
+            "generation_id": projected.get("generation_id"),
+            "stale": projected.get("stale") is not False,
+        }
+        source["source_token"] = semantic_token(source)
+        actions.append(source)
+    return actions
+
+
+def validate_current_generated_source(
+    source: dict,
+    expected_token: object,
+    *,
+    current_profile_revision: object,
+    current_generation_id: object,
+    generation_field: str,
+    changed_message: str,
+    stale_message: str,
+) -> None:
+    """Require an exact, explicitly current generated-source projection."""
+    source_id = source.get("id")
+    token = str(expected_token or "")
+    if (
+        not isinstance(source_id, str)
+        or not source_id.strip()
+        or not token
+        or semantic_token(source) != token
+    ):
+        raise FollowThroughConflict(changed_message)
+
+    generation_id = source.get(generation_field)
+    if (
+        source.get("stale") is not False
+        or not isinstance(current_generation_id, str)
+        or not current_generation_id.strip()
+        or not isinstance(generation_id, str)
+        or not generation_id.strip()
+        or generation_id != current_generation_id
+        or source.get("source_profile_revision") is None
+        or str(source.get("source_profile_revision")) != str(current_profile_revision)
+    ):
+        raise FollowThroughConflict(stale_message)
 
 
 def find_summary_action(profile: dict, action_id: str, expected_token: object) -> dict:
@@ -177,19 +220,58 @@ def find_summary_action(profile: dict, action_id: str, expected_token: object) -
         raise FollowThroughConflict(
             "The generated assessment is no longer current. Regenerate it before accepting an action."
         )
-    projected = copy.deepcopy(summary)
-    ensure_summary_action_ids(projected)
+    projected = project_summary_actions(summary)
     action = next(
-        (item for item in projected.get("next_actions") or [] if item.get("id") == action_id),
+        (item for item in projected if item.get("id") == action_id),
         None,
     )
-    if action is None or semantic_token(action) != str(expected_token or ""):
+    if action is None:
         raise FollowThroughConflict("The generated action changed. Reload before accepting it.")
+    validate_current_generated_source(
+        action,
+        expected_token,
+        current_profile_revision=profile.get("profile_revision"),
+        current_generation_id=summary.get("generation_id"),
+        generation_field="generation_id",
+        changed_message="The generated action changed. Reload before accepting it.",
+        stale_message=(
+            "The generated assessment is no longer current. Regenerate it before accepting an action."
+        ),
+    )
     return action
 
 
 def question_source_token(question: dict) -> str:
     return semantic_token(question)
+
+
+def project_question(profile: dict, stored: dict) -> dict:
+    """Project one question with freshness derived from current server identity."""
+    question = copy.deepcopy(stored)
+    if question.get("source") == "ai":
+        generation_id = question.get("generation_job_id")
+        current_generation_id = profile.get("questions_generation_id")
+        current_revision = profile.get("profile_revision")
+        if (
+            question.get("stale") is not False
+            or not isinstance(question.get("id"), str)
+            or not question["id"].strip()
+            or not isinstance(current_generation_id, str)
+            or not current_generation_id.strip()
+            or not isinstance(generation_id, str)
+            or not generation_id.strip()
+            or generation_id != current_generation_id
+            or question.get("source_profile_revision") is None
+            or str(question.get("source_profile_revision")) != str(current_revision)
+        ):
+            question["stale"] = True
+            question["stale_reason"] = (
+                question.get("stale_reason") or "missing_or_superseded_generation_provenance"
+            )
+        else:
+            question["stale"] = False
+    question["source_token"] = question_source_token(question)
+    return question
 
 
 def find_question(profile: dict, question_id: str, expected_token: object) -> dict:
@@ -201,17 +283,21 @@ def find_question(profile: dict, question_id: str, expected_token: object) -> di
         ),
         None,
     )
-    if question is None or question_source_token(question) != str(expected_token or ""):
+    if question is None:
         raise FollowThroughConflict("The question changed. Reload before adding it to a visit.")
+    projected = project_question(profile, question)
     if question.get("source") == "ai":
-        if question.get("stale"):
-            raise FollowThroughConflict("The generated question is outdated.")
-        if str(question.get("source_profile_revision")) != str(profile.get("profile_revision")):
-            raise FollowThroughConflict(
-                "The generated question is from an older clinical revision."
-            )
-        if question.get("generation_job_id") != profile.get("questions_generation_id"):
-            raise FollowThroughConflict("The generated question was superseded.")
+        validate_current_generated_source(
+            projected,
+            expected_token,
+            current_profile_revision=profile.get("profile_revision"),
+            current_generation_id=profile.get("questions_generation_id"),
+            generation_field="generation_job_id",
+            changed_message="The question changed. Reload before adding it to a visit.",
+            stale_message="The generated question is outdated.",
+        )
+    elif question_source_token(projected) != str(expected_token or ""):
+        raise FollowThroughConflict("The question changed. Reload before adding it to a visit.")
     return question
 
 

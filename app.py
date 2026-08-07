@@ -930,7 +930,7 @@ def _new_action(
     return action
 
 
-def _refresh_summary(profile: dict) -> str | None:
+def _refresh_summary(profile: dict, *, generation_id: str) -> str | None:
     """Refresh the summary in-place, preserving prior content on LLM failure."""
     generated = agent.generate_executive_summary(profile)
     failure = generated.get("generation_failed") if isinstance(generated, dict) else True
@@ -952,6 +952,7 @@ def _refresh_summary(profile: dict) -> str | None:
         profile["summary_stale"] = True
         return message
 
+    generated["generation_id"] = generation_id
     generated["summary_revision"] = int(profile.get("profile_revision") or 0)
     agent.ensure_summary_action_ids(generated)
     generated["generated_at_timestamp"] = now_stamp()
@@ -1124,7 +1125,7 @@ def _run_feed_job(
             )
             agent.save_profile(profile)
             _update_job(job_id, {"stage": "refreshing summary"})
-            summary_error = _refresh_summary(profile)
+            summary_error = _refresh_summary(profile, generation_id=job_id)
             agent.save_profile(profile, clinical_change=False)
             _prune_source_retention()
 
@@ -1220,7 +1221,7 @@ def _run_digest_job(job_id: str):
             )
             agent.save_profile(profile)
             _update_job(job_id, {"stage": "refreshing summary"})
-            summary_error = _refresh_summary(profile)
+            summary_error = _refresh_summary(profile, generation_id=job_id)
             agent.save_profile(profile, clinical_change=False)
 
             reports_dir = DATA_DIR / "reports"
@@ -1344,7 +1345,7 @@ def _run_summary_job(job_id: str) -> None:
             profile["treatments_classified"] = classified_txs
             profile["treatments_classification_revision"] = profile.get("profile_revision")
             profile["treatments_classification_job_id"] = job_id
-            summary_error = _refresh_summary(profile)
+            summary_error = _refresh_summary(profile, generation_id=job_id)
             agent.save_profile(profile, clinical_change=False)
             result = {
                 "summary": profile["executive_summary"],
@@ -3380,22 +3381,9 @@ def api_delete_paper(pmid):
 @app.route("/api/questions")
 def api_questions():
     profile = agent.load_profile()
-    generation_id = profile.get("questions_generation_id")
-    profile_revision = profile.get("profile_revision")
     questions = []
     for stored in profile.get("appointment_questions", []):
-        question = copy.deepcopy(stored)
-        if question.get("source") == "ai" and (
-            not question.get("generation_job_id")
-            or str(question.get("source_profile_revision")) != str(profile_revision)
-            or (not question.get("asked") and question.get("generation_job_id") != generation_id)
-        ):
-            question["stale"] = True
-            question["stale_reason"] = (
-                question.get("stale_reason") or "missing_or_superseded_generation_provenance"
-            )
-        question["source_token"] = agent.question_source_token(stored)
-        questions.append(question)
+        questions.append(agent.project_question(profile, stored))
     return jsonify(questions)
 
 

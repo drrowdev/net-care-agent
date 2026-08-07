@@ -241,6 +241,21 @@ def _m0008_add_follow_through_foundation(data: dict) -> dict:
     summary = data.get("executive_summary")
     if isinstance(summary, dict):
         ensure_summary_action_ids(summary)
+        generation_id = summary.get("generation_id")
+        summary_revision = summary.get("summary_revision")
+        current_revision = data.get("profile_revision")
+        complete_current_identity = (
+            isinstance(generation_id, str)
+            and bool(generation_id.strip())
+            and summary_revision is not None
+            and str(summary_revision) == str(current_revision)
+            and summary.get("stale") is False
+            and data.get("summary_stale") is False
+        )
+        if not complete_current_identity:
+            summary["stale"] = True
+            summary.setdefault("stale_reason", "legacy_missing_generation_provenance")
+            data["summary_stale"] = True
 
     alerts_by_id = {}
     for alert in data.get("alerts") or []:

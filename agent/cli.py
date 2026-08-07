@@ -187,7 +187,9 @@ def cmd_resolve_alert(args) -> None:
         }
         append_history(
             alert,
+            endpoint="cli:resolve-alert",
             operation="resolved",
+            target=f"alert:{args.alert_id}",
             mutation_id=mutation_id,
             payload={"alert_id": args.alert_id, "outcome": outcome_text},
             before_token=before_token,

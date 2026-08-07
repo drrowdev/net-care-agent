@@ -454,12 +454,16 @@ class WorkflowAuditEvent(_Lenient):
 
     id: str
     mutation_id: str
+    endpoint: str | None = None
     operation: str
+    target: str | None = None
     at: str
     request_hash: str
     before_token: str | None = None
     after_token: str | None = None
     changes: dict[str, Any] = Field(default_factory=dict)
+    result_hash: str | None = None
+    result_snapshot: dict[str, Any] | None = None
 
 
 class ActionOriginSnapshot(_Lenient):

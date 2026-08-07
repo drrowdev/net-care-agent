@@ -142,7 +142,7 @@ def test_digest_records_zero_when_nothing_new_is_found(app_module, monkeypatch, 
     monkeypatch.setattr(app_module.agent, "poll_tracked_trials", lambda _profile: {"changed": []})
     monkeypatch.setattr(app_module.agent, "run_orchestrator", lambda *_args: "report")
     monkeypatch.setattr(app_module.agent, "classify_treatments", lambda _profile: [])
-    monkeypatch.setattr(app_module, "_refresh_summary", lambda _profile: None)
+    monkeypatch.setattr(app_module, "_refresh_summary", lambda _profile, **_kwargs: None)
 
     app_module._run_digest_job("digest-new")
 

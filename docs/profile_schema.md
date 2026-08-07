@@ -481,6 +481,7 @@ Most recent JSON output of agent.exec_summary.generate_executive_summary.
 |-------|------|-------------|
 | `generated_at` | `str \| None` |  |
 | `generated_at_timestamp` | `str \| None` |  |
+| `generation_id` | `str \| None` |  |
 | `summary_revision` | `int \| None` |  |
 | `stale` | `bool` |  |
 | `summary_error` | `str \| None` |  |

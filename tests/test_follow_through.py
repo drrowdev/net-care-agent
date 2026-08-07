@@ -22,6 +22,7 @@ def _save_current_summary(agent, profile, *, revision=5):
     profile["profile_revision"] = revision
     profile["summary_stale"] = False
     profile["executive_summary"] = {
+        "generation_id": "summary-current",
         "summary_revision": revision,
         "stale": False,
         "next_actions": [
@@ -123,6 +124,131 @@ def test_generated_action_rejects_stale_source_without_mutation(app_client, agen
     assert response.status_code == 409
     assert after["workflow_revision"] == before["workflow_revision"]
     assert after["caregiver_actions"] == []
+
+
+def test_migrated_generationless_summary_gets_stale_projection_and_post_is_atomic(
+    app_client, agent
+):
+    _, client = app_client
+    from agent.migrations import apply_migrations
+
+    profile = apply_migrations(
+        {
+            "schema_version": 7,
+            "profile_revision": 6,
+            "summary_stale": False,
+            "patient": {"diagnosis": "NET"},
+            "executive_summary": {
+                "summary_revision": 6,
+                "stale": False,
+                "next_actions": [
+                    {
+                        "action": "Ask the treating team to confirm the monitoring schedule",
+                        "priority": "high",
+                    }
+                ],
+            },
+        }
+    )
+    agent.save_profile(profile, clinical_change=False)
+    stored = agent.load_profile()
+    source = agent.project_summary_actions(stored["executive_summary"])[0]
+    before = agent.load_profile()
+
+    projection = client.get("/api/summary")
+    response = client.post(
+        "/api/follow-ups",
+        json={
+            "mutation_id": "reject-migrated-summary-action",
+            "origin_kind": "executive_summary_action",
+            "source_id": source["id"],
+            "expected_source_token": source["source_token"],
+        },
+    )
+
+    assert projection.get_json()["stale"] is True
+    assert projection.get_json()["content_hidden"] is True
+    assert "next_actions" not in projection.get_json()
+    assert response.status_code == 409
+    assert agent.load_profile() == before
+
+
+def test_generated_source_helper_rejects_empty_current_generation(agent):
+    source = {
+        "id": "q-stale",
+        "generation_job_id": None,
+        "source_profile_revision": 3,
+        "stale": False,
+    }
+
+    with pytest.raises(agent.FollowThroughConflict, match="outdated"):
+        agent.validate_current_generated_source(
+            source,
+            agent.semantic_token(source),
+            current_profile_revision=3,
+            current_generation_id=None,
+            generation_field="generation_job_id",
+            changed_message="changed",
+            stale_message="outdated",
+        )
+
+
+def test_generationless_question_gets_stale_projection_and_post_is_atomic(
+    app_client, agent, empty_profile
+):
+    _, client = app_client
+    empty_profile["profile_revision"] = 4
+    empty_profile["questions_generation_id"] = None
+    empty_profile["appointment_questions"] = [
+        {
+            "id": "q-generationless",
+            "text": "What should we monitor?",
+            "source": "ai",
+            "generation_job_id": None,
+            "source_profile_revision": 4,
+            "stale": False,
+        }
+    ]
+    agent.save_profile(empty_profile, clinical_change=False)
+    visit = _create_visit(client, mutation_id="visit-generationless")
+    source = client.get("/api/questions").get_json()[0]
+    before = agent.load_profile()
+
+    response = client.post(
+        f"/api/visits/{visit['id']}/questions",
+        json={
+            "mutation_id": "visit-question-stale-generationless",
+            "expected_visit_token": visit["token"],
+            "source_kind": "generated",
+            "source_question_id": source["id"],
+            "expected_source_token": source["source_token"],
+        },
+    )
+
+    assert source["stale"] is True
+    assert response.status_code == 409
+    assert agent.load_profile() == before
+
+
+def test_manual_visit_question_remains_acceptable(app_client, agent, empty_profile):
+    _, client = app_client
+    agent.save_profile(empty_profile, clinical_change=False)
+    visit = _create_visit(client, mutation_id="visit-manual-question")
+
+    response = client.post(
+        f"/api/visits/{visit['id']}/questions",
+        json={
+            "mutation_id": "visit-question-manual",
+            "expected_visit_token": visit["token"],
+            "source_kind": "manual",
+            "text": "What should we discuss at the next appointment?",
+        },
+    )
+
+    assert response.status_code == 201
+    question = response.get_json()["visit"]["question_snapshots"][0]
+    assert question["source_kind"] == "manual"
+    assert question["source_generation_id"] is None
 
 
 def test_follow_up_admin_edit_does_not_stale_clinical_artifacts_but_outcome_does(
@@ -254,6 +380,7 @@ def test_visit_question_snapshot_and_answer_revision_semantics(app_client, agent
     agent.save_profile(empty_profile, clinical_change=False)
     visit = _create_visit(client)
     source = client.get("/api/questions").get_json()[0]
+    assert source["stale"] is False
 
     added = client.post(
         f"/api/visits/{visit['id']}/questions",
@@ -292,6 +419,63 @@ def test_visit_question_snapshot_and_answer_revision_semantics(app_client, agent
         "attributed_to": "clinician",
         "source_verification": "unverified",
     }
+
+
+def test_current_generated_snapshots_survive_later_clinical_revision(
+    app_client, agent, empty_profile
+):
+    _, client = app_client
+    _save_current_summary(agent, empty_profile, revision=4)
+    profile = agent.load_profile()
+    profile["questions_generation_id"] = "questions-current"
+    profile["appointment_questions"] = [
+        {
+            "id": "q-current",
+            "text": "What should we monitor?",
+            "source": "ai",
+            "generation_job_id": "questions-current",
+            "source_profile_revision": 4,
+            "stale": False,
+        }
+    ]
+    agent.save_profile(profile, clinical_change=False)
+
+    summary_source = client.get("/api/summary").get_json()["next_actions"][0]
+    accepted_action = client.post(
+        "/api/follow-ups",
+        json={
+            "mutation_id": "durable-summary-action",
+            "origin_kind": "executive_summary_action",
+            "source_id": summary_source["id"],
+            "expected_source_token": summary_source["source_token"],
+        },
+    )
+    assert accepted_action.status_code == 201
+
+    visit = _create_visit(client, mutation_id="durable-visit-create")
+    question_source = client.get("/api/questions").get_json()[0]
+    accepted_question = client.post(
+        f"/api/visits/{visit['id']}/questions",
+        json={
+            "mutation_id": "durable-question-snapshot",
+            "expected_visit_token": visit["token"],
+            "source_kind": "generated",
+            "source_question_id": question_source["id"],
+            "expected_source_token": question_source["source_token"],
+        },
+    )
+    assert accepted_question.status_code == 201
+
+    changed = agent.load_profile()
+    agent.save_profile(changed)
+    saved = agent.load_profile()
+
+    assert saved["caregiver_actions"][0]["text"] == summary_source["action"]
+    assert saved["caregiver_actions"][0]["origin_snapshot"]["generation_id"] == "summary-current"
+    assert saved["visits"][0]["question_snapshots"][0]["text"] == question_source["text"]
+    assert (
+        saved["visits"][0]["question_snapshots"][0]["source_generation_id"] == "questions-current"
+    )
 
 
 def test_decision_text_is_immutable_and_successor_supersedes_atomically(

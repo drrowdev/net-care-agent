@@ -568,6 +568,7 @@ class ExecutiveSummary(_Lenient):
 
     generated_at: str | None = None
     generated_at_timestamp: str | None = None
+    generation_id: str | None = None
     summary_revision: int | None = None
     stale: bool = True
     summary_error: str | None = None

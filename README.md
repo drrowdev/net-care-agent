@@ -152,7 +152,12 @@ All patient state lives in a single JSON file at `${DATA_DIR}/patient_profile.js
   "feedback":    [ {target, item_id, assessment, note, outcome, timestamps}, ... ],
   "caregiver_actions": [ {id, origin_snapshot, text, owner, due_date, status, outcome, history}, ... ],
   "visits":      [ {id, status, question_snapshots, decisions, follow_up_ids, history}, ... ],
-  "exec_summary": { "summary_revision": 42, "stale": false, ... },
+  "exec_summary": {
+    "generation_id": "summary-job-abc123",
+    "summary_revision": 42,
+    "stale": false,
+    ...
+  },
   "latest_research_update": {
     "job_id": "abc123", "trigger": "digest", "completed_at": "...",
     "trial_ids": ["NCT..."], "paper_ids": ["PMID..."]

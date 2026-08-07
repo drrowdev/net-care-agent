@@ -666,7 +666,10 @@ def summary_is_current(profile: dict) -> bool:
     summary = profile.get("executive_summary")
     if not isinstance(summary, dict) or not summary:
         return False
-    if profile.get("summary_stale") or summary.get("stale"):
+    if profile.get("summary_stale") is not False or summary.get("stale") is not False:
+        return False
+    generation_id = summary.get("generation_id")
+    if not isinstance(generation_id, str) or not generation_id.strip():
         return False
     revision = summary.get("summary_revision")
     if revision is None or str(revision) != str(profile.get("profile_revision")):

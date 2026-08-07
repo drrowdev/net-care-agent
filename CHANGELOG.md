@@ -20,6 +20,10 @@ incremented when something user-visible or operationally meaningful changes.
   resolution can atomically record an outcome/link a follow-up or decision
   without changing sibling alerts. No appointment UI, generic review inbox,
   autonomous treatment instruction, database, or scheduler is introduced.
+  Generated summary actions and questions are now acceptable only from an
+  explicitly current, fully identified generation with an exact source token;
+  generationless or migrated legacy content remains visible as stale provenance
+  until regenerated and cannot create workflow records.
 - **Scoped document reconciliation and correction.** Every retained feed job now
   opens its own profile-backed receipt showing exact additions, old-to-new
   updates, conflicts/no-ops, immutable source identity/time, and verified,

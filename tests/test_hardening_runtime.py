@@ -369,7 +369,7 @@ def test_pdf_worker_uses_extractor_and_removes_upload(hardened_app, monkeypatch)
     monkeypatch.setattr(hardened_app.agent, "save_profile", lambda *args, **kwargs: None)
     monkeypatch.setattr(hardened_app.agent, "run_orchestrator", lambda *_args: "report")
     monkeypatch.setattr(hardened_app.agent, "classify_treatments", lambda _profile: [])
-    monkeypatch.setattr(hardened_app, "_refresh_summary", lambda _profile: None)
+    monkeypatch.setattr(hardened_app, "_refresh_summary", lambda _profile, **_kwargs: None)
     monkeypatch.setattr(hardened_app, "_prune_retention", lambda: None)
 
     hardened_app._run_feed_job(job_id, None, "job-upload", "document.pdf", "application/pdf")

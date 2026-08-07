@@ -18,6 +18,12 @@ incremented when something user-visible or operationally meaningful changes.
   tab content, form values, drafts, retry intents, and dialog references while
   safely resetting focus and inert state. Ordinary offline failures continue to
   preserve the caregiver's in-progress draft for explicit retry.
+- **Generated-question revision redaction.** A clinical revision now removes
+  generated appointment choices from browser cache and both Questions surfaces
+  before the authoritative reload. Offline, stale, revisionless, and late
+  responses show only a generic retry state without prior text, metadata,
+  priority styling, acceptance tokens, or Add controls, while manual drafts and
+  accepted visit snapshots remain intact.
 - **Mutation replay identity and immutable results.** Layer 2 and alert-resolution
   idempotency is now bound to endpoint, operation, target, and the complete
   accepted request, including CAS/source tokens. Unsupported fields are rejected

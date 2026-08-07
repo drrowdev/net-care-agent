@@ -266,8 +266,12 @@ working record; on a phone it opens as a full-height sheet.
    question. Generated acceptance sends only its stable ID/token—the browser
    never copies generated text back as the source. Outdated or revisionless
    generated rows show only a generic unavailable state; their prior text is not
-   displayed. Already accepted visit snapshots remain visible for audit with
-   their generated-snapshot provenance.
+   displayed. When the clinical revision changes, generated choices are removed
+   from the browser cache and both question surfaces immediately show a generic
+   unavailable/retry state before reloading `/api/questions`; an offline, stale,
+   or late response cannot restore the old text, metadata, token, or Add action.
+   Manual drafts and already accepted visit snapshots remain visible, with the
+   latter retaining their generated-snapshot provenance.
 4. Pin questions and use Move/rank controls. The complete order is saved
    atomically after the server verifies the visit plus every question ID/token;
    a conflict cannot leave a partially reordered list.

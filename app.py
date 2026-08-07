@@ -1210,6 +1210,9 @@ def _run_chat_job(
         if str(generation_revision) != str(expected_profile_revision):
             raise RuntimeError("chat_history_stale")
         reply = agent.handle_chat(profile, user_message, history)
+        current_revision = agent.load_profile().get("profile_revision")
+        if str(current_revision) != str(generation_revision):
+            raise RuntimeError("chat_context_stale")
         result_ref = _write_job_result(
             job_id,
             {
@@ -2097,8 +2100,8 @@ def api_resolve_alert(alert_id):
             question["stale"] = True
             question["stale_reason"] = "active_alert_resolved_after_generation"
             question["stale_at"] = timestamp
-    agent.save_profile(profile, clinical_change=False)
-    return jsonify({"ok": True})
+    agent.save_profile(profile)
+    return jsonify({"ok": True, "profile_revision": profile["profile_revision"]})
 
 
 @app.route("/api/alerts/resolve/<int:idx>", methods=["POST"])
@@ -2173,6 +2176,23 @@ def api_treatment_edit(treatment_id):
             jsonify(
                 {
                     "error": "Treatment source mapping overlaps another treatment. Refresh classification before editing."
+                }
+            ),
+            409,
+        )
+    treatment_identities = agent.treatment_identity_set(
+        treatment.get("text") or treatment.get("label") or ""
+    )
+    selected_records = [item for item in records if item.get("id") in source_ids]
+    if len(treatment_identities) != 1 or any(
+        agent.treatment_identity_set(record.get("text", "")) != treatment_identities
+        or not agent.treatment_text_is_certifiable(record.get("text", ""))
+        for record in selected_records
+    ):
+        return (
+            jsonify(
+                {
+                    "error": "Treatment source coverage is not exclusive. Refresh classification before editing."
                 }
             ),
             409,

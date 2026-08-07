@@ -544,7 +544,7 @@ def active_alerts(profile: dict) -> list[dict]:
     for item in profile.get("alerts", []):
         if item.get("resolved"):
             continue
-        kind = item.get("dependency_kind") or "durable"
+        kind = item.get("dependency_kind") or "profile_snapshot"
         if kind == "source" and not item.get("source_dependency_active", True):
             continue
         if kind == "profile_snapshot" and str(item.get("generation_profile_revision")) != str(

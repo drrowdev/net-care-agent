@@ -152,9 +152,11 @@ resolved, `source` alerts remain until source correction/undo or resolution, and
 trial-poll mutations commit before fallible orchestration/classification so
 durable alerts survive downstream failure.
 Alert resolution is serialized by stable alert ID, semantic token, and expected
-profile revision; index-based resolution returns `410`. Resolution is
-bookkeeping-only so sibling alert dependencies stay valid, but it explicitly
-stales summaries and generated questions that consumed the resolved alert.
+profile revision; index-based resolution returns `410`. Resolution advances the
+clinical revision because generated contexts may have consumed the alert. This
+invalidates prior chat history, in-flight chat responses, reports/results,
+summaries, and generated questions while durable/source-scoped sibling alerts
+remain active under their own lifecycle.
 
 Clinical jobs establish one effective revision: feed/digest commit clinical
 mutations and finalized alert dependencies first, then generate/save the summary
@@ -166,10 +168,22 @@ Treatment classification carries revision/job identity. Raw treatment mutation
 invalidates it before the first save; output must cover every raw treatment
 component bidirectionally with no ungrounded extras or collapsed distinct drugs.
 When stale/failing, all consumers use the raw `current_treatments` fallback.
-Schema v6 also stores deterministic raw source/component records and maps every
+Schema v6 stores deterministic raw source/component records and maps every
 classified row to component IDs. Manual remove/complete uses treatment ID +
 semantic token + expected profile revision; composite siblings survive, and
 stale/missing/changed mappings return `409`.
+Classification certification strips recognized identities and permits only
+known status/action/dose/schedule modifiers in the residual text. Unknown drugs,
+procedures, or transition targets fail closed. Transition narratives are split
+only when each side has one certified identity, and the edit endpoint rechecks
+exclusive component coverage before any destructive mutation.
+
+Schema v7 remediates released legacy alerts: generated source-less rows are
+deterministically sanitized and bound to their migration-time profile snapshot,
+while only explicitly recognized ingestion-failure and trial-status producers
+remain durable. Receipt effective values are synchronized in the same migration.
+Nullable legacy patient scaffolding is coerced before treatment-record backfill;
+non-null invalid structural types still follow quarantine/recovery.
 
 Executive-summary prompts receive an opaque catalog of verified source-span IDs.
 The model may select only those IDs for named claims and actions; Flask resolves

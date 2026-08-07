@@ -212,6 +212,77 @@ def test_mixed_known_and_custom_treatment_cannot_drop_custom_identity(agent, emp
             agent.classify_treatments(empty_profile)
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "Switched from lanreotide to ABC-123",
+        "lanreotide replaced by ABC-123",
+        "lanreotide versus ABC-123",
+        "lanreotide vs ABC-123",
+        "lanreotide with irreversible electroporation",
+        "lanreotide after experimental tumor procedure",
+    ],
+)
+def test_uncertified_residual_therapy_content_fails_closed(agent, empty_profile, raw):
+    empty_profile["patient"]["current_treatments"] = [raw]
+    incomplete = [{"text": "lanreotide", "category": "active", "label": "lanreotide"}]
+    with patch_llm(agent, lambda **_: llm_text(json.dumps(incomplete))):
+        with pytest.raises(agent.TreatmentClassificationError):
+            agent.classify_treatments(empty_profile)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "Switched from lanreotide",
+        "lanreotide stopped",
+        "lanreotide currently active",
+        "lanreotide depot 120 mg every 4 weeks",
+    ],
+)
+def test_action_status_and_schedule_residuals_remain_certifiable(agent, empty_profile, raw):
+    empty_profile["patient"]["current_treatments"] = [raw]
+    payload = [{"text": "lanreotide", "category": "active", "label": "lanreotide"}]
+    with patch_llm(agent, lambda **_: llm_text(json.dumps(payload))):
+        assert agent.classify_treatments(empty_profile)[0]["text"] == "lanreotide"
+
+
+@pytest.mark.parametrize(
+    ("raw", "canonical"),
+    [
+        ("octreotide LAR 30 mg IM monthly", "octreotide"),
+        ("Sandostatin LAR 30mg monthly", "octreotide"),
+        ("everolimus 10mg PO daily", "everolimus"),
+        ("octreotide 100mcg SC tid", "octreotide"),
+        ("lanreotide 120mg SQ q4w", "lanreotide"),
+        ("Lu-177 dotatate 7.4 GBq IV", "PRRT"),
+    ],
+)
+def test_standard_route_formulation_frequency_and_radionuclide_qualifiers_certify(
+    agent, empty_profile, raw, canonical
+):
+    empty_profile["patient"]["current_treatments"] = [raw]
+    payload = [{"text": canonical, "category": "active", "label": canonical}]
+    with patch_llm(agent, lambda **_: llm_text(json.dumps(payload))):
+        assert agent.classify_treatments(empty_profile)[0]["text"] == canonical
+
+
+def test_known_transition_components_receive_exclusive_source_mappings(agent, empty_profile):
+    empty_profile["patient"]["current_treatments"] = ["Switched from lanreotide to everolimus"]
+    payload = [
+        {"text": "lanreotide", "category": "completed", "label": "lanreotide"},
+        {"text": "everolimus", "category": "active", "label": "everolimus"},
+    ]
+    with patch_llm(agent, lambda **_: llm_text(json.dumps(payload))):
+        classified = agent.classify_treatments(empty_profile)
+
+    assert [item["text"] for item in classified] == ["lanreotide", "everolimus"]
+    assert len({source for item in classified for source in item["source_treatment_ids"]}) == 2
+    assert not (
+        set(classified[0]["source_treatment_ids"]) & set(classified[1]["source_treatment_ids"])
+    )
+
+
 def test_unknown_drug_suffix_in_composite_cannot_be_dropped(agent, empty_profile):
     empty_profile["patient"]["current_treatments"] = ["lanreotide plus cabozantinib"]
     incomplete = [{"text": "lanreotide", "category": "active", "label": "lanreotide"}]

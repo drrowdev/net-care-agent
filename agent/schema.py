@@ -268,7 +268,7 @@ class Alert(_Lenient):
     source_document_id: str | None = None
     source_job_id: str | None = None
     generation_profile_revision: int | None = None
-    dependency_kind: Literal["durable", "source", "profile_snapshot"] = "durable"
+    dependency_kind: Literal["durable", "source", "profile_snapshot"] = "profile_snapshot"
     source_dependency_active: bool = True
     source_invalidated_at: str | None = None
     inactive_reason: str | None = None

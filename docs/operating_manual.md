@@ -118,11 +118,13 @@ receipt remains visible with **Correction saved successfully** and a retry
 button. Open feedback editors and report/result panels are immediately replaced
 when stale state is detected; old actions/reports cannot remain copyable.
 Digest/deep-sweep reports and chat answers are also labelled outdated and hidden
-after any later clinical revision. Alert resolution is bookkeeping-only: it
-does not expire other alerts generated from the same current record, but it
-marks assessments/generated questions stale. Alerts resolve by stable identity;
-if the alert changed while open, the UI reloads it instead of resolving another
-row.
+after any later clinical revision. Alert resolution advances that revision
+because those artifacts may have consumed the alert: prior chat turns clear,
+in-flight replies are rejected, open reports/results become outdated, and
+assessments/generated questions become stale. Durable or source-scoped sibling
+alerts remain active under their declared lifecycle. Alerts resolve by stable
+identity; if the alert changed while open, the UI reloads it instead of
+resolving another row.
 
 Chat history is bound to the patient profile revision. Correction, undo, or any
 other clinical revision clears prior in-tab turns with a visible notice. The
@@ -138,6 +140,10 @@ Treatment remove/complete actions use stable mapped component identities. For a
 composite raw entry such as `lanreotide plus everolimus`, removing/completing one
 row preserves the other component. Concurrent reorder/change returns `409`
 instead of mutating the shifted row.
+Transition prose such as `switched from lanreotide to everolimus` is editable
+only when both sides can be mapped exclusively. Any unidentified drug,
+procedure, or residual therapy phrase keeps classification outdated and the raw
+entry visible rather than allowing a partial destructive edit.
 
 Alert lifetime follows its declared dependency. Ingestion-failure and
 trial-status alerts are durable until resolved. Feed-source alerts deactivate
@@ -221,6 +227,8 @@ visible but is no longer a hard constraint until a clinician reactivates it.
 1. UI → **Patient** → **Active alerts**.
 2. Click **Mark resolved** on the card.
 3. The alert is marked `resolved=true` in the profile but kept for audit.
+4. Prior chat turns clear and open generated reports/results become outdated;
+   regenerate only after reviewing the remaining active alerts.
 
 ## 5. Generate appointment questions
 

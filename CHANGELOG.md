@@ -78,6 +78,14 @@ incremented when something user-visible or operationally meaningful changes.
   ID/token/revision CAS so composite edits preserve siblings. Lossless
   classification recognizes common NET surgical therapies and rejects mixed
   recognized/unknown compounds before mappings can be edited.
+  Schema v7 extends that invariant to unidentified residual therapy content,
+  including transition narratives, and the mutation endpoint independently
+  verifies exclusive component coverage. It also sanitizes source-less legacy
+  generated alerts, snapshot-binds them instead of making them durable, and
+  safely migrates nullable legacy patient scaffolding. Resolving an alert now
+  advances the generated-context revision so chat, reports/results, summaries,
+  and questions cannot retain the unresolved-alert context. Authorization
+  eviction also clears and hides the assessment freshness/source banner.
 - **Today-first responsive caregiver workspace.** Replaced the duplicated
   desktop/mobile surfaces with shared **Today**, **Patient**, **Questions**, and
   **Activity** views while retaining the warm green/amber visual identity.

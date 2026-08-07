@@ -70,6 +70,7 @@ def test_get_patient_summary_handles_alerts(agent, empty_profile):
             "priority": "urgent",
             "message": "Critical finding",
             "resolved": False,
+            "dependency_kind": "durable",
         },
         {"date": "2026-01-02", "priority": "high", "message": "Resolved one", "resolved": True},
     ]

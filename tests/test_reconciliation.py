@@ -1164,10 +1164,10 @@ def test_alert_dependency_kinds_have_distinct_lifetimes(agent, empty_profile):
     assert [item["id"] for item in agent.active_alerts(empty_profile)] == ["durable"]
 
 
-def test_resolving_one_alert_does_not_expire_sibling_versioned_alert(
+def test_alert_resolution_advances_context_revision_and_preserves_durable_sibling(
     app_client, agent, empty_profile
 ):
-    _, client = app_client
+    app_module, client = app_client
     empty_profile["profile_revision"] = 4
     empty_profile["alerts"] = [
         {
@@ -1177,6 +1177,7 @@ def test_resolving_one_alert_does_not_expire_sibling_versioned_alert(
             "resolved": False,
             "generation_profile_revision": 4,
             "source_dependency_active": True,
+            "dependency_kind": "durable",
         },
         {
             "id": "second",
@@ -1185,6 +1186,35 @@ def test_resolving_one_alert_does_not_expire_sibling_versioned_alert(
             "resolved": False,
             "generation_profile_revision": 4,
             "source_dependency_active": True,
+            "dependency_kind": "durable",
+        },
+    ]
+    reports_dir = app_module.DATA_DIR / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    report_path = reports_dir / "before-alert-resolution.md"
+    report_path.write_text("OLD ALERT REPORT", encoding="utf-8")
+    chat_ref = app_module._write_job_result(
+        "chat-before-resolution",
+        {"reply": "OLD ALERT CHAT", "source_profile_revision": 4},
+    )
+    app_module._jobs = [
+        {
+            "id": "report-before-resolution",
+            "type": "deep-sweep",
+            "status": "done",
+            "stage": "done",
+            "created_at": "2026-08-01T12:00:00",
+            "report_file": app_module._artifact_ref(report_path),
+            "profile_revision": 4,
+        },
+        {
+            "id": "chat-before-resolution",
+            "type": "chat",
+            "status": "done",
+            "stage": "done",
+            "created_at": "2026-08-01T12:00:00",
+            "result_file": chat_ref,
+            "profile_revision": 4,
         },
     ]
     empty_profile["summary_stale"] = False
@@ -1215,7 +1245,7 @@ def test_resolving_one_alert_does_not_expire_sibling_versioned_alert(
     saved = agent.load_profile()
 
     assert response.status_code == 200
-    assert saved["profile_revision"] == 4
+    assert saved["profile_revision"] == 5
     assert saved["alerts"][0]["resolved"] is True
     assert [item["id"] for item in agent.active_alerts(saved)] == ["second"]
     assert saved["summary_stale"] is True
@@ -1231,6 +1261,54 @@ def test_resolving_one_alert_does_not_expire_sibling_versioned_alert(
         },
     )
     assert dismissal.status_code == 409
+    stale_chat = client.post(
+        "/api/chat",
+        json={
+            "message": "What changed?",
+            "history": [{"role": "assistant", "content": "Old alert context"}],
+            "history_revision": 4,
+        },
+    )
+    assert stale_chat.status_code == 409
+    assert stale_chat.get_json()["profile_revision"] == 5
+    report_task = client.get("/api/jobs/report-before-resolution").get_json()
+    chat_task = client.get("/api/jobs/chat-before-resolution").get_json()
+    assert report_task["derived_content_stale"] is True
+    assert report_task["report_stale"] is True
+    assert "report" not in report_task
+    assert chat_task["derived_content_stale"] is True
+    assert chat_task["result"]["stale"] is True
+    assert "reply" not in chat_task["result"]
+
+
+def test_chat_worker_revalidates_revision_after_model_response(
+    app_client, agent, empty_profile, monkeypatch
+):
+    app_module, _ = app_client
+    empty_profile["profile_revision"] = 4
+    agent.save_profile(empty_profile, clinical_change=False)
+    app_module._jobs = [
+        {
+            "id": "interleaved-chat",
+            "type": "chat",
+            "status": "queued",
+            "stage": "queued",
+            "created_at": "2026-08-01T12:00:00",
+        }
+    ]
+
+    def interleaving_chat(_profile, _message, _history):
+        changed = agent.load_profile()
+        agent.save_profile(changed)
+        return "STALE MODEL RESPONSE"
+
+    monkeypatch.setattr(agent, "handle_chat", interleaving_chat)
+
+    app_module._run_chat_job("interleaved-chat", "Question", [], 4)
+
+    job = next(item for item in app_module._jobs if item["id"] == "interleaved-chat")
+    assert job["status"] == "error"
+    assert not job.get("result_file")
 
 
 def test_alert_resolution_by_id_survives_reorder_and_rejects_stale_token(
@@ -1246,6 +1324,7 @@ def test_alert_resolution_by_id_survives_reorder_and_rejects_stale_token(
             "resolved": False,
             "generation_profile_revision": 4,
             "source_dependency_active": True,
+            "dependency_kind": "durable",
         },
         {
             "id": "second",
@@ -1254,6 +1333,7 @@ def test_alert_resolution_by_id_survives_reorder_and_rejects_stale_token(
             "resolved": False,
             "generation_profile_revision": 4,
             "source_dependency_active": True,
+            "dependency_kind": "durable",
         },
     ]
     agent.save_profile(empty_profile, clinical_change=False)
@@ -1591,6 +1671,41 @@ def test_surgery_and_medication_composite_preserves_surgery_on_remove(
     assert [item["text"] for item in saved["treatments_classified"]] == ["hepatectomy"]
 
 
+@pytest.mark.parametrize("action", ["remove", "complete"])
+def test_treatment_edit_rejects_nonexclusive_uncertified_source_mapping(
+    app_client, agent, empty_profile, action
+):
+    _, client = app_client
+    empty_profile["profile_revision"] = 3
+    empty_profile["patient"]["current_treatments"] = ["Switched from lanreotide to ABC-123"]
+    records = agent.sync_treatment_records(empty_profile)
+    treatment = {
+        "id": "txclass_lanreotide",
+        "text": "lanreotide",
+        "label": "lanreotide",
+        "category": "active",
+        "source_treatment_ids": [records[0]["id"]],
+    }
+    empty_profile["treatments_classified"] = [treatment]
+    empty_profile["treatments_classification_revision"] = 3
+    empty_profile["treatments_classification_job_id"] = "legacy-unsafe"
+    agent.save_profile(empty_profile, clinical_change=False)
+    token = agent.treatment_edit_token(empty_profile, treatment)
+
+    response = client.post(
+        "/api/treatments/txclass_lanreotide",
+        json={
+            "action": action,
+            "expected_token": token,
+            "expected_profile_revision": 3,
+        },
+    )
+
+    assert response.status_code == 409
+    saved = agent.load_profile()
+    assert saved["patient"]["current_treatments"] == ["Switched from lanreotide to ABC-123"]
+
+
 @pytest.mark.parametrize(
     "raw",
     [
@@ -1675,39 +1790,28 @@ def test_treatment_edit_rejects_changed_mapped_component(app_client, agent, empt
     assert len(agent.load_profile()["treatments_classified"]) == 2
 
 
-def test_overlapping_narrative_treatment_mapping_rejects_edit(app_client, agent, empty_profile):
+def test_transition_treatment_mapping_is_exclusive_and_preserves_destination(
+    app_client, agent, empty_profile
+):
     _, client = app_client
     empty_profile["profile_revision"] = 3
     empty_profile["patient"]["current_treatments"] = ["Switched from lanreotide to everolimus"]
-    records = agent.sync_treatment_records(empty_profile)
-    assert len(records) == 1
-    shared_id = records[0]["id"]
-    empty_profile["treatments_classified"] = [
-        {
-            "id": "txclass_lanreotide",
-            "text": "lanreotide",
-            "label": "Lanreotide",
-            "category": "completed",
-            "source_treatment_ids": [shared_id],
-        },
-        {
-            "id": "txclass_everolimus",
-            "text": "everolimus",
-            "label": "Everolimus",
-            "category": "active",
-            "source_treatment_ids": [shared_id],
-        },
+    payload = [
+        {"text": "lanreotide", "label": "Lanreotide", "category": "completed"},
+        {"text": "everolimus", "label": "Everolimus", "category": "active"},
     ]
+    with patch_llm(agent, lambda **_: llm_text(json.dumps(payload))):
+        empty_profile["treatments_classified"] = agent.classify_treatments(empty_profile)
     empty_profile["treatments_classification_revision"] = 3
     empty_profile["treatments_classification_job_id"] = "seed"
     agent.save_profile(empty_profile, clinical_change=False)
     status = client.get("/api/status").get_json()
     lanreotide = next(
-        item for item in status["treatments_classified"] if item["id"] == "txclass_lanreotide"
+        item for item in status["treatments_classified"] if item["text"] == "lanreotide"
     )
 
     response = client.post(
-        "/api/treatments/txclass_lanreotide",
+        f"/api/treatments/{lanreotide['id']}",
         json={
             "action": "remove",
             "expected_token": lanreotide["edit_token"],
@@ -1715,10 +1819,10 @@ def test_overlapping_narrative_treatment_mapping_rejects_edit(app_client, agent,
         },
     )
 
-    assert response.status_code == 409
+    assert response.status_code == 200
     saved = agent.load_profile()
-    assert saved["patient"]["current_treatments"] == ["Switched from lanreotide to everolimus"]
-    assert len(saved["treatments_classified"]) == 2
+    assert saved["patient"]["current_treatments"] == ["everolimus"]
+    assert [item["text"] for item in saved["treatments_classified"]] == ["everolimus"]
 
 
 def test_generated_questions_are_dynamically_stale_after_profile_revision_change(

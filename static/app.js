@@ -438,6 +438,7 @@
     latestResearchUpdate = null;
     allBiomarkers = [];
     renderLatestResearchUpdate(null);
+    clearFreshnessProjection();
     if (patient) patient.textContent = 'Patient profile unavailable';
     if (patientMeta) patientMeta.innerHTML = '';
     if (treatments) treatments.innerHTML = loadFailureMarkup('Treatments', 'loadStatus()');
@@ -464,6 +465,7 @@
       chatHistoryRevision = null;
       document.querySelectorAll('.action-feedback').forEach(editor => editor.remove());
       renderLatestResearchUpdate(null);
+      clearFreshnessProjection();
 
       const clear = (id, html = '') => {
         const element = document.getElementById(id);
@@ -777,7 +779,7 @@
     const expectedToken = row?.dataset.resolveToken;
     if (!alertId || !expectedToken || latestProfileRevision == null) return;
     try {
-      await readJsonResponse(await fetch(`/api/alerts/${encodeURIComponent(alertId)}/resolve`, {
+      const result = await readJsonResponse(await fetch(`/api/alerts/${encodeURIComponent(alertId)}/resolve`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -785,6 +787,7 @@
           expected_profile_revision: latestProfileRevision,
         }),
       }));
+      syncChatRevision(result.profile_revision, true);
       await loadStatus();
     } catch (error) {
       reportLoadError('action', error);
@@ -1281,7 +1284,11 @@
       reportLoadSuccess('summary');
       return d;
     } catch(e) {
-      if (requestPhiEpoch === phiEpoch && shouldEvictClientPhi(e)) evictClientPhi(e);
+      if (requestPhiEpoch === phiEpoch && shouldEvictClientPhi(e)) {
+        evictClientPhi(e);
+        reportLoadError('summary', e);
+        return null;
+      }
       document.getElementById('summary-body').innerHTML = loadFailureMarkup('Assessment', 'loadSummary()');
       renderFreshness(null, e);
       reportLoadError('summary', e);
@@ -1312,6 +1319,7 @@
     if (!banner) return;
     const title = document.getElementById('freshness-title');
     const message = document.getElementById('freshness-message');
+    banner.hidden = false;
     banner.className = 'freshness-banner';
 
     if (error) {
@@ -1320,6 +1328,7 @@
       message.textContent = 'The assessment could not be compared with the latest patient data.';
       return;
     }
+
     if (!d || d.status === 'not_generated') {
       banner.classList.add('stale');
       title.textContent = 'No current assessment';
@@ -1348,6 +1357,18 @@
       message.textContent = d.generated_at
         ? `Updated ${fmtDate(d.generated_at_timestamp || d.generated_at)} and aligned with the current record.`
         : 'The summary is aligned with the current patient record.';
+    }
+  }
+
+  function clearFreshnessProjection() {
+    const banner = document.getElementById('freshness-banner');
+    const title = document.getElementById('freshness-title');
+    const message = document.getElementById('freshness-message');
+    if (title) title.textContent = '';
+    if (message) message.textContent = '';
+    if (banner) {
+      banner.className = 'freshness-banner';
+      banner.hidden = true;
     }
   }
 

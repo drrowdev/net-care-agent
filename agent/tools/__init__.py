@@ -240,16 +240,21 @@ _NEGATED_SCREENING_RE = re.compile(
     r"excludes?\s+enrollment|fails?\s+(?:the\s+)?inclusion)\b",
     re.IGNORECASE,
 )
-_SCREENING_CONTEXT_RE = re.compile(r"\b(?:trial|study|protocol|prrt|nct\d+)\b", re.IGNORECASE)
+_SCREENING_CONTEXT_RE = re.compile(
+    r"\b(?:trial|study|protocol|prrt|nct\d+|lutathera|"
+    r"lutetium[- ]?177(?:\s+dotatate)?|lu[- ]?177(?:[- ]dotatate)?|"
+    r"177lu(?:[- ]octreotate)?|peptide\s+receptor\s+radionuclide\s+therapy)\b",
+    re.IGNORECASE,
+)
 _SCREENING_ASSERTION_RE = re.compile(
     r"\b(?:candidate|suitable|fit|match\w*|criteria|eligib\w*|qualif\w*|"
     r"inclusion|exclusion|enroll\w*|enrol\w*|excellent|compelling|ideal|top|"
-    r"indicat\w*|appropriate|benefit\w*|receive|offer\w*)\b",
+    r"indicat\w*|appropriate|benefit\w*|receive|offer\w*|recommend\w*|advis\w*)\b",
     re.IGNORECASE,
 )
 _SCREENING_HISTORICAL_RE = re.compile(
     r"\b(?:(?:was|were|had\s+been)\s+(?:considered\s+)?(?:indicat\w*|appropriate|suitable|"
-    r"eligible|qualified|a\s+candidate)|"
+    r"eligible|qualified|recommended|advised|a\s+candidate)|"
     r"(?:prior|previous|historical)\s+(?:note|plan|assessment)\s+(?:said|stated|"
     r"recorded)?(?:(?![.;]|\b(?:and|but|however|then|now)\b).)*?"
     r"(?:benefit\w*|candidate|fit|match\w*|indicat\w*))\b",
@@ -276,6 +281,20 @@ _TREATMENT_RECOMMENDATION_RE = re.compile(
 _TREATMENT_MODAL_PASSIVE_RE = re.compile(
     r"\b(?:should|must|needs?\s+to)\s+be\s+"
     r"(?:started|stopped|held|paused|resumed|switched|increased|decreased|"
+    r"redosed|titrated|discontinued|withheld|omitted|skipped|administered|taken|"
+    r"reduced|restarted|continued|initiated|escalated|de-escalated)\b",
+    re.IGNORECASE,
+)
+_TREATMENT_RECOMMENDED_PASSIVE_RE = re.compile(
+    r"\b(?:recommend\w*|advis\w*|consider\w*|plan\w*|needs?)\b.*?"
+    r"\bbe\s+(?:started|stopped|held|paused|resumed|switched|increased|decreased|"
+    r"redosed|titrated|discontinued|withheld|omitted|skipped|administered|taken|"
+    r"reduced|restarted|continued|initiated|escalated|de-escalated)\b",
+    re.IGNORECASE,
+)
+_TREATMENT_RECOMMENDED_OBJECT_RE = re.compile(
+    r"\b(?:recommend\w*|advis\w*|consider\w*|plan\w*|needs?)\b.*?"
+    r"\b(?:started|stopped|held|paused|resumed|switched|increased|decreased|"
     r"redosed|titrated|discontinued|withheld|omitted|skipped|administered|taken|"
     r"reduced|restarted|continued|initiated|escalated|de-escalated)\b",
     re.IGNORECASE,
@@ -326,7 +345,10 @@ def _screening_safe_alert_text(value: object) -> str:
     for clause in (
         item.strip()
         for item in re.split(
-            r"[.;,:]|\s+[-–—]\s+|\b(?:but|then)\b",
+            rf"[.;,:]|\s+[-–—]\s+|\b(?:but|then|however)\b|"
+            rf"\band\b(?=\s*{_TREATMENT_CHANGE_VERB}\b)|"
+            r"\band\b(?=[^.;,:]*\b(?:should|must|needs?\s+to)\b)|"
+            r"\band\b(?=\s*(?:recommend\w*|advis\w*|consider\w*|plan\w*|needs?)\b)",
             original,
             flags=re.IGNORECASE,
         )
@@ -335,16 +357,22 @@ def _screening_safe_alert_text(value: object) -> str:
         if _TREATMENT_CANCELLED_HISTORY_RE.search(clause):
             continue
         recommendation = bool(_TREATMENT_RECOMMENDATION_RE.search(clause))
+        recommended_passive = bool(
+            _TREATMENT_RECOMMENDED_PASSIVE_RE.search(clause)
+            or _TREATMENT_RECOMMENDED_OBJECT_RE.search(clause)
+        )
+        modal_passive = bool(_TREATMENT_MODAL_PASSIVE_RE.search(clause))
         historical = bool(
             _TREATMENT_HISTORICAL_RE.search(clause) or _TREATMENT_NOUN_EVENT_RE.search(clause)
         )
         directive = bool(
             recommendation
-            or _TREATMENT_MODAL_PASSIVE_RE.search(clause)
+            or recommended_passive
+            or modal_passive
             or _TREATMENT_COMMAND_RE.search(clause)
             or _TREATMENT_GERUND_RE.search(clause)
         )
-        if directive and (recommendation or not historical):
+        if directive and (recommendation or recommended_passive or modal_passive or not historical):
             treatment_directive = True
             break
     if treatment_directive:

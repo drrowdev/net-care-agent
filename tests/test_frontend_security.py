@@ -187,6 +187,7 @@ def test_central_phi_eviction_clears_patient_panels_dialogs_and_histories():
         "pendingSummary = null",
         "chatHistory = []",
         "chatHistoryRevision = null",
+        "clearFreshnessProjection()",
         "document.querySelectorAll('.action-feedback')",
         "clear('panel-body'",
         "clear('summary-body'",
@@ -202,6 +203,21 @@ def test_central_phi_eviction_clears_patient_panels_dialogs_and_histories():
         ".receipt-editor input",
     ):
         assert expression in eviction
+    freshness = _function_source("clearFreshnessProjection", "renderClaimEvidence")
+    assert "\n  function clearFreshnessProjection" in APP_JS
+    assert "\n    function clearFreshnessProjection" not in _function_source(
+        "renderFreshness", "renderClaimEvidence"
+    )
+    for expression in (
+        "title.textContent = ''",
+        "message.textContent = ''",
+        "banner.hidden = true",
+    ):
+        assert expression in freshness
+    summary = _function_source("loadSummary", "renderPendingSummary")
+    auth_failure = summary[summary.index("catch(e)") :]
+    assert auth_failure.index("evictClientPhi(e)") < auth_failure.index("return null")
+    assert auth_failure.index("return null") < auth_failure.index("renderFreshness(null, e)")
     for loader, next_name in (
         ("loadStatus", "renderStatusFailure"),
         ("loadPatientEvidence", "evidenceBadge"),
@@ -377,6 +393,7 @@ def test_alert_resolution_uses_stable_id_token_and_revision():
     assert "/api/alerts/${encodeURIComponent(alertId)}/resolve" in resolver
     assert "expected_token: expectedToken" in resolver
     assert "expected_profile_revision: latestProfileRevision" in resolver
+    assert "syncChatRevision(result.profile_revision, true)" in resolver
 
 
 def test_patient_history_joins_documents_and_keeps_orphaned_legacy_records():

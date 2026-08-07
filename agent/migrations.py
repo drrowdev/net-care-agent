@@ -35,7 +35,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 6
+CURRENT_SCHEMA_VERSION: int = 7
 
 # Append-only ordered registry of migrations.  Never reorder entries.
 _REGISTRY: list[dict[str, Any]] = []
@@ -117,7 +117,8 @@ def _m0005_add_dependency_lifecycles(data: dict) -> dict:
         elif alert.get("generation_profile_revision") is not None:
             alert["dependency_kind"] = "profile_snapshot"
         else:
-            alert["dependency_kind"] = "durable"
+            alert["dependency_kind"] = "profile_snapshot"
+            alert["generation_profile_revision"] = int(data.get("profile_revision") or 0)
         for receipt in data.get("document_imports") or []:
             if not isinstance(receipt, dict):
                 continue
@@ -136,7 +137,12 @@ def _m0005_add_dependency_lifecycles(data: dict) -> dict:
 @_migration("0006_add_stable_treatment_records", to_version=6)
 def _m0006_add_stable_treatment_records(data: dict) -> dict:
     """v5 → v6: backfill deterministic raw treatment component identities."""
-    patient = data.setdefault("patient", {})
+    patient = data.get("patient")
+    if patient is None:
+        patient = {}
+        data["patient"] = patient
+    elif not isinstance(patient, dict):
+        raise TypeError("migration 0006 requires patient to be a dict or null")
     records = []
     occurrences: dict[str, int] = {}
     for source_order, raw in enumerate(patient.get("current_treatments") or []):
@@ -166,6 +172,57 @@ def _m0006_add_stable_treatment_records(data: dict) -> dict:
     data["treatments_classification_revision"] = None
     data["treatments_classification_job_id"] = None
     data["schema_version"] = 6
+    return data
+
+
+@_migration("0007_harden_legacy_generated_alerts", to_version=7)
+def _m0007_harden_legacy_generated_alerts(data: dict) -> dict:
+    """v6 → v7: contain legacy generated claims and remove fail-open lifetimes."""
+    from .tools import _screening_safe_alert_text
+
+    durable_sources = {"intake_extraction_failure", "trial_status_poll"}
+    revision = int(data.get("profile_revision") or 0)
+    alerts_by_id = {}
+    for alert in data.get("alerts") or []:
+        if not isinstance(alert, dict):
+            continue
+        alert["message"] = _screening_safe_alert_text(alert.get("message", ""))
+        alert["action_required"] = _screening_safe_alert_text(alert.get("action_required", ""))
+        if alert.get("source") in durable_sources:
+            alert["dependency_kind"] = "durable"
+        elif alert.get("source_document_id"):
+            alert["dependency_kind"] = "source"
+        elif alert.get("dependency_kind") == "durable":
+            alert["dependency_kind"] = "profile_snapshot"
+            alert["generation_profile_revision"] = revision
+        elif alert.get("dependency_kind") == "profile_snapshot":
+            alert.setdefault("generation_profile_revision", revision)
+        if alert.get("id"):
+            alerts_by_id[alert["id"]] = alert
+
+    for receipt in data.get("document_imports") or []:
+        if not isinstance(receipt, dict):
+            continue
+        for change in receipt.get("changes") or []:
+            if not isinstance(change, dict):
+                continue
+            target = change.get("target") or {}
+            if target.get("collection") != "alerts":
+                continue
+            alert = alerts_by_id.get(target.get("record_id"))
+            effective = change.get("effective_value")
+            if alert is None or not isinstance(effective, dict):
+                continue
+            for key in (
+                "message",
+                "action_required",
+                "dependency_kind",
+                "generation_profile_revision",
+                "source_dependency_active",
+            ):
+                if key in alert:
+                    effective[key] = alert[key]
+    data["schema_version"] = 7
     return data
 
 

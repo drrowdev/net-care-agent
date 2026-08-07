@@ -427,6 +427,50 @@ def test_historical_clause_does_not_exempt_live_screening_assertion(agent, empty
     assert "should receive prrt" not in message
 
 
+@pytest.mark.parametrize(
+    "unsafe",
+    [
+        "Renal function is worsening and hold PRRT now",
+        "It is recommended that everolimus be stopped immediately",
+        "The patient should receive Lutathera",
+        "Lutetium-177 dotatate is indicated for this patient",
+        "Consider reducing everolimus and restart lanreotide",
+        "The plan is to initiate sunitinib",
+        "Everolimus needs to be held",
+        "The patient is suitable for 177Lu-octreotate",
+        "It is recommended that everolimus and octreotide be stopped",
+        "Recommend PRRT and octreotide be discontinued now",
+        "It is advised that PRRT and octreotide be held",
+        "Consider that everolimus and sunitinib be stopped",
+        "Plan is that lanreotide and everolimus be switched",
+        "Patient needs everolimus stopped",
+        "Patient needs PRRT held",
+        "Lu-177 dotatate is recommended",
+        "Octreotide was stopped and everolimus should be started",
+        "Lanreotide was discontinued and sunitinib should be started",
+        "PRRT was administered and everolimus must be held",
+        "Capecitabine was reduced and octreotide should be increased",
+        "Everolimus was held and lanreotide should be resumed",
+        "Recommendation to start sunitinib was withdrawn and everolimus should be stopped",
+        "Advice to hold PRRT was cancelled and recommend restarting lanreotide",
+    ],
+)
+@pytest.mark.parametrize("field", ["message", "action_required"])
+def test_generated_alert_containment_covers_passive_alias_and_conjunction_variants(
+    agent, empty_profile, unsafe, field
+):
+    inputs = {"priority": "high", "message": "Renal finding"}
+    inputs[field] = unsafe
+    agent.execute_tool("flag_alert", inputs, empty_profile)
+
+    persisted = empty_profile["alerts"][0][field].lower()
+    assert unsafe.lower() != persisted
+    assert (
+        "confirm before any treatment change" in persisted
+        or "must review the complete criteria" in persisted
+    )
+
+
 # ─── analyze_biomarker_trends ────────────────────────────────────────────────
 
 

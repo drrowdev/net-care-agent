@@ -9,7 +9,12 @@ from __future__ import annotations
 
 # Agents
 from .chat import build_chat_system, handle_chat
-from .classify import TreatmentClassificationError, classify_treatments
+from .classify import (
+    TreatmentClassificationError,
+    classify_treatments,
+    treatment_identity_set,
+    treatment_text_is_certifiable,
+)
 
 # Configuration & paths
 from .config import (
@@ -161,6 +166,8 @@ __all__ = [
     "verification_note",
     "classify_treatments",
     "TreatmentClassificationError",
+    "treatment_identity_set",
+    "treatment_text_is_certifiable",
     "generate_executive_summary",
     "generate_appointment_questions",
     "generate_questions_for_profile",

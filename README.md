@@ -131,7 +131,7 @@ All patient state lives in a single JSON file at `${DATA_DIR}/patient_profile.js
 
 ```
 {
-  "schema_version": 6,
+  "schema_version": 7,
   "profile_revision": 42,
   "profile_updated_at": "2026-07-10T16:51:49",
   "profile_saved_at": "2026-07-10T16:52:03",
@@ -178,6 +178,10 @@ revision/job identity. Legacy classifications become stale and fall back to raw
 Schema v6 backfills stable raw treatment component/source IDs. Classified rows
 map explicitly to those components so ID/token/revision CAS edits preserve
 unaffected parts of composite entries.
+Schema v7 sanitizes source-less legacy generated alerts and binds them to the
+profile snapshot that was current at migration; only recognized ingestion and
+trial-status producers remain durable. Treatment certification also rejects any
+unidentified residual therapy content before editable mappings become current.
 
 A daily backup is written to `${DATA_DIR}/backups/profile_YYYYMMDD.json`
 (retention: 30 days).

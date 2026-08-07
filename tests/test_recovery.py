@@ -416,6 +416,7 @@ def test_missing_profile_recovers_backup_instead_of_creating_default(tmp_path, m
     monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
     monkeypatch.setattr(cfg, "PROFILE_PATH", tmp_path / "patient_profile.json")
     monkeypatch.setattr(bk, "BACKUPS_DIR", tmp_path / "backups")
+    (tmp_path / ".profile-initialized").write_text("stale\n")
     valid = json.dumps(
         {"schema_version": 1, "patient": {"diagnosis": "Recovered NET"}, "biomarkers": []}
     ).encode()

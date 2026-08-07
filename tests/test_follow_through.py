@@ -1328,6 +1328,88 @@ def test_failed_save_leaves_persisted_profile_unchanged(
     assert saved["workflow_revision"] == 0
 
 
+@pytest.mark.parametrize("failure_point", ["temp_write", "replace"])
+def test_precommit_profile_failure_rejects_workflow_without_persisting_state(
+    app_client, agent, empty_profile, monkeypatch, failure_point
+):
+    _, client = app_client
+    from agent import config, io
+
+    agent.save_profile(empty_profile, clinical_change=False)
+
+    if failure_point == "temp_write":
+        monkeypatch.setattr(
+            io.os,
+            "fsync",
+            lambda _fd: (_ for _ in ()).throw(OSError("simulated profile temp write failure")),
+        )
+    else:
+        monkeypatch.setattr(
+            io.os,
+            "replace",
+            lambda _source, _destination: (_ for _ in ()).throw(
+                OSError("simulated profile replace failure")
+            ),
+        )
+
+    with pytest.raises(OSError):
+        client.post(
+            "/api/follow-ups",
+            json={
+                "mutation_id": f"precommit-{failure_point}",
+                "origin_kind": "manual",
+                "text": "Ask the treating team about timing",
+            },
+        )
+
+    saved = agent.load_profile()
+    assert saved["caregiver_actions"] == []
+    assert saved["workflow_revision"] == 0
+    assert not list(config.DATA_DIR.glob(f".{config.PROFILE_PATH.name}.*.tmp"))
+
+
+def test_marker_failure_after_commit_succeeds_and_replay_is_idempotent(
+    app_client, agent, empty_profile, monkeypatch, caplog
+):
+    _, client = app_client
+    import agent.profile as profile_module
+
+    agent.save_profile(empty_profile, clinical_change=False)
+    (profile_module.config.DATA_DIR / ".profile-initialized").unlink()
+    private_error = r"patient-name C:\private\.profile-initialized"
+    real_atomic_write = profile_module.atomic_write_text
+
+    def fail_marker(path, content, encoding="utf-8"):
+        if path.name == ".profile-initialized":
+            raise OSError(private_error)
+        return real_atomic_write(path, content, encoding)
+
+    monkeypatch.setattr(profile_module, "atomic_write_text", fail_marker)
+    request = {
+        "mutation_id": "marker-failure-001",
+        "origin_kind": "manual",
+        "text": "Ask the treating team about timing",
+    }
+
+    with caplog.at_level("WARNING"):
+        first = client.post("/api/follow-ups", json=request)
+        replay = client.post("/api/follow-ups", json=request)
+        saved = agent.load_profile()
+
+    assert first.status_code == 201
+    assert replay.status_code == 200
+    assert replay.get_json()["idempotent_replay"] is True
+    assert first.get_json()["item"]["id"] == replay.get_json()["item"]["id"]
+    assert saved["workflow_revision"] == 1
+    assert saved["profile_revision"] == 0
+    assert len(saved["caregiver_actions"]) == 1
+    assert len(saved["caregiver_actions"][0]["history"]) == 1
+    assert saved["caregiver_actions"][0]["history"][0]["mutation_id"] == "marker-failure-001"
+    assert private_error not in caplog.text
+    assert private_error not in json.dumps(first.get_json())
+    assert private_error not in json.dumps(replay.get_json())
+
+
 def test_cli_resolve_alert_uses_stable_id_and_audit(agent, empty_profile):
     from agent.cli import cmd_resolve_alert
 

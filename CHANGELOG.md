@@ -18,6 +18,13 @@ incremented when something user-visible or operationally meaningful changes.
   even after later edits. Result hashes and owner/link checks fail closed on
   malformed stored snapshots. Legacy alert requests without a mutation ID remain
   compatible through a deterministic ID in a client-inaccessible namespace.
+- **Profile-save commit semantics.** Atomic replacement of
+  `patient_profile.json` is now the explicit commit point. Failures writing or
+  replacing the profile still fail the request without committed workflow
+  state, while post-commit `.profile-initialized` maintenance is best-effort,
+  path-free in logs, and cannot make a successful mutation appear failed.
+  Missing markers are repaired after a valid profile load, and stale markers do
+  not block snapshot/backup recovery or permit duplicate initialization.
 
 ### Added
 - **Durable caregiver follow-through backend.** Schema v8 adds independent

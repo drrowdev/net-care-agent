@@ -9,6 +9,15 @@ incremented when something user-visible or operationally meaningful changes.
 ## [Unreleased]
 
 ### Fixed
+- **Late appointment responses and authorization PHI teardown.** Appointment
+  mutations now validate their patient-data and visit-selection epochs before
+  changing workflow/profile revisions, visit caches, retry state, drafts, or
+  rendered content. Late visit A responses cannot repaint visit B or trigger
+  success cleanup. Authorization eviction now scrubs appointment titles,
+  clinician/location metadata, visit and decision options, statuses, dynamic
+  tab content, form values, drafts, retry intents, and dialog references while
+  safely resetting focus and inert state. Ordinary offline failures continue to
+  preserve the caregiver's in-progress draft for explicit retry.
 - **Mutation replay identity and immutable results.** Layer 2 and alert-resolution
   idempotency is now bound to endpoint, operation, target, and the complete
   accepted request, including CAS/source tokens. Unsupported fields are rejected

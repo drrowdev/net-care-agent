@@ -233,6 +233,53 @@ visible but is no longer a hard constraint until a clinician reactivates it.
 4. Prior chat turns clear and open generated reports/results become outdated;
    regenerate only after reviewing the remaining active alerts.
 
+## 4a. Track caregiver follow-through
+
+Open **Today** → **Follow-through**. Desktop and phone use the same action list
+and dialogs; there is no separate mobile copy or extra top-level view.
+
+1. Use **Active**, **Completed**, **Cancelled**, and **All** to filter durable
+   caregiver tasks. Active combines `open` and `in_progress`. Due dates use calm
+   **Due soon** and **Overdue** labels; the card also shows owner, origin,
+   linked visit/decision/alert indicators, timestamps, and any recorded outcome.
+2. Choose **Add follow-up** for a manual task. Use contact, ask, discuss, or
+   confirm wording with the treating team. The browser never silently rewrites a
+   treatment directive: it gives safer wording guidance and displays any
+   authoritative server rejection.
+3. A current generated assessment action offers **Add to follow-through**.
+   Acceptance sends only the server-projected stable source ID and semantic
+   token, never generated text or a list index. Stale, hidden, revisionless, or
+   conflicted actions become a generic unavailable row without cached text,
+   token, or action control. Once accepted, the durable generated snapshot
+   remains in Follow-through after later assessment revisions.
+4. Use **Edit owner or due date** for administrative changes. Use **Start** on an
+   open task or **Move to open** on an in-progress task. Completed and cancelled
+   actions are immutable terminal history and do not offer reopen controls.
+5. **Complete** or **Cancel** requires an outcome source and text:
+   `administrative`, `caregiver_reported`, or `clinician_attributed`.
+   Administrative outcomes are explicitly not clinical evidence. The other two
+   are labelled **Caregiver-entered · caregiver reported · unverified** or
+   **Caregiver-entered · attributed to clinician · unverified**; neither receives
+   source-verified styling or becomes a clinician fact.
+
+Each user intent gets one mutation ID and the current full action/source token.
+Only an explicit retry after an ambiguous connection loss reuses that exact
+unchanged request. A `409` never auto-retries or applies pending browser copies:
+the UI reloads the authoritative action (and assessment source when relevant),
+keeps only the eligible caregiver-entered draft, and requires a new explicit
+submission. Drafts are keyed to their action and intent and live only in the
+current SPA memory.
+
+Owner, due-date, and administrative lifecycle changes advance only
+`workflow_revision`, so they refresh action UI without clearing chat, reports,
+summary, questions, tasks, or status. Caregiver-reported and
+clinician-attributed outcomes may also advance `profile_revision`; the browser
+uses the returned revision, never the selected outcome kind, to trigger the full
+authoritative clinical refresh. Authorization or hard data-load failure clears
+all action rows, tokens, dialogs, drafts, retry state, and late responses. An
+ordinary offline failure clears cached durable rows but preserves the current
+caregiver draft and exact retry intent in memory.
+
 ## 5. Generate appointment questions
 
 1. UI → **Questions** → **Generate questions**.

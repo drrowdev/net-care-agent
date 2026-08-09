@@ -16,13 +16,24 @@
   let taskSelectionEpoch = 0;
   let latestProfileRevision = null;
   let phiEpoch = 0;
+  let summaryLoadEpoch = 0;
   let workflowRevision = null;
   let visitsById = new Map();
   let appointmentOptions = [];
   let appointmentQuestionSources = [];
   let questionLoadEpoch = 0;
   let generatedQuestionsUnavailable = false;
-  let visitFollowUps = [];
+  let followUpsById = new Map();
+  let followUpFilter = 'active';
+  let followUpLoadEpoch = 0;
+  let selectedFollowUpId = null;
+  let followUpSelectionEpoch = 0;
+  let followUpDialogOpen = false;
+  let followUpDialogMode = null;
+  let followUpOutcomeStatus = null;
+  let pendingFollowUpIntent = null;
+  let followUpMutationPending = false;
+  let followUpDrafts = new Map();
   let selectedVisitId = null;
   let visitSelectionEpoch = 0;
   let appointmentDialogOpen = false;
@@ -132,6 +143,7 @@
 
   async function refreshClinicalWorkflowState(profileRevision) {
     redactGeneratedQuestionChoices();
+    redactGeneratedSummaryActions();
     phiEpoch += 1;
     const refreshPhiEpoch = phiEpoch;
     taskSelectionEpoch += 1;
@@ -142,7 +154,7 @@
       loadQuestions(),
       loadTasks(),
       loadVisits(),
-      loadVisitFollowUps(),
+      loadFollowUps(),
     ]);
     if (refreshPhiEpoch !== phiEpoch) return false;
     if (appointmentDialogOpen) {
@@ -164,10 +176,7 @@
     }
     if (data.item?.question_snapshots && data.item.id) visitsById.set(data.item.id, data.item);
     if (data.item?.visit_id && data.item.id) {
-      visitFollowUps = [
-        ...visitFollowUps.filter(item => item.id !== data.item.id),
-        data.item,
-      ];
+      followUpsById.set(data.item.id, data.item);
     }
 
     const profileChanged = data.profile_revision != null
@@ -211,7 +220,7 @@
     if (generatedSource) redactGeneratedQuestionChoices();
     setAppointmentMessage(message, 'conflict');
     reportLoadError('appointment-workflow', error);
-    await Promise.allSettled([loadVisits(), loadVisitFollowUps(), loadQuestions()]);
+    await Promise.allSettled([loadVisits(), loadFollowUps(), loadQuestions()]);
     return true;
   }
 
@@ -542,7 +551,7 @@
       loadSymptoms(),
       loadPatientEvidence(),
       loadVisits(),
-      loadVisitFollowUps(),
+      loadFollowUps(),
     ]);
   }
 
@@ -565,7 +574,7 @@
       loadQuestions();
       loadJudgments();
       loadVisits();
-      loadVisitFollowUps();
+      loadFollowUps();
     } else if (name === 'patient') {
       loadStatus();
       loadSymptoms();
@@ -575,6 +584,7 @@
     } else if (name === 'today') {
       loadStatus();
       loadSummary();
+      loadFollowUps();
     }
     if (window.location.hash !== `#${name}`) {
       history.replaceState(null, '', `#${name}`);
@@ -589,9 +599,9 @@
   function refreshAfterVisibilityRestore() {
     if (document.hidden) return;
     const refreshes = [loadTasks(), loadStatus()];
-    if (activeView === 'today') refreshes.push(loadSummary());
+    if (activeView === 'today') refreshes.push(loadSummary(), loadFollowUps());
     if (activeView === 'questions' || appointmentDialogOpen) {
-      refreshes.push(loadVisits(), loadVisitFollowUps(), loadQuestions());
+      refreshes.push(loadVisits(), loadFollowUps(), loadQuestions());
     }
     Promise.allSettled(refreshes);
   }
@@ -708,6 +718,7 @@
     currentReportText = '';
     currentReceipt = null;
     pendingSummary = null;
+    summaryLoadEpoch += 1;
     latestProfileRevision = null;
     latestResearchUpdate = null;
     patientEvidence = null;
@@ -718,7 +729,16 @@
     appointmentQuestionSources = [];
     questionLoadEpoch += 1;
     generatedQuestionsUnavailable = false;
-    visitFollowUps = [];
+    followUpsById = new Map();
+    followUpLoadEpoch += 1;
+    selectedFollowUpId = null;
+    followUpSelectionEpoch += 1;
+    followUpDialogOpen = false;
+    followUpDialogMode = null;
+    followUpOutcomeStatus = null;
+    pendingFollowUpIntent = null;
+    followUpMutationPending = false;
+    followUpDrafts = new Map();
     selectedVisitId = null;
     visitSelectionEpoch += 1;
     appointmentDialogOpen = false;
@@ -751,6 +771,8 @@
     clear('visit-question-list');
     clear('visit-decision-list');
     clear('visit-followup-list');
+    clear('follow-up-list');
+    clear('follow-up-status');
     clear('judgments-list');
     clear('symptoms-list');
     clear('summary-status-inline');
@@ -761,6 +783,19 @@
 
     const appointmentOverlay = document.getElementById('appointment-overlay');
     const appointmentDialog = document.getElementById('appointment-dialog');
+    const followUpOverlay = document.getElementById('follow-up-overlay');
+    const followUpDialog = document.getElementById('follow-up-dialog');
+    if (
+      followUpDialog
+      && typeof followUpDialog.contains === 'function'
+      && followUpDialog.contains(document.activeElement)
+    ) {
+      document.activeElement?.blur();
+    }
+    followUpOverlay?.classList.remove('open');
+    followUpOverlay?.setAttribute('aria-hidden', 'true');
+    if (followUpOverlay) followUpOverlay.inert = true;
+    if (followUpDialog) followUpDialog.inert = true;
     if (
       appointmentDialog
       && typeof appointmentDialog.contains === 'function'
@@ -816,7 +851,8 @@
       if (panel) panel.hidden = !active;
     }
     for (const id of [
-      'appointment-retry', 'visit-create-retry', 'visit-decision-cancel-supersede'
+      'appointment-retry', 'visit-create-retry', 'visit-decision-cancel-supersede',
+      'follow-up-retry', 'follow-up-dialog-retry'
     ]) {
       const element = document.getElementById(id);
       if (element) element.hidden = true;
@@ -827,7 +863,8 @@
     }
     for (const id of [
       'visit-create-error', 'visit-details-error', 'visit-question-error',
-      'visit-decision-error', 'visit-followup-error'
+      'visit-decision-error', 'visit-followup-error', 'follow-up-create-error',
+      'follow-up-edit-error', 'follow-up-outcome-error'
     ]) {
       const status = document.getElementById(id);
       if (status) status.textContent = '';
@@ -870,6 +907,8 @@
       'visit-edit-clinician', 'visit-edit-location',
       'visit-manual-question', 'visit-decision-text', 'visit-decision-supersedes',
       'visit-followup-text', 'visit-followup-owner', 'visit-followup-due',
+      'follow-up-create-text', 'follow-up-create-owner', 'follow-up-create-due',
+      'follow-up-edit-owner', 'follow-up-edit-due', 'follow-up-outcome-text',
       'dismiss-text-0', 'dismiss-text-1', 'dismiss-text-2',
       'dismiss-text-3', 'dismiss-text-4'
     ]) {
@@ -882,6 +921,15 @@
       const select = document.getElementById(id);
       if (select) select.value = '';
     }
+    const outcomeKind = document.getElementById('follow-up-outcome-kind');
+    if (outcomeKind) outcomeKind.value = 'administrative';
+    const followUpDialogStatus = document.getElementById('follow-up-dialog-status');
+    if (followUpDialogStatus) {
+      followUpDialogStatus.textContent = '';
+      followUpDialogStatus.className = 'follow-up-dialog-status';
+    }
+    const followUpRetry = document.getElementById('follow-up-retry');
+    if (followUpRetry) followUpRetry.hidden = true;
     document.querySelectorAll(
       '.judgment-edit-text, .receipt-editor input, .receipt-editor textarea, .receipt-editor select'
     ).forEach(control => {
@@ -908,6 +956,9 @@
     });
     if (appointmentOverlay) appointmentOverlay.inert = true;
     if (appointmentDialog) appointmentDialog.inert = true;
+    if (followUpOverlay) followUpOverlay.inert = true;
+    if (followUpDialog) followUpDialog.inert = true;
+    setFollowUpMutationBusy(false);
     setAppointmentMutationBusy(false);
     updateAppointmentFormValidity();
   }
@@ -1618,10 +1669,27 @@
 
   async function loadSummary() {
     const requestPhiEpoch = phiEpoch;
+    const requestSummaryEpoch = ++summaryLoadEpoch;
     try {
       const r = await fetch('/api/summary');
       const d = await readJsonResponse(r);
-      if (requestPhiEpoch !== phiEpoch) return null;
+      if (requestPhiEpoch !== phiEpoch || requestSummaryEpoch !== summaryLoadEpoch) return null;
+      if (
+        latestProfileRevision != null
+        && d.profile_revision != null
+        && String(d.profile_revision) !== String(latestProfileRevision)
+      ) {
+        redactGeneratedSummaryActions();
+        pendingSummary = null;
+        renderSummary({
+          status: 'stale',
+          content_hidden: true,
+          profile_revision: latestProfileRevision,
+          summary_revision: d.summary_revision,
+        });
+        reportLoadSuccess('summary');
+        return null;
+      }
       const editor = document.querySelector('.action-feedback');
       const responseStale = d.status === 'stale' || d.content_hidden || summaryIsStale(d);
       const editorRevision = editor?.previousElementSibling?.dataset.summaryRevision;
@@ -1645,7 +1713,7 @@
       reportLoadSuccess('summary');
       return d;
     } catch(e) {
-      if (requestPhiEpoch !== phiEpoch) {
+      if (requestPhiEpoch !== phiEpoch || requestSummaryEpoch !== summaryLoadEpoch) {
         reportLoadError('summary', e);
         return null;
       }
@@ -1735,6 +1803,62 @@
       banner.className = 'freshness-banner';
       banner.hidden = true;
     }
+  }
+
+  function summaryActionIsCurrent(action, summary) {
+    return action?.stale === false
+      && typeof action.id === 'string'
+      && Boolean(action.id.trim())
+      && typeof action.source_token === 'string'
+      && Boolean(action.source_token.trim())
+      && typeof action.generation_id === 'string'
+      && Boolean(action.generation_id.trim())
+      && action.source_profile_revision != null
+      && summary?.profile_revision != null
+      && String(action.source_profile_revision) === String(summary.profile_revision)
+      && String(action.generation_id) === String(summary.generation_id || '')
+      && String(summary.summary_revision ?? '') === String(summary.profile_revision ?? '');
+  }
+
+  function generatedActionAccepted(sourceId) {
+    return [...followUpsById.values()].some(
+      item => item?.origin_snapshot?.kind === 'executive_summary_action'
+        && item.origin_snapshot.source_id === sourceId
+    );
+  }
+
+  function refreshGeneratedActionControls() {
+    document.querySelectorAll('[data-generated-action-source-id]').forEach(row => {
+      const button = row.querySelector('.action-accept-btn');
+      if (!button) return;
+      const accepted = generatedActionAccepted(row.dataset.generatedActionSourceId);
+      button.disabled = accepted;
+      button.textContent = accepted ? 'Accepted' : 'Add to follow-through';
+    });
+  }
+
+  function redactGeneratedSummaryActions() {
+    document.querySelectorAll('[data-generated-action-source-id]').forEach(row => {
+      row.removeAttribute('data-generated-action-source-id');
+      row.removeAttribute('data-generated-action-source-token');
+      row.className = 'action-item unavailable';
+      row.innerHTML = '<div class="summary-action-unavailable"><strong>Generated action unavailable</strong><span>Reload the current assessment before using this action.</span></div>';
+    });
+  }
+
+  async function acceptGeneratedFollowUp(row) {
+    const sourceId = row?.dataset.generatedActionSourceId;
+    const sourceToken = row?.dataset.generatedActionSourceToken;
+    if (!sourceId || !sourceToken) return;
+    await submitFollowUpMutation(
+      '/api/follow-ups',
+      {
+        origin_kind: 'executive_summary_action',
+        source_id: sourceId,
+        expected_source_token: sourceToken,
+      },
+      { sourceKind: 'generated' },
+    );
   }
 
   function renderClaimEvidence(items) {
@@ -1842,10 +1966,17 @@
         <div class="summary-section-label">What to do next</div>
         <div class="action-list">`;
       d.next_actions.forEach((a, idx) => {
+        if (!summaryActionIsCurrent(a, d)) {
+          html += `<div class="action-item unavailable">
+            <div class="summary-action-unavailable"><strong>Generated action unavailable</strong><span>Reload the current assessment before using this action.</span></div>
+          </div>`;
+          return;
+        }
         const provBadge = a.provisional
           ? `<span style="font-family:var(--mono);font-size:9px;color:var(--text2);border:0.5px solid var(--border);padding:1px 4px;border-radius:2px;margin-left:4px">TBD</span>`
           : '';
-        html += `<div class="action-item" id="action-${idx}" data-action-text="${escHtml(a.action || '')}" data-summary-revision="${escHtml(d.summary_revision ?? '')}">
+        const accepted = generatedActionAccepted(a.id);
+        html += `<div class="action-item" id="action-${idx}" data-action-text="${escHtml(a.action || '')}" data-summary-revision="${escHtml(d.summary_revision ?? '')}" data-generated-action-source-id="${escHtml(a.id)}" data-generated-action-source-token="${escHtml(a.source_token)}">
           <span class="action-priority ${safeClassToken(a.priority, 'medium')}">${escHtml(a.priority || 'medium')}</span>
           <div class="action-text">
             <div class="action-main">${escHtml(a.action)}${provBadge}</div>
@@ -1853,7 +1984,10 @@
             ${renderClaimEvidence(d.claim_evidence?.actions?.[idx])}
           </div>
           <div class="action-timeframe">${escHtml(a.due_date ? `Due ${fmtDate(a.due_date)}` : (a.timeframe || 'Review with care team'))}</div>
-          <button onclick="dismissAction(${idx})" aria-label="Review or dismiss this action" title="Review or dismiss" class="icon-button action-dismiss-btn">⋯</button>
+          <div class="action-controls">
+            <button class="button secondary action-accept-btn" onclick="acceptGeneratedFollowUp(this.closest('.action-item'))" ${accepted ? 'disabled' : ''}>${accepted ? 'Accepted' : 'Add to follow-through'}</button>
+            <button onclick="dismissAction(${idx})" aria-label="Review or dismiss this action" title="Review or dismiss" class="icon-button action-dismiss-btn">⋯</button>
+          </div>
         </div>`;
       });
       html += `</div></div>`;
@@ -2657,6 +2791,10 @@
   document.addEventListener('keydown', (e) => {
     if (trapDialogFocus(e)) return;
     if (e.key !== 'Escape') return;
+    if (followUpDialogOpen) {
+      closeFollowUpDialog();
+      return;
+    }
     if (appointmentDialogOpen) {
       closeAppointmentWorkspace();
       return;
@@ -2951,27 +3089,747 @@
     }
   }
 
-  async function loadVisitFollowUps() {
+  function followUpItems() {
+    return [...followUpsById.values()];
+  }
+
+  function followUpStatusLabel(status) {
+    return {
+      open: 'Open',
+      in_progress: 'In progress',
+      completed: 'Completed',
+      cancelled: 'Cancelled',
+    }[status] || 'Unavailable';
+  }
+
+  function localDateIso(date = new Date()) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  function dueDatePresentation(item) {
+    if (!item?.due_date) return { label: 'No due date', tone: '' };
+    if (!['open', 'in_progress'].includes(item.status)) {
+      return { label: `Due ${fmtDate(item.due_date)}`, tone: '' };
+    }
+    const today = localDateIso();
+    if (item.due_date < today) {
+      return { label: `Overdue · ${fmtDate(item.due_date)}`, tone: 'overdue' };
+    }
+    const due = new Date(`${item.due_date}T12:00:00`);
+    const now = new Date(`${today}T12:00:00`);
+    const days = Math.round((due - now) / 86400000);
+    if (days >= 0 && days <= 7) {
+      return {
+        label: days === 0 ? 'Due today' : `Due soon · ${fmtDate(item.due_date)}`,
+        tone: 'soon',
+      };
+    }
+    return { label: `Due ${fmtDate(item.due_date)}`, tone: '' };
+  }
+
+  function followUpOriginLabel(item) {
+    const origin = item?.origin_snapshot || {};
+    if (origin.kind === 'executive_summary_action') {
+      return `Generated action snapshot · record revision ${origin.source_profile_revision ?? 'unavailable'} · generation ${origin.generation_id || 'unavailable'}`;
+    }
+    if (origin.kind === 'visit_decision') return 'Caregiver follow-up from a visit decision';
+    if (origin.kind === 'alert') return 'Caregiver follow-up from an alert';
+    return 'Manual caregiver follow-up';
+  }
+
+  function followUpOutcomePresentation(outcome) {
+    if (!outcome) return null;
+    if (outcome.kind === 'clinician_attributed') {
+      return {
+        label: 'Caregiver-entered · attributed to clinician · unverified',
+        className: 'clinician-attributed',
+      };
+    }
+    if (outcome.kind === 'caregiver_reported') {
+      return {
+        label: 'Caregiver-entered · caregiver reported · unverified',
+        className: 'caregiver-reported',
+      };
+    }
+    return {
+      label: 'Caregiver-entered administrative outcome · not clinical evidence',
+      className: 'administrative',
+    };
+  }
+
+  function formatActionTimestamp(value) {
+    if (!value) return '';
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return fmtDate(value);
+    return parsed.toLocaleString([], {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }
+
+  function setFollowUpStatus(message, tone = '') {
+    const status = document.getElementById('follow-up-status');
+    if (!status) return;
+    status.textContent = message || '';
+    status.className = `follow-up-status${tone ? ` ${safeClassToken(tone)}` : ''}`;
+  }
+
+  function setFollowUpDialogStatus(message, tone = '') {
+    const status = document.getElementById('follow-up-dialog-status');
+    if (!status) return;
+    status.textContent = message || '';
+    status.className = `follow-up-dialog-status${tone ? ` ${safeClassToken(tone)}` : ''}`;
+  }
+
+  function renderFollowUps() {
+    const list = document.getElementById('follow-up-list');
+    if (!list) return;
+    const items = followUpItems();
+    const counts = {
+      active: items.filter(item => ['open', 'in_progress'].includes(item.status)).length,
+      completed: items.filter(item => item.status === 'completed').length,
+      cancelled: items.filter(item => item.status === 'cancelled').length,
+      all: items.length,
+    };
+    Object.entries(counts).forEach(([name, count]) => {
+      const badge = document.getElementById(`follow-up-count-${name}`);
+      if (badge) badge.textContent = String(count);
+    });
+    const filtered = items.filter(item => (
+      followUpFilter === 'all'
+      || (followUpFilter === 'active' && ['open', 'in_progress'].includes(item.status))
+      || item.status === followUpFilter
+    )).sort((a, b) => {
+      if (followUpFilter === 'active') {
+        const dueA = a.due_date || '9999-12-31';
+        const dueB = b.due_date || '9999-12-31';
+        return dueA.localeCompare(dueB)
+          || String(b.updated_at || '').localeCompare(String(a.updated_at || ''));
+      }
+      return String(b.updated_at || '').localeCompare(String(a.updated_at || ''));
+    });
+    list.setAttribute('aria-labelledby', `follow-up-filter-${followUpFilter}`);
+    if (!filtered.length) {
+      const empty = {
+        active: 'No active follow-through tasks.',
+        completed: 'No completed follow-through tasks.',
+        cancelled: 'No cancelled follow-through tasks.',
+        all: 'No follow-through tasks yet.',
+      }[followUpFilter];
+      list.innerHTML = `<div class="empty-state">${escHtml(empty)}</div>`;
+      refreshGeneratedActionControls();
+      if (followUpMutationPending) setFollowUpMutationBusy(true);
+      return;
+    }
+    list.innerHTML = filtered.map(item => {
+      const due = dueDatePresentation(item);
+      const outcome = followUpOutcomePresentation(item.outcome);
+      const links = [
+        item.visit_id && 'Linked visit',
+        item.decision_id && 'Linked decision',
+        item.alert_id && 'Linked alert',
+      ].filter(Boolean);
+      const lifecycle = [];
+      if (item.status === 'open') {
+        lifecycle.push(`<button class="button primary" onclick="changeFollowUpStatus(this.closest('.follow-up-item'),'in_progress')">Start</button>`);
+      } else if (item.status === 'in_progress') {
+        lifecycle.push(`<button class="button secondary" onclick="changeFollowUpStatus(this.closest('.follow-up-item'),'open')">Move to open</button>`);
+      }
+      if (['open', 'in_progress'].includes(item.status)) {
+        lifecycle.push(`<button class="button secondary" onclick="openFollowUpOutcomeDialog(this,this.closest('.follow-up-item').dataset.followUpId,'completed')">Complete</button>`);
+        lifecycle.push(`<button class="button secondary danger" onclick="openFollowUpOutcomeDialog(this,this.closest('.follow-up-item').dataset.followUpId,'cancelled')">Cancel</button>`);
+      }
+      const terminalAt = item.status === 'completed' ? item.completed_at : item.cancelled_at;
+      return `<article class="follow-up-item" data-follow-up-id="${escHtml(item.id)}" data-follow-up-token="${escHtml(item.token)}">
+        <div class="follow-up-item-heading">
+          <span class="visit-status-badge ${safeClassToken(item.status, 'open')}">${escHtml(followUpStatusLabel(item.status))}</span>
+          <span class="follow-up-due ${safeClassToken(due.tone)}">${escHtml(due.label)}</span>
+        </div>
+        <p class="follow-up-copy">${escHtml(item.text)}</p>
+        <p class="follow-up-provenance">${escHtml(followUpOriginLabel(item))}</p>
+        <div class="follow-up-metadata">
+          <span>${escHtml(item.owner ? `Owner: ${item.owner}` : 'Owner not set')}</span>
+          <span>Created ${escHtml(formatActionTimestamp(item.created_at))}</span>
+          <span>Updated ${escHtml(formatActionTimestamp(item.updated_at))}</span>
+          ${terminalAt ? `<span>${item.status === 'completed' ? 'Completed' : 'Cancelled'} ${escHtml(formatActionTimestamp(terminalAt))}</span>` : ''}
+        </div>
+        ${links.length ? `<div class="follow-up-links">${links.map(link => `<span>${escHtml(link)}</span>`).join('')}</div>` : ''}
+        ${item.outcome ? `<div class="follow-up-outcome ${safeClassToken(outcome.className)}"><strong>Outcome</strong><p>${escHtml(item.outcome.text)}</p><span>${escHtml(outcome.label)}</span>${item.outcome.recorded_at ? `<time>${escHtml(formatActionTimestamp(item.outcome.recorded_at))}</time>` : ''}</div>` : ''}
+        <div class="follow-up-actions">
+          <button class="button secondary" onclick="openFollowUpEditDialog(this,this.closest('.follow-up-item').dataset.followUpId)">Edit owner or due date</button>
+          ${lifecycle.join('')}
+        </div>
+      </article>`;
+    }).join('');
+    refreshGeneratedActionControls();
+    if (followUpMutationPending) setFollowUpMutationBusy(true);
+  }
+
+  function setFollowUpFilter(name) {
+    if (!['active', 'completed', 'cancelled', 'all'].includes(name)) return;
+    followUpFilter = name;
+    for (const filterName of ['active', 'completed', 'cancelled', 'all']) {
+      const selected = filterName === name;
+      const button = document.getElementById(`follow-up-filter-${filterName}`);
+      button?.classList.toggle('active', selected);
+      button?.setAttribute('aria-selected', String(selected));
+      if (button) button.tabIndex = selected ? 0 : -1;
+    }
+    renderFollowUps();
+  }
+
+  function handleFollowUpFilterKeydown(event) {
+    const names = ['active', 'completed', 'cancelled', 'all'];
+    const tabs = names.map(name => document.getElementById(`follow-up-filter-${name}`));
+    const current = tabs.indexOf(document.activeElement);
+    if (current < 0) return;
+    let next = current;
+    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') next = (current + 1) % tabs.length;
+    else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') next = (current - 1 + tabs.length) % tabs.length;
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = tabs.length - 1;
+    else return;
+    event.preventDefault();
+    setFollowUpFilter(names[next]);
+    tabs[next]?.focus();
+  }
+
+  function clearFollowUpRetry() {
+    pendingFollowUpIntent = null;
+    for (const id of ['follow-up-retry', 'follow-up-dialog-retry']) {
+      const retry = document.getElementById(id);
+      if (retry) retry.hidden = true;
+    }
+  }
+
+  function followUpDraftKey(mode = followUpDialogMode, actionId = selectedFollowUpId, status = followUpOutcomeStatus) {
+    if (mode === 'create') return 'create';
+    if (mode === 'outcome') return `outcome:${actionId || 'unavailable'}:${status || 'unavailable'}`;
+    return `edit:${actionId || 'unavailable'}`;
+  }
+
+  function captureFollowUpDraft() {
+    if (!followUpDialogOpen || !followUpDialogMode) return;
+    const key = followUpDraftKey();
+    if (followUpDialogMode === 'create') {
+      followUpDrafts.set(key, {
+        text: document.getElementById('follow-up-create-text')?.value || '',
+        owner: document.getElementById('follow-up-create-owner')?.value || '',
+        dueDate: document.getElementById('follow-up-create-due')?.value || '',
+      });
+    } else if (followUpDialogMode === 'edit') {
+      followUpDrafts.set(key, {
+        owner: document.getElementById('follow-up-edit-owner')?.value || '',
+        dueDate: document.getElementById('follow-up-edit-due')?.value || '',
+      });
+    } else if (followUpDialogMode === 'outcome') {
+      followUpDrafts.set(key, {
+        kind: document.getElementById('follow-up-outcome-kind')?.value || 'administrative',
+        text: document.getElementById('follow-up-outcome-text')?.value || '',
+      });
+    }
+  }
+
+  function restoreFollowUpDraft() {
+    const action = selectedFollowUpId ? followUpsById.get(selectedFollowUpId) : null;
+    const draft = followUpDrafts.get(followUpDraftKey());
+    if (followUpDialogMode === 'create') {
+      document.getElementById('follow-up-create-text').value = draft?.text || '';
+      document.getElementById('follow-up-create-owner').value = draft?.owner || '';
+      document.getElementById('follow-up-create-due').value = draft?.dueDate || '';
+    } else if (followUpDialogMode === 'edit') {
+      document.getElementById('follow-up-edit-owner').value =
+        draft?.owner ?? action?.owner ?? '';
+      document.getElementById('follow-up-edit-due').value =
+        draft?.dueDate ?? action?.due_date ?? '';
+    } else if (followUpDialogMode === 'outcome') {
+      document.getElementById('follow-up-outcome-kind').value = draft?.kind || 'administrative';
+      document.getElementById('follow-up-outcome-text').value = draft?.text || '';
+      updateFollowUpOutcomeGuidance();
+    }
+    updateFollowUpFormValidity();
+  }
+
+  function invalidateFollowUpRetryOnDraftChange() {
+    if (pendingFollowUpIntent) {
+      clearFollowUpRetry();
+      setFollowUpDialogStatus(
+        'The draft changed. Review the latest action and submit it as a new request.',
+        'conflict',
+      );
+    }
+    captureFollowUpDraft();
+    updateFollowUpFormValidity();
+  }
+
+  function setFollowUpMutationBusy(busy) {
+    document.querySelectorAll(
+      '#follow-up-dialog button, #follow-up-list .button, #follow-up-create-button'
+    ).forEach(control => {
+      if (busy) {
+        if (!('followUpWasDisabled' in control.dataset)) {
+          control.dataset.followUpWasDisabled = String(control.disabled);
+        }
+        control.disabled = true;
+      } else if ('followUpWasDisabled' in control.dataset) {
+        control.disabled = control.dataset.followUpWasDisabled === 'true';
+        delete control.dataset.followUpWasDisabled;
+      }
+    });
+  }
+
+  function updateFollowUpOutcomeGuidance() {
+    const kind = document.getElementById('follow-up-outcome-kind')?.value;
+    const guidance = document.getElementById('follow-up-outcome-guidance');
+    if (!guidance) return;
+    guidance.textContent = {
+      clinician_attributed: 'Caregiver-entered · attributed to clinician · unverified',
+      caregiver_reported: 'Caregiver-entered · caregiver reported · unverified',
+      administrative: 'Caregiver-entered administrative outcome · not clinical evidence',
+    }[kind] || '';
+  }
+
+  function updateFollowUpFormValidity() {
+    const createText = (document.getElementById('follow-up-create-text')?.value || '').trim();
+    const outcomeText = (document.getElementById('follow-up-outcome-text')?.value || '').trim();
+    const createButton = document.getElementById('follow-up-create-submit');
+    const outcomeButton = document.getElementById('follow-up-outcome-submit');
+    if (createButton && !followUpMutationPending) createButton.disabled = !createText;
+    if (outcomeButton && !followUpMutationPending) outcomeButton.disabled = !outcomeText;
+    if (createText) setFormError('follow-up-create-error', '');
+    if (outcomeText) setFormError('follow-up-outcome-error', '');
+  }
+
+  function renderFollowUpDialog() {
+    if (!followUpDialogOpen) return;
+    const action = selectedFollowUpId ? followUpsById.get(selectedFollowUpId) : null;
+    const title = document.getElementById('follow-up-dialog-title');
+    const create = document.getElementById('follow-up-create-form');
+    const edit = document.getElementById('follow-up-edit-form');
+    const outcome = document.getElementById('follow-up-outcome-form');
+    create.hidden = followUpDialogMode !== 'create';
+    edit.hidden = followUpDialogMode !== 'edit';
+    outcome.hidden = followUpDialogMode !== 'outcome';
+    if (followUpDialogMode === 'create') {
+      title.textContent = 'Add caregiver follow-up';
+    } else if (!action) {
+      title.textContent = 'Follow-up unavailable';
+      setFollowUpDialogStatus('This action is no longer available. Reload before continuing.', 'conflict');
+      edit.hidden = true;
+      outcome.hidden = true;
+      return;
+    } else if (followUpDialogMode === 'edit') {
+      title.textContent = 'Edit owner or due date';
+      document.getElementById('follow-up-edit-copy').textContent = action.text;
+    } else {
+      title.textContent = followUpOutcomeStatus === 'completed'
+        ? 'Complete follow-up'
+        : 'Cancel follow-up';
+      document.getElementById('follow-up-outcome-copy').textContent = action.text;
+      document.getElementById('follow-up-outcome-submit').textContent =
+        followUpOutcomeStatus === 'completed' ? 'Complete follow-up' : 'Cancel follow-up';
+    }
+    restoreFollowUpDraft();
+  }
+
+  function openFollowUpDialog(mode, trigger, actionId = null, status = null) {
+    if (!['create', 'edit', 'outcome'].includes(mode)) return;
+    if (actionId && !followUpsById.has(actionId)) {
+      setFollowUpStatus('This action is no longer available. Reload before continuing.', 'conflict');
+      loadFollowUps();
+      return;
+    }
+    if (followUpDialogOpen) captureFollowUpDraft();
+    selectedFollowUpId = actionId;
+    followUpSelectionEpoch += 1;
+    followUpDialogMode = mode;
+    followUpOutcomeStatus = status;
+    followUpDialogOpen = true;
+    clearFollowUpRetry();
+    setFollowUpDialogStatus('');
+    for (const id of ['follow-up-create-error', 'follow-up-edit-error', 'follow-up-outcome-error']) {
+      setFormError(id, '');
+    }
+    const overlay = document.getElementById('follow-up-overlay');
+    const dialog = document.getElementById('follow-up-dialog');
+    overlay.inert = false;
+    overlay.classList.add('open');
+    overlay.setAttribute('aria-hidden', 'false');
+    dialog.inert = false;
+    renderFollowUpDialog();
+    activateDialog(dialog, trigger);
+  }
+
+  function openFollowUpCreateDialog(trigger) {
+    openFollowUpDialog('create', trigger);
+  }
+
+  function openFollowUpEditDialog(trigger, actionId) {
+    openFollowUpDialog('edit', trigger, actionId);
+  }
+
+  function openFollowUpOutcomeDialog(trigger, actionId, status) {
+    if (!['completed', 'cancelled'].includes(status)) return;
+    const action = followUpsById.get(actionId);
+    if (!action || !['open', 'in_progress'].includes(action.status)) {
+      setFollowUpStatus('This action changed. Reload before recording an outcome.', 'conflict');
+      loadFollowUps();
+      return;
+    }
+    openFollowUpDialog('outcome', trigger, actionId, status);
+  }
+
+  function closeFollowUpDialog(preserveDraft = true, force = false) {
+    if (!followUpDialogOpen) return;
+    if (followUpMutationPending && !force) {
+      setFollowUpDialogStatus('Saving is still in progress. Wait for the result before closing.', 'saving');
+      return;
+    }
+    if (preserveDraft) captureFollowUpDraft();
+    followUpDialogOpen = false;
+    selectedFollowUpId = null;
+    followUpSelectionEpoch += 1;
+    followUpDialogMode = null;
+    followUpOutcomeStatus = null;
+    clearFollowUpRetry();
+    const overlay = document.getElementById('follow-up-overlay');
+    overlay?.classList.remove('open');
+    overlay?.setAttribute('aria-hidden', 'true');
+    if (overlay) overlay.inert = true;
+    const dialog = document.getElementById('follow-up-dialog');
+    if (dialog) dialog.inert = true;
+    deactivateDialog(dialog);
+  }
+
+  function closeFollowUpFromBackdrop(event) {
+    if (event?.target === document.getElementById('follow-up-overlay')) {
+      closeFollowUpDialog();
+    }
+  }
+
+  function clearFollowUpCachedProjection(message, tone = 'offline') {
+    if (followUpDialogOpen) captureFollowUpDraft();
+    followUpsById = new Map();
+    renderFollowUps();
+    renderVisitFollowUps();
+    setFollowUpStatus(message, tone);
+    if (followUpDialogOpen && followUpDialogMode !== 'create') {
+      document.getElementById('follow-up-edit-copy').textContent = '';
+      document.getElementById('follow-up-outcome-copy').textContent = '';
+    }
+    refreshGeneratedActionControls();
+  }
+
+  async function loadFollowUps() {
     const requestPhiEpoch = phiEpoch;
+    const requestLoadEpoch = ++followUpLoadEpoch;
     try {
       const data = await readJsonResponse(await fetch('/api/follow-ups'));
-      if (requestPhiEpoch !== phiEpoch) return [];
-      workflowRevision = data.workflow_revision;
+      if (requestPhiEpoch !== phiEpoch || requestLoadEpoch !== followUpLoadEpoch) return [];
+      if (followUpDialogOpen) captureFollowUpDraft();
+      if (Number.isInteger(data.workflow_revision)) workflowRevision = data.workflow_revision;
       syncChatRevision(data.profile_revision);
-      visitFollowUps = Array.isArray(data.items) ? data.items : [];
-      if (appointmentDialogOpen) renderVisitFollowUps();
-      reportLoadSuccess('visit-follow-ups');
-      return visitFollowUps;
+      followUpsById = new Map(
+        (Array.isArray(data.items) ? data.items : [])
+          .filter(item => item && typeof item.id === 'string')
+          .map(item => [item.id, item])
+      );
+      renderFollowUps();
+      renderVisitFollowUps();
+      if (followUpDialogOpen) renderFollowUpDialog();
+      setFollowUpStatus('');
+      reportLoadSuccess('follow-ups');
+      return followUpItems();
     } catch (error) {
-      if (requestPhiEpoch === phiEpoch && shouldEvictClientPhi(error)) {
-        evictClientPhi(error);
-      } else if (requestPhiEpoch === phiEpoch && appointmentDialogOpen) {
-        const list = document.getElementById('visit-followup-list');
-        if (list) list.innerHTML = loadFailureMarkup('Visit follow-ups', 'loadVisitFollowUps()');
+      if (requestPhiEpoch !== phiEpoch || requestLoadEpoch !== followUpLoadEpoch) {
+        if (error?.status === 401 || error?.status === 403) {
+          reportLoadError('follow-ups', error);
+        }
+        return [];
       }
-      reportLoadError('visit-follow-ups', error);
+      if (shouldEvictClientPhi(error)) {
+        evictClientPhi(error);
+      } else {
+        const offline = error instanceof TypeError || navigator.onLine === false;
+        clearFollowUpCachedProjection(
+          offline
+            ? 'Follow-through is offline. Caregiver-entered drafts remain available in this tab.'
+            : 'Follow-through could not be loaded. Retry to get the current action list.',
+          offline ? 'offline' : 'error',
+        );
+        const list = document.getElementById('follow-up-list');
+        if (list) list.innerHTML = loadFailureMarkup('Follow-through', 'loadFollowUps()');
+        const visitList = document.getElementById('visit-followup-list');
+        if (visitList && appointmentDialogOpen) {
+          visitList.innerHTML = loadFailureMarkup('Visit follow-ups', 'loadFollowUps()');
+        }
+      }
+      reportLoadError('follow-ups', error);
       return [];
     }
+  }
+
+  function createFollowUpIntent(url, body, options = {}) {
+    return {
+      method: options.method || 'POST',
+      url,
+      body: { ...body, mutation_id: newMutationId() },
+      actionId: options.actionId || null,
+      draftKey: options.draftKey || null,
+      sourceKind: options.sourceKind || null,
+      requestPhiEpoch: phiEpoch,
+      requestActionEpoch: followUpSelectionEpoch,
+    };
+  }
+
+  function followUpIntentCanRender(intent) {
+    return intent.requestPhiEpoch === phiEpoch
+      && intent.requestActionEpoch === followUpSelectionEpoch
+      && intent.actionId === selectedFollowUpId;
+  }
+
+  async function handleFollowUpConflict(error, intent) {
+    if (!followUpIntentCanRender(intent)) return false;
+    if (followUpDialogOpen) captureFollowUpDraft();
+    clearFollowUpRetry();
+    if (intent.sourceKind === 'generated') redactGeneratedSummaryActions();
+    const message = intent.sourceKind === 'generated'
+      ? 'The generated action is unavailable. Reloaded assessment actions must be reviewed before accepting one.'
+      : (error.message || 'This action changed. Review the latest version before trying again.');
+    setFollowUpStatus(message, 'conflict');
+    setFollowUpDialogStatus(message, 'conflict');
+    reportLoadError('follow-up-mutation', error);
+    await Promise.allSettled([
+      loadFollowUps(),
+      intent.sourceKind === 'generated' ? loadSummary() : Promise.resolve(),
+    ]);
+    return true;
+  }
+
+  async function consumeFollowUpResponse(data, intent) {
+    if (!followUpIntentCanRender(intent)) return false;
+    const priorProfileRevision = latestProfileRevision;
+    if (Number.isInteger(data.workflow_revision)) workflowRevision = data.workflow_revision;
+    if (data.item?.id) followUpsById.set(data.item.id, data.item);
+    const profileChanged = data.profile_revision != null
+      && priorProfileRevision != null
+      && String(data.profile_revision) !== String(priorProfileRevision);
+    if (data.profile_revision != null) latestProfileRevision = data.profile_revision;
+    if (intent.draftKey) followUpDrafts.delete(intent.draftKey);
+    if (followUpDialogOpen) closeFollowUpDialog(false, true);
+    if (intent.method === 'POST' && data.item?.status === 'open') {
+      setFollowUpFilter('active');
+    }
+    renderFollowUps();
+    renderVisitFollowUps();
+    if (profileChanged) {
+      await refreshClinicalWorkflowState(data.profile_revision);
+    } else {
+      await loadFollowUps();
+    }
+    setFollowUpStatus('Saved.', 'success');
+    reportLoadSuccess('follow-up-mutation');
+    return true;
+  }
+
+  function restoreFollowUpMutationFocus(intent) {
+    const row = intent.actionId
+      ? [...document.querySelectorAll('.follow-up-item')]
+        .find(item => item.dataset.followUpId === intent.actionId)
+      : null;
+    const target = row?.querySelector('.button')
+      || document.getElementById('follow-up-create-button')
+      || document.getElementById('follow-through-heading');
+    if (target && typeof target.focus === 'function') target.focus();
+  }
+
+  async function performFollowUpIntent(intent, explicitRetry = false) {
+    if (followUpMutationPending) return null;
+    followUpMutationPending = true;
+    let consumedSuccessfully = false;
+    setFollowUpMutationBusy(true);
+    if (!explicitRetry) clearFollowUpRetry();
+    setFollowUpStatus(explicitRetry ? 'Retrying the unchanged request…' : 'Saving…', 'saving');
+    setFollowUpDialogStatus(explicitRetry ? 'Retrying the unchanged request…' : 'Saving…', 'saving');
+    try {
+      const response = await fetch(intent.url, {
+        method: intent.method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(intent.body),
+      });
+      const data = await readJsonResponse(response);
+      const consumed = await consumeFollowUpResponse(data, intent);
+      if (!consumed) return null;
+      consumedSuccessfully = true;
+      clearFollowUpRetry();
+      return data;
+    } catch (error) {
+      if (intent.requestPhiEpoch !== phiEpoch) {
+        if (error?.status === 401 || error?.status === 403) {
+          reportLoadError('follow-up-mutation', error);
+        }
+        return null;
+      }
+      if (shouldEvictClientPhi(error)) {
+        evictClientPhi(error);
+        reportLoadError('follow-up-mutation', error);
+        return null;
+      }
+      if (!followUpIntentCanRender(intent)) return null;
+      if (error?.status === 409) {
+        await handleFollowUpConflict(error, intent);
+        return null;
+      }
+      if (error instanceof TypeError || navigator.onLine === false) {
+        pendingFollowUpIntent = intent;
+        clearFollowUpCachedProjection(
+          'Connection lost. Caregiver-entered drafts remain available in this tab.',
+          'offline',
+        );
+        const retry = document.getElementById(
+          followUpDialogOpen ? 'follow-up-dialog-retry' : 'follow-up-retry'
+        );
+        if (retry) retry.hidden = false;
+        setFollowUpDialogStatus(
+          'Connection lost. Your draft is still available for an explicit unchanged retry.',
+          'offline',
+        );
+        reportLoadError('follow-up-mutation', error);
+        return null;
+      }
+      const message = error?.message || 'The follow-up request could not be saved.';
+      setFollowUpStatus(message, 'error');
+      setFollowUpDialogStatus(message, 'error');
+      const errorId = followUpDialogMode === 'create'
+        ? 'follow-up-create-error'
+        : (followUpDialogMode === 'outcome' ? 'follow-up-outcome-error' : 'follow-up-edit-error');
+      setFormError(errorId, message);
+      reportLoadError('follow-up-mutation', error);
+      return null;
+    } finally {
+      followUpMutationPending = false;
+      if (consumedSuccessfully || intent.requestPhiEpoch === phiEpoch) {
+        setFollowUpMutationBusy(false);
+        updateFollowUpFormValidity();
+      }
+      if (consumedSuccessfully) restoreFollowUpMutationFocus(intent);
+    }
+  }
+
+  async function submitFollowUpMutation(url, body, options = {}) {
+    selectedFollowUpId = options.actionId || null;
+    followUpSelectionEpoch += 1;
+    const intent = createFollowUpIntent(url, body, options);
+    return performFollowUpIntent(intent);
+  }
+
+  async function retryFollowUpIntent() {
+    const intent = pendingFollowUpIntent;
+    if (!intent) return;
+    if (!followUpIntentCanRender(intent)) {
+      clearFollowUpRetry();
+      setFollowUpStatus(
+        'The action changed. Review the latest version before submitting a new request.',
+        'conflict',
+      );
+      return;
+    }
+    await performFollowUpIntent(intent, true);
+  }
+
+  async function createManualFollowUp() {
+    const text = (document.getElementById('follow-up-create-text')?.value || '').trim();
+    if (!text) {
+      setFormError('follow-up-create-error', 'Enter a caregiver follow-up.');
+      updateFollowUpFormValidity();
+      return;
+    }
+    if (/^(start|stop|hold|pause|resume|switch|increase|decrease|administer|take|skip|discontinue|withhold)\b/i.test(text)) {
+      setFormError(
+        'follow-up-create-error',
+        'Use contact, ask, discuss, or confirm wording with the treating team.',
+      );
+      return;
+    }
+    const draftKey = followUpDraftKey('create', null, null);
+    await submitFollowUpMutation(
+      '/api/follow-ups',
+      {
+        origin_kind: 'manual',
+        text,
+        owner: (document.getElementById('follow-up-create-owner')?.value || '').trim() || null,
+        due_date: document.getElementById('follow-up-create-due')?.value || null,
+      },
+      { draftKey },
+    );
+  }
+
+  async function saveFollowUpDetails() {
+    const action = selectedFollowUpId ? followUpsById.get(selectedFollowUpId) : null;
+    if (!action) return;
+    const owner = (document.getElementById('follow-up-edit-owner')?.value || '').trim() || null;
+    const dueDate = document.getElementById('follow-up-edit-due')?.value || null;
+    if (owner === (action.owner || null) && dueDate === (action.due_date || null)) {
+      setFormError('follow-up-edit-error', 'Change the owner or due date before saving.');
+      return;
+    }
+    const draftKey = followUpDraftKey('edit', action.id, null);
+    await submitFollowUpMutation(
+      `/api/follow-ups/${encodeURIComponent(action.id)}`,
+      { expected_token: action.token, owner, due_date: dueDate },
+      { method: 'PATCH', actionId: action.id, draftKey },
+    );
+  }
+
+  async function submitFollowUpOutcome() {
+    const action = selectedFollowUpId ? followUpsById.get(selectedFollowUpId) : null;
+    const kind = document.getElementById('follow-up-outcome-kind')?.value;
+    const text = (document.getElementById('follow-up-outcome-text')?.value || '').trim();
+    if (!action || !['completed', 'cancelled'].includes(followUpOutcomeStatus)) return;
+    if (!['administrative', 'caregiver_reported', 'clinician_attributed'].includes(kind)) {
+      setFormError('follow-up-outcome-error', 'Choose the outcome source.');
+      return;
+    }
+    if (!text) {
+      setFormError('follow-up-outcome-error', 'Record what happened.');
+      updateFollowUpFormValidity();
+      return;
+    }
+    const targetStatus = followUpOutcomeStatus;
+    const draftKey = followUpDraftKey('outcome', action.id, targetStatus);
+    await submitFollowUpMutation(
+      `/api/follow-ups/${encodeURIComponent(action.id)}`,
+      {
+        expected_token: action.token,
+        status: targetStatus,
+        outcome: { kind, text },
+      },
+      { method: 'PATCH', actionId: action.id, draftKey },
+    );
+  }
+
+  async function changeFollowUpStatus(row, status) {
+    const actionId = row?.dataset.followUpId;
+    const token = row?.dataset.followUpToken;
+    const action = actionId ? followUpsById.get(actionId) : null;
+    if (!action || !token) return;
+    const allowed = (action.status === 'open' && status === 'in_progress')
+      || (action.status === 'in_progress' && status === 'open');
+    if (!allowed) {
+      setFollowUpStatus('This lifecycle change is not available.', 'conflict');
+      return;
+    }
+    await submitFollowUpMutation(
+      `/api/follow-ups/${encodeURIComponent(action.id)}`,
+      { expected_token: token, status },
+      { method: 'PATCH', actionId: action.id },
+    );
   }
 
   function renderAppointmentOptions() {
@@ -3796,19 +4654,23 @@
     const visit = currentVisit();
     const list = document.getElementById('visit-followup-list');
     if (!visit || !list) return;
-    const items = visitFollowUps.filter(item =>
+    const items = followUpItems().filter(item =>
       item.visit_id === visit.id || (visit.follow_up_ids || []).includes(item.id)
     );
     if (!items.length) {
       list.innerHTML = '<div class="empty-state">No resulting follow-ups for this visit.</div>';
       return;
     }
-    list.innerHTML = items.map(item => `<article class="visit-followup" data-followup-id="${escHtml(item.id)}">
+    list.innerHTML = items.map(item => {
+      const outcome = followUpOutcomePresentation(item.outcome);
+      return `<article class="visit-followup" data-followup-id="${escHtml(item.id)}">
       <div class="visit-decision-heading"><strong>${escHtml(item.text)}</strong><span class="visit-status-badge ${safeClassToken(item.status, 'open')}">${escHtml(item.status.replaceAll('_', ' '))}</span></div>
       <p>${escHtml([item.owner && `Owner: ${item.owner}`, item.due_date && `Due ${fmtDate(item.due_date)}`].filter(Boolean).join(' · ') || 'Owner and due date not set')}</p>
       ${item.decision_id ? `<p class="visit-source-label">Linked to visit decision ${escHtml(item.decision_id)}</p>` : ''}
       ${item.outcome?.text ? `<p>${escHtml(item.outcome.text)}</p>` : ''}
-    </article>`).join('');
+      ${outcome ? `<p class="capture-provenance">${escHtml(outcome.label)}</p>` : ''}
+    </article>`;
+    }).join('');
   }
 
   async function createVisitFollowUp() {
@@ -4082,11 +4944,15 @@
   let chatOpen = false;
 
   function syncChatRevision(revision, forceNotice = false, reloadQuestions = true) {
+    const priorProfileRevision = latestProfileRevision == null
+      ? null
+      : String(latestProfileRevision);
     if (revision == null) {
       latestProfileRevision = null;
       chatHistoryRevision = null;
       chatHistory = [];
       redactGeneratedQuestionChoices();
+      redactGeneratedSummaryActions();
       if (reloadQuestions) loadQuestions();
       const unavailableMessages = document.getElementById('chat-messages');
       if (unavailableMessages) {
@@ -4100,6 +4966,10 @@
     if (chatHistoryRevision == null) {
       chatHistoryRevision = normalized;
       latestProfileRevision = revision;
+      if (priorProfileRevision != null && priorProfileRevision !== normalized) {
+        redactGeneratedQuestionChoices();
+        redactGeneratedSummaryActions();
+      }
       const generatedChoicesNeedAuthority = generatedQuestionsUnavailable
         || appointmentQuestionSources.some(question => question?.source === 'ai');
       if (generatedChoicesNeedAuthority) {
@@ -4112,6 +4982,7 @@
     latestProfileRevision = revision;
     if (changed) {
       redactGeneratedQuestionChoices();
+      redactGeneratedSummaryActions();
       if (reloadQuestions) loadQuestions();
     }
     if (!changed && !forceNotice) return false;
@@ -4367,7 +5238,7 @@
   loadSymptoms();
   loadPatientEvidence();
   loadVisits();
-  loadVisitFollowUps();
+  loadFollowUps();
   ['q-add-input', 'judgment-input', 'sym-name', 'chat-input'].forEach(id => {
     document.getElementById(id)?.addEventListener('input', updateFormValidity);
   });
@@ -4387,6 +5258,9 @@
   };
   appointmentSurface?.addEventListener('input', handleAppointmentDraftChange);
   appointmentSurface?.addEventListener('change', handleAppointmentDraftChange);
+  const followUpSurface = document.getElementById('follow-up-dialog');
+  followUpSurface?.addEventListener('input', invalidateFollowUpRetryOnDraftChange);
+  followUpSurface?.addEventListener('change', invalidateFollowUpRetryOnDraftChange);
   updateFormValidity();
   startPolling();
   const requestedView = window.location.hash.replace('#', '');

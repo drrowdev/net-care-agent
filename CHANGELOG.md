@@ -48,6 +48,19 @@ incremented when something user-visible or operationally meaningful changes.
   not block snapshot/backup recovery or permit duplicate initialization.
 
 ### Added
+- **Today durable follow-through workflow.** Today now has one responsive
+  caregiver-action surface with Active, Completed, Cancelled, and All filters,
+  safe manual task creation, current generated-action acceptance by opaque
+  source ID/token only, owner/due edits, backend-valid lifecycle controls, and
+  required typed completion/cancellation outcomes. Generated, manual,
+  visit/decision/alert provenance and caregiver-reported or
+  clinician-attributed unverified outcomes remain explicit without promoting
+  administrative or generated text into clinician facts. Stable-ID/full-token
+  CAS, one-intent mutation IDs, exact explicit retry, strict conflict reloads,
+  independent workflow/clinical revision handling, action/PHI response epochs,
+  complete hard eviction, draft-only offline retention, keyboard dialogs, and
+  44px overflow-safe phone controls prevent stale copies and late responses from
+  changing the visible action.
 - **Responsive appointment working mode.** Questions now includes visit
   preparation and one focused desktop/phone workspace for current generated or
   manual question snapshots, atomic pin/rank ordering, answered versus explicitly

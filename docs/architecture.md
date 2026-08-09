@@ -176,6 +176,27 @@ caregiver-visible row and generation identity. `PATCH
 due date, lifecycle, and a typed completion/cancellation outcome. Direct
 treatment instructions are rejected in favor of contact/ask/confirm wording.
 
+The Today view exposes these records through one responsive Follow-through
+surface with Active, Completed, Cancelled, and All projections. One browser
+cache keyed by stable action ID also supplies the appointment workspace's
+read-only visit-linked rows. Generated assessment acceptance reads only the
+current server-projected source ID/token from data attributes; stale or
+revisionless rows are redacted before they can be acted on. Action mutation
+intents capture both `phiEpoch` and a separate action-selection epoch so late
+action A responses cannot repaint action B.
+
+The client treats `workflow_revision` and `profile_revision` independently.
+Workflow-only action responses update the shared action UI without invalidating
+clinical artifacts. A changed returned clinical revision enters the existing
+authoritative status/summary/questions/tasks/chat/visits refresh path. Exact
+transport retries retain one immutable request; `409` responses never auto-retry
+and reload the addressed action/source before a new explicit request. Action
+loading is event-driven (view entry, relevant visibility restoration,
+successful mutation, and explicit retry), never polled. Transient failures keep
+only caregiver drafts plus an eligible exact retry intent; authorization/hard
+failure centrally evicts every action cache, token, DOM/dialog value, draft,
+retry/focus reference, and late response.
+
 `visits[]` is deliberately separate from intake-imported `appointments[]`.
 `/api/visits` creates and updates working records; nested question endpoints
 snapshot a current generated question or an explicit manual question, then

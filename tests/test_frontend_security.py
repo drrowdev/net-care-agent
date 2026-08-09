@@ -83,13 +83,24 @@ let lastDialogTrigger = null;
 let chatOpen = true;
 let taskSelectionEpoch = 0;
 let phiEpoch = 0;
+let summaryLoadEpoch = 0;
 let workflowRevision = 3;
 let visitsById = new Map([['visit-phi', { patient: true }]]);
 let appointmentOptions = [{ patient: true }];
 let appointmentQuestionSources = [{ patient: true }];
 let questionLoadEpoch = 0;
 let generatedQuestionsUnavailable = false;
-let visitFollowUps = [{ patient: true }];
+let followUpsById = new Map([['follow-up-phi', { patient: true }]]);
+let followUpFilter = 'active';
+let followUpLoadEpoch = 0;
+let selectedFollowUpId = 'follow-up-phi';
+let followUpSelectionEpoch = 0;
+let followUpDialogOpen = true;
+let followUpDialogMode = 'edit';
+let followUpOutcomeStatus = null;
+let pendingFollowUpIntent = { patient: true };
+let followUpMutationPending = true;
+let followUpDrafts = new Map([['edit:follow-up-phi', { patient: true }]]);
 let selectedVisitId = 'visit-phi';
 let visitSelectionEpoch = 0;
 let appointmentDialogOpen = true;
@@ -104,6 +115,7 @@ function renderLatestResearchUpdate() {}
 function clearReportCopyState() {}
 function updateCharCount() {}
 function setAppointmentMutationBusy() {}
+function setFollowUpMutationBusy() {}
 function updateAppointmentFormValidity() {}
 function loadFailureMarkup() { return 'transient failure'; }
 function reportLoadSuccess() {}
@@ -367,6 +379,7 @@ def test_central_phi_eviction_clears_patient_panels_dialogs_and_histories():
     eviction = _function_source("evictClientPhi", "renderLatestResearchUpdate")
     for expression in (
         "taskSelectionEpoch += 1",
+        "summaryLoadEpoch += 1",
         "selectedTaskId = null",
         "currentReportText = ''",
         "currentReceipt = null",
@@ -402,7 +415,9 @@ def test_central_phi_eviction_clears_patient_panels_dialogs_and_histories():
         assert expression in freshness
     summary = _function_source("loadSummary", "renderPendingSummary")
     auth_failure = summary[summary.index("catch(e)") :]
-    epoch_guard = auth_failure.index("if (requestPhiEpoch !== phiEpoch)")
+    epoch_guard = auth_failure.index(
+        "if (requestPhiEpoch !== phiEpoch || requestSummaryEpoch !== summaryLoadEpoch)"
+    )
     eviction = auth_failure.index("if (shouldEvictClientPhi(e))")
     repaint = auth_failure.index("renderFreshness(null, e)")
     assert epoch_guard < auth_failure.index("return null", epoch_guard) < eviction
@@ -782,7 +797,7 @@ let visitsById = new Map([
   ['visit-a', { id: 'visit-a', token: 'a-original' }],
   ['visit-b', { id: 'visit-b', token: 'b-original' }],
 ]);
-let visitFollowUps = [];
+let followUpsById = new Map();
 let pendingWorkflowIntent = null;
 let workflowMutationPending = false;
 let appointmentDrafts = new Map();
@@ -968,8 +983,10 @@ const element = id => {
   return elements.get(id);
 };
 const appointmentDialog = element('appointment-dialog');
+const followUpDialog = element('follow-up-dialog');
 const focusedControl = { blurred: false, blur() { this.blurred = true; } };
 appointmentDialog.contains = candidate => candidate === focusedControl;
+followUpDialog.contains = () => false;
 const background = fakeElement();
 background.inert = true;
 background.attributes['aria-hidden'] = 'true';
@@ -977,7 +994,13 @@ background.dataset.dialogAriaHidden = 'true';
 const appointmentOverlay = element('appointment-overlay');
 appointmentOverlay.classList.add('open');
 appointmentOverlay.attributes['aria-hidden'] = 'false';
-const body = { children: [background, appointmentOverlay], classList: new FakeClassList() };
+const followUpOverlay = element('follow-up-overlay');
+followUpOverlay.classList.add('open');
+followUpOverlay.attributes['aria-hidden'] = 'false';
+const body = {
+  children: [background, appointmentOverlay, followUpOverlay],
+  classList: new FakeClassList(),
+};
 body.classList.add('dialog-open');
 const document = {
   activeElement: focusedControl,
@@ -988,7 +1011,7 @@ const document = {
 
 for (const id of [
   'visit-list', 'visit-source-questions', 'visit-question-list',
-  'visit-decision-list', 'visit-followup-list'
+  'visit-decision-list', 'visit-followup-list', 'follow-up-list', 'follow-up-status'
 ]) element(id).innerHTML = `SECRET ${id}`;
 for (const id of [
   'visit-create-title', 'visit-create-date', 'visit-create-time',
@@ -996,11 +1019,14 @@ for (const id of [
   'visit-edit-title', 'visit-edit-date', 'visit-edit-time',
   'visit-edit-clinician', 'visit-edit-location', 'visit-manual-question',
   'visit-decision-text', 'visit-decision-supersedes', 'visit-followup-text',
-  'visit-followup-owner', 'visit-followup-due'
+  'visit-followup-owner', 'visit-followup-due', 'follow-up-create-text',
+  'follow-up-create-owner', 'follow-up-create-due', 'follow-up-edit-owner',
+  'follow-up-edit-due', 'follow-up-outcome-text'
 ]) element(id).value = `SECRET ${id}`;
 for (const id of [
   'visit-create-error', 'visit-details-error', 'visit-question-error',
-  'visit-decision-error', 'visit-followup-error'
+  'visit-decision-error', 'visit-followup-error', 'follow-up-create-error',
+  'follow-up-edit-error', 'follow-up-outcome-error'
 ]) element(id).textContent = `SECRET ${id}`;
 element('appointment-dialog-title').textContent = 'SECRET title';
 element('appointment-dialog-meta').textContent = 'SECRET clinician and location';
@@ -1018,6 +1044,10 @@ element('appointment-retry').hidden = false;
 element('visit-create-retry').hidden = false;
 element('visit-decision-cancel-supersede').hidden = false;
 element('visit-decision-label').textContent = 'SECRET successor';
+element('follow-up-dialog-status').textContent = 'SECRET action status';
+element('follow-up-retry').hidden = false;
+element('follow-up-dialog-retry').hidden = false;
+element('follow-up-outcome-kind').value = 'clinician_attributed';
 for (const name of ['questions', 'decisions', 'followups']) {
   element(`appointment-tab-${name}`);
   element(`appointment-panel-${name}`);
@@ -1037,7 +1067,17 @@ let appointmentOptions = [{ patient: true }];
 let appointmentQuestionSources = [{ patient: true }];
 let questionLoadEpoch = 3;
 let generatedQuestionsUnavailable = true;
-let visitFollowUps = [{ patient: true }];
+let followUpsById = new Map([['follow-up-phi', { patient: true }]]);
+let followUpFilter = 'active';
+let followUpLoadEpoch = 3;
+let selectedFollowUpId = 'follow-up-phi';
+let followUpSelectionEpoch = 4;
+let followUpDialogOpen = true;
+let followUpDialogMode = 'outcome';
+let followUpOutcomeStatus = 'completed';
+let pendingFollowUpIntent = { patient: true };
+let followUpMutationPending = true;
+let followUpDrafts = new Map([['outcome:follow-up-phi:completed', { patient: true }]]);
 let selectedVisitId = 'visit-phi';
 let visitSelectionEpoch = 8;
 let appointmentDialogOpen = true;
@@ -1050,6 +1090,7 @@ let chatHistoryRevision = 41;
 let chatOpen = true;
 let taskSelectionEpoch = 2;
 let phiEpoch = 5;
+let summaryLoadEpoch = 2;
 let lastDialogTrigger = { patient: true };
 let activeDialogSurface = appointmentDialog;
 
@@ -1058,6 +1099,7 @@ function clearFreshnessProjection() {}
 function clearReportCopyState() {}
 function updateCharCount() {}
 function setAppointmentMutationBusy() {}
+function setFollowUpMutationBusy() {}
 function updateAppointmentFormValidity() {}
 """,
             _executable_function_source("workflowIntentCanRender", "refreshClinicalWorkflowState"),
@@ -1096,7 +1138,9 @@ function updateAppointmentFormValidity() {}
     'visit-followup-decision', 'visit-list', 'visit-source-questions',
     'visit-question-list', 'visit-decision-list', 'visit-followup-list',
     'visit-create-error', 'visit-details-error', 'visit-question-error',
-    'visit-decision-error', 'visit-followup-error', 'visit-decision-label'
+    'visit-decision-error', 'visit-followup-error', 'visit-decision-label',
+    'follow-up-list', 'follow-up-status', 'follow-up-dialog-status',
+    'follow-up-create-error', 'follow-up-edit-error', 'follow-up-outcome-error'
   ];
   const formIds = [
     'visit-create-title', 'visit-create-date', 'visit-create-time',
@@ -1104,7 +1148,9 @@ function updateAppointmentFormValidity() {}
     'visit-edit-title', 'visit-edit-date', 'visit-edit-time',
     'visit-edit-clinician', 'visit-edit-location', 'visit-manual-question',
     'visit-decision-text', 'visit-decision-supersedes', 'visit-followup-text',
-    'visit-followup-owner', 'visit-followup-due'
+    'visit-followup-owner', 'visit-followup-due', 'follow-up-create-text',
+    'follow-up-create-owner', 'follow-up-create-due', 'follow-up-edit-owner',
+    'follow-up-edit-due', 'follow-up-outcome-text'
   ];
   console.log(JSON.stringify({
     lateResults,
@@ -1114,18 +1160,26 @@ function updateAppointmentFormValidity() {}
     mapsEmpty: visitsById.size === 0
       && appointmentOptions.length === 0
       && appointmentQuestionSources.length === 0
-      && visitFollowUps.length === 0,
-    selectionCleared: selectedVisitId === null && appointmentDrafts.size === 0,
-    intentCleared: pendingWorkflowIntent === null && workflowMutationPending === false,
+      && followUpsById.size === 0,
+    selectionCleared: selectedVisitId === null
+      && appointmentDrafts.size === 0
+      && selectedFollowUpId === null
+      && followUpDrafts.size === 0,
+    intentCleared: pendingWorkflowIntent === null
+      && workflowMutationPending === false
+      && pendingFollowUpIntent === null
+      && followUpMutationPending === false,
     projectionsScrubbed: projectionIds.every(id => {
       const node = element(id);
       return !`${node.innerHTML} ${node.textContent} ${node.value}`.includes('SECRET');
     }),
     formsScrubbed: formIds.every(id => element(id).value === ''),
     overlayClosed: !appointmentOverlay.classList.contains('open')
-      && appointmentOverlay.attributes['aria-hidden'] === 'true',
-    overlayInert: appointmentOverlay.inert,
-    dialogInert: appointmentDialog.inert,
+      && appointmentOverlay.attributes['aria-hidden'] === 'true'
+      && !followUpOverlay.classList.contains('open')
+      && followUpOverlay.attributes['aria-hidden'] === 'true',
+    overlayInert: appointmentOverlay.inert && followUpOverlay.inert,
+    dialogInert: appointmentDialog.inert && followUpDialog.inert,
     focusBlurred: focusedControl.blurred,
     refsCleared: activeDialogSurface === null && lastDialogTrigger === null,
     bodyReset: !body.classList.contains('dialog-open')
@@ -1135,7 +1189,9 @@ function updateAppointmentFormValidity() {}
     createClosed: element('visit-create-panel').hidden
       && element('visit-create-toggle').attributes['aria-expanded'] === 'false',
     retriesHidden: element('appointment-retry').hidden
-      && element('visit-create-retry').hidden,
+      && element('visit-create-retry').hidden
+      && element('follow-up-retry').hidden
+      && element('follow-up-dialog-retry').hidden,
     questionsTabReset: element('appointment-tab-questions').attributes['aria-selected']
       === 'true'
       && element('appointment-panel-questions').hidden === false
@@ -1490,11 +1546,12 @@ function setAppointmentMessage() {}
 function workflowIntentCanRender() { return true; }
 function captureAppointmentDraft() {}
 function clearWorkflowRetry() {}
+function redactGeneratedSummaryActions() {}
 function loadStatus() { return Promise.resolve(); }
 function loadSummary() { return Promise.resolve(); }
 function loadTasks() { return Promise.resolve(); }
 function loadVisits() { return Promise.resolve(); }
-function loadVisitFollowUps() { return Promise.resolve(); }
+function loadFollowUps() { return Promise.resolve(); }
 globalThis.fetch = () => {
   if (!fetchQueue.length) throw new Error('missing queued response');
   return fetchQueue.shift();
@@ -2023,7 +2080,7 @@ def test_appointment_revision_epoch_conflict_and_eviction_guards_are_complete():
     assert "loadSummary()" in refresh
     assert "loadTasks()" in refresh
     assert "loadVisits()" in refresh
-    assert "loadVisitFollowUps()" in refresh
+    assert "loadFollowUps()" in refresh
     assert "loadQuestions()" in conflicts
     assert conflicts.index("redactGeneratedQuestionChoices()") < conflicts.index(
         "Promise.allSettled"
@@ -2035,7 +2092,7 @@ def test_appointment_revision_epoch_conflict_and_eviction_guards_are_complete():
         "visitsById = new Map()",
         "appointmentOptions = []",
         "appointmentQuestionSources = []",
-        "visitFollowUps = []",
+        "followUpsById = new Map()",
         "selectedVisitId = null",
         "visitSelectionEpoch += 1",
         "appointmentDialogOpen = false",
@@ -2091,8 +2148,476 @@ def test_appointment_provenance_and_stale_source_wording_are_fixed():
 
 def test_appointment_flows_never_call_deferred_or_legacy_routes():
     assert "/api/visits/${encodeURIComponent(visit.id)}/follow-ups" in APP_JS
-    assert "visitFollowUps.filter" in APP_JS
+    assert "followUpItems().filter" in APP_JS
     assert "/api/alerts/resolve/" not in APP_JS
-    assert "/api/follow-ups/" not in APP_JS
+    assert "/api/follow-ups/${encodeURIComponent(action.id)}" in APP_JS
     assert "Save as follow-up" not in APP_JS
-    assert "follow-up filters" not in APP_JS
+
+
+def _run_follow_up_request_probe() -> list[dict]:
+    script = "\n".join(
+        [
+            """
+const elements = new Map();
+const element = (id, value = '') => {
+  if (!elements.has(id)) elements.set(id, { value, textContent: '', disabled: false });
+  return elements.get(id);
+};
+const document = { getElementById: element };
+const calls = [];
+let selectedFollowUpId = 'action-1';
+let followUpDialogMode = 'outcome';
+let followUpOutcomeStatus = 'completed';
+const followUpsById = new Map([['action-1', {
+  id: 'action-1',
+  token: 'full-action-token',
+  owner: 'Old owner',
+  due_date: '2026-08-10',
+  status: 'in_progress',
+}]]);
+
+element('follow-up-create-text').value = 'Contact the clinic to confirm timing';
+element('follow-up-create-owner').value = 'Caregiver';
+element('follow-up-create-due').value = '2026-08-15';
+element('follow-up-edit-owner').value = 'Family';
+element('follow-up-edit-due').value = '2026-08-18';
+element('follow-up-outcome-kind').value = 'clinician_attributed';
+element('follow-up-outcome-text').value = 'The clinician confirmed the next review date';
+
+function setFormError() {}
+function updateFollowUpFormValidity() {}
+function followUpDraftKey(mode, actionId, status) {
+  if (mode === 'create') return 'create';
+  if (mode === 'outcome') return `outcome:${actionId}:${status}`;
+  return `edit:${actionId}`;
+}
+async function submitFollowUpMutation(url, body, options = {}) {
+  calls.push({ url, body, options });
+  return { item: { id: 'saved' } };
+}
+""",
+            _executable_function_source("acceptGeneratedFollowUp", "renderClaimEvidence"),
+            _executable_function_source("createManualFollowUp", "saveFollowUpDetails"),
+            _executable_function_source("saveFollowUpDetails", "submitFollowUpOutcome"),
+            _executable_function_source("submitFollowUpOutcome", "changeFollowUpStatus"),
+            _executable_function_source("changeFollowUpStatus", "renderAppointmentOptions"),
+            """
+(async () => {
+  await acceptGeneratedFollowUp({
+    dataset: {
+      generatedActionSourceId: 'sumact-stable',
+      generatedActionSourceToken: 'semantic-source-token',
+    },
+  });
+  await createManualFollowUp();
+  await saveFollowUpDetails();
+  await submitFollowUpOutcome();
+  await changeFollowUpStatus({
+    dataset: { followUpId: 'action-1', followUpToken: 'full-action-token' },
+  }, 'open');
+  console.log(JSON.stringify(calls));
+})().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
+""",
+        ]
+    )
+    completed = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
+def test_follow_up_requests_use_stable_ids_tokens_and_exact_bodies():
+    calls = _run_follow_up_request_probe()
+
+    assert calls == [
+        {
+            "url": "/api/follow-ups",
+            "body": {
+                "origin_kind": "executive_summary_action",
+                "source_id": "sumact-stable",
+                "expected_source_token": "semantic-source-token",
+            },
+            "options": {"sourceKind": "generated"},
+        },
+        {
+            "url": "/api/follow-ups",
+            "body": {
+                "origin_kind": "manual",
+                "text": "Contact the clinic to confirm timing",
+                "owner": "Caregiver",
+                "due_date": "2026-08-15",
+            },
+            "options": {"draftKey": "create"},
+        },
+        {
+            "url": "/api/follow-ups/action-1",
+            "body": {
+                "expected_token": "full-action-token",
+                "owner": "Family",
+                "due_date": "2026-08-18",
+            },
+            "options": {
+                "method": "PATCH",
+                "actionId": "action-1",
+                "draftKey": "edit:action-1",
+            },
+        },
+        {
+            "url": "/api/follow-ups/action-1",
+            "body": {
+                "expected_token": "full-action-token",
+                "status": "completed",
+                "outcome": {
+                    "kind": "clinician_attributed",
+                    "text": "The clinician confirmed the next review date",
+                },
+            },
+            "options": {
+                "method": "PATCH",
+                "actionId": "action-1",
+                "draftKey": "outcome:action-1:completed",
+            },
+        },
+        {
+            "url": "/api/follow-ups/action-1",
+            "body": {"expected_token": "full-action-token", "status": "open"},
+            "options": {"method": "PATCH", "actionId": "action-1"},
+        },
+    ]
+    assert "generatedActionSourceId" not in json.dumps(calls[0]["body"])
+    assert "text" not in calls[0]["body"]
+
+
+def _run_follow_up_epoch_probe() -> dict:
+    script = "\n".join(
+        [
+            """
+let phiEpoch = 2;
+let followUpSelectionEpoch = 5;
+let selectedFollowUpId = 'action-b';
+let latestProfileRevision = 20;
+let workflowRevision = 4;
+let followUpsById = new Map([
+  ['action-a', { id: 'action-a', token: 'a-original' }],
+  ['action-b', { id: 'action-b', token: 'b-original' }],
+]);
+let followUpDialogOpen = false;
+const followUpDrafts = new Map();
+let workflowLoads = 0;
+let clinicalRefreshes = 0;
+let renders = 0;
+
+function closeFollowUpDialog() {}
+function renderFollowUps() { renders += 1; }
+function renderVisitFollowUps() {}
+function setFollowUpStatus() {}
+function reportLoadSuccess() {}
+async function loadFollowUps() { workflowLoads += 1; return []; }
+async function refreshClinicalWorkflowState() { clinicalRefreshes += 1; return true; }
+""",
+            _executable_function_source("followUpIntentCanRender", "handleFollowUpConflict"),
+            _executable_function_source("consumeFollowUpResponse", "performFollowUpIntent"),
+            """
+(async () => {
+  const lateA = {
+    actionId: 'action-a',
+    requestPhiEpoch: 2,
+    requestActionEpoch: 4,
+  };
+  const lateAResult = await consumeFollowUpResponse({
+    item: { id: 'action-a', token: 'a-late' },
+    workflow_revision: 99,
+    profile_revision: 99,
+  }, lateA);
+
+  const workflowB = {
+    actionId: 'action-b',
+    requestPhiEpoch: 2,
+    requestActionEpoch: 5,
+  };
+  const workflowResult = await consumeFollowUpResponse({
+    item: { id: 'action-b', token: 'b-workflow' },
+    workflow_revision: 5,
+    profile_revision: 20,
+  }, workflowB);
+
+  selectedFollowUpId = 'action-c';
+  followUpSelectionEpoch = 6;
+  followUpsById.set('action-c', { id: 'action-c', token: 'c-original' });
+  const clinicalC = {
+    actionId: 'action-c',
+    requestPhiEpoch: 2,
+    requestActionEpoch: 6,
+  };
+  const clinicalResult = await consumeFollowUpResponse({
+    item: { id: 'action-c', token: 'c-clinical' },
+    workflow_revision: 6,
+    profile_revision: 21,
+  }, clinicalC);
+
+  phiEpoch = 3;
+  const postEviction = await consumeFollowUpResponse({
+    item: { id: 'action-c', token: 'c-late-auth' },
+    workflow_revision: 7,
+    profile_revision: 22,
+  }, clinicalC);
+
+  console.log(JSON.stringify({
+    lateAResult,
+    actionAToken: followUpsById.get('action-a').token,
+    actionBToken: followUpsById.get('action-b').token,
+    actionCToken: followUpsById.get('action-c').token,
+    workflowResult,
+    clinicalResult,
+    postEviction,
+    workflowLoads,
+    clinicalRefreshes,
+    workflowRevision,
+    latestProfileRevision,
+    renders,
+  }));
+})().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
+""",
+        ]
+    )
+    completed = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
+def test_follow_up_epochs_and_revision_paths_block_late_repaints():
+    assert _run_follow_up_epoch_probe() == {
+        "lateAResult": False,
+        "actionAToken": "a-original",
+        "actionBToken": "b-workflow",
+        "actionCToken": "c-clinical",
+        "workflowResult": True,
+        "clinicalResult": True,
+        "postEviction": False,
+        "workflowLoads": 1,
+        "clinicalRefreshes": 1,
+        "workflowRevision": 6,
+        "latestProfileRevision": 21,
+        "renders": 2,
+    }
+
+
+def _run_generated_action_redaction_probe() -> dict:
+    script = "\n".join(
+        [
+            """
+class FakeRow {
+  constructor() {
+    this.dataset = {
+      generatedActionSourceId: 'sumact-secret',
+      generatedActionSourceToken: 'SECRET TOKEN',
+    };
+    this.className = 'action-item';
+    this.innerHTML = 'SECRET GENERATED TEXT <button>Add to follow-through</button>';
+  }
+  removeAttribute(name) {
+    if (name === 'data-generated-action-source-id') delete this.dataset.generatedActionSourceId;
+    if (name === 'data-generated-action-source-token') delete this.dataset.generatedActionSourceToken;
+  }
+}
+const row = new FakeRow();
+const document = { querySelectorAll() { return [row]; } };
+""",
+            _function_source("summaryActionIsCurrent", "generatedActionAccepted"),
+            _executable_function_source("redactGeneratedSummaryActions", "acceptGeneratedFollowUp"),
+            """
+const summary = { profile_revision: 9, summary_revision: 9, generation_id: 'generation-9' };
+const current = {
+  id: 'sumact-current',
+  source_token: 'token',
+  generation_id: 'generation-9',
+  source_profile_revision: 9,
+  stale: false,
+};
+const stale = { ...current, stale: true };
+const revisionless = { ...current };
+delete revisionless.source_profile_revision;
+redactGeneratedSummaryActions();
+console.log(JSON.stringify({
+  current: summaryActionIsCurrent(current, summary),
+  stale: summaryActionIsCurrent(stale, summary),
+  revisionless: summaryActionIsCurrent(revisionless, summary),
+  html: row.innerHTML,
+  dataset: row.dataset,
+  className: row.className,
+}));
+""",
+        ]
+    )
+    completed = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
+def test_generated_action_staleness_redacts_text_token_and_control():
+    result = _run_generated_action_redaction_probe()
+    assert result["current"] is True
+    assert result["stale"] is False
+    assert result["revisionless"] is False
+    assert result["dataset"] == {}
+    assert result["className"] == "action-item unavailable"
+    assert "Generated action unavailable" in result["html"]
+    assert "SECRET" not in result["html"]
+    assert "Add to follow-through" not in result["html"]
+
+
+def test_summary_action_sources_use_load_and_profile_revision_guards():
+    loader = _function_source("loadSummary", "renderPendingSummary")
+    revision_sync = _function_source("syncChatRevision", "toggleChat")
+    assert "requestSummaryEpoch = ++summaryLoadEpoch" in loader
+    assert "requestSummaryEpoch !== summaryLoadEpoch" in loader
+    assert "String(d.profile_revision) !== String(latestProfileRevision)" in loader
+    assert loader.index("redactGeneratedSummaryActions()") < loader.index("renderSummary({")
+    assert revision_sync.count("redactGeneratedSummaryActions()") >= 3
+
+
+def test_follow_up_retry_conflict_eviction_and_loading_contracts_are_strict():
+    intent = _function_source("createFollowUpIntent", "followUpIntentCanRender")
+    performer = _function_source("performFollowUpIntent", "submitFollowUpMutation")
+    retry = _function_source("retryFollowUpIntent", "createManualFollowUp")
+    conflict = _function_source("handleFollowUpConflict", "consumeFollowUpResponse")
+    eviction = _function_source("evictClientPhi", "renderLatestResearchUpdate")
+    loader = _function_source("loadFollowUps", "createFollowUpIntent")
+    polling = _function_source("startPolling", "currentVisit")
+
+    assert "mutation_id: newMutationId()" in intent
+    assert "performFollowUpIntent(intent, true)" in retry
+    assert "pendingFollowUpIntent = intent" in performer
+    assert "error?.status === 409" in performer
+    assert "consumedSuccessfully || intent.requestPhiEpoch === phiEpoch" in performer
+    renderer = _function_source("renderFollowUps", "setFollowUpFilter")
+    busy = _function_source("setFollowUpMutationBusy", "updateFollowUpOutcomeGuidance")
+    closer = _function_source("closeFollowUpDialog", "closeFollowUpFromBackdrop")
+    focus = _function_source("restoreFollowUpMutationFocus", "performFollowUpIntent")
+    assert "if (followUpMutationPending) setFollowUpMutationBusy(true)" in renderer
+    assert "if (!('followUpWasDisabled' in control.dataset))" in busy
+    assert "if (followUpMutationPending && !force)" in closer
+    assert "closeFollowUpDialog(false, true)" in _function_source(
+        "consumeFollowUpResponse", "restoreFollowUpMutationFocus"
+    )
+    assert "document.querySelectorAll('.follow-up-item')" in focus
+    assert "restoreFollowUpMutationFocus(intent)" in performer
+    assert "performFollowUpIntent" not in conflict
+    assert "redactGeneratedSummaryActions()" in conflict
+    assert "loadFollowUps()" in conflict
+    assert "loadSummary()" in conflict
+    assert "loadFollowUps()" not in polling
+    assert "error?.status === 401 || error?.status === 403" in loader
+    assert "reportLoadError('follow-ups', error)" in loader
+    for expression in (
+        "followUpsById = new Map()",
+        "followUpLoadEpoch += 1",
+        "selectedFollowUpId = null",
+        "followUpSelectionEpoch += 1",
+        "followUpDialogOpen = false",
+        "pendingFollowUpIntent = null",
+        "followUpMutationPending = false",
+        "followUpDrafts = new Map()",
+        "clear('follow-up-list')",
+        "clear('follow-up-status')",
+    ):
+        assert expression in eviction
+
+
+def test_follow_up_outcomes_have_precise_unverified_provenance():
+    presentation = _function_source("followUpOutcomePresentation", "formatActionTimestamp")
+    assert "Caregiver-entered · attributed to clinician · unverified" in presentation
+    assert "Caregiver-entered · caregiver reported · unverified" in presentation
+    assert "Caregiver-entered administrative outcome · not clinical evidence" in presentation
+    assert "verified" not in presentation.replace("unverified", "")
+    renderer = _function_source("renderFollowUps", "setFollowUpFilter")
+    visit_renderer = _function_source("renderVisitFollowUps", "createVisitFollowUp")
+    assert "escHtml(item.outcome.text)" in renderer
+    assert "source-verified" not in renderer
+    assert "followUpOutcomePresentation(item.outcome)" in visit_renderer
+    assert "escHtml(outcome.label)" in visit_renderer
+
+
+def test_follow_up_surface_is_responsive_keyboard_operable_and_overflow_safe():
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    markup = """
+      <main>
+        <section class="content-card follow-through-card">
+          <div class="follow-up-filters">
+            <button class="follow-up-filter active">Active <span>2</span></button>
+            <button class="follow-up-filter">Completed <span>1</span></button>
+            <button class="follow-up-filter">Cancelled <span>0</span></button>
+            <button class="follow-up-filter">All <span>3</span></button>
+          </div>
+          <div class="follow-up-list">
+            <article class="follow-up-item">
+              <div class="follow-up-item-heading">
+                <span class="visit-status-badge open">Open</span>
+                <span class="follow-up-due soon">Due soon · 15-08-2026</span>
+              </div>
+              <p class="follow-up-copy">Contact the clinic to confirm a deliberately long follow-up description that must wrap without causing horizontal overflow on a narrow phone viewport.</p>
+              <div class="follow-up-actions">
+                <button class="button secondary">Edit owner or due date</button>
+                <button class="button primary">Start</button>
+                <button class="button secondary">Complete</button>
+              </div>
+            </article>
+          </div>
+        </section>
+        <div class="follow-up-overlay open">
+          <section class="follow-up-dialog">
+            <div class="follow-up-dialog-body">
+              <form class="follow-up-form">
+                <label><span>What happened?</span><textarea>Outcome</textarea></label>
+                <div class="follow-up-dialog-actions">
+                  <button class="button primary">Save outcome</button>
+                  <button class="button secondary">Cancel</button>
+                </div>
+              </form>
+            </div>
+          </section>
+        </div>
+      </main>
+    """
+
+    with playwright_api.sync_playwright() as playwright:
+        executable = Path(playwright.chromium.executable_path)
+        if not executable.exists():
+            pytest.skip("Installed Playwright browser is unavailable")
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 360, "height": 800})
+        page.set_content(markup)
+        page.add_style_tag(content=CSS)
+        heights = page.locator(
+            ".follow-up-filter, .follow-up-actions .button, "
+            ".follow-up-dialog-actions .button, .follow-up-form textarea"
+        ).evaluate_all("(items) => items.map(item => item.getBoundingClientRect().height)")
+        overflow = page.evaluate(
+            """() => ({
+              document: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+              card: document.querySelector('.follow-through-card').scrollWidth
+                - document.querySelector('.follow-through-card').clientWidth,
+              item: document.querySelector('.follow-up-item').scrollWidth
+                - document.querySelector('.follow-up-item').clientWidth,
+              dialog: document.querySelector('.follow-up-dialog').scrollWidth
+                - document.querySelector('.follow-up-dialog').clientWidth,
+            })"""
+        )
+        assert heights
+        assert all(height >= 44 for height in heights)
+        assert overflow == {"document": 0, "card": 0, "item": 0, "dialog": 0}
+        page.keyboard.press("Tab")
+        focus = page.evaluate(
+            """() => {
+              const style = getComputedStyle(document.activeElement);
+              return { tag: document.activeElement.tagName, outline: style.outlineStyle };
+            }"""
+        )
+        assert focus["tag"] in {"BUTTON", "TEXTAREA"}
+        assert focus["outline"] != "none"
+        browser.close()

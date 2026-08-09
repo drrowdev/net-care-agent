@@ -16,12 +16,15 @@
   let taskSelectionEpoch = 0;
   let latestProfileRevision = null;
   let phiEpoch = 0;
+  let statusLoadEpoch = 0;
   let summaryLoadEpoch = 0;
+  let taskLoadEpoch = 0;
   let workflowRevision = null;
   let visitsById = new Map();
   let appointmentOptions = [];
   let appointmentQuestionSources = [];
   let questionLoadEpoch = 0;
+  let visitLoadEpoch = 0;
   let generatedQuestionsUnavailable = false;
   let followUpsById = new Map();
   let followUpFilter = 'active';
@@ -32,7 +35,10 @@
   let followUpDialogMode = null;
   let followUpOutcomeStatus = null;
   let pendingFollowUpIntent = null;
+  let pendingFollowUpCompletion = null;
   let followUpMutationPending = false;
+  let followUpMutationOwner = null;
+  let summaryActionMutationOwner = null;
   let followUpDrafts = new Map();
   let selectedVisitId = null;
   let visitSelectionEpoch = 0;
@@ -75,6 +81,25 @@
     } catch (_) {
       return '';
     }
+  }
+
+  function revisionIsOlder(candidate, current) {
+    if (candidate == null || current == null) return false;
+    const candidateNumber = Number(candidate);
+    const currentNumber = Number(current);
+    return Number.isFinite(candidateNumber)
+      && Number.isFinite(currentNumber)
+      && candidateNumber < currentNumber;
+  }
+
+  function followUpControlsLocked() {
+    return followUpMutationPending
+      || pendingFollowUpCompletion !== null
+      || summaryActionMutationOwner !== null
+      || (
+        typeof workflowMutationPending !== 'undefined'
+        && workflowMutationPending
+      );
   }
 
   function newMutationId() {
@@ -141,15 +166,17 @@
     return !intent.visitId || intent.visitId === selectedVisitId;
   }
 
-  async function refreshClinicalWorkflowState(profileRevision) {
+  async function refreshClinicalWorkflowState(profileRevision, expectedWorkflowRevision = null) {
     redactGeneratedQuestionChoices();
     redactGeneratedSummaryActions();
     phiEpoch += 1;
     const refreshPhiEpoch = phiEpoch;
     taskSelectionEpoch += 1;
-    syncChatRevision(profileRevision, true, false);
-    await Promise.allSettled([
-      loadStatus(),
+    const status = await loadStatus();
+    if (refreshPhiEpoch !== phiEpoch || status?.profile_revision == null) return false;
+    const statusRevision = status.profile_revision;
+    syncChatRevision(statusRevision, true, false);
+    const refreshResults = await Promise.allSettled([
       loadSummary(),
       loadQuestions(),
       loadTasks(),
@@ -157,10 +184,33 @@
       loadFollowUps(),
     ]);
     if (refreshPhiEpoch !== phiEpoch) return false;
-    if (appointmentDialogOpen) {
-      setAppointmentMessage('Saved. Clinical content was refreshed for the updated record.', 'success');
-    }
-    return true;
+    const loadsSucceeded = refreshResults.every(
+      result => result.status === 'fulfilled' && result.value !== null
+    );
+    const revisionValues = [
+      statusRevision,
+      refreshResults[0].value?.profile_revision,
+      refreshResults[1].value?.profileRevision,
+      refreshResults[3].value?.profileRevision,
+      refreshResults[4].value?.profileRevision,
+    ];
+    const workflowValues = [
+      refreshResults[3].value?.workflowRevision,
+      refreshResults[4].value?.workflowRevision,
+    ];
+    const verified = loadsSucceeded
+      && statusRevision != null
+      && !revisionIsOlder(statusRevision, profileRevision)
+      && revisionValues.every(value => (
+        value != null && String(value) === String(statusRevision)
+      ))
+      && workflowValues.every(value => value != null)
+      && !revisionIsOlder(workflowValues[0], expectedWorkflowRevision)
+      && workflowValues.every(value => (
+        String(value) === String(workflowValues[0])
+      ))
+      && String(latestProfileRevision) === String(statusRevision);
+    return { verified };
   }
 
   async function consumeWorkflowResponse(data, intent) {
@@ -190,8 +240,11 @@
       renderAppointmentWorkspace();
     }
     if (profileChanged) {
-      const refreshed = await refreshClinicalWorkflowState(data.profile_revision);
-      return refreshed
+      const refreshed = await refreshClinicalWorkflowState(
+        data.profile_revision,
+        data.workflow_revision,
+      );
+      return refreshed?.verified === true
         && responseVisitEpoch === visitSelectionEpoch
         && responseVisitId === selectedVisitId;
     }
@@ -225,9 +278,10 @@
   }
 
   async function performWorkflowIntent(intent, explicitRetry = false) {
-    if (workflowMutationPending) return null;
+    if (followUpControlsLocked() || workflowMutationPending) return null;
     workflowMutationPending = true;
     setAppointmentMutationBusy(true);
+    setFollowUpMutationBusy(true);
     if (!explicitRetry) clearWorkflowRetry();
     setAppointmentMessage(explicitRetry ? 'Retrying the unchanged request…' : 'Saving…', 'saving');
     try {
@@ -277,6 +331,7 @@
       return null;
     } finally {
       workflowMutationPending = false;
+      setFollowUpMutationBusy(false);
       if (intent.requestPhiEpoch === phiEpoch || appointmentDialogOpen) {
         setAppointmentMutationBusy(false);
         updateAppointmentFormValidity();
@@ -285,6 +340,7 @@
   }
 
   async function submitWorkflowMutation(url, body, visitId = selectedVisitId, method = 'POST') {
+    if (followUpControlsLocked() || workflowMutationPending) return null;
     const intent = createWorkflowIntent(url, body, visitId);
     intent.method = method;
     return performWorkflowIntent(intent);
@@ -302,11 +358,11 @@
     finalizeRetriedWorkflowIntent(intent, result);
   }
 
-  async function readJsonResponse(response) {
+  async function readJsonResponse(response, canEvictClientPhi = () => true) {
     if (response.status === 401 || response.status === 403) {
       const authError = new Error('Authorization failed.');
       authError.status = response.status;
-      evictClientPhi(authError);
+      if (canEvictClientPhi()) evictClientPhi(authError);
     }
     let data;
     try {
@@ -325,7 +381,7 @@
       error.retryAfter = response.headers.get('Retry-After');
       error.data = data;
       if (response.status === 401 || response.status === 403) {
-        evictClientPhi(error);
+        if (canEvictClientPhi()) evictClientPhi(error);
       }
       throw error;
     }
@@ -439,7 +495,7 @@
     (focusable[0] || surface).focus();
   }
 
-  function deactivateDialog(surface) {
+  function deactivateDialog(surface, restoreFocus = true) {
     if (surface && activeDialogSurface !== surface) return;
     activeDialogSurface = null;
     [...document.body.children].forEach(child => {
@@ -450,7 +506,8 @@
       }
     });
     document.body.classList.remove('dialog-open');
-    restoreDialogFocus();
+    if (restoreFocus) restoreDialogFocus();
+    else lastDialogTrigger = null;
   }
 
   function trapDialogFocus(event) {
@@ -670,17 +727,28 @@
   // ── Status sidebar ──────────────────────────────────────────────────────
   async function loadStatus() {
     const requestPhiEpoch = phiEpoch;
+    const requestLoadEpoch = ++statusLoadEpoch;
+    const requestIsCurrent = () => (
+      requestPhiEpoch === phiEpoch && requestLoadEpoch === statusLoadEpoch
+    );
     try {
       const r = await fetch('/api/status');
-      const d = await readJsonResponse(r);
-      if (requestPhiEpoch !== phiEpoch) return null;
+      if (!requestIsCurrent()) return null;
+      const d = await readJsonResponse(r, requestIsCurrent);
+      if (!requestIsCurrent()) return null;
+      if (revisionIsOlder(d.profile_revision, latestProfileRevision)) return null;
       const revisionChanged = syncChatRevision(d.profile_revision);
       renderSidebar(d);
       if (revisionChanged && selectedTaskId) loadTasks();
       reportLoadSuccess('status');
       return d;
     } catch(e) {
-      if (requestPhiEpoch === phiEpoch && shouldEvictClientPhi(e)) evictClientPhi(e);
+      if (!requestIsCurrent()) return null;
+      if (shouldEvictClientPhi(e)) {
+        reportLoadError('status', e);
+        if (requestIsCurrent()) evictClientPhi(e);
+        return null;
+      }
       renderStatusFailure();
       reportLoadError('status', e);
       return null;
@@ -713,12 +781,14 @@
 
   function evictClientPhi(error = null) {
     phiEpoch += 1;
+    statusLoadEpoch += 1;
     taskSelectionEpoch += 1;
     selectedTaskId = null;
     currentReportText = '';
     currentReceipt = null;
     pendingSummary = null;
     summaryLoadEpoch += 1;
+    taskLoadEpoch += 1;
     latestProfileRevision = null;
     latestResearchUpdate = null;
     patientEvidence = null;
@@ -728,6 +798,7 @@
     appointmentOptions = [];
     appointmentQuestionSources = [];
     questionLoadEpoch += 1;
+    visitLoadEpoch += 1;
     generatedQuestionsUnavailable = false;
     followUpsById = new Map();
     followUpLoadEpoch += 1;
@@ -737,7 +808,10 @@
     followUpDialogMode = null;
     followUpOutcomeStatus = null;
     pendingFollowUpIntent = null;
+    pendingFollowUpCompletion = null;
     followUpMutationPending = false;
+    followUpMutationOwner = null;
+    summaryActionMutationOwner = null;
     followUpDrafts = new Map();
     selectedVisitId = null;
     visitSelectionEpoch += 1;
@@ -1363,6 +1437,7 @@
   }
 
   async function dismissAction(idx) {
+    if (followUpControlsLocked()) return;
     // Show inline feedback dialog
     const el = document.getElementById('action-' + idx);
     if (!el) return;
@@ -1394,6 +1469,17 @@
   }
 
   async function quickDismiss(idx, feedback, category) {
+    if (followUpControlsLocked()) return;
+    const mutationOwner = {};
+    summaryActionMutationOwner = mutationOwner;
+    const requestPhiEpoch = phiEpoch;
+    let requestSummaryEpoch = summaryLoadEpoch;
+    const mutationIsCurrent = () => (
+      summaryActionMutationOwner === mutationOwner
+      && requestPhiEpoch === phiEpoch
+      && requestSummaryEpoch === summaryLoadEpoch
+    );
+    setFollowUpMutationBusy(true);
     const el = document.getElementById('action-' + idx);
     const dlg = document.getElementById('dismiss-dialog-' + idx);
     const payload = {
@@ -1405,24 +1491,53 @@
     if (el) el.style.opacity = '0.3';
     if (dlg) dlg.remove();
     try {
-      await requireOk(await fetch(`/api/summary/dismiss-action/${idx}`, {
+      const response = await fetch(`/api/summary/dismiss-action/${idx}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
-      }));
-      await loadSummary();
-      if (feedback.trim()) await loadJudgments();
+      });
+      if (!mutationIsCurrent()) return;
+      await requireOk(response);
+      if (!mutationIsCurrent()) return;
+      const summary = await loadSummary();
+      requestSummaryEpoch += 1;
+      if (!mutationIsCurrent() || summary === null) return;
+      if (feedback.trim()) {
+        await loadJudgments();
+        if (!mutationIsCurrent()) return;
+      }
     } catch(e) {
+      if (!mutationIsCurrent()) return;
       if (el) el.style.opacity = '1';
       reportLoadError('action', e);
+    } finally {
+      if (mutationIsCurrent()) {
+        summaryActionMutationOwner = null;
+        setFollowUpMutationBusy(false);
+        refreshGeneratedActionControls();
+        updateFollowUpFormValidity();
+      } else if (summaryActionMutationOwner === mutationOwner) {
+        summaryActionMutationOwner = null;
+      }
     }
   }
 
   async function reportMissedSummary() {
-    const note = prompt('What was missed or incorrect? This records review feedback only; it will not change clinical facts.');
-    if (!note || !note.trim()) return;
+    if (followUpControlsLocked()) return;
+    const mutationOwner = {};
+    summaryActionMutationOwner = mutationOwner;
+    const requestPhiEpoch = phiEpoch;
+    let requestSummaryEpoch = summaryLoadEpoch;
+    const mutationIsCurrent = () => (
+      summaryActionMutationOwner === mutationOwner
+      && requestPhiEpoch === phiEpoch
+      && requestSummaryEpoch === summaryLoadEpoch
+    );
+    setFollowUpMutationBusy(true);
     try {
-      await requireOk(await fetch('/api/feedback', {
+      const note = prompt('What was missed or incorrect? This records review feedback only; it will not change clinical facts.');
+      if (!note || !note.trim()) return;
+      const response = await fetch('/api/feedback', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1431,10 +1546,25 @@
           assessment: 'missed',
           note: note.trim(),
         }),
-      }));
-      await loadSummary();
+      });
+      if (!mutationIsCurrent()) return;
+      await requireOk(response);
+      if (!mutationIsCurrent()) return;
+      const summary = await loadSummary();
+      requestSummaryEpoch += 1;
+      if (!mutationIsCurrent() || summary === null) return;
     } catch (error) {
+      if (!mutationIsCurrent()) return;
       reportLoadError('action', error);
+    } finally {
+      if (mutationIsCurrent()) {
+        summaryActionMutationOwner = null;
+        setFollowUpMutationBusy(false);
+        refreshGeneratedActionControls();
+        updateFollowUpFormValidity();
+      } else if (summaryActionMutationOwner === mutationOwner) {
+        summaryActionMutationOwner = null;
+      }
     }
   }
 
@@ -1670,10 +1800,14 @@
   async function loadSummary() {
     const requestPhiEpoch = phiEpoch;
     const requestSummaryEpoch = ++summaryLoadEpoch;
+    const requestIsCurrent = () => (
+      requestPhiEpoch === phiEpoch && requestSummaryEpoch === summaryLoadEpoch
+    );
     try {
       const r = await fetch('/api/summary');
-      const d = await readJsonResponse(r);
-      if (requestPhiEpoch !== phiEpoch || requestSummaryEpoch !== summaryLoadEpoch) return null;
+      if (!requestIsCurrent()) return null;
+      const d = await readJsonResponse(r, requestIsCurrent);
+      if (!requestIsCurrent()) return null;
       if (
         latestProfileRevision != null
         && d.profile_revision != null
@@ -1688,7 +1822,7 @@
           summary_revision: d.summary_revision,
         });
         reportLoadSuccess('summary');
-        return null;
+        return d;
       }
       const editor = document.querySelector('.action-feedback');
       const responseStale = d.status === 'stale' || d.content_hidden || summaryIsStale(d);
@@ -1713,13 +1847,10 @@
       reportLoadSuccess('summary');
       return d;
     } catch(e) {
-      if (requestPhiEpoch !== phiEpoch || requestSummaryEpoch !== summaryLoadEpoch) {
-        reportLoadError('summary', e);
-        return null;
-      }
+      if (!requestIsCurrent()) return null;
       if (shouldEvictClientPhi(e)) {
-        evictClientPhi(e);
         reportLoadError('summary', e);
+        if (requestIsCurrent()) evictClientPhi(e);
         return null;
       }
       document.getElementById('summary-body').innerHTML = loadFailureMarkup('Assessment', 'loadSummary()');
@@ -1832,7 +1963,14 @@
       const button = row.querySelector('.action-accept-btn');
       if (!button) return;
       const accepted = generatedActionAccepted(row.dataset.generatedActionSourceId);
-      button.disabled = accepted;
+      if (followUpControlsLocked()) {
+        if (!('followUpWasDisabled' in button.dataset)) {
+          button.dataset.followUpWasDisabled = String(accepted);
+        }
+        button.disabled = true;
+      } else {
+        button.disabled = accepted;
+      }
       button.textContent = accepted ? 'Accepted' : 'Add to follow-through';
     });
   }
@@ -1847,6 +1985,7 @@
   }
 
   async function acceptGeneratedFollowUp(row) {
+    if (followUpControlsLocked()) return;
     const sourceId = row?.dataset.generatedActionSourceId;
     const sourceToken = row?.dataset.generatedActionSourceToken;
     if (!sourceId || !sourceToken) return;
@@ -1958,7 +2097,7 @@
       html += `<div class="summary-narrative">${escHtml(d.summary)}${renderClaimEvidence(d.claim_evidence?.claims?.summary)}</div>`;
     }
 
-    html += `<div style="margin:18px 22px 2px"><button class="btn-digest" style="border-color:var(--amber);color:var(--amber)" onclick="reportMissedSummary()">⚑ Report something missed or incorrect</button>${d.feedback_pending ? ` <span style="font-size:10px;color:var(--amber)">${escHtml(d.feedback_pending)} review item(s) recorded</span>` : ''}</div>`;
+    html += `<div style="margin:18px 22px 2px"><button class="btn-digest summary-feedback-button" style="border-color:var(--amber);color:var(--amber)" onclick="reportMissedSummary()">⚑ Report something missed or incorrect</button>${d.feedback_pending ? ` <span style="font-size:10px;color:var(--amber)">${escHtml(d.feedback_pending)} review item(s) recorded</span>` : ''}</div>`;
 
     // Next actions
     if (d.next_actions && d.next_actions.length) {
@@ -2024,6 +2163,8 @@
     }
 
     body.innerHTML = html;
+    refreshGeneratedActionControls();
+    if (followUpControlsLocked()) setFollowUpMutationBusy(true);
   }
 
   // ── Tutkimukset / Artikkelit Modal ───────────────────────────────────────────────
@@ -2141,10 +2282,15 @@
   // ── Task log ────────────────────────────────────────────────────────────
   async function loadTasks() {
     const requestPhiEpoch = phiEpoch;
+    const requestLoadEpoch = ++taskLoadEpoch;
+    const requestIsCurrent = () => (
+      requestPhiEpoch === phiEpoch && requestLoadEpoch === taskLoadEpoch
+    );
     try {
       const r = await fetch('/api/jobs');
-      const tasks = await readJsonResponse(r);
-      if (requestPhiEpoch !== phiEpoch) return [];
+      if (!requestIsCurrent()) return null;
+      const tasks = await readJsonResponse(r, requestIsCurrent);
+      if (!requestIsCurrent()) return null;
       if (tasks.some(t => t.status === 'running' || t.status === 'queued')) {
         hadActiveJobs = true;
       }
@@ -2154,12 +2300,17 @@
       reportLoadSuccess('tasks');
       return tasks;
     } catch(e) {
-      if (requestPhiEpoch === phiEpoch && shouldEvictClientPhi(e)) evictClientPhi(e);
+      if (!requestIsCurrent()) return null;
+      if (shouldEvictClientPhi(e)) {
+        reportLoadError('tasks', e);
+        if (requestIsCurrent()) evictClientPhi(e);
+        return null;
+      }
       document.getElementById('task-list').innerHTML = loadFailureMarkup('Processing activity', 'loadTasks()');
       document.getElementById('log-count').textContent = 'Unavailable';
       updateHeaderStatus(null, e);
       reportLoadError('tasks', e);
-      return [];
+      return null;
     }
   }
 
@@ -3058,9 +3209,19 @@
 
   async function loadVisits() {
     const requestPhiEpoch = phiEpoch;
+    const requestLoadEpoch = ++visitLoadEpoch;
+    const requestIsCurrent = () => (
+      requestPhiEpoch === phiEpoch && requestLoadEpoch === visitLoadEpoch
+    );
     try {
-      const data = await readJsonResponse(await fetch('/api/visits'));
-      if (requestPhiEpoch !== phiEpoch) return [];
+      const response = await fetch('/api/visits');
+      if (!requestIsCurrent()) return null;
+      const data = await readJsonResponse(response, requestIsCurrent);
+      if (!requestIsCurrent()) return null;
+      if (
+        revisionIsOlder(data.profile_revision, latestProfileRevision)
+        || revisionIsOlder(data.workflow_revision, workflowRevision)
+      ) return null;
       if (appointmentDialogOpen) captureAppointmentDraft();
       workflowRevision = data.workflow_revision;
       syncChatRevision(data.profile_revision);
@@ -3076,16 +3237,22 @@
       renderVisitPreparation();
       if (appointmentDialogOpen) renderAppointmentWorkspace();
       reportLoadSuccess('visits');
-      return data.items || [];
+      const items = data.items || [];
+      items.profileRevision = data.profile_revision;
+      items.workflowRevision = data.workflow_revision;
+      return items;
     } catch (error) {
-      if (requestPhiEpoch === phiEpoch && shouldEvictClientPhi(error)) {
-        evictClientPhi(error);
-      } else if (requestPhiEpoch === phiEpoch) {
+      if (!requestIsCurrent()) return null;
+      if (shouldEvictClientPhi(error)) {
+        reportLoadError('visits', error);
+        if (requestIsCurrent()) evictClientPhi(error);
+        return null;
+      } else {
         const list = document.getElementById('visit-list');
         if (list) list.innerHTML = loadFailureMarkup('Appointments', 'loadVisits()');
       }
       reportLoadError('visits', error);
-      return [];
+      return null;
     }
   }
 
@@ -3224,7 +3391,7 @@
       }[followUpFilter];
       list.innerHTML = `<div class="empty-state">${escHtml(empty)}</div>`;
       refreshGeneratedActionControls();
-      if (followUpMutationPending) setFollowUpMutationBusy(true);
+      if (followUpControlsLocked()) setFollowUpMutationBusy(true);
       return;
     }
     list.innerHTML = filtered.map(item => {
@@ -3268,11 +3435,12 @@
       </article>`;
     }).join('');
     refreshGeneratedActionControls();
-    if (followUpMutationPending) setFollowUpMutationBusy(true);
+    if (followUpControlsLocked()) setFollowUpMutationBusy(true);
   }
 
   function setFollowUpFilter(name) {
     if (!['active', 'completed', 'cancelled', 'all'].includes(name)) return;
+    if (followUpControlsLocked()) return;
     followUpFilter = name;
     for (const filterName of ['active', 'completed', 'cancelled', 'all']) {
       const selected = filterName === name;
@@ -3370,7 +3538,15 @@
 
   function setFollowUpMutationBusy(busy) {
     document.querySelectorAll(
-      '#follow-up-dialog button, #follow-up-list .button, #follow-up-create-button'
+      '#follow-up-dialog button, #follow-up-dialog input, #follow-up-dialog textarea, '
+      + '#follow-up-dialog select, #follow-up-list .button, #follow-up-create-button, '
+      + '#follow-up-retry button, .follow-up-filter, .action-accept-btn, '
+      + '.action-dismiss-btn, .action-feedback button, .action-feedback input, '
+      + '.summary-feedback-button, .visit-open-button, #visit-create-toggle, '
+      + '#appointment-dialog button, #appointment-dialog input, '
+      + '#appointment-dialog textarea, #appointment-dialog select, '
+      + '#visit-create-panel button, #visit-create-panel input, '
+      + '#visit-create-panel textarea, #visit-create-panel select'
     ).forEach(control => {
       if (busy) {
         if (!('followUpWasDisabled' in control.dataset)) {
@@ -3382,6 +3558,22 @@
         delete control.dataset.followUpWasDisabled;
       }
     });
+    if (busy && pendingFollowUpCompletion && !followUpMutationPending) {
+      exposePendingFollowUpCompletionRetry();
+    }
+  }
+
+  function exposePendingFollowUpCompletionRetry() {
+    const retryContainer = document.getElementById(
+      followUpDialogOpen ? 'follow-up-dialog-retry' : 'follow-up-retry'
+    );
+    if (!retryContainer) return;
+    retryContainer.hidden = false;
+    const retryButton = retryContainer.querySelector('button');
+    if (retryButton) {
+      retryButton.disabled = false;
+      retryButton.textContent = 'Retry authoritative reload';
+    }
   }
 
   function updateFollowUpOutcomeGuidance() {
@@ -3400,8 +3592,8 @@
     const outcomeText = (document.getElementById('follow-up-outcome-text')?.value || '').trim();
     const createButton = document.getElementById('follow-up-create-submit');
     const outcomeButton = document.getElementById('follow-up-outcome-submit');
-    if (createButton && !followUpMutationPending) createButton.disabled = !createText;
-    if (outcomeButton && !followUpMutationPending) outcomeButton.disabled = !outcomeText;
+    if (createButton && !followUpControlsLocked()) createButton.disabled = !createText;
+    if (outcomeButton && !followUpControlsLocked()) outcomeButton.disabled = !outcomeText;
     if (createText) setFormError('follow-up-create-error', '');
     if (outcomeText) setFormError('follow-up-outcome-error', '');
   }
@@ -3440,6 +3632,7 @@
 
   function openFollowUpDialog(mode, trigger, actionId = null, status = null) {
     if (!['create', 'edit', 'outcome'].includes(mode)) return;
+    if (followUpControlsLocked()) return;
     if (actionId && !followUpsById.has(actionId)) {
       setFollowUpStatus('This action is no longer available. Reload before continuing.', 'conflict');
       loadFollowUps();
@@ -3475,6 +3668,7 @@
   }
 
   function openFollowUpOutcomeDialog(trigger, actionId, status) {
+    if (followUpControlsLocked()) return;
     if (!['completed', 'cancelled'].includes(status)) return;
     const action = followUpsById.get(actionId);
     if (!action || !['open', 'in_progress'].includes(action.status)) {
@@ -3485,9 +3679,13 @@
     openFollowUpDialog('outcome', trigger, actionId, status);
   }
 
-  function closeFollowUpDialog(preserveDraft = true, force = false) {
+  function closeFollowUpDialog(
+    preserveDraft = true,
+    force = false,
+    restoreFocus = true,
+  ) {
     if (!followUpDialogOpen) return;
-    if (followUpMutationPending && !force) {
+    if (followUpControlsLocked() && !force) {
       setFollowUpDialogStatus('Saving is still in progress. Wait for the result before closing.', 'saving');
       return;
     }
@@ -3504,7 +3702,7 @@
     if (overlay) overlay.inert = true;
     const dialog = document.getElementById('follow-up-dialog');
     if (dialog) dialog.inert = true;
-    deactivateDialog(dialog);
+    deactivateDialog(dialog, restoreFocus);
   }
 
   function closeFollowUpFromBackdrop(event) {
@@ -3529,9 +3727,18 @@
   async function loadFollowUps() {
     const requestPhiEpoch = phiEpoch;
     const requestLoadEpoch = ++followUpLoadEpoch;
+    const requestIsCurrent = () => (
+      requestPhiEpoch === phiEpoch && requestLoadEpoch === followUpLoadEpoch
+    );
     try {
-      const data = await readJsonResponse(await fetch('/api/follow-ups'));
-      if (requestPhiEpoch !== phiEpoch || requestLoadEpoch !== followUpLoadEpoch) return [];
+      const response = await fetch('/api/follow-ups');
+      if (!requestIsCurrent()) return null;
+      const data = await readJsonResponse(response, requestIsCurrent);
+      if (!requestIsCurrent()) return null;
+      if (
+        revisionIsOlder(data.profile_revision, latestProfileRevision)
+        || revisionIsOlder(data.workflow_revision, workflowRevision)
+      ) return null;
       if (followUpDialogOpen) captureFollowUpDraft();
       if (Number.isInteger(data.workflow_revision)) workflowRevision = data.workflow_revision;
       syncChatRevision(data.profile_revision);
@@ -3545,16 +3752,16 @@
       if (followUpDialogOpen) renderFollowUpDialog();
       setFollowUpStatus('');
       reportLoadSuccess('follow-ups');
-      return followUpItems();
+      const items = followUpItems();
+      items.profileRevision = data.profile_revision;
+      items.workflowRevision = data.workflow_revision;
+      return items;
     } catch (error) {
-      if (requestPhiEpoch !== phiEpoch || requestLoadEpoch !== followUpLoadEpoch) {
-        if (error?.status === 401 || error?.status === 403) {
-          reportLoadError('follow-ups', error);
-        }
-        return [];
-      }
+      if (!requestIsCurrent()) return null;
       if (shouldEvictClientPhi(error)) {
-        evictClientPhi(error);
+        reportLoadError('follow-ups', error);
+        if (requestIsCurrent()) evictClientPhi(error);
+        return null;
       } else {
         const offline = error instanceof TypeError || navigator.onLine === false;
         clearFollowUpCachedProjection(
@@ -3571,8 +3778,20 @@
         }
       }
       reportLoadError('follow-ups', error);
-      return [];
+      return null;
     }
+  }
+
+  function beginFollowUpMutation(allowPendingCompletion = false) {
+    if (
+      followUpMutationPending
+      || summaryActionMutationOwner !== null
+      || (pendingFollowUpCompletion !== null && !allowPendingCompletion)
+    ) return null;
+    const owner = {};
+    followUpMutationOwner = owner;
+    followUpMutationPending = true;
+    return owner;
   }
 
   function createFollowUpIntent(url, body, options = {}) {
@@ -3583,15 +3802,29 @@
       actionId: options.actionId || null,
       draftKey: options.draftKey || null,
       sourceKind: options.sourceKind || null,
+      mutationOwner: options.mutationOwner || null,
       requestPhiEpoch: phiEpoch,
       requestActionEpoch: followUpSelectionEpoch,
     };
   }
 
-  function followUpIntentCanRender(intent) {
-    return intent.requestPhiEpoch === phiEpoch
+  function followUpIntentCanRender(intent, expectedPhiEpoch = intent.requestPhiEpoch) {
+    return expectedPhiEpoch === phiEpoch
       && intent.requestActionEpoch === followUpSelectionEpoch
       && intent.actionId === selectedFollowUpId;
+  }
+
+  function followUpIntentOwnsMutation(
+    intent,
+    expectedPhiEpoch = (
+      intent.completionPhiEpoch
+      ?? intent.pendingPhiEpoch
+      ?? intent.requestPhiEpoch
+    ),
+  ) {
+    return followUpMutationPending
+      && followUpMutationOwner === intent.mutationOwner
+      && followUpIntentCanRender(intent, expectedPhiEpoch);
   }
 
   async function handleFollowUpConflict(error, intent) {
@@ -3612,29 +3845,72 @@
     return true;
   }
 
-  async function consumeFollowUpResponse(data, intent) {
-    if (!followUpIntentCanRender(intent)) return false;
+  async function consumeFollowUpResponse(data, intent, forceClinicalRefresh = false) {
+    if (!followUpIntentOwnsMutation(intent)) return false;
     const priorProfileRevision = latestProfileRevision;
-    if (Number.isInteger(data.workflow_revision)) workflowRevision = data.workflow_revision;
-    if (data.item?.id) followUpsById.set(data.item.id, data.item);
-    const profileChanged = data.profile_revision != null
-      && priorProfileRevision != null
-      && String(data.profile_revision) !== String(priorProfileRevision);
-    if (data.profile_revision != null) latestProfileRevision = data.profile_revision;
-    if (intent.draftKey) followUpDrafts.delete(intent.draftKey);
-    if (followUpDialogOpen) closeFollowUpDialog(false, true);
-    if (intent.method === 'POST' && data.item?.status === 'open') {
-      setFollowUpFilter('active');
-    }
-    renderFollowUps();
-    renderVisitFollowUps();
-    if (profileChanged) {
-      await refreshClinicalWorkflowState(data.profile_revision);
+    let requiresClinicalRefresh = forceClinicalRefresh
+      || (
+        data.profile_revision != null
+        && (
+          priorProfileRevision == null
+          || String(data.profile_revision) !== String(priorProfileRevision)
+        )
+      );
+    let expectedPhiEpoch = requiresClinicalRefresh ? phiEpoch + 1 : phiEpoch;
+    intent.pendingPhiEpoch = expectedPhiEpoch;
+    let refreshed;
+    if (requiresClinicalRefresh) {
+      refreshed = await refreshClinicalWorkflowState(
+        data.profile_revision,
+        data.workflow_revision,
+      );
     } else {
-      await loadFollowUps();
+      refreshed = await loadFollowUps();
+      if (
+        Array.isArray(refreshed)
+        && followUpIntentOwnsMutation(intent, expectedPhiEpoch)
+        && (
+          (
+            data.profile_revision != null
+            && String(refreshed.profileRevision) !== String(data.profile_revision)
+          )
+          || (
+            data.workflow_revision != null
+            && String(refreshed.workflowRevision) !== String(data.workflow_revision)
+          )
+        )
+      ) {
+        requiresClinicalRefresh = true;
+        expectedPhiEpoch = phiEpoch + 1;
+        intent.pendingPhiEpoch = expectedPhiEpoch;
+        refreshed = await refreshClinicalWorkflowState(
+          refreshed.profileRevision ?? data.profile_revision,
+          refreshed.workflowRevision ?? data.workflow_revision,
+        );
+      }
     }
-    setFollowUpStatus('Saved.', 'success');
-    reportLoadSuccess('follow-up-mutation');
+    if (
+      (
+        requiresClinicalRefresh
+          ? refreshed?.verified !== true
+          : !Array.isArray(refreshed)
+      )
+      || !followUpIntentOwnsMutation(intent, expectedPhiEpoch)
+    ) {
+      if (followUpIntentOwnsMutation(intent, expectedPhiEpoch)) {
+        pendingFollowUpCompletion = {
+          data,
+          intent,
+          requiresClinicalRefresh,
+        };
+        const message =
+          'The current follow-through state could not be verified. Retry the authoritative reload.';
+        setFollowUpStatus(message, 'offline');
+        setFollowUpDialogStatus(message, 'offline');
+      }
+      return false;
+    }
+    intent.completionPhiEpoch = expectedPhiEpoch;
     return true;
   }
 
@@ -3649,10 +3925,49 @@
     if (target && typeof target.focus === 'function') target.focus();
   }
 
+  function releaseFollowUpMutation(intent, restoreFocus = false, viewAlreadyValidated = false) {
+    const stillOwned = followUpMutationPending
+      && followUpMutationOwner === intent.mutationOwner;
+    const viewIsCurrent = viewAlreadyValidated || followUpIntentOwnsMutation(intent);
+    if (!stillOwned) return false;
+    followUpMutationPending = false;
+    setFollowUpMutationBusy(false);
+    refreshGeneratedActionControls();
+    updateFollowUpFormValidity();
+    if (restoreFocus && viewIsCurrent) restoreFollowUpMutationFocus(intent);
+    followUpMutationOwner = null;
+    if (pendingFollowUpCompletion) {
+      setFollowUpMutationBusy(true);
+    }
+    return true;
+  }
+
+  function finalizeFollowUpSuccess(data, intent) {
+    if (!followUpIntentOwnsMutation(intent)) return false;
+    if (intent.draftKey) followUpDrafts.delete(intent.draftKey);
+    pendingFollowUpCompletion = null;
+    clearFollowUpRetry();
+    const closedDialog = followUpDialogOpen;
+    if (closedDialog) closeFollowUpDialog(false, true, false);
+    if (intent.method === 'POST' && data.item?.status === 'open') {
+      followUpFilter = 'active';
+      for (const filterName of ['active', 'completed', 'cancelled', 'all']) {
+        const selected = filterName === followUpFilter;
+        const button = document.getElementById(`follow-up-filter-${filterName}`);
+        button?.classList.toggle('active', selected);
+        button?.setAttribute('aria-selected', String(selected));
+        if (button) button.tabIndex = selected ? 0 : -1;
+      }
+      renderFollowUps();
+    }
+    setFollowUpStatus('Saved.', 'success');
+    reportLoadSuccess('follow-up-mutation');
+    releaseFollowUpMutation(intent, true, true);
+    return true;
+  }
+
   async function performFollowUpIntent(intent, explicitRetry = false) {
-    if (followUpMutationPending) return null;
-    followUpMutationPending = true;
-    let consumedSuccessfully = false;
+    if (!followUpIntentOwnsMutation(intent, intent.requestPhiEpoch)) return null;
     setFollowUpMutationBusy(true);
     if (!explicitRetry) clearFollowUpRetry();
     setFollowUpStatus(explicitRetry ? 'Retrying the unchanged request…' : 'Saving…', 'saving');
@@ -3663,25 +3978,25 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(intent.body),
       });
-      const data = await readJsonResponse(response);
+      if (!followUpIntentOwnsMutation(intent, intent.requestPhiEpoch)) return null;
+      const data = await readJsonResponse(
+        response,
+        () => followUpIntentOwnsMutation(intent, intent.requestPhiEpoch),
+      );
+      if (!followUpIntentOwnsMutation(intent, intent.requestPhiEpoch)) return null;
       const consumed = await consumeFollowUpResponse(data, intent);
-      if (!consumed) return null;
-      consumedSuccessfully = true;
-      clearFollowUpRetry();
+      if (!consumed || !followUpIntentOwnsMutation(intent)) return null;
+      if (!finalizeFollowUpSuccess(data, intent)) return null;
       return data;
     } catch (error) {
-      if (intent.requestPhiEpoch !== phiEpoch) {
-        if (error?.status === 401 || error?.status === 403) {
-          reportLoadError('follow-up-mutation', error);
+      if (!followUpIntentOwnsMutation(intent, intent.requestPhiEpoch)) return null;
+      if (shouldEvictClientPhi(error)) {
+        reportLoadError('follow-up-mutation', error);
+        if (followUpIntentOwnsMutation(intent, intent.requestPhiEpoch)) {
+          evictClientPhi(error);
         }
         return null;
       }
-      if (shouldEvictClientPhi(error)) {
-        evictClientPhi(error);
-        reportLoadError('follow-up-mutation', error);
-        return null;
-      }
-      if (!followUpIntentCanRender(intent)) return null;
       if (error?.status === 409) {
         await handleFollowUpConflict(error, intent);
         return null;
@@ -3713,23 +4028,43 @@
       reportLoadError('follow-up-mutation', error);
       return null;
     } finally {
-      followUpMutationPending = false;
-      if (consumedSuccessfully || intent.requestPhiEpoch === phiEpoch) {
-        setFollowUpMutationBusy(false);
-        updateFollowUpFormValidity();
-      }
-      if (consumedSuccessfully) restoreFollowUpMutationFocus(intent);
+      releaseFollowUpMutation(intent);
     }
   }
 
   async function submitFollowUpMutation(url, body, options = {}) {
+    const mutationOwner = beginFollowUpMutation();
+    if (!mutationOwner) return null;
     selectedFollowUpId = options.actionId || null;
     followUpSelectionEpoch += 1;
-    const intent = createFollowUpIntent(url, body, options);
+    const intent = createFollowUpIntent(url, body, { ...options, mutationOwner });
     return performFollowUpIntent(intent);
   }
 
   async function retryFollowUpIntent() {
+    if (pendingFollowUpCompletion) {
+      const completion = pendingFollowUpCompletion;
+      const mutationOwner = beginFollowUpMutation(true);
+      if (!mutationOwner) return;
+      completion.intent.mutationOwner = mutationOwner;
+      completion.intent.pendingPhiEpoch = phiEpoch;
+      delete completion.intent.completionPhiEpoch;
+      setFollowUpMutationBusy(true);
+      setFollowUpStatus('Retrying the authoritative reload…', 'saving');
+      setFollowUpDialogStatus('Retrying the authoritative reload…', 'saving');
+      try {
+        const consumed = await consumeFollowUpResponse(
+          completion.data,
+          completion.intent,
+          completion.requiresClinicalRefresh,
+        );
+        if (!consumed || !followUpIntentOwnsMutation(completion.intent)) return;
+        finalizeFollowUpSuccess(completion.data, completion.intent);
+      } finally {
+        releaseFollowUpMutation(completion.intent);
+      }
+      return;
+    }
     const intent = pendingFollowUpIntent;
     if (!intent) return;
     if (!followUpIntentCanRender(intent)) {
@@ -3740,10 +4075,14 @@
       );
       return;
     }
+    const mutationOwner = beginFollowUpMutation();
+    if (!mutationOwner) return;
+    intent.mutationOwner = mutationOwner;
     await performFollowUpIntent(intent, true);
   }
 
   async function createManualFollowUp() {
+    if (followUpControlsLocked()) return;
     const text = (document.getElementById('follow-up-create-text')?.value || '').trim();
     if (!text) {
       setFormError('follow-up-create-error', 'Enter a caregiver follow-up.');
@@ -3771,6 +4110,7 @@
   }
 
   async function saveFollowUpDetails() {
+    if (followUpControlsLocked()) return;
     const action = selectedFollowUpId ? followUpsById.get(selectedFollowUpId) : null;
     if (!action) return;
     const owner = (document.getElementById('follow-up-edit-owner')?.value || '').trim() || null;
@@ -3788,6 +4128,7 @@
   }
 
   async function submitFollowUpOutcome() {
+    if (followUpControlsLocked()) return;
     const action = selectedFollowUpId ? followUpsById.get(selectedFollowUpId) : null;
     const kind = document.getElementById('follow-up-outcome-kind')?.value;
     const text = (document.getElementById('follow-up-outcome-text')?.value || '').trim();
@@ -3815,6 +4156,7 @@
   }
 
   async function changeFollowUpStatus(row, status) {
+    if (followUpControlsLocked()) return;
     const actionId = row?.dataset.followUpId;
     const token = row?.dataset.followUpToken;
     const action = actionId ? followUpsById.get(actionId) : null;
@@ -4124,6 +4466,7 @@
   }
 
   function openAppointmentWorkspace(trigger, visitId) {
+    if (followUpControlsLocked()) return;
     const visit = visitsById.get(visitId);
     if (!visit) {
       setAppointmentMessage('The visit is no longer available.', 'conflict');
@@ -4775,36 +5118,38 @@
     const requestProfileRevision = latestProfileRevision == null
       ? null
       : String(latestProfileRevision);
+    const requestIsCurrent = () => (
+      requestPhiEpoch === phiEpoch
+      && requestQuestionEpoch === questionLoadEpoch
+      && (
+        requestProfileRevision == null
+        || String(latestProfileRevision) === requestProfileRevision
+      )
+    );
     try {
       const r = await fetch('/api/questions');
-      const qs = await readJsonResponse(r);
-      if (
-        requestPhiEpoch !== phiEpoch
-        || requestQuestionEpoch !== questionLoadEpoch
-        || (
-          requestProfileRevision != null
-          && String(latestProfileRevision) !== requestProfileRevision
-        )
-      ) return [];
+      if (!requestIsCurrent()) return null;
+      const qs = await readJsonResponse(r, requestIsCurrent);
+      if (!requestIsCurrent()) return null;
       const projection = projectQuestionChoices(qs);
       appointmentQuestionSources = projection.items;
       generatedQuestionsUnavailable = projection.unavailable;
+      appointmentQuestionSources.profileRevision = requestProfileRevision;
       renderQuestions(appointmentQuestionSources);
       renderVisitSourceQuestions();
       reportLoadSuccess('questions');
       return appointmentQuestionSources;
     } catch(e) {
-      if (
-        requestPhiEpoch !== phiEpoch
-        || requestQuestionEpoch !== questionLoadEpoch
-      ) return [];
-      if (requestPhiEpoch === phiEpoch && shouldEvictClientPhi(e)) {
-        evictClientPhi(e);
-      } else if (requestPhiEpoch === phiEpoch) {
+      if (!requestIsCurrent()) return null;
+      if (shouldEvictClientPhi(e)) {
+        reportLoadError('questions', e);
+        if (requestIsCurrent()) evictClientPhi(e);
+        return null;
+      } else {
         redactGeneratedQuestionChoices();
       }
       reportLoadError('questions', e);
-      return [];
+      return null;
     }
   }
 

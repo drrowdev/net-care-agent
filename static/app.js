@@ -18,6 +18,8 @@
   let phiEpoch = 0;
   let summaryLoadEpoch = 0;
   let workflowRevision = null;
+  let clinicalConvergenceRevision = null;
+  let clinicalConvergenceRunning = false;
   let visitsById = new Map();
   let appointmentOptions = [];
   let appointmentQuestionSources = [];
@@ -82,6 +84,175 @@
     return `mutation-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   }
 
+  function normalizedRevision(value) {
+    if (value == null) return null;
+    const revision = typeof value === 'number' ? value : Number(value);
+    return Number.isSafeInteger(revision) && revision >= 0 ? revision : NaN;
+  }
+
+  function capturePatientRequest(options = {}) {
+    const request = { requestPhiEpoch: phiEpoch };
+    if (options.taskSelection) {
+      request.requestTaskEpoch = taskSelectionEpoch;
+      request.requestTaskId = selectedTaskId;
+    }
+    if (options.visitSelection) {
+      request.requestVisitEpoch = visitSelectionEpoch;
+      request.requestVisitId = selectedVisitId;
+    }
+    if (options.followUpSelection) {
+      request.requestActionEpoch = followUpSelectionEpoch;
+      request.requestActionId = selectedFollowUpId;
+    }
+    return request;
+  }
+
+  function patientRequestIsCurrent(request) {
+    if (!request || request.requestPhiEpoch !== phiEpoch) return false;
+    if (
+      request.requestTaskEpoch != null
+      && (
+        request.requestTaskEpoch !== taskSelectionEpoch
+        || request.requestTaskId !== selectedTaskId
+      )
+    ) return false;
+    if (
+      request.requestVisitEpoch != null
+      && (
+        request.requestVisitEpoch !== visitSelectionEpoch
+        || (
+          ('requestVisitId' in request || 'visitId' in request)
+          && (request.requestVisitId ?? request.visitId ?? null) !== selectedVisitId
+        )
+      )
+    ) return false;
+    if (
+      request.requestActionEpoch != null
+      && (
+        request.requestActionEpoch !== followUpSelectionEpoch
+        || (
+          ('requestActionId' in request || 'actionId' in request)
+          && (request.requestActionId ?? request.actionId ?? null) !== selectedFollowUpId
+        )
+      )
+    ) return false;
+    return true;
+  }
+
+  function requestClinicalConvergence(profileRevision) {
+    const revision = normalizedRevision(profileRevision);
+    if (!Number.isSafeInteger(revision)) return;
+    if (
+      clinicalConvergenceRevision == null
+      || revision > clinicalConvergenceRevision
+    ) {
+      clinicalConvergenceRevision = revision;
+    }
+    if (clinicalConvergenceRunning) return;
+    clinicalConvergenceRunning = true;
+    Promise.resolve().then(async () => {
+      while (clinicalConvergenceRevision != null) {
+        const targetRevision = clinicalConvergenceRevision;
+        clinicalConvergenceRevision = null;
+        await refreshClinicalWorkflowState(targetRevision);
+      }
+    }).catch(error => {
+      reportLoadError('clinical-convergence', error);
+    }).finally(() => {
+      clinicalConvergenceRunning = false;
+      if (clinicalConvergenceRevision != null) {
+        requestClinicalConvergence(clinicalConvergenceRevision);
+      }
+    });
+  }
+
+  function advancePatientAuthority(profileRevision) {
+    const revision = normalizedRevision(profileRevision);
+    const current = normalizedRevision(latestProfileRevision);
+    if (
+      !Number.isSafeInteger(revision)
+      || (Number.isSafeInteger(current) && revision <= current)
+    ) return false;
+    phiEpoch += 1;
+    taskSelectionEpoch += 1;
+    syncChatRevision(revision, true, false);
+    requestClinicalConvergence(revision);
+    return true;
+  }
+
+  function authorizePatientResponse(request, data, options = {}) {
+    if (!patientRequestIsCurrent(request)) {
+      return { accepted: false, profileAdvanced: false };
+    }
+    const hasProfileRevision = data != null
+      && !Array.isArray(data)
+      && Object.prototype.hasOwnProperty.call(data, 'profile_revision');
+    const responseProfileRevision = hasProfileRevision
+      ? normalizedRevision(data.profile_revision)
+      : null;
+    if (hasProfileRevision && !Number.isSafeInteger(responseProfileRevision)) {
+      return { accepted: false, profileAdvanced: false };
+    }
+    const currentProfileRevision = normalizedRevision(latestProfileRevision);
+    if (
+      Number.isSafeInteger(responseProfileRevision)
+      && Number.isSafeInteger(currentProfileRevision)
+      && responseProfileRevision < currentProfileRevision
+    ) {
+      return { accepted: false, profileAdvanced: false };
+    }
+
+    const hasWorkflowRevision = data != null
+      && !Array.isArray(data)
+      && Object.prototype.hasOwnProperty.call(data, 'workflow_revision');
+    const responseWorkflowRevision = hasWorkflowRevision
+      ? normalizedRevision(data.workflow_revision)
+      : null;
+    if (hasWorkflowRevision && !Number.isSafeInteger(responseWorkflowRevision)) {
+      return { accepted: false, profileAdvanced: false };
+    }
+    const currentWorkflowRevision = normalizedRevision(workflowRevision);
+    const strictWorkflowProjection = options.workflow === 'projection';
+    const staleWorkflowProjection = strictWorkflowProjection
+      && Number.isSafeInteger(currentWorkflowRevision)
+      && (
+        !Number.isSafeInteger(responseWorkflowRevision)
+        || responseWorkflowRevision < currentWorkflowRevision
+      );
+
+    const profileAdvanced = Number.isSafeInteger(responseProfileRevision)
+      && (
+        !Number.isSafeInteger(currentProfileRevision)
+        || responseProfileRevision > currentProfileRevision
+      );
+    if (profileAdvanced) {
+      advancePatientAuthority(responseProfileRevision);
+    }
+    if (staleWorkflowProjection) {
+      if (profileAdvanced) requestClinicalConvergence(responseProfileRevision);
+      return { accepted: false, profileAdvanced };
+    }
+    const workflowAdvanced = Number.isSafeInteger(responseWorkflowRevision)
+      && (
+        !Number.isSafeInteger(currentWorkflowRevision)
+        || responseWorkflowRevision > currentWorkflowRevision
+      );
+    if (workflowAdvanced) {
+      workflowRevision = responseWorkflowRevision;
+      if (!profileAdvanced && Number.isSafeInteger(currentProfileRevision)) {
+        requestClinicalConvergence(currentProfileRevision);
+      }
+    }
+    return {
+      accepted: true,
+      profileAdvanced,
+      workflowAdvanced,
+      requestPhiEpoch: phiEpoch,
+      profileRevision: responseProfileRevision,
+      workflowRevision: responseWorkflowRevision,
+    };
+  }
+
   function setAppointmentMessage(message, tone = '') {
     const status = document.getElementById('appointment-status-message');
     if (!status) return;
@@ -132,6 +303,7 @@
       visitId: visitId || null,
       requestPhiEpoch: phiEpoch,
       requestVisitEpoch: visitSelectionEpoch,
+      requestVisitId: selectedVisitId,
     };
   }
 
@@ -144,10 +316,7 @@
   async function refreshClinicalWorkflowState(profileRevision) {
     redactGeneratedQuestionChoices();
     redactGeneratedSummaryActions();
-    phiEpoch += 1;
     const refreshPhiEpoch = phiEpoch;
-    taskSelectionEpoch += 1;
-    syncChatRevision(profileRevision, true, false);
     await Promise.allSettled([
       loadStatus(),
       loadSummary(),
@@ -165,11 +334,11 @@
 
   async function consumeWorkflowResponse(data, intent) {
     if (!workflowIntentCanRender(intent)) return false;
+    const authority = authorizePatientResponse(intent, data, { workflow: 'targeted' });
+    if (!authority.accepted) return false;
     const responseVisitEpoch = visitSelectionEpoch;
     const responseVisitId = selectedVisitId;
     if (appointmentDialogOpen) captureAppointmentDraft();
-    const priorProfileRevision = latestProfileRevision;
-    if (Number.isInteger(data.workflow_revision)) workflowRevision = data.workflow_revision;
     if (data.visit?.id) {
       visitsById.set(data.visit.id, data.visit);
       revalidateDecisionSuccessorState(data.visit);
@@ -179,24 +348,17 @@
       followUpsById.set(data.item.id, data.item);
     }
 
-    const profileChanged = data.profile_revision != null
-      && priorProfileRevision != null
-      && String(data.profile_revision) !== String(priorProfileRevision);
-    if (data.profile_revision != null) latestProfileRevision = data.profile_revision;
-
-    const renderedResponseVisit = Boolean(data.visit?.id && workflowIntentCanRender(intent));
+    const renderedResponseVisit = Boolean(data.visit?.id);
     if (renderedResponseVisit) {
       renderVisitPreparation();
       renderAppointmentWorkspace();
     }
-    if (profileChanged) {
-      const refreshed = await refreshClinicalWorkflowState(data.profile_revision);
-      return refreshed
-        && responseVisitEpoch === visitSelectionEpoch
+    if (authority.profileAdvanced) {
+      return responseVisitEpoch === visitSelectionEpoch
         && responseVisitId === selectedVisitId;
     }
 
-    if (workflowIntentCanRender(intent) && !renderedResponseVisit) {
+    if (!renderedResponseVisit) {
       renderVisitPreparation();
       renderAppointmentWorkspace();
     }
@@ -227,6 +389,7 @@
   async function performWorkflowIntent(intent, explicitRetry = false) {
     if (workflowMutationPending) return null;
     workflowMutationPending = true;
+    let consumedSuccessfully = false;
     setAppointmentMutationBusy(true);
     if (!explicitRetry) clearWorkflowRetry();
     setAppointmentMessage(explicitRetry ? 'Retrying the unchanged request…' : 'Saving…', 'saving');
@@ -239,6 +402,7 @@
       const data = await readJsonResponse(response);
       const consumed = await consumeWorkflowResponse(data, intent);
       if (!consumed) return null;
+      consumedSuccessfully = true;
       clearWorkflowRetry();
       if (workflowIntentCanRender(intent)) setAppointmentMessage('Saved.', 'success');
       return data;
@@ -276,8 +440,9 @@
       reportLoadError('appointment-workflow', error);
       return null;
     } finally {
+      const ownsCleanup = consumedSuccessfully || workflowIntentCanRender(intent);
       workflowMutationPending = false;
-      if (intent.requestPhiEpoch === phiEpoch || appointmentDialogOpen) {
+      if (ownsCleanup) {
         setAppointmentMutationBusy(false);
         updateAppointmentFormValidity();
       }
@@ -669,18 +834,19 @@
 
   // ── Status sidebar ──────────────────────────────────────────────────────
   async function loadStatus() {
-    const requestPhiEpoch = phiEpoch;
+    const request = capturePatientRequest();
     try {
       const r = await fetch('/api/status');
       const d = await readJsonResponse(r);
-      if (requestPhiEpoch !== phiEpoch) return null;
-      const revisionChanged = syncChatRevision(d.profile_revision);
+      const authority = authorizePatientResponse(request, d);
+      if (!authority.accepted) return null;
       renderSidebar(d);
-      if (revisionChanged && selectedTaskId) loadTasks();
       reportLoadSuccess('status');
       return d;
     } catch(e) {
-      if (requestPhiEpoch === phiEpoch && shouldEvictClientPhi(e)) evictClientPhi(e);
+      if (!patientRequestIsCurrent(request)) return null;
+      if (shouldEvictClientPhi(e)) evictClientPhi(e);
+      if (!patientRequestIsCurrent(request)) return null;
       renderStatusFailure();
       reportLoadError('status', e);
       return null;
@@ -694,7 +860,6 @@
     const biomarkers = document.getElementById('bm-list');
     const alerts = document.getElementById('alerts-list');
     const search = document.getElementById('bm-search');
-    latestProfileRevision = null;
     redactGeneratedQuestionChoices();
     latestResearchUpdate = null;
     allBiomarkers = [];
@@ -724,6 +889,7 @@
     patientEvidence = null;
     allBiomarkers = [];
     workflowRevision = null;
+    clinicalConvergenceRevision = null;
     visitsById = new Map();
     appointmentOptions = [];
     appointmentQuestionSources = [];
@@ -1190,6 +1356,7 @@
     const alertId = row?.dataset.alertId;
     const expectedToken = row?.dataset.resolveToken;
     if (!alertId || !expectedToken || latestProfileRevision == null) return;
+    const request = capturePatientRequest();
     try {
       const result = await readJsonResponse(await fetch(`/api/alerts/${encodeURIComponent(alertId)}/resolve`, {
         method: 'POST',
@@ -1199,9 +1366,10 @@
           expected_profile_revision: latestProfileRevision,
         }),
       }));
-      syncChatRevision(result.profile_revision, true);
+      if (!authorizePatientResponse(request, result).accepted) return;
       await loadStatus();
     } catch (error) {
+      if (!patientRequestIsCurrent(request)) return;
       reportLoadError('action', error);
     }
   }
@@ -1210,18 +1378,18 @@
   let summaryOpen = true;
 
   async function loadPatientEvidence() {
-    const requestPhiEpoch = phiEpoch;
+    const request = capturePatientRequest();
     try {
       const evidence = await readJsonResponse(await fetch('/api/patient/evidence'));
-      if (requestPhiEpoch !== phiEpoch) return null;
+      if (!authorizePatientResponse(request, evidence).accepted) return null;
       patientEvidence = evidence;
       renderPatientEvidence();
       reportLoadSuccess('patient-evidence');
       return patientEvidence;
     } catch (error) {
-      if (requestPhiEpoch === phiEpoch && shouldEvictClientPhi(error)) {
-        evictClientPhi(error);
-      }
+      if (!patientRequestIsCurrent(request)) return null;
+      if (shouldEvictClientPhi(error)) evictClientPhi(error);
+      if (!patientRequestIsCurrent(request)) return null;
       patientEvidence = null;
       document.getElementById('imaging-history').innerHTML = loadFailureMarkup('Imaging history', 'loadPatientEvidence()');
       document.getElementById('source-history').innerHTML = loadFailureMarkup('Source history', 'loadPatientEvidence()');
@@ -1331,8 +1499,9 @@
     const treatmentId = button?.dataset.treatmentId;
     const expectedToken = button?.dataset.editToken;
     if (!treatmentId || !expectedToken || latestProfileRevision == null) return;
+    const request = capturePatientRequest();
     try {
-      await readJsonResponse(await fetch(`/api/treatments/${encodeURIComponent(treatmentId)}`, {
+      const result = await readJsonResponse(await fetch(`/api/treatments/${encodeURIComponent(treatmentId)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1341,24 +1510,33 @@
           expected_profile_revision: latestProfileRevision,
         }),
       }));
+      if (!authorizePatientResponse(request, result).accepted) return;
       await loadStatus();
     } catch (error) {
+      if (!patientRequestIsCurrent(request)) return;
       reportLoadError('action', error);
     }
   }
 
   async function generateSummary() {
+    const request = capturePatientRequest();
     const btn = document.getElementById('btn-gen-summary');
     if (btn) { btn.disabled = true; btn.textContent = '⊙ Generating…'; }
     try {
       const r = await fetch('/api/summary/generate', { method: 'POST' });
       const submitted = await readJobSubmission(r);
-      await waitForJob(submitted.job_id);
+      if (!authorizePatientResponse(request, submitted).accepted) return;
+      const completed = await waitForJob(submitted.job_id);
+      if (!authorizePatientResponse(request, completed).accepted) return;
       await Promise.all([loadSummary(), loadStatus()]);
     } catch(e) {
+      if (!patientRequestIsCurrent(request)) return;
       reportLoadError('summary', e);
     } finally {
-      if (btn) { btn.disabled = false; btn.textContent = '↻ Refresh assessment'; }
+      if (patientRequestIsCurrent(request) && btn) {
+        btn.disabled = false;
+        btn.textContent = '↻ Refresh assessment';
+      }
     }
   }
 
@@ -1440,15 +1618,20 @@
 
   // ── Clinical Judgments ───────────────────────────────────────────────────
   async function loadJudgments() {
-    const requestPhiEpoch = phiEpoch;
+    const request = capturePatientRequest();
     try {
       const r = await fetch('/api/judgments');
       const js = await readJsonResponse(r);
-      if (requestPhiEpoch !== phiEpoch) return [];
+      if (!authorizePatientResponse(request, js).accepted) return [];
       renderJudgments(js);
       reportLoadSuccess('judgments');
       return js;
     } catch(e) {
+      if (!patientRequestIsCurrent(request)) return [];
+      if (shouldEvictClientPhi(e)) {
+        evictClientPhi(e);
+        return [];
+      }
       document.getElementById('judgments-list').innerHTML = loadFailureMarkup('Clinical notes', 'loadJudgments()');
       reportLoadError('judgments', e);
       return [];
@@ -1582,15 +1765,20 @@
 
   // ── Symptoms ─────────────────────────────────────────────────────────────
   async function loadSymptoms() {
-    const requestPhiEpoch = phiEpoch;
+    const request = capturePatientRequest();
     try {
       const r = await fetch('/api/symptoms');
       const list = await readJsonResponse(r);
-      if (requestPhiEpoch !== phiEpoch) return [];
+      if (!authorizePatientResponse(request, list).accepted) return [];
       renderSymptoms(list);
       reportLoadSuccess('symptoms');
       return list;
     } catch (e) {
+      if (!patientRequestIsCurrent(request)) return [];
+      if (shouldEvictClientPhi(e)) {
+        evictClientPhi(e);
+        return [];
+      }
       document.getElementById('symptoms-list').innerHTML = loadFailureMarkup('Symptoms', 'loadSymptoms()');
       reportLoadError('symptoms', e);
       return [];
@@ -1668,16 +1856,18 @@
   }
 
   async function loadSummary() {
-    const requestPhiEpoch = phiEpoch;
+    const request = capturePatientRequest();
     const requestSummaryEpoch = ++summaryLoadEpoch;
     try {
       const r = await fetch('/api/summary');
       const d = await readJsonResponse(r);
-      if (requestPhiEpoch !== phiEpoch || requestSummaryEpoch !== summaryLoadEpoch) return null;
+      if (requestSummaryEpoch !== summaryLoadEpoch) return null;
+      const authority = authorizePatientResponse(request, d);
+      if (!authority.accepted) return null;
       if (
         latestProfileRevision != null
         && d.profile_revision != null
-        && String(d.profile_revision) !== String(latestProfileRevision)
+        && normalizedRevision(d.profile_revision) < normalizedRevision(latestProfileRevision)
       ) {
         redactGeneratedSummaryActions();
         pendingSummary = null;
@@ -1713,15 +1903,12 @@
       reportLoadSuccess('summary');
       return d;
     } catch(e) {
-      if (requestPhiEpoch !== phiEpoch || requestSummaryEpoch !== summaryLoadEpoch) {
-        reportLoadError('summary', e);
-        return null;
-      }
+      if (!patientRequestIsCurrent(request) || requestSummaryEpoch !== summaryLoadEpoch) return null;
       if (shouldEvictClientPhi(e)) {
         evictClientPhi(e);
-        reportLoadError('summary', e);
         return null;
       }
+      if (!patientRequestIsCurrent(request)) return null;
       document.getElementById('summary-body').innerHTML = loadFailureMarkup('Assessment', 'loadSummary()');
       renderFreshness(null, e);
       reportLoadError('summary', e);
@@ -2140,11 +2327,11 @@
 
   // ── Task log ────────────────────────────────────────────────────────────
   async function loadTasks() {
-    const requestPhiEpoch = phiEpoch;
+    const request = capturePatientRequest();
     try {
       const r = await fetch('/api/jobs');
       const tasks = await readJsonResponse(r);
-      if (requestPhiEpoch !== phiEpoch) return [];
+      if (!authorizePatientResponse(request, tasks).accepted) return [];
       if (tasks.some(t => t.status === 'running' || t.status === 'queued')) {
         hadActiveJobs = true;
       }
@@ -2154,7 +2341,9 @@
       reportLoadSuccess('tasks');
       return tasks;
     } catch(e) {
-      if (requestPhiEpoch === phiEpoch && shouldEvictClientPhi(e)) evictClientPhi(e);
+      if (!patientRequestIsCurrent(request)) return [];
+      if (shouldEvictClientPhi(e)) evictClientPhi(e);
+      if (!patientRequestIsCurrent(request)) return [];
       document.getElementById('task-list').innerHTML = loadFailureMarkup('Processing activity', 'loadTasks()');
       document.getElementById('log-count').textContent = 'Unavailable';
       updateHeaderStatus(null, e);
@@ -2288,7 +2477,7 @@
   }
 
   function closePanel() {
-    const requestPhiEpoch = phiEpoch;
+    const request = capturePatientRequest();
     const report = document.getElementById('report-panel');
     report.classList.add('collapsed');
     report.setAttribute('aria-hidden', 'true');
@@ -2299,9 +2488,11 @@
     fetch('/api/jobs')
       .then(readJsonResponse)
       .then(tasks => {
-        if (requestPhiEpoch === phiEpoch) renderTasks(tasks);
+        if (authorizePatientResponse(request, tasks).accepted) renderTasks(tasks);
       })
-      .catch(error => reportLoadError('tasks', error));
+      .catch(error => {
+        if (patientRequestIsCurrent(request)) reportLoadError('tasks', error);
+      });
     deactivateDialog(report);
   }
 
@@ -2478,6 +2669,7 @@
     const originJobId = currentReceipt.job_id;
     const originReceiptRevision = currentReceipt.receipt_revision;
     const originSelectionEpoch = taskSelectionEpoch;
+    const request = capturePatientRequest({ taskSelection: true });
     receiptMutationPending = true;
     document.querySelectorAll('.receipt-card button').forEach(button => {
       button.dataset.pendingWasDisabled = String(button.disabled);
@@ -2501,6 +2693,7 @@
       } catch (_) {
         throw new Error(`The server returned an invalid response (${response.status}).`);
       }
+      if (!authorizePatientResponse(request, data).accepted) return;
       if (!response.ok) {
         if (response.status === 401 || response.status === 403) {
           const authError = new Error(data.error || 'Authorization failed.');
@@ -2522,8 +2715,9 @@
         await selectTask(originJobId, originSelectionEpoch, data.receipt);
       }
       await Promise.allSettled([loadStatus(), loadSummary(), loadPatientEvidence()]);
-      reportLoadSuccess('action');
+      if (patientRequestIsCurrent(request)) reportLoadSuccess('action');
     } catch (error) {
+      if (!patientRequestIsCurrent(request)) return;
       if (taskSelectionEpoch === originSelectionEpoch && selectedTaskId === originJobId && currentReceipt?.job_id === originJobId) {
         const target = document.getElementById('receipt-error');
         if (target) target.textContent = error.message || 'The receipt could not be updated.';
@@ -2531,7 +2725,11 @@
       reportLoadError('action', error);
     } finally {
       receiptMutationPending = false;
-      if (taskSelectionEpoch === originSelectionEpoch && selectedTaskId === originJobId) {
+      if (
+        patientRequestIsCurrent(request)
+        && taskSelectionEpoch === originSelectionEpoch
+        && selectedTaskId === originJobId
+      ) {
         document.querySelectorAll('.receipt-card button[data-pending-was-disabled]').forEach(button => {
           button.disabled = button.dataset.pendingWasDisabled === 'true';
           delete button.dataset.pendingWasDisabled;
@@ -2553,6 +2751,7 @@
     const selectionEpoch = expectedEpoch == null ? ++taskSelectionEpoch : expectedEpoch;
     if (selectionEpoch !== taskSelectionEpoch) return;
     selectedTaskId = id;
+    const request = capturePatientRequest({ taskSelection: true });
     currentReceipt = fallbackReceipt;
     currentReportText = '';
     const loadingPanel = document.getElementById('panel-body');
@@ -2572,14 +2771,14 @@
     let tasks;
     try {
       const r = await fetch('/api/jobs');
-      if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return false;
       tasks = await readJsonResponse(r);
-      if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return false;
+      if (!authorizePatientResponse(request, tasks).accepted) return false;
     } catch (error) {
-      if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return false;
+      if (!patientRequestIsCurrent(request)) return false;
       if (shouldEvictClientPhi(error) && !fallbackReceipt) {
         evictClientPhi(error);
       }
+      if (!patientRequestIsCurrent(request)) return false;
       document.getElementById('panel-body').innerHTML = fallbackReceipt
         ? receiptRefreshFailureMarkup(fallbackReceipt, id, error.message)
         : loadFailureMarkup('Activity detail', 'loadTasks()');
@@ -2598,11 +2797,10 @@
     if (task.status === 'done' || task.status === 'error' || task.status === 'interrupted') {
       try {
         const detailResponse = await fetch(`/api/jobs/${encodeURIComponent(id)}`);
-        if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return;
         task = await readJsonResponse(detailResponse);
-        if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return;
+        if (!authorizePatientResponse(request, task).accepted) return false;
       } catch (error) {
-        if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return false;
+        if (!patientRequestIsCurrent(request)) return false;
         if (fallbackReceipt) {
           document.getElementById('panel-body').innerHTML = receiptRefreshFailureMarkup(
             fallbackReceipt, id, error.message
@@ -2625,12 +2823,11 @@
     if (task.receipt_url) {
       try {
         const receiptResponse = await fetch(task.receipt_url);
-        if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return;
         const receipt = await readJsonResponse(receiptResponse);
-        if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return;
+        if (!authorizePatientResponse(request, receipt).accepted) return false;
         receiptHtml = renderReceipt(receipt);
       } catch (error) {
-        if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return false;
+        if (!patientRequestIsCurrent(request)) return false;
         if (error?.status === 401 || error?.status === 403) {
           evictClientPhi(error);
           reportLoadError('tasks', error);
@@ -2641,7 +2838,7 @@
           : `<div class="receipt-error visible">The import receipt could not be loaded. ${escHtml(error.message)}</div>`;
       }
     }
-    if (selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id) return;
+    if (!patientRequestIsCurrent(request)) return false;
 
     if (task.status === 'running' || task.status === 'queued') {
       panel.innerHTML = `
@@ -3057,13 +3254,12 @@
   }
 
   async function loadVisits() {
-    const requestPhiEpoch = phiEpoch;
+    const request = capturePatientRequest();
     try {
       const data = await readJsonResponse(await fetch('/api/visits'));
-      if (requestPhiEpoch !== phiEpoch) return [];
+      const authority = authorizePatientResponse(request, data, { workflow: 'projection' });
+      if (!authority.accepted) return [];
       if (appointmentDialogOpen) captureAppointmentDraft();
-      workflowRevision = data.workflow_revision;
-      syncChatRevision(data.profile_revision);
       visitsById = new Map((data.items || []).map(item => [item.id, item]));
       decisionSuccessorConflicts = new Set();
       appointmentOptions = Array.isArray(data.appointments) ? data.appointments : [];
@@ -3078,13 +3274,14 @@
       reportLoadSuccess('visits');
       return data.items || [];
     } catch (error) {
-      if (requestPhiEpoch === phiEpoch && shouldEvictClientPhi(error)) {
+      if (!patientRequestIsCurrent(request)) return [];
+      if (shouldEvictClientPhi(error)) {
         evictClientPhi(error);
-      } else if (requestPhiEpoch === phiEpoch) {
+      } else if (patientRequestIsCurrent(request)) {
         const list = document.getElementById('visit-list');
         if (list) list.innerHTML = loadFailureMarkup('Appointments', 'loadVisits()');
       }
-      reportLoadError('visits', error);
+      if (patientRequestIsCurrent(request)) reportLoadError('visits', error);
       return [];
     }
   }
@@ -3527,14 +3724,14 @@
   }
 
   async function loadFollowUps() {
-    const requestPhiEpoch = phiEpoch;
+    const request = capturePatientRequest();
     const requestLoadEpoch = ++followUpLoadEpoch;
     try {
       const data = await readJsonResponse(await fetch('/api/follow-ups'));
-      if (requestPhiEpoch !== phiEpoch || requestLoadEpoch !== followUpLoadEpoch) return [];
+      if (requestLoadEpoch !== followUpLoadEpoch) return [];
+      const authority = authorizePatientResponse(request, data, { workflow: 'projection' });
+      if (!authority.accepted) return [];
       if (followUpDialogOpen) captureFollowUpDraft();
-      if (Number.isInteger(data.workflow_revision)) workflowRevision = data.workflow_revision;
-      syncChatRevision(data.profile_revision);
       followUpsById = new Map(
         (Array.isArray(data.items) ? data.items : [])
           .filter(item => item && typeof item.id === 'string')
@@ -3547,12 +3744,7 @@
       reportLoadSuccess('follow-ups');
       return followUpItems();
     } catch (error) {
-      if (requestPhiEpoch !== phiEpoch || requestLoadEpoch !== followUpLoadEpoch) {
-        if (error?.status === 401 || error?.status === 403) {
-          reportLoadError('follow-ups', error);
-        }
-        return [];
-      }
+      if (!patientRequestIsCurrent(request) || requestLoadEpoch !== followUpLoadEpoch) return [];
       if (shouldEvictClientPhi(error)) {
         evictClientPhi(error);
       } else {
@@ -3570,7 +3762,7 @@
           visitList.innerHTML = loadFailureMarkup('Visit follow-ups', 'loadFollowUps()');
         }
       }
-      reportLoadError('follow-ups', error);
+      if (patientRequestIsCurrent(request)) reportLoadError('follow-ups', error);
       return [];
     }
   }
@@ -3585,6 +3777,7 @@
       sourceKind: options.sourceKind || null,
       requestPhiEpoch: phiEpoch,
       requestActionEpoch: followUpSelectionEpoch,
+      requestActionId: selectedFollowUpId,
     };
   }
 
@@ -3614,13 +3807,9 @@
 
   async function consumeFollowUpResponse(data, intent) {
     if (!followUpIntentCanRender(intent)) return false;
-    const priorProfileRevision = latestProfileRevision;
-    if (Number.isInteger(data.workflow_revision)) workflowRevision = data.workflow_revision;
+    const authority = authorizePatientResponse(intent, data, { workflow: 'targeted' });
+    if (!authority.accepted) return false;
     if (data.item?.id) followUpsById.set(data.item.id, data.item);
-    const profileChanged = data.profile_revision != null
-      && priorProfileRevision != null
-      && String(data.profile_revision) !== String(priorProfileRevision);
-    if (data.profile_revision != null) latestProfileRevision = data.profile_revision;
     if (intent.draftKey) followUpDrafts.delete(intent.draftKey);
     if (followUpDialogOpen) closeFollowUpDialog(false, true);
     if (intent.method === 'POST' && data.item?.status === 'open') {
@@ -3628,9 +3817,7 @@
     }
     renderFollowUps();
     renderVisitFollowUps();
-    if (profileChanged) {
-      await refreshClinicalWorkflowState(data.profile_revision);
-    } else {
+    if (!authority.profileAdvanced) {
       await loadFollowUps();
     }
     setFollowUpStatus('Saved.', 'success');
@@ -3713,8 +3900,9 @@
       reportLoadError('follow-up-mutation', error);
       return null;
     } finally {
+      const ownsCleanup = consumedSuccessfully || followUpIntentCanRender(intent);
       followUpMutationPending = false;
-      if (consumedSuccessfully || intent.requestPhiEpoch === phiEpoch) {
+      if (ownsCleanup) {
         setFollowUpMutationBusy(false);
         updateFollowUpFormValidity();
       }
@@ -4770,22 +4958,13 @@
   }
 
   async function loadQuestions() {
-    const requestPhiEpoch = phiEpoch;
+    const request = capturePatientRequest();
     const requestQuestionEpoch = ++questionLoadEpoch;
-    const requestProfileRevision = latestProfileRevision == null
-      ? null
-      : String(latestProfileRevision);
     try {
       const r = await fetch('/api/questions');
       const qs = await readJsonResponse(r);
-      if (
-        requestPhiEpoch !== phiEpoch
-        || requestQuestionEpoch !== questionLoadEpoch
-        || (
-          requestProfileRevision != null
-          && String(latestProfileRevision) !== requestProfileRevision
-        )
-      ) return [];
+      if (requestQuestionEpoch !== questionLoadEpoch) return [];
+      if (!authorizePatientResponse(request, qs).accepted) return [];
       const projection = projectQuestionChoices(qs);
       appointmentQuestionSources = projection.items;
       generatedQuestionsUnavailable = projection.unavailable;
@@ -4794,16 +4973,13 @@
       reportLoadSuccess('questions');
       return appointmentQuestionSources;
     } catch(e) {
-      if (
-        requestPhiEpoch !== phiEpoch
-        || requestQuestionEpoch !== questionLoadEpoch
-      ) return [];
-      if (requestPhiEpoch === phiEpoch && shouldEvictClientPhi(e)) {
+      if (!patientRequestIsCurrent(request) || requestQuestionEpoch !== questionLoadEpoch) return [];
+      if (shouldEvictClientPhi(e)) {
         evictClientPhi(e);
-      } else if (requestPhiEpoch === phiEpoch) {
+      } else if (patientRequestIsCurrent(request)) {
         redactGeneratedQuestionChoices();
       }
-      reportLoadError('questions', e);
+      if (patientRequestIsCurrent(request)) reportLoadError('questions', e);
       return [];
     }
   }
@@ -4865,7 +5041,7 @@
   }
 
   async function generateQuestions() {
-    const requestPhiEpoch = phiEpoch;
+    const request = capturePatientRequest();
     const btnId    = 'q-gen-btn';
     const apptType = 'oncology follow-up';
     const btn = document.getElementById(btnId);
@@ -4881,19 +5057,23 @@
       });
       const submitted = await readJobSubmission(r);
       const completed = await waitForJob(submitted.job_id);
-      if (requestPhiEpoch !== phiEpoch) return;
+      if (!authorizePatientResponse(request, completed).accepted) return;
       await loadQuestions();
-      reportLoadSuccess('action');
+      if (patientRequestIsCurrent(request)) reportLoadSuccess('action');
     } catch(e) {
+      if (!patientRequestIsCurrent(request)) return;
       reportLoadError('action', e);
     }
     finally {
-      if (btn) { btn.disabled = false; btn.textContent = '✦ Generate questions'; }
+      if (patientRequestIsCurrent(request) && btn) {
+        btn.disabled = false;
+        btn.textContent = '✦ Generate questions';
+      }
     }
   }
 
   async function addQuestion() {
-    const requestPhiEpoch = phiEpoch;
+    const request = capturePatientRequest();
     const inputId = 'q-add-input';
     const input = document.getElementById(inputId);
     const text = (input?.value || '').trim();
@@ -4904,20 +5084,22 @@
     }
     input.value = '';
     try {
-      await readJsonResponse(await fetch('/api/questions/add', {
+      const result = await readJsonResponse(await fetch('/api/questions/add', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text }),
       }));
+      if (!authorizePatientResponse(request, result).accepted) return;
       await loadQuestions();
+      if (!patientRequestIsCurrent(request)) return;
       setFormError('q-form-error', '');
     } catch(e) {
-      if (requestPhiEpoch !== phiEpoch) return;
+      if (!patientRequestIsCurrent(request)) return;
       input.value = text;
       setFormError('q-form-error', e.message || 'The question could not be added.');
       reportLoadError('action', e);
     }
-    updateFormValidity();
+    if (patientRequestIsCurrent(request)) updateFormValidity();
   }
 
   async function toggleQuestion(qid) {
@@ -4946,26 +5128,18 @@
   function syncChatRevision(revision, forceNotice = false, reloadQuestions = true) {
     const priorProfileRevision = latestProfileRevision == null
       ? null
-      : String(latestProfileRevision);
+      : normalizedRevision(latestProfileRevision);
     if (revision == null) {
-      latestProfileRevision = null;
-      chatHistoryRevision = null;
-      chatHistory = [];
-      redactGeneratedQuestionChoices();
-      redactGeneratedSummaryActions();
-      if (reloadQuestions) loadQuestions();
-      const unavailableMessages = document.getElementById('chat-messages');
-      if (unavailableMessages) {
-        unavailableMessages.innerHTML = `<div class="chat-revision-notice" role="status">
-          Patient record revision unavailable. Prior chat history was cleared.
-        </div>`;
-      }
-      return true;
+      return false;
     }
-    const normalized = String(revision);
+    const normalized = normalizedRevision(revision);
+    if (!Number.isSafeInteger(normalized)) return false;
+    if (Number.isSafeInteger(priorProfileRevision) && normalized < priorProfileRevision) {
+      return false;
+    }
     if (chatHistoryRevision == null) {
       chatHistoryRevision = normalized;
-      latestProfileRevision = revision;
+      latestProfileRevision = normalized;
       if (priorProfileRevision != null && priorProfileRevision !== normalized) {
         redactGeneratedQuestionChoices();
         redactGeneratedSummaryActions();
@@ -4978,8 +5152,12 @@
       }
       return false;
     }
-    const changed = chatHistoryRevision !== normalized;
-    latestProfileRevision = revision;
+    const currentChatRevision = normalizedRevision(chatHistoryRevision);
+    if (Number.isSafeInteger(currentChatRevision) && normalized < currentChatRevision) {
+      return false;
+    }
+    const changed = currentChatRevision !== normalized;
+    latestProfileRevision = normalized;
     if (changed) {
       redactGeneratedQuestionChoices();
       redactGeneratedSummaryActions();
@@ -5169,7 +5347,7 @@
   }
 
   async function sendChat() {
-    const requestPhiEpoch = phiEpoch;
+    const request = capturePatientRequest();
     const input = document.getElementById('chat-input');
     const btn = document.getElementById('chat-send-btn');
     const text = (input?.value || '').trim();
@@ -5201,11 +5379,10 @@
         }),
       });
       const data = await readJsonResponse(r);
-      if (requestPhiEpoch !== phiEpoch) return;
-      const revisionChanged = syncChatRevision(data.profile_revision);
-      if (revisionChanged) return;
+      const authority = authorizePatientResponse(request, data);
+      if (!authority.accepted || authority.profileAdvanced) return;
       const completed = await waitForJob(data.job_id);
-      if (requestPhiEpoch !== phiEpoch) return;
+      if (!authorizePatientResponse(request, completed).accepted) return;
       const reply = (completed.result || {}).reply;
       if (!reply) throw new Error('No response was produced.');
 
@@ -5214,18 +5391,21 @@
       chatHistory.push({ role: 'assistant', content: reply });
       setFormError('chat-form-error', '');
     } catch(e) {
-      if (requestPhiEpoch !== phiEpoch) return;
+      if (!patientRequestIsCurrent(request)) return;
       if (e.status === 409) {
-        syncChatRevision(e.data?.profile_revision, true);
+        authorizePatientResponse(request, e.data || {});
       }
+      if (!patientRequestIsCurrent(request)) return;
       thinkingDiv.querySelector('.chat-bubble').classList.remove('thinking');
       updateLastMsg(thinkingDiv, `Error: ${e.message}`);
       setFormError('chat-form-error', e.message || 'The question could not be sent.');
     } finally {
-      delete btn.dataset.busy;
-      btn.textContent = 'Send';
-      if (requestPhiEpoch === phiEpoch) input.focus();
-      updateFormValidity();
+      if (patientRequestIsCurrent(request)) {
+        delete btn.dataset.busy;
+        btn.textContent = 'Send';
+        input.focus();
+        updateFormValidity();
+      }
     }
   }
 

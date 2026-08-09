@@ -9,6 +9,14 @@ incremented when something user-visible or operationally meaningful changes.
 ## [Unreleased]
 
 ### Fixed
+- **Cross-surface revision authority.** Patient-data responses now pass one
+  monotonic profile/workflow authority guard before changing caches, revisions,
+  drafts, retries, or rendered content. Observing a newer clinical revision
+  invalidates every older in-flight patient read, including revisionless legacy
+  responses, while equal independent workflow reads remain usable and targeted
+  token-authorized results cannot roll global workflow state backward. Chat
+  history revisions are monotonic, and stale authorization, catch, and cleanup
+  paths cannot repaint or restore older patient projections.
 - **Late appointment responses and authorization PHI teardown.** Appointment
   mutations now validate their patient-data and visit-selection epochs before
   changing workflow/profile revisions, visit caches, retry state, drafts, or

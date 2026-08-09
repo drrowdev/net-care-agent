@@ -790,16 +790,18 @@ let renderPreparationCalls = 0;
 let renderWorkspaceCalls = 0;
 let successReports = 0;
 let callerCleanupCalls = 0;
+const evictions = [];
+const loadErrors = [];
 
 function captureAppointmentDraft() {}
 function renderVisitPreparation() { renderPreparationCalls += 1; }
 function renderAppointmentWorkspace() { renderWorkspaceCalls += 1; }
 function reportLoadSuccess() { successReports += 1; }
-function reportLoadError() {}
+function reportLoadError(scope, error) { loadErrors.push([scope, error?.status || null]); }
 async function refreshClinicalWorkflowState() { return true; }
 async function handleWorkflowConflict() { return true; }
-function shouldEvictClientPhi() { return false; }
-function evictClientPhi() {}
+function shouldEvictClientPhi(error) { return Number(error?.status) >= 500; }
+function evictClientPhi(error) { evictions.push(error.status); }
 function setAppointmentMutationBusy() {}
 function updateAppointmentFormValidity() {}
 function safeClassToken(value) { return String(value || ''); }
@@ -849,6 +851,16 @@ function response(data) {
   const lateRetryPreserved = pendingWorkflowIntent?.marker === 'keep-b-retry'
     && element('appointment-retry').hidden === false;
 
+  globalThis.fetch = async () => {
+    const error = new Error('hard server failure');
+    error.status = 500;
+    throw error;
+  };
+  const hardFailureResult = await performWorkflowIntent({
+    ...visitAIntent,
+    body: { source_kind: 'manual', mutation_id: 'mutation-a-hard-failure' },
+  });
+
   appointmentDrafts = new Map([['visit-b', { manualQuestion: 'caregiver draft' }]]);
   globalThis.fetch = async () => { throw new TypeError('offline'); };
   const offlineIntent = {
@@ -872,6 +884,9 @@ function response(data) {
     successReports,
     callerCleanupCalls,
     lateRetryPreserved,
+    hardFailureResult,
+    evictions,
+    loadErrors,
     retryPreserved: pendingWorkflowIntent === offlineIntent,
     offlineRetryVisible: element('appointment-retry').hidden === false,
     offlineDraft: appointmentDrafts.get('visit-b').manualQuestion,
@@ -903,6 +918,12 @@ def test_late_visit_a_response_cannot_mutate_visit_b_or_trigger_success_cleanup(
         "successReports": 0,
         "callerCleanupCalls": 0,
         "lateRetryPreserved": True,
+        "hardFailureResult": None,
+        "evictions": [500],
+        "loadErrors": [
+            ["appointment-workflow", 500],
+            ["appointment-workflow", None],
+        ],
         "retryPreserved": True,
         "offlineRetryVisible": True,
         "offlineDraft": "caregiver draft",
@@ -1014,6 +1035,8 @@ let workflowRevision = 17;
 let visitsById = new Map([['visit-phi', { patient: true }]]);
 let appointmentOptions = [{ patient: true }];
 let appointmentQuestionSources = [{ patient: true }];
+let questionLoadEpoch = 3;
+let generatedQuestionsUnavailable = true;
 let visitFollowUps = [{ patient: true }];
 let selectedVisitId = 'visit-phi';
 let visitSelectionEpoch = 8;

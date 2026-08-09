@@ -234,6 +234,17 @@
       if (workflowIntentCanRender(intent)) setAppointmentMessage('Saved.', 'success');
       return data;
     } catch (error) {
+      if (intent.requestPhiEpoch !== phiEpoch) {
+        if (error?.status === 401 || error?.status === 403) {
+          reportLoadError('appointment-workflow', error);
+        }
+        return null;
+      }
+      if (shouldEvictClientPhi(error)) {
+        evictClientPhi(error);
+        reportLoadError('appointment-workflow', error);
+        return null;
+      }
       if (!workflowIntentCanRender(intent)) return null;
       if (error?.status === 409) {
         await handleWorkflowConflict(error, intent);
@@ -249,11 +260,6 @@
           setFormError('visit-create-error', 'Connection lost. Your draft is still available.');
         }
         setAppointmentMessage('Connection lost. Your draft is still available.', 'offline');
-        reportLoadError('appointment-workflow', error);
-        return null;
-      }
-      if (shouldEvictClientPhi(error)) {
-        evictClientPhi(error);
         reportLoadError('appointment-workflow', error);
         return null;
       }

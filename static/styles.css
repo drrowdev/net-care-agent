@@ -2635,6 +2635,23 @@ body.dialog-open { overflow: hidden; }
 .follow-up-dialog-status.error,
 .follow-up-dialog-status.conflict { color: #7b2020; background: #fff1f1; }
 .follow-up-list { display: grid; gap: 10px; padding: 14px 18px 18px; }
+.follow-up-stale-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 13px;
+  border: 1px solid #e8c88a;
+  border-radius: 9px;
+  background: var(--amber-dim);
+  color: #684800;
+}
+.follow-up-stale-note div { display: grid; gap: 2px; }
+.follow-up-stale-note strong { font-size: 12px; }
+.follow-up-stale-note span { color: var(--text1); font-size: 11px; }
+.follow-up-stale-note.compact { margin-bottom: 10px; }
+.follow-up-item.stale-projection,
+.visit-followup.stale-projection { background: #fffdf5; }
 .follow-up-item {
   min-width: 0;
   padding: 14px;

@@ -275,10 +275,13 @@ Owner, due-date, and administrative lifecycle changes advance only
 summary, questions, tasks, or status. Caregiver-reported and
 clinician-attributed outcomes may also advance `profile_revision`; the browser
 uses the returned revision, never the selected outcome kind, to trigger the full
-authoritative clinical refresh. Authorization or hard data-load failure clears
-all action rows, tokens, dialogs, drafts, retry state, and late responses. An
-ordinary offline failure clears cached durable rows but preserves the current
-caregiver draft and exact retry intent in memory.
+authoritative clinical refresh. Authorization or hard data-load failure clears all action rows, tokens, dialog
+copies and forms, drafts, retry bodies, focus state, and late responses. An
+ordinary offline or aborted refresh preserves the last authoritative Today and
+visit-linked action rows as a visibly stale, read-only snapshot. All action
+mutation and generated-action acceptance controls remain disabled until a
+successful authoritative reload supplies fresh tokens. Caregiver drafts remain
+isolated by action and intent in SPA memory only.
 
 ## 5. Generate appointment questions
 

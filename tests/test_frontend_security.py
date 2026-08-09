@@ -27,6 +27,17 @@ def _executable_function_source(name: str, next_name: str) -> str:
     return f"async {source}" if APP_JS[start - 6 : start] == "async " else source
 
 
+def _response_authority_source() -> str:
+    return "\n".join(
+        [
+            _function_source("normalizedRevision", "capturePatientRequest"),
+            _function_source("capturePatientRequest", "patientRequestIsCurrent"),
+            _function_source("patientRequestIsCurrent", "requestClinicalConvergence"),
+            _function_source("authorizePatientResponse", "setAppointmentMessage"),
+        ]
+    )
+
+
 def _run_summary_auth_probe(status: int) -> dict:
     script = "\n".join(
         [
@@ -126,7 +137,13 @@ function renderSummary(data) {
 }
 function summaryIsStale() { return false; }
 function fmtDate(value) { return value; }
+function advancePatientAuthority(revision) {
+  latestProfileRevision = revision;
+  phiEpoch += 1;
+  return true;
+}
 """,
+            _response_authority_source(),
             _executable_function_source("readJsonResponse", "readJobSubmission"),
             _function_source("shouldEvictClientPhi", "restoreDialogFocus"),
             _function_source("evictClientPhi", "renderLatestResearchUpdate"),
@@ -206,7 +223,7 @@ def test_summary_auth_eviction_cannot_repaint_freshness_or_accept_late_success(s
         "summary": '<div class="summary-empty">Patient assessment unavailable.</div>',
         "renderSummaryCalls": 0,
         "fetchCalls": 2,
-        "loadErrors": [["summary", status]],
+        "loadErrors": [],
     }
 
 
@@ -357,7 +374,6 @@ def test_load_failures_distinguish_auth_offline_and_retry_states():
 def test_status_failure_clears_all_status_derived_phi_and_caches():
     failure = _function_source("renderStatusFailure", "renderLatestResearchUpdate")
     for expression in (
-        "latestProfileRevision = null",
         "redactGeneratedQuestionChoices()",
         "latestResearchUpdate = null",
         "allBiomarkers = []",
@@ -369,8 +385,10 @@ def test_status_failure_clears_all_status_derived_phi_and_caches():
         assert expression in failure
     evidence = _function_source("loadPatientEvidence", "evidenceBadge")
     assert "patientEvidence = null" in evidence
-    assert evidence.index("const evidence = await") < evidence.index("requestPhiEpoch !== phiEpoch")
-    assert evidence.index("requestPhiEpoch !== phiEpoch") < evidence.index(
+    assert evidence.index("const evidence = await") < evidence.index(
+        "authorizePatientResponse(request, evidence)"
+    )
+    assert evidence.index("authorizePatientResponse(request, evidence)") < evidence.index(
         "patientEvidence = evidence"
     )
 
@@ -415,9 +433,7 @@ def test_central_phi_eviction_clears_patient_panels_dialogs_and_histories():
         assert expression in freshness
     summary = _function_source("loadSummary", "renderPendingSummary")
     auth_failure = summary[summary.index("catch(e)") :]
-    epoch_guard = auth_failure.index(
-        "if (requestPhiEpoch !== phiEpoch || requestSummaryEpoch !== summaryLoadEpoch)"
-    )
+    epoch_guard = auth_failure.index("if (!patientRequestIsCurrent(request)")
     eviction = auth_failure.index("if (shouldEvictClientPhi(e))")
     repaint = auth_failure.index("renderFreshness(null, e)")
     assert epoch_guard < auth_failure.index("return null", epoch_guard) < eviction
@@ -438,19 +454,21 @@ def test_central_phi_eviction_clears_patient_panels_dialogs_and_histories():
     assert "evictClientPhi(authError)" in mutation
     assert mutation.index("response.status === 401") < mutation.index("response.json()")
     close = _function_source("closePanel", "receiptValueSummary")
-    assert "const requestPhiEpoch = phiEpoch" in close
-    assert "requestPhiEpoch === phiEpoch" in close
+    assert "const request = capturePatientRequest()" in close
+    assert "authorizePatientResponse(request, tasks)" in close
     questions = _function_source("generateQuestions", "addQuestion")
-    assert "const requestPhiEpoch = phiEpoch" in questions
-    assert "requestPhiEpoch !== phiEpoch" in questions
+    assert "const request = capturePatientRequest()" in questions
+    assert "patientRequestIsCurrent(request)" in questions
     for handler, next_name in (
         ("addJudgment", "deleteJudgment"),
         ("addSymptom", "deleteSymptom"),
-        ("addQuestion", "toggleQuestion"),
     ):
         source = _function_source(handler, next_name)
         assert "const requestPhiEpoch = phiEpoch" in source
         assert "requestPhiEpoch !== phiEpoch" in source
+    add_question = _function_source("addQuestion", "toggleQuestion")
+    assert "const request = capturePatientRequest()" in add_question
+    assert "authorizePatientResponse(request, result)" in add_question
 
 
 def test_missing_selected_task_evicts_instead_of_restoring_cached_receipt():
@@ -555,7 +573,9 @@ def test_task_selection_epoch_guards_every_async_panel_update():
     assert "const selectionEpoch = expectedEpoch == null ? ++taskSelectionEpoch" in selection
     assert "currentReceipt = fallbackReceipt" in selection
     assert "Loading activity detail" in selection
-    assert selection.count("selectionEpoch !== taskSelectionEpoch || selectedTaskId !== id") >= 7
+    assert "const request = capturePatientRequest({ taskSelection: true })" in selection
+    assert selection.count("authorizePatientResponse(request,") >= 3
+    assert selection.count("patientRequestIsCurrent(request)") >= 3
     assert "const detailResponse = await fetch" in selection
     assert "const receiptResponse = await fetch" in selection
 
@@ -586,11 +606,11 @@ def test_chat_history_is_bound_to_profile_revision_and_visibly_cleared():
     assert "Patient record changed. Prior chat history was cleared" in sync
     sender = APP_JS[APP_JS.index("function sendChat") :]
     assert "history_revision: chatHistoryRevision" in sender
-    assert "const revisionChanged = syncChatRevision(data.profile_revision)" in sender
-    assert "if (revisionChanged) return" in sender
+    assert "const authority = authorizePatientResponse(request, data)" in sender
+    assert "if (!authority.accepted || authority.profileAdvanced) return" in sender
     assert "chatHistoryRevision = String(data.profile_revision)" not in sender
     assert "if (e.status === 409)" in sender
-    assert "syncChatRevision(e.data?.profile_revision, true)" in sender
+    assert "authorizePatientResponse(request, e.data || {})" in sender
     assert "?? latestProfileRevision" not in sender
 
 
@@ -602,7 +622,7 @@ def test_alert_resolution_uses_stable_id_token_and_revision():
     assert "/api/alerts/${encodeURIComponent(alertId)}/resolve" in resolver
     assert "expected_token: expectedToken" in resolver
     assert "expected_profile_revision: latestProfileRevision" in resolver
-    assert "syncChatRevision(result.profile_revision, true)" in resolver
+    assert "authorizePatientResponse(request, result)" in resolver
 
 
 def test_patient_history_joins_documents_and_keeps_orphaned_legacy_records():
@@ -820,7 +840,13 @@ function evictClientPhi(error) { evictions.push(error.status); }
 function setAppointmentMutationBusy() {}
 function updateAppointmentFormValidity() {}
 function safeClassToken(value) { return String(value || ''); }
+function advancePatientAuthority(revision) {
+  latestProfileRevision = revision;
+  phiEpoch += 1;
+  return true;
+}
 """,
+            _response_authority_source(),
             _function_source("setAppointmentMessage", "clearWorkflowRetry"),
             _function_source("clearWorkflowRetry", "invalidateWorkflowRetryOnDraftChange"),
             _executable_function_source("workflowIntentCanRender", "refreshClinicalWorkflowState"),
@@ -1491,6 +1517,7 @@ const navigator = { onLine: false };
 let phiEpoch = 0;
 let taskSelectionEpoch = 0;
 let latestProfileRevision = null;
+let workflowRevision = null;
 let chatHistoryRevision = null;
 let chatHistory = [{ patient: true }];
 let questionLoadEpoch = 0;
@@ -1552,6 +1579,11 @@ function loadSummary() { return Promise.resolve(); }
 function loadTasks() { return Promise.resolve(); }
 function loadVisits() { return Promise.resolve(); }
 function loadFollowUps() { return Promise.resolve(); }
+function advancePatientAuthority(revision) {
+  latestProfileRevision = revision;
+  phiEpoch += 1;
+  return true;
+}
 globalThis.fetch = () => {
   if (!fetchQueue.length) throw new Error('missing queued response');
   return fetchQueue.shift();
@@ -1597,6 +1629,7 @@ function snapshot() {
   };
 }
 """,
+            _response_authority_source(),
             _executable_function_source("refreshClinicalWorkflowState", "consumeWorkflowResponse"),
             _executable_function_source("handleWorkflowConflict", "performWorkflowIntent"),
             _executable_function_source("readJsonResponse", "readJobSubmission"),
@@ -1701,6 +1734,9 @@ function snapshot() {
 
   fetchQueue.push(Promise.reject(new TypeError('offline')));
   appointmentDialogOpen = false;
+  phiEpoch += 1;
+  taskSelectionEpoch += 1;
+  syncChatRevision(8, true, false);
   const revisionRefresh = refreshClinicalWorkflowState(8);
   const immediateAfterRevision = snapshot();
   appointmentDialogOpen = true;
@@ -1860,7 +1896,6 @@ def test_generated_question_choices_fail_closed_across_revision_and_reload_paths
         "afterLateOld",
         "conflict",
         "staleAndRevisionless",
-        "missingRevision",
     ):
         phase = result[phase_name]
         assert phase["oldGone"] is True, phase_name
@@ -1884,6 +1919,7 @@ def test_generated_question_choices_fail_closed_across_revision_and_reload_paths
     assert "OLD GENERATED TEXT" not in current["cache"]
     assert current["manualDraft"] == "KEEP MANUAL DRAFT"
     assert current["acceptedSnapshot"] == "KEEP ACCEPTED SNAPSHOT"
+    assert result["missingRevision"] == current
     assert result["loadErrors"] == [
         ["appointment-workflow", 409],
         ["questions", "TypeError"],
@@ -1939,9 +1975,11 @@ def test_decision_controls_match_the_server_lifecycle_matrix_at_runtime():
     assert "revalidateDecisionSuccessorState(data.visit)" in consume
     assert "renderAppointmentWorkspace()" in consume
     assert consume.index("revalidateDecisionSuccessorState(data.visit)") < consume.index(
-        "if (profileChanged)"
+        "if (authority.profileAdvanced)"
     )
-    assert consume.index("renderAppointmentWorkspace()") < consume.index("if (profileChanged)")
+    assert consume.index("renderAppointmentWorkspace()") < consume.index(
+        "if (authority.profileAdvanced)"
+    )
     conflicts = _function_source("handleWorkflowConflict", "performWorkflowIntent")
     assert "decisionSuccessorConflicts.add(intent.body.supersedes_id)" in conflicts
     assert "renderVisitDecisions()" in conflicts
@@ -2061,7 +2099,7 @@ def test_appointment_revision_epoch_conflict_and_eviction_guards_are_complete():
         "captureAppointmentDraft()"
     )
     assert consume.index("if (!workflowIntentCanRender(intent)) return false") < consume.index(
-        "workflowRevision = data.workflow_revision"
+        "authorizePatientResponse(intent, data, { workflow: 'targeted' })"
     )
     assert "return true" in consume
     assert conflicts.index("if (!workflowIntentCanRender(intent)) return false") < conflicts.index(
@@ -2073,9 +2111,10 @@ def test_appointment_revision_epoch_conflict_and_eviction_guards_are_complete():
     assert catch_source.index("if (!workflowIntentCanRender(intent)) return null") < (
         catch_source.index("error?.status === 409")
     )
-    assert "phiEpoch += 1" in refresh
-    assert "taskSelectionEpoch += 1" in refresh
-    assert "syncChatRevision(profileRevision, true, false)" in refresh
+    authority = _function_source("advancePatientAuthority", "authorizePatientResponse")
+    assert "phiEpoch += 1" in authority
+    assert "taskSelectionEpoch += 1" in authority
+    assert "syncChatRevision(revision, true, false)" in authority
     assert refresh.index("redactGeneratedQuestionChoices()") < refresh.index("loadQuestions()")
     assert "loadSummary()" in refresh
     assert "loadTasks()" in refresh
@@ -2316,7 +2355,15 @@ function setFollowUpStatus() {}
 function reportLoadSuccess() {}
 async function loadFollowUps() { workflowLoads += 1; return []; }
 async function refreshClinicalWorkflowState() { clinicalRefreshes += 1; return true; }
+function requestClinicalConvergence() {}
+function advancePatientAuthority(revision) {
+  latestProfileRevision = revision;
+  phiEpoch += 1;
+  clinicalRefreshes += 1;
+  return true;
+}
 """,
+            _response_authority_source(),
             _executable_function_source("followUpIntentCanRender", "handleFollowUpConflict"),
             _executable_function_source("consumeFollowUpResponse", "performFollowUpIntent"),
             """
@@ -2476,9 +2523,272 @@ def test_summary_action_sources_use_load_and_profile_revision_guards():
     revision_sync = _function_source("syncChatRevision", "toggleChat")
     assert "requestSummaryEpoch = ++summaryLoadEpoch" in loader
     assert "requestSummaryEpoch !== summaryLoadEpoch" in loader
-    assert "String(d.profile_revision) !== String(latestProfileRevision)" in loader
+    assert "authorizePatientResponse(request, d)" in loader
     assert loader.index("redactGeneratedSummaryActions()") < loader.index("renderSummary({")
-    assert revision_sync.count("redactGeneratedSummaryActions()") >= 3
+    assert revision_sync.count("redactGeneratedSummaryActions()") >= 2
+
+
+def _run_revision_authority_probe() -> dict:
+    script = "\n".join(
+        [
+            """
+let selectedTaskId = null;
+let taskSelectionEpoch = 0;
+let selectedVisitId = null;
+let visitSelectionEpoch = 0;
+let selectedFollowUpId = null;
+let followUpSelectionEpoch = 0;
+let latestProfileRevision = null;
+let workflowRevision = null;
+let phiEpoch = 0;
+let clinicalConvergenceRevision = null;
+let clinicalConvergenceRunning = false;
+let chatHistoryRevision = null;
+let chatHistory = [{ role: 'assistant', content: 'keep me' }];
+let appointmentQuestionSources = [];
+let generatedQuestionsUnavailable = false;
+let nestedRevision = null;
+const convergenceTargets = [];
+const document = { getElementById() { return null; } };
+
+function redactGeneratedQuestionChoices() {}
+function redactGeneratedSummaryActions() {}
+function loadQuestions() {}
+function reportLoadError() {}
+async function refreshClinicalWorkflowState(target) {
+  convergenceTargets.push(target);
+  if (nestedRevision != null && target < nestedRevision) {
+    const next = nestedRevision;
+    nestedRevision = null;
+    authorizePatientResponse(capturePatientRequest(), {
+      profile_revision: next,
+      workflow_revision: workflowRevision,
+    }, { workflow: 'projection' });
+  }
+  await Promise.resolve();
+  return true;
+}
+""",
+            _function_source("normalizedRevision", "capturePatientRequest"),
+            _function_source("capturePatientRequest", "patientRequestIsCurrent"),
+            _function_source("patientRequestIsCurrent", "requestClinicalConvergence"),
+            _function_source("requestClinicalConvergence", "advancePatientAuthority"),
+            _function_source("advancePatientAuthority", "authorizePatientResponse"),
+            _function_source("authorizePatientResponse", "setAppointmentMessage"),
+            _function_source("syncChatRevision", "toggleChat"),
+            """
+const flush = async () => {
+  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setImmediate(resolve));
+};
+
+(async () => {
+  const actionRequest = capturePatientRequest();
+  const visitRequest = capturePatientRequest();
+  const action11 = authorizePatientResponse(actionRequest, {
+    profile_revision: 11,
+    workflow_revision: 4,
+  }, { workflow: 'projection' });
+  let renderedAction11 = action11.accepted;
+  const visit10 = authorizePatientResponse(visitRequest, {
+    profile_revision: 10,
+    workflow_revision: 3,
+  }, { workflow: 'projection' });
+  let renderedVisit10 = visit10.accepted;
+  await flush();
+  const actionThenVisit = {
+    renderedAction11,
+    renderedVisit10,
+    latestProfileRevision,
+    chatHistoryRevision,
+    workflowRevision,
+  };
+
+  latestProfileRevision = null;
+  workflowRevision = null;
+  chatHistoryRevision = null;
+  chatHistory = [];
+  const visitRequest2 = capturePatientRequest();
+  const actionRequest2 = capturePatientRequest();
+  const visit11 = authorizePatientResponse(visitRequest2, {
+    profile_revision: 11,
+    workflow_revision: 4,
+  }, { workflow: 'projection' });
+  const action10 = authorizePatientResponse(actionRequest2, {
+    profile_revision: 10,
+    workflow_revision: 3,
+  }, { workflow: 'projection' });
+  await flush();
+  const visitThenAction = {
+    renderedVisit11: visit11.accepted,
+    renderedAction10: action10.accepted,
+    latestProfileRevision,
+    workflowRevision,
+  };
+
+  const lateStatus = capturePatientRequest();
+  const lateSummary = capturePatientRequest();
+  const lateQuestions = capturePatientRequest();
+  const lateTasks = capturePatientRequest();
+  const authorityRequest = capturePatientRequest();
+  authorizePatientResponse(authorityRequest, {
+    profile_revision: 12,
+    workflow_revision: 5,
+  }, { workflow: 'projection' });
+  const lateLowerReads = {
+    status: authorizePatientResponse(lateStatus, { profile_revision: 11 }).accepted,
+    summary: authorizePatientResponse(lateSummary, { profile_revision: 11 }).accepted,
+    questions: authorizePatientResponse(lateQuestions, []).accepted,
+    tasks: authorizePatientResponse(lateTasks, []).accepted,
+  };
+  await flush();
+
+  const equalWorkflowA = authorizePatientResponse(capturePatientRequest(), {
+    profile_revision: 12,
+    workflow_revision: 5,
+  }, { workflow: 'projection' });
+  const equalWorkflowB = authorizePatientResponse(capturePatientRequest(), {
+    profile_revision: 12,
+    workflow_revision: 5,
+  }, { workflow: 'projection' });
+  const missingWorkflow = authorizePatientResponse(capturePatientRequest(), {
+    profile_revision: 12,
+  }, { workflow: 'projection' });
+  const missingProfile = authorizePatientResponse(capturePatientRequest(), {
+    workflow_revision: 5,
+  }, { workflow: 'projection' });
+  const currentRevisionless = authorizePatientResponse(capturePatientRequest(), []);
+  const oldRevisionlessRequest = capturePatientRequest();
+  authorizePatientResponse(capturePatientRequest(), {
+    profile_revision: 13,
+    workflow_revision: 6,
+  }, { workflow: 'projection' });
+  const lateRevisionless = authorizePatientResponse(oldRevisionlessRequest, []);
+  await flush();
+
+  workflowRevision = 9;
+  const targetedLowerWorkflow = authorizePatientResponse(capturePatientRequest(), {
+    profile_revision: 13,
+    workflow_revision: 8,
+  }, { workflow: 'targeted' });
+  const workflowAfterTargeted = workflowRevision;
+
+  chatHistory = [{ role: 'assistant', content: 'current answer' }];
+  chatHistoryRevision = 13;
+  latestProfileRevision = 13;
+  syncChatRevision(12, true, false);
+  const chatAfterLower = {
+    chatHistoryRevision,
+    latestProfileRevision,
+    historyLength: chatHistory.length,
+  };
+  syncChatRevision(14, true, false);
+  const chatAfterNewer = {
+    chatHistoryRevision,
+    latestProfileRevision,
+    historyLength: chatHistory.length,
+  };
+
+  nestedRevision = 16;
+  authorizePatientResponse(capturePatientRequest(), {
+    profile_revision: 15,
+    workflow_revision: 10,
+  }, { workflow: 'projection' });
+  await flush();
+  await flush();
+
+  console.log(JSON.stringify({
+    actionThenVisit,
+    visitThenAction,
+    lateLowerReads,
+    equalWorkflow: [equalWorkflowA.accepted, equalWorkflowB.accepted],
+    missingWorkflow: missingWorkflow.accepted,
+    missingProfile: missingProfile.accepted,
+    currentRevisionless: currentRevisionless.accepted,
+    lateRevisionless: lateRevisionless.accepted,
+    targetedLowerWorkflow: targetedLowerWorkflow.accepted,
+    workflowAfterTargeted,
+    chatAfterLower,
+    chatAfterNewer,
+    nested: {
+      latestProfileRevision,
+      chatHistoryRevision,
+      workflowRevision,
+      targets: convergenceTargets.slice(-2),
+    },
+  }));
+})().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
+""",
+        ]
+    )
+    completed = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
+def test_response_authority_is_monotonic_across_patient_surface_interleavings():
+    result = _run_revision_authority_probe()
+    assert result["actionThenVisit"] == {
+        "renderedAction11": True,
+        "renderedVisit10": False,
+        "latestProfileRevision": 11,
+        "chatHistoryRevision": 11,
+        "workflowRevision": 4,
+    }
+    assert result["visitThenAction"] == {
+        "renderedVisit11": True,
+        "renderedAction10": False,
+        "latestProfileRevision": 11,
+        "workflowRevision": 4,
+    }
+    assert result["lateLowerReads"] == {
+        "status": False,
+        "summary": False,
+        "questions": False,
+        "tasks": False,
+    }
+    assert result["equalWorkflow"] == [True, True]
+    assert result["missingWorkflow"] is False
+    assert result["missingProfile"] is True
+    assert result["currentRevisionless"] is True
+    assert result["lateRevisionless"] is False
+    assert result["targetedLowerWorkflow"] is True
+    assert result["workflowAfterTargeted"] == 9
+    assert result["chatAfterLower"] == {
+        "chatHistoryRevision": 13,
+        "latestProfileRevision": 13,
+        "historyLength": 1,
+    }
+    assert result["chatAfterNewer"] == {
+        "chatHistoryRevision": 14,
+        "latestProfileRevision": 14,
+        "historyLength": 0,
+    }
+    assert result["nested"] == {
+        "latestProfileRevision": 16,
+        "chatHistoryRevision": 16,
+        "workflowRevision": 10,
+        "targets": [15, 16],
+    }
+
+
+def test_patient_loaders_authorize_before_projection_or_failure_mutation():
+    checks = (
+        ("loadStatus", "renderStatusFailure", "renderSidebar(d)"),
+        ("loadSummary", "renderPendingSummary", "const editor ="),
+        ("loadTasks", "renderTasks", "hadActiveJobs = true"),
+        ("loadVisits", "followUpItems", "captureAppointmentDraft()"),
+        ("loadFollowUps", "createFollowUpIntent", "captureFollowUpDraft()"),
+        ("loadQuestions", "renderQuestions", "appointmentQuestionSources ="),
+    )
+    for name, next_name, first_mutation in checks:
+        source = _function_source(name, next_name)
+        assert source.index("authorizePatientResponse(") < source.index(first_mutation)
+        catch = source[source.index("catch") :]
+        assert "patientRequestIsCurrent(request)" in catch
 
 
 def test_follow_up_retry_conflict_eviction_and_loading_contracts_are_strict():
@@ -2494,7 +2804,7 @@ def test_follow_up_retry_conflict_eviction_and_loading_contracts_are_strict():
     assert "performFollowUpIntent(intent, true)" in retry
     assert "pendingFollowUpIntent = intent" in performer
     assert "error?.status === 409" in performer
-    assert "consumedSuccessfully || intent.requestPhiEpoch === phiEpoch" in performer
+    assert "consumedSuccessfully || followUpIntentCanRender(intent)" in performer
     renderer = _function_source("renderFollowUps", "setFollowUpFilter")
     busy = _function_source("setFollowUpMutationBusy", "updateFollowUpOutcomeGuidance")
     closer = _function_source("closeFollowUpDialog", "closeFollowUpFromBackdrop")
@@ -2512,7 +2822,8 @@ def test_follow_up_retry_conflict_eviction_and_loading_contracts_are_strict():
     assert "loadFollowUps()" in conflict
     assert "loadSummary()" in conflict
     assert "loadFollowUps()" not in polling
-    assert "error?.status === 401 || error?.status === 403" in loader
+    assert "shouldEvictClientPhi(error)" in loader
+    assert "if (!patientRequestIsCurrent(request)" in loader
     assert "reportLoadError('follow-ups', error)" in loader
     for expression in (
         "followUpsById = new Map()",

@@ -50,6 +50,16 @@ def test_primary_states_and_dialogs_are_accessible():
     assert 'id="summary-toggle" aria-controls="summary-body" aria-expanded="true"' in HTML
     assert 'aria-label="Primary"' in HTML
     assert 'class="skip-link"' in HTML
+    assert (
+        'id="appointment-dialog" role="dialog" aria-modal="true" '
+        'aria-labelledby="appointment-dialog-title"'
+    ) in HTML
+    assert ('role="tablist" aria-label="Appointment workspace sections"') in HTML
+    for name in ("questions", "decisions", "followups"):
+        assert f'id="appointment-tab-{name}"' in HTML
+        assert f'id="appointment-panel-{name}"' in HTML
+        assert f'aria-controls="appointment-panel-{name}"' in HTML
+        assert f'aria-labelledby="appointment-tab-{name}"' in HTML
 
 
 def test_generic_review_flow_is_replaced_by_latest_research_additions():
@@ -76,6 +86,10 @@ def test_empty_submission_controls_have_inline_errors_and_disabled_defaults():
         "judgment-add-btn",
         "sym-add-btn",
         "chat-send-btn",
+        "visit-create-submit",
+        "visit-manual-question-submit",
+        "visit-decision-submit",
+        "visit-followup-submit",
     ):
         assert re.search(rf'id="{button_id}"[^>]*disabled', HTML)
     for error_id in (
@@ -84,6 +98,11 @@ def test_empty_submission_controls_have_inline_errors_and_disabled_defaults():
         "judgment-form-error",
         "sym-form-error",
         "chat-form-error",
+        "visit-create-error",
+        "visit-details-error",
+        "visit-question-error",
+        "visit-decision-error",
+        "visit-followup-error",
     ):
         assert f'id="{error_id}"' in HTML
         assert 'aria-live="polite"' in HTML
@@ -96,6 +115,41 @@ def test_mobile_controls_and_overflow_guards_are_explicit():
     assert ".judgment-action {" in CSS
     assert ".modal-close { min-width: 44px; min-height: 44px; }" in CSS
     assert "overflow-x: hidden;" in CSS
+    assert "overflow-wrap: anywhere;" in CSS
+    assert ".appointment-dialog {" in CSS
+    assert "width: 100vw;" in CSS
+    assert "height: 100dvh;" in CSS
+    assert ".visit-answer { grid-template-columns: 1fr;" in CSS
+    assert ".visit-form-grid.compact { grid-template-columns: 1fr;" in CSS
+    assert ".appointment-tab { flex: 1;" in CSS
+    assert re.search(
+        r"\.visit-question-order \.button \{[^}]*min-height: 44px;",
+        CSS,
+        re.DOTALL,
+    )
+    assert ".visit-question-order select { min-height: 44px; }" in CSS
+
+
+def test_questions_view_contains_one_shared_appointment_workspace():
+    assert 'id="appointment-prep-heading">Appointment workspace</h2>' in HTML
+    assert 'id="visit-list"' in HTML
+    assert 'id="visit-source-appointment"' in HTML
+    assert 'id="appointment-overlay"' in HTML
+    assert HTML.count('id="appointment-dialog"') == 1
+    assert "mob-appointment" not in HTML
+    assert "Caregiver-entered · attributed to clinician · unverified" in HTML
+    assert "visit recap" not in HTML.lower()
+    assert "export" not in HTML.lower()
+
+
+def test_appointment_controls_are_keyboard_and_phone_accessible():
+    assert 'onkeydown="handleAppointmentTabKeydown(event)"' in HTML
+    assert 'onclick="closeAppointmentFromBackdrop(event)"' in HTML
+    assert 'tabindex="-1"' in HTML
+    assert ".appointment-tab {" in CSS
+    assert "min-height: 44px;" in CSS
+    assert "@media (prefers-reduced-motion: reduce)" in CSS
+    assert "overflow-y: auto;" in CSS
     assert "overflow-wrap: anywhere;" in CSS
 
 

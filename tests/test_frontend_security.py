@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 
 import pytest
 
 APP_JS = Path("static/app.js").read_text(encoding="utf-8")
+CSS = Path("static/styles.css").read_text(encoding="utf-8")
 
 
 def _function_source(name: str, next_name: str) -> str:
@@ -77,15 +79,32 @@ let allBiomarkers = [{ patient: true }];
 let chatHistory = [{ patient: true }];
 let chatHistoryRevision = 7;
 let activeDialogSurface = null;
+let lastDialogTrigger = null;
 let chatOpen = true;
 let taskSelectionEpoch = 0;
 let phiEpoch = 0;
+let workflowRevision = 3;
+let visitsById = new Map([['visit-phi', { patient: true }]]);
+let appointmentOptions = [{ patient: true }];
+let appointmentQuestionSources = [{ patient: true }];
+let questionLoadEpoch = 0;
+let generatedQuestionsUnavailable = false;
+let visitFollowUps = [{ patient: true }];
+let selectedVisitId = 'visit-phi';
+let visitSelectionEpoch = 0;
+let appointmentDialogOpen = true;
+let activeAppointmentTab = 'decisions';
+let pendingWorkflowIntent = { patient: true };
+let workflowMutationPending = true;
+let appointmentDrafts = new Map([['visit-phi', { patient: true }]]);
 let renderSummaryCalls = 0;
 const loadErrors = [];
 
 function renderLatestResearchUpdate() {}
 function clearReportCopyState() {}
 function updateCharCount() {}
+function setAppointmentMutationBusy() {}
+function updateAppointmentFormValidity() {}
 function loadFailureMarkup() { return 'transient failure'; }
 function reportLoadSuccess() {}
 function reportLoadError(scope, error) { loadErrors.push([scope, error.status]); }
@@ -327,6 +346,7 @@ def test_status_failure_clears_all_status_derived_phi_and_caches():
     failure = _function_source("renderStatusFailure", "renderLatestResearchUpdate")
     for expression in (
         "latestProfileRevision = null",
+        "redactGeneratedQuestionChoices()",
         "latestResearchUpdate = null",
         "allBiomarkers = []",
         "renderLatestResearchUpdate(null)",
@@ -551,7 +571,12 @@ def test_chat_history_is_bound_to_profile_revision_and_visibly_cleared():
     assert "Patient record changed. Prior chat history was cleared" in sync
     sender = APP_JS[APP_JS.index("function sendChat") :]
     assert "history_revision: chatHistoryRevision" in sender
+    assert "const revisionChanged = syncChatRevision(data.profile_revision)" in sender
+    assert "if (revisionChanged) return" in sender
+    assert "chatHistoryRevision = String(data.profile_revision)" not in sender
     assert "if (e.status === 409)" in sender
+    assert "syncChatRevision(e.data?.profile_revision, true)" in sender
+    assert "?? latestProfileRevision" not in sender
 
 
 def test_alert_resolution_uses_stable_id_token_and_revision():
@@ -713,3 +738,1361 @@ def test_model_markdown_remains_escape_first_and_protocol_limited():
     sanitizer = _function_source("mdSanitizeUrl", "mdInline")
     assert "/^(https?:\\/\\/|mailto:|tel:|#|\\/)/i" in sanitizer
     assert "javascript:" not in sanitizer
+
+
+def _run_workflow_epoch_probe() -> dict:
+    script = "\n".join(
+        [
+            """
+class FakeClassList {
+  add() {}
+  remove() {}
+  toggle() {}
+}
+function fakeElement() {
+  return {
+    classList: new FakeClassList(),
+    className: '',
+    dataset: {},
+    disabled: false,
+    hidden: false,
+    innerHTML: '',
+    textContent: '',
+    value: '',
+    setAttribute() {},
+  };
+}
+const elements = new Map();
+const element = id => {
+  if (!elements.has(id)) elements.set(id, fakeElement());
+  return elements.get(id);
+};
+const document = {
+  getElementById: element,
+  querySelectorAll() { return []; },
+};
+const navigator = { onLine: true };
+let phiEpoch = 0;
+let visitSelectionEpoch = 4;
+let selectedVisitId = 'visit-a';
+let appointmentDialogOpen = true;
+let workflowRevision = 10;
+let latestProfileRevision = 20;
+let visitsById = new Map([
+  ['visit-a', { id: 'visit-a', token: 'a-original' }],
+  ['visit-b', { id: 'visit-b', token: 'b-original' }],
+]);
+let visitFollowUps = [];
+let pendingWorkflowIntent = null;
+let workflowMutationPending = false;
+let appointmentDrafts = new Map();
+let renderPreparationCalls = 0;
+let renderWorkspaceCalls = 0;
+let successReports = 0;
+let callerCleanupCalls = 0;
+const evictions = [];
+const loadErrors = [];
+
+function captureAppointmentDraft() {}
+function renderVisitPreparation() { renderPreparationCalls += 1; }
+function renderAppointmentWorkspace() { renderWorkspaceCalls += 1; }
+function reportLoadSuccess() { successReports += 1; }
+function reportLoadError(scope, error) { loadErrors.push([scope, error?.status || null]); }
+async function refreshClinicalWorkflowState() { return true; }
+async function handleWorkflowConflict() { return true; }
+function shouldEvictClientPhi(error) { return Number(error?.status) >= 500; }
+function evictClientPhi(error) { evictions.push(error.status); }
+function setAppointmentMutationBusy() {}
+function updateAppointmentFormValidity() {}
+function safeClassToken(value) { return String(value || ''); }
+""",
+            _function_source("setAppointmentMessage", "clearWorkflowRetry"),
+            _function_source("clearWorkflowRetry", "invalidateWorkflowRetryOnDraftChange"),
+            _executable_function_source("workflowIntentCanRender", "refreshClinicalWorkflowState"),
+            _executable_function_source("consumeWorkflowResponse", "handleWorkflowConflict"),
+            _executable_function_source("performWorkflowIntent", "submitWorkflowMutation"),
+            _executable_function_source("readJsonResponse", "readJobSubmission"),
+            """
+function response(data) {
+  return {
+    status: 200,
+    ok: true,
+    headers: { get() { return null; } },
+    async json() { return data; },
+  };
+}
+
+(async () => {
+  let resolveLate;
+  globalThis.fetch = () => new Promise(resolve => { resolveLate = resolve; });
+  const visitAIntent = {
+    method: 'POST',
+    url: '/api/visits/visit-a/questions',
+    body: { source_kind: 'manual', mutation_id: 'mutation-a' },
+    visitId: 'visit-a',
+    requestPhiEpoch: 0,
+    requestVisitEpoch: 4,
+  };
+  const lateRequest = performWorkflowIntent(visitAIntent);
+  await Promise.resolve();
+
+  selectedVisitId = 'visit-b';
+  visitSelectionEpoch = 5;
+  pendingWorkflowIntent = { visitId: 'visit-b', marker: 'keep-b-retry' };
+  element('appointment-retry').hidden = false;
+  element('appointment-status-message').textContent = 'Visit changed.';
+  resolveLate(response({
+    workflow_revision: 999,
+    profile_revision: 999,
+    item: { id: 'visit-a', token: 'a-late', question_snapshots: [] },
+  }));
+  const lateResult = await lateRequest;
+  if (lateResult) callerCleanupCalls += 1;
+  const lateRetryPreserved = pendingWorkflowIntent?.marker === 'keep-b-retry'
+    && element('appointment-retry').hidden === false;
+
+  globalThis.fetch = async () => {
+    const error = new Error('hard server failure');
+    error.status = 500;
+    throw error;
+  };
+  const hardFailureResult = await performWorkflowIntent({
+    ...visitAIntent,
+    body: { source_kind: 'manual', mutation_id: 'mutation-a-hard-failure' },
+  });
+
+  appointmentDrafts = new Map([['visit-b', { manualQuestion: 'caregiver draft' }]]);
+  globalThis.fetch = async () => { throw new TypeError('offline'); };
+  const offlineIntent = {
+    method: 'POST',
+    url: '/api/visits/visit-b/questions',
+    body: { source_kind: 'manual', mutation_id: 'mutation-b' },
+    visitId: 'visit-b',
+    requestPhiEpoch: 0,
+    requestVisitEpoch: 5,
+  };
+  const offlineResult = await performWorkflowIntent(offlineIntent);
+
+  console.log(JSON.stringify({
+    lateResult,
+    workflowRevision,
+    latestProfileRevision,
+    visitAToken: visitsById.get('visit-a').token,
+    visitBToken: visitsById.get('visit-b').token,
+    renderPreparationCalls,
+    renderWorkspaceCalls,
+    successReports,
+    callerCleanupCalls,
+    lateRetryPreserved,
+    hardFailureResult,
+    evictions,
+    loadErrors,
+    retryPreserved: pendingWorkflowIntent === offlineIntent,
+    offlineRetryVisible: element('appointment-retry').hidden === false,
+    offlineDraft: appointmentDrafts.get('visit-b').manualQuestion,
+    offlineResult,
+  }));
+})().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
+""",
+        ]
+    )
+    completed = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
+def test_late_visit_a_response_cannot_mutate_visit_b_or_trigger_success_cleanup():
+    result = _run_workflow_epoch_probe()
+
+    assert result == {
+        "lateResult": None,
+        "workflowRevision": 10,
+        "latestProfileRevision": 20,
+        "visitAToken": "a-original",
+        "visitBToken": "b-original",
+        "renderPreparationCalls": 0,
+        "renderWorkspaceCalls": 0,
+        "successReports": 0,
+        "callerCleanupCalls": 0,
+        "lateRetryPreserved": True,
+        "hardFailureResult": None,
+        "evictions": [500],
+        "loadErrors": [
+            ["appointment-workflow", 500],
+            ["appointment-workflow", None],
+        ],
+        "retryPreserved": True,
+        "offlineRetryVisible": True,
+        "offlineDraft": "caregiver draft",
+        "offlineResult": None,
+    }
+
+
+def _run_appointment_eviction_probe(status: int) -> dict:
+    script = "\n".join(
+        [
+            """
+class FakeClassList {
+  constructor() { this.values = new Set(); }
+  add(name) { this.values.add(name); }
+  remove(name) { this.values.delete(name); }
+  toggle(name, active) { active ? this.values.add(name) : this.values.delete(name); }
+  contains(name) { return this.values.has(name); }
+}
+function fakeElement() {
+  return {
+    attributes: {},
+    classList: new FakeClassList(),
+    className: '',
+    dataset: {},
+    disabled: false,
+    hidden: false,
+    inert: false,
+    innerHTML: '',
+    style: {},
+    tabIndex: 0,
+    textContent: '',
+    value: '',
+    closest() { return null; },
+    remove() {},
+    removeAttribute(name) { delete this.attributes[name]; },
+    setAttribute(name, value) { this.attributes[name] = value; },
+  };
+}
+const elements = new Map();
+const element = id => {
+  if (!elements.has(id)) elements.set(id, fakeElement());
+  return elements.get(id);
+};
+const appointmentDialog = element('appointment-dialog');
+const focusedControl = { blurred: false, blur() { this.blurred = true; } };
+appointmentDialog.contains = candidate => candidate === focusedControl;
+const background = fakeElement();
+background.inert = true;
+background.attributes['aria-hidden'] = 'true';
+background.dataset.dialogAriaHidden = 'true';
+const appointmentOverlay = element('appointment-overlay');
+appointmentOverlay.classList.add('open');
+appointmentOverlay.attributes['aria-hidden'] = 'false';
+const body = { children: [background, appointmentOverlay], classList: new FakeClassList() };
+body.classList.add('dialog-open');
+const document = {
+  activeElement: focusedControl,
+  body,
+  getElementById: element,
+  querySelectorAll() { return []; },
+};
+
+for (const id of [
+  'visit-list', 'visit-source-questions', 'visit-question-list',
+  'visit-decision-list', 'visit-followup-list'
+]) element(id).innerHTML = `SECRET ${id}`;
+for (const id of [
+  'visit-create-title', 'visit-create-date', 'visit-create-time',
+  'visit-create-clinician', 'visit-create-location',
+  'visit-edit-title', 'visit-edit-date', 'visit-edit-time',
+  'visit-edit-clinician', 'visit-edit-location', 'visit-manual-question',
+  'visit-decision-text', 'visit-decision-supersedes', 'visit-followup-text',
+  'visit-followup-owner', 'visit-followup-due'
+]) element(id).value = `SECRET ${id}`;
+for (const id of [
+  'visit-create-error', 'visit-details-error', 'visit-question-error',
+  'visit-decision-error', 'visit-followup-error'
+]) element(id).textContent = `SECRET ${id}`;
+element('appointment-dialog-title').textContent = 'SECRET title';
+element('appointment-dialog-meta').textContent = 'SECRET clinician and location';
+element('appointment-status-message').textContent = 'SECRET status';
+element('visit-status-badge').textContent = 'SECRET visit state';
+element('appointment-visit-select').innerHTML = '<option>SECRET visit name</option>';
+element('appointment-visit-select').value = 'visit-phi';
+element('visit-source-appointment').innerHTML = '<option>SECRET imported appointment</option>';
+element('visit-source-appointment').value = 'appointment-phi';
+element('visit-followup-decision').innerHTML = '<option>SECRET decision</option>';
+element('visit-followup-decision').value = 'decision-phi';
+element('visit-create-panel').hidden = false;
+element('visit-create-toggle').attributes['aria-expanded'] = 'true';
+element('appointment-retry').hidden = false;
+element('visit-create-retry').hidden = false;
+element('visit-decision-cancel-supersede').hidden = false;
+element('visit-decision-label').textContent = 'SECRET successor';
+for (const name of ['questions', 'decisions', 'followups']) {
+  element(`appointment-tab-${name}`);
+  element(`appointment-panel-${name}`);
+}
+
+let selectedTaskId = 'patient-task';
+let currentReportText = 'patient report';
+let currentReceipt = { patient: true };
+let pendingSummary = { patient: true };
+let latestProfileRevision = 41;
+let latestResearchUpdate = { patient: true };
+let patientEvidence = { patient: true };
+let allBiomarkers = [{ patient: true }];
+let workflowRevision = 17;
+let visitsById = new Map([['visit-phi', { patient: true }]]);
+let appointmentOptions = [{ patient: true }];
+let appointmentQuestionSources = [{ patient: true }];
+let questionLoadEpoch = 3;
+let generatedQuestionsUnavailable = true;
+let visitFollowUps = [{ patient: true }];
+let selectedVisitId = 'visit-phi';
+let visitSelectionEpoch = 8;
+let appointmentDialogOpen = true;
+let activeAppointmentTab = 'decisions';
+let pendingWorkflowIntent = { patient: true };
+let workflowMutationPending = true;
+let appointmentDrafts = new Map([['visit-phi', { patient: true }]]);
+let chatHistory = [{ patient: true }];
+let chatHistoryRevision = 41;
+let chatOpen = true;
+let taskSelectionEpoch = 2;
+let phiEpoch = 5;
+let lastDialogTrigger = { patient: true };
+let activeDialogSurface = appointmentDialog;
+
+function renderLatestResearchUpdate() {}
+function clearFreshnessProjection() {}
+function clearReportCopyState() {}
+function updateCharCount() {}
+function setAppointmentMutationBusy() {}
+function updateAppointmentFormValidity() {}
+""",
+            _executable_function_source("workflowIntentCanRender", "refreshClinicalWorkflowState"),
+            _executable_function_source("consumeWorkflowResponse", "handleWorkflowConflict"),
+            _function_source("evictClientPhi", "renderLatestResearchUpdate"),
+            """
+(async () => {
+  const authStatus = Number(process.argv[1]);
+  const lateIntent = {
+    visitId: 'visit-phi',
+    requestPhiEpoch: phiEpoch,
+    requestVisitEpoch: visitSelectionEpoch,
+  };
+  evictClientPhi({ status: authStatus });
+  const lateResults = await Promise.all([
+    consumeWorkflowResponse({
+      workflow_revision: 101,
+      profile_revision: 102,
+      visit: { id: 'visit-phi', title: 'SECRET late visit' },
+    }, lateIntent),
+    consumeWorkflowResponse({
+      workflow_revision: 103,
+      profile_revision: 104,
+      item: { id: 'followup-phi', visit_id: 'visit-phi', text: 'SECRET late follow-up' },
+    }, lateIntent),
+    consumeWorkflowResponse({
+      workflow_revision: 105,
+      profile_revision: 106,
+      item: { id: 'visit-phi', question_snapshots: [{ text: 'SECRET late question' }] },
+    }, lateIntent),
+  ]);
+  const projectionIds = [
+    'appointment-dialog-title', 'appointment-dialog-meta',
+    'appointment-status-message', 'visit-status-badge',
+    'appointment-visit-select', 'visit-source-appointment',
+    'visit-followup-decision', 'visit-list', 'visit-source-questions',
+    'visit-question-list', 'visit-decision-list', 'visit-followup-list',
+    'visit-create-error', 'visit-details-error', 'visit-question-error',
+    'visit-decision-error', 'visit-followup-error', 'visit-decision-label'
+  ];
+  const formIds = [
+    'visit-create-title', 'visit-create-date', 'visit-create-time',
+    'visit-create-clinician', 'visit-create-location',
+    'visit-edit-title', 'visit-edit-date', 'visit-edit-time',
+    'visit-edit-clinician', 'visit-edit-location', 'visit-manual-question',
+    'visit-decision-text', 'visit-decision-supersedes', 'visit-followup-text',
+    'visit-followup-owner', 'visit-followup-due'
+  ];
+  console.log(JSON.stringify({
+    lateResults,
+    phiEpoch,
+    workflowRevision,
+    latestProfileRevision,
+    mapsEmpty: visitsById.size === 0
+      && appointmentOptions.length === 0
+      && appointmentQuestionSources.length === 0
+      && visitFollowUps.length === 0,
+    selectionCleared: selectedVisitId === null && appointmentDrafts.size === 0,
+    intentCleared: pendingWorkflowIntent === null && workflowMutationPending === false,
+    projectionsScrubbed: projectionIds.every(id => {
+      const node = element(id);
+      return !`${node.innerHTML} ${node.textContent} ${node.value}`.includes('SECRET');
+    }),
+    formsScrubbed: formIds.every(id => element(id).value === ''),
+    overlayClosed: !appointmentOverlay.classList.contains('open')
+      && appointmentOverlay.attributes['aria-hidden'] === 'true',
+    overlayInert: appointmentOverlay.inert,
+    dialogInert: appointmentDialog.inert,
+    focusBlurred: focusedControl.blurred,
+    refsCleared: activeDialogSurface === null && lastDialogTrigger === null,
+    bodyReset: !body.classList.contains('dialog-open')
+      && background.inert === false
+      && !('aria-hidden' in background.attributes)
+      && !('dialogAriaHidden' in background.dataset),
+    createClosed: element('visit-create-panel').hidden
+      && element('visit-create-toggle').attributes['aria-expanded'] === 'false',
+    retriesHidden: element('appointment-retry').hidden
+      && element('visit-create-retry').hidden,
+    questionsTabReset: element('appointment-tab-questions').attributes['aria-selected']
+      === 'true'
+      && element('appointment-panel-questions').hidden === false
+      && element('appointment-panel-decisions').hidden === true
+      && element('appointment-panel-followups').hidden === true,
+  }));
+})().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
+""",
+        ]
+    )
+    completed = subprocess.run(
+        ["node", "-e", script, str(status)],
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_auth_eviction_scrubs_appointment_phi_and_rejects_all_late_successes(status):
+    result = _run_appointment_eviction_probe(status)
+
+    assert result == {
+        "lateResults": [False, False, False],
+        "phiEpoch": 6,
+        "workflowRevision": None,
+        "latestProfileRevision": None,
+        "mapsEmpty": True,
+        "selectionCleared": True,
+        "intentCleared": True,
+        "projectionsScrubbed": True,
+        "formsScrubbed": True,
+        "overlayClosed": True,
+        "overlayInert": True,
+        "dialogInert": True,
+        "focusBlurred": True,
+        "refsCleared": True,
+        "bodyReset": True,
+        "createClosed": True,
+        "retriesHidden": True,
+        "questionsTabReset": True,
+    }
+
+
+def _run_appointment_behavior_probe() -> dict:
+    script = "\n".join(
+        [
+            """
+let selectedVisitId = 'visit-1';
+let visitsById = new Map([['visit-1', {
+  id: 'visit-1',
+  token: 'visit-token',
+  question_snapshots: [
+    { id: 'q-1', token: 'token-1', pinned: false, order: 0, created_at: '1' },
+    { id: 'q-2', token: 'token-2', pinned: false, order: 1, created_at: '2' },
+    { id: 'q-3', token: 'token-3', pinned: false, order: 2, created_at: '3' },
+  ],
+}]]);
+let appointmentQuestionSources = [
+  { id: 'stale', source: 'ai', stale: true, text: 'STALE PATIENT TEXT', rationale: 'SECRET' },
+  {
+    id: 'current',
+    source: 'ai',
+    stale: false,
+    text: 'Current question',
+    source_token: 'source-token',
+    generation_job_id: 'generation-current',
+    source_profile_revision: 7,
+  },
+];
+let latestProfileRevision = 7;
+let generatedQuestionsUnavailable = false;
+class FakeClassList {
+  constructor() { this.values = new Set(); }
+  toggle(name, active) { active ? this.values.add(name) : this.values.delete(name); }
+  contains(name) { return this.values.has(name); }
+}
+function fakeTabElement() {
+  return {
+    classList: new FakeClassList(),
+    hidden: false,
+    tabIndex: -1,
+    attributes: {},
+    setAttribute(name, value) { this.attributes[name] = value; },
+  };
+}
+const elements = new Map([['visit-source-questions', { innerHTML: '' }]]);
+for (const name of ['questions', 'decisions', 'followups']) {
+  elements.set(`appointment-tab-${name}`, fakeTabElement());
+  elements.set(`appointment-panel-${name}`, fakeTabElement());
+}
+const document = { getElementById(id) { return elements.get(id) || null; } };
+const submissions = [];
+let activeAppointmentTab = 'questions';
+function captureAppointmentDraft() {}
+function escHtml(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+async function submitWorkflowMutation(url, body, visitId, method) {
+  submissions.push({ url, body, visitId, method });
+}
+""",
+            _function_source("currentVisit", "visitStatusLabel"),
+            _function_source("sortedVisitQuestions", "linkableAppointment"),
+            _executable_function_source("persistVisitQuestionOrder", "reorderedQuestionList"),
+            _executable_function_source("reorderedQuestionList", "moveVisitQuestion"),
+            _function_source("generatedQuestionIsCurrent", "projectQuestionChoices"),
+            _executable_function_source("renderVisitSourceQuestions", "addGeneratedVisitQuestion"),
+            _function_source("switchAppointmentTab", "handleAppointmentTabKeydown"),
+            """
+(async () => {
+  const ordered = reorderedQuestionList('q-3', 0);
+  await persistVisitQuestionOrder(ordered);
+  renderVisitSourceQuestions();
+  switchAppointmentTab('decisions');
+  console.log(JSON.stringify({
+    ordered: ordered.map(item => item.id),
+    submission: submissions[0],
+    staleRedacted: !elements.get('visit-source-questions').innerHTML.includes('STALE PATIENT TEXT')
+      && !elements.get('visit-source-questions').innerHTML.includes('SECRET'),
+    currentVisible: elements.get('visit-source-questions').innerHTML.includes('Current question'),
+    activeTab: activeAppointmentTab,
+    decisionSelected: elements.get('appointment-tab-decisions').attributes['aria-selected'],
+    decisionPanelHidden: elements.get('appointment-panel-decisions').hidden,
+    questionsPanelHidden: elements.get('appointment-panel-questions').hidden,
+  }));
+})().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
+""",
+        ]
+    )
+    completed = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
+def _run_decision_lifecycle_probe() -> dict:
+    script = "\n".join(
+        [
+            """
+const decisions = ['active', 'needs_confirmation', 'superseded', 'retracted'].map(status => ({
+  id: `decision-${status}`,
+  text: `${status} decision`,
+  status,
+  token: `token-${status}`,
+}));
+const visit = { id: 'visit-1', decisions };
+const elements = new Map([
+  ['visit-decision-list', { innerHTML: '' }],
+  ['visit-followup-decision', { innerHTML: '' }],
+  ['visit-decision-text', { value: '' }],
+  ['visit-decision-supersedes', { value: '' }],
+  ['visit-decision-cancel-supersede', { hidden: true }],
+  ['visit-decision-label', { textContent: '' }],
+]);
+const document = {
+  getElementById(id) { return elements.get(id) || null; },
+  querySelectorAll() { return []; },
+};
+const appointmentDrafts = new Map([['visit-1', {
+  decisionText: 'Corrected decision wording',
+  supersedesId: 'decision-active',
+}]]);
+let appointmentDialogOpen = true;
+let selectedVisitId = 'visit-1';
+const decisionSuccessorConflicts = new Set();
+function currentVisit() { return visit; }
+function updateAppointmentFormValidity() {}
+function toggleVisitAnswerText() {}
+function safeClassToken(value, fallback = '') {
+  return /^[a-z0-9_-]+$/i.test(String(value || '')) ? String(value) : fallback;
+}
+function escHtml(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+""",
+            _function_source("activeDecisionSuccessorId", "restoreAppointmentDraft"),
+            _function_source("restoreAppointmentDraft", "openAppointmentWorkspace"),
+            _function_source("decisionLifecyclePresentation", "renderVisitDecisions"),
+            _function_source("renderVisitDecisions", "prepareDecisionSuccessor"),
+            """
+renderVisitDecisions();
+decisionSuccessorConflicts.add('decision-active');
+renderVisitDecisions();
+const conflictedHtml = elements.get('visit-decision-list').innerHTML;
+decisionSuccessorConflicts.clear();
+renderVisitDecisions();
+restoreAppointmentDraft(visit);
+const activeDraft = {
+  supersedesId: elements.get('visit-decision-supersedes').value,
+  correctionLabel: elements.get('visit-decision-label').textContent,
+  cancelHidden: elements.get('visit-decision-cancel-supersede').hidden,
+};
+const changedVisit = {
+  ...visit,
+  decisions: decisions.map(decision => decision.id === 'decision-active'
+    ? { ...decision, status: 'needs_confirmation' }
+    : decision),
+};
+revalidateDecisionSuccessorState(changedVisit);
+const immediateInvalidation = {
+  supersedesId: elements.get('visit-decision-supersedes').value,
+  correctionLabel: elements.get('visit-decision-label').textContent,
+  cancelHidden: elements.get('visit-decision-cancel-supersede').hidden,
+  storedSupersedesId: appointmentDrafts.get('visit-1').supersedesId,
+};
+restoreAppointmentDraft(changedVisit);
+const nonActiveDraft = {
+  supersedesId: elements.get('visit-decision-supersedes').value,
+  correctionLabel: elements.get('visit-decision-label').textContent,
+  cancelHidden: elements.get('visit-decision-cancel-supersede').hidden,
+  decisionText: elements.get('visit-decision-text').value,
+  storedSupersedesId: appointmentDrafts.get('visit-1').supersedesId,
+};
+console.log(JSON.stringify({
+  lifecycle: Object.fromEntries(decisions.map(({ status }) => [
+    status,
+    decisionLifecyclePresentation(status),
+  ])),
+  html: elements.get('visit-decision-list').innerHTML,
+  followupOptions: elements.get('visit-followup-decision').innerHTML,
+  conflictedHtml,
+  activeDraft,
+  immediateInvalidation,
+  nonActiveDraft,
+}));
+""",
+        ]
+    )
+    completed = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
+def test_appointment_order_is_atomic_and_stale_generated_text_is_redacted_at_runtime():
+    result = _run_appointment_behavior_probe()
+    assert result["ordered"] == ["q-3", "q-1", "q-2"]
+    assert result["submission"] == {
+        "url": "/api/visits/visit-1/questions/order",
+        "body": {
+            "expected_visit_token": "visit-token",
+            "questions": [
+                {"id": "q-3", "expected_token": "token-3"},
+                {"id": "q-1", "expected_token": "token-1"},
+                {"id": "q-2", "expected_token": "token-2"},
+            ],
+        },
+        "visitId": "visit-1",
+        "method": "PATCH",
+    }
+    assert result["staleRedacted"] is True
+    assert result["currentVisible"] is True
+    assert result["activeTab"] == "decisions"
+    assert result["decisionSelected"] == "true"
+    assert result["decisionPanelHidden"] is False
+    assert result["questionsPanelHidden"] is True
+
+
+def _run_generated_question_redaction_probe() -> dict:
+    script = "\n".join(
+        [
+            """
+class FakeClassList {
+  toggle() {}
+}
+
+function fakeElement(html = '') {
+  return {
+    classList: new FakeClassList(),
+    hidden: false,
+    innerHTML: html,
+    textContent: '',
+  };
+}
+
+const elements = new Map([
+  ['q-list', fakeElement()],
+  ['q-count-badge', fakeElement()],
+  ['visit-source-questions', fakeElement()],
+  ['visit-question-list', fakeElement('Accepted generated snapshot: KEEP ACCEPTED')],
+  ['chat-messages', fakeElement()],
+]);
+const document = {
+  getElementById(id) { return elements.get(id) || null; },
+};
+const navigator = { onLine: false };
+let phiEpoch = 0;
+let taskSelectionEpoch = 0;
+let latestProfileRevision = null;
+let chatHistoryRevision = null;
+let chatHistory = [{ patient: true }];
+let questionLoadEpoch = 0;
+let generatedQuestionsUnavailable = false;
+let appointmentDialogOpen = true;
+let appointmentQuestionSources = [
+  {
+    id: 'manual-profile',
+    source: 'manual',
+    text: 'KEEP MANUAL PROFILE QUESTION',
+    category: 'Other',
+    priority: 'medium',
+    asked: false,
+  },
+  {
+    id: 'old-generated',
+    source: 'ai',
+    stale: false,
+    text: 'OLD GENERATED TEXT',
+    rationale: 'OLD SECRET RATIONALE',
+    category: 'Treatment',
+    priority: 'urgent',
+    source_token: 'OLD ACCEPTANCE TOKEN',
+    generation_job_id: 'old-generation',
+    source_profile_revision: 7,
+    asked: false,
+  },
+];
+const visitsById = new Map([['visit-1', {
+  question_snapshots: [{ id: 'accepted', text: 'KEEP ACCEPTED SNAPSHOT' }],
+}]]);
+const appointmentDrafts = new Map([['visit-1', {
+  manualQuestion: 'KEEP MANUAL DRAFT',
+}]]);
+const loadErrors = [];
+const fetchQueue = [];
+
+function escHtml(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+function safeClassToken(value, fallback = '') {
+  const token = String(value == null ? '' : value);
+  return /^[a-z0-9_-]+$/i.test(token) ? token : fallback;
+}
+function translateCategory(value) { return value; }
+function reportLoadSuccess() {}
+function reportLoadError(scope, error) { loadErrors.push([scope, error.status || error.name]); }
+function shouldEvictClientPhi(error) { return error?.status === 401 || error?.status === 403; }
+function evictClientPhi() { throw new Error('unexpected auth eviction'); }
+function setAppointmentMessage() {}
+function workflowIntentCanRender() { return true; }
+function captureAppointmentDraft() {}
+function clearWorkflowRetry() {}
+function loadStatus() { return Promise.resolve(); }
+function loadSummary() { return Promise.resolve(); }
+function loadTasks() { return Promise.resolve(); }
+function loadVisits() { return Promise.resolve(); }
+function loadVisitFollowUps() { return Promise.resolve(); }
+globalThis.fetch = () => {
+  if (!fetchQueue.length) throw new Error('missing queued response');
+  return fetchQueue.shift();
+};
+
+function response(status, data) {
+  return {
+    status,
+    ok: status >= 200 && status < 300,
+    headers: { get() { return null; } },
+    async json() { return data; },
+  };
+}
+
+function snapshot() {
+  const cache = JSON.stringify(appointmentQuestionSources);
+  const questions = elements.get('q-list').innerHTML;
+  const picker = elements.get('visit-source-questions').innerHTML;
+  const rendered = `${cache} ${questions} ${picker}`;
+  return {
+    cache,
+    questions,
+    picker,
+    generatedQuestionsUnavailable,
+    oldGone: !rendered.includes('OLD GENERATED TEXT')
+      && !rendered.includes('OLD SECRET RATIONALE')
+      && !rendered.includes('OLD ACCEPTANCE TOKEN'),
+    staleGone: !rendered.includes('STALE GENERATED TEXT')
+      && !rendered.includes('STALE RATIONALE')
+      && !rendered.includes('REVISIONLESS TEXT')
+      && !rendered.includes('INCOMPLETE RATIONALE'),
+    noPriorityLeak: !questions.includes('q-priority-dot urgent'),
+    noAcceptanceToken: !picker.includes('data-source-token'),
+    noAddAction: !picker.includes('>Add</button>'),
+    genericUnavailable: questions.includes('Generated questions unavailable')
+      && picker.includes('Generated questions unavailable')
+      && picker.includes('>Retry</button>'),
+    manualVisible: questions.includes('KEEP MANUAL PROFILE QUESTION'),
+    manualCached: cache.includes('KEEP MANUAL PROFILE QUESTION'),
+    acceptedSnapshot: visitsById.get('visit-1').question_snapshots[0].text,
+    acceptedDom: elements.get('visit-question-list').innerHTML,
+    manualDraft: appointmentDrafts.get('visit-1').manualQuestion,
+  };
+}
+""",
+            _executable_function_source("refreshClinicalWorkflowState", "consumeWorkflowResponse"),
+            _executable_function_source("handleWorkflowConflict", "performWorkflowIntent"),
+            _executable_function_source("readJsonResponse", "readJobSubmission"),
+            _executable_function_source("renderVisitSourceQuestions", "addGeneratedVisitQuestion"),
+            _function_source("generatedQuestionIsCurrent", "projectQuestionChoices"),
+            _function_source("projectQuestionChoices", "redactGeneratedQuestionChoices"),
+            _executable_function_source("redactGeneratedQuestionChoices", "loadQuestions"),
+            _executable_function_source("loadQuestions", "renderQuestions"),
+            _executable_function_source("renderQuestions", "generateQuestions"),
+            _function_source("syncChatRevision", "toggleChat"),
+            """
+(async () => {
+  renderQuestions(appointmentQuestionSources);
+  renderVisitSourceQuestions();
+
+  fetchQueue.push(Promise.resolve(response(200, [
+    {
+      id: 'manual-profile',
+      source: 'manual',
+      text: 'KEEP MANUAL PROFILE QUESTION',
+      category: 'Other',
+      priority: 'medium',
+      asked: false,
+    },
+    {
+      id: 'old-generated',
+      source: 'ai',
+      stale: false,
+      text: 'OLD GENERATED TEXT',
+      rationale: 'OLD SECRET RATIONALE',
+      category: 'Treatment',
+      priority: 'urgent',
+      source_token: 'OLD ACCEPTANCE TOKEN',
+      generation_job_id: 'old-generation',
+      source_profile_revision: 6,
+    },
+  ])));
+  await loadQuestions();
+  const unknownRevision = snapshot();
+
+  fetchQueue.push(Promise.resolve(response(200, [
+    {
+      id: 'manual-profile',
+      source: 'manual',
+      text: 'KEEP MANUAL PROFILE QUESTION',
+      category: 'Other',
+      priority: 'medium',
+      asked: false,
+    },
+    {
+      id: 'old-generated',
+      source: 'ai',
+      stale: false,
+      text: 'OLD GENERATED TEXT',
+      rationale: 'OLD SECRET RATIONALE',
+      category: 'Treatment',
+      priority: 'urgent',
+      source_token: 'OLD ACCEPTANCE TOKEN',
+      generation_job_id: 'old-generation',
+      source_profile_revision: 7,
+      asked: false,
+    },
+  ])));
+  syncChatRevision(7);
+  await new Promise(resolve => setImmediate(resolve));
+
+  let resolveGeneratedConflict;
+  fetchQueue.push(new Promise(resolve => { resolveGeneratedConflict = resolve; }));
+  const generatedConflictRefresh = handleWorkflowConflict(
+    { status: 409, message: 'generated source stale' },
+    { body: { source_kind: 'generated' } },
+  );
+  const generatedMutationConflict = snapshot();
+  resolveGeneratedConflict(response(200, [
+    {
+      id: 'manual-profile',
+      source: 'manual',
+      text: 'KEEP MANUAL PROFILE QUESTION',
+      category: 'Other',
+      priority: 'medium',
+      asked: false,
+    },
+    {
+      id: 'old-generated',
+      source: 'ai',
+      stale: false,
+      text: 'OLD GENERATED TEXT',
+      rationale: 'OLD SECRET RATIONALE',
+      category: 'Treatment',
+      priority: 'urgent',
+      source_token: 'OLD ACCEPTANCE TOKEN',
+      generation_job_id: 'old-generation',
+      source_profile_revision: 7,
+      asked: false,
+    },
+  ]));
+  await generatedConflictRefresh;
+
+  let resolveLateOld;
+  fetchQueue.push(new Promise(resolve => { resolveLateOld = resolve; }));
+  const lateOldRequest = loadQuestions();
+
+  fetchQueue.push(Promise.reject(new TypeError('offline')));
+  appointmentDialogOpen = false;
+  const revisionRefresh = refreshClinicalWorkflowState(8);
+  const immediateAfterRevision = snapshot();
+  appointmentDialogOpen = true;
+  await revisionRefresh;
+  const offline = snapshot();
+
+  const abortError = new Error('aborted');
+  abortError.name = 'AbortError';
+  fetchQueue.push(Promise.reject(abortError));
+  await loadQuestions();
+  const aborted = snapshot();
+
+  resolveLateOld(response(200, [{
+    id: 'old-generated',
+    source: 'ai',
+    stale: false,
+    text: 'OLD GENERATED TEXT',
+    rationale: 'OLD SECRET RATIONALE',
+    category: 'Treatment',
+    priority: 'urgent',
+    source_token: 'OLD ACCEPTANCE TOKEN',
+    generation_job_id: 'old-generation',
+    source_profile_revision: 7,
+  }]));
+  await lateOldRequest;
+  const afterLateOld = snapshot();
+
+  fetchQueue.push(Promise.resolve(response(409, { error: 'stale revision' })));
+  await loadQuestions();
+  const conflict = snapshot();
+
+  fetchQueue.push(Promise.resolve(response(200, [
+    {
+      id: 'manual-profile',
+      source: 'manual',
+      text: 'KEEP MANUAL PROFILE QUESTION',
+      category: 'Other',
+      priority: 'medium',
+      asked: false,
+    },
+    {
+      id: 'stale-generated',
+      source: 'ai',
+      stale: true,
+      text: 'STALE GENERATED TEXT',
+      rationale: 'STALE RATIONALE',
+      category: 'Treatment',
+      priority: 'urgent',
+      source_token: 'STALE TOKEN',
+      generation_job_id: 'stale-generation',
+      source_profile_revision: 7,
+    },
+    {
+      id: 'revisionless-generated',
+      source: 'ai',
+      stale: false,
+      text: 'REVISIONLESS TEXT',
+      rationale: 'REVISIONLESS RATIONALE',
+      category: 'Diagnostics',
+      priority: 'urgent',
+      source_token: 'REVISIONLESS TOKEN',
+      generation_job_id: 'new-generation',
+    },
+    {
+      id: 'incomplete-generated',
+      source: 'ai',
+      stale: false,
+      text: '   ',
+      rationale: 'INCOMPLETE RATIONALE',
+      category: 'Trials',
+      priority: 'urgent',
+      source_token: 'INCOMPLETE TOKEN',
+      generation_job_id: 'new-generation',
+      source_profile_revision: 8,
+    },
+  ])));
+  appointmentDialogOpen = false;
+  await loadQuestions();
+  const staleAndRevisionless = snapshot();
+  appointmentDialogOpen = true;
+
+  fetchQueue.push(Promise.resolve(response(200, [
+    {
+      id: 'manual-profile',
+      source: 'manual',
+      text: 'KEEP MANUAL PROFILE QUESTION',
+      category: 'Other',
+      priority: 'medium',
+      asked: false,
+    },
+    {
+      id: 'new-generated',
+      source: 'ai',
+      stale: false,
+      text: 'NEW CURRENT QUESTION',
+      rationale: 'CURRENT RATIONALE',
+      category: 'Monitoring',
+      priority: 'high',
+      source_token: 'NEW CURRENT TOKEN',
+      generation_job_id: 'new-generation',
+      source_profile_revision: 8,
+      asked: false,
+    },
+  ])));
+  await loadQuestions();
+  const current = snapshot();
+
+  let resolveMissingRevision;
+  fetchQueue.push(new Promise(resolve => { resolveMissingRevision = resolve; }));
+  syncChatRevision(null);
+  const missingRevision = snapshot();
+  resolveMissingRevision(response(200, [{
+    id: 'new-generated',
+    source: 'ai',
+    stale: false,
+    text: 'NEW CURRENT QUESTION',
+    source_token: 'NEW CURRENT TOKEN',
+    generation_job_id: 'new-generation',
+    source_profile_revision: 8,
+  }]));
+  await new Promise(resolve => setImmediate(resolve));
+
+  console.log(JSON.stringify({
+    unknownRevision,
+    generatedMutationConflict,
+    immediateAfterRevision,
+    offline,
+    aborted,
+    afterLateOld,
+    conflict,
+    staleAndRevisionless,
+    current,
+    missingRevision,
+    loadErrors,
+  }));
+})().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
+""",
+        ]
+    )
+    completed = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
+def test_generated_question_choices_fail_closed_across_revision_and_reload_paths():
+    result = _run_generated_question_redaction_probe()
+
+    for phase_name in (
+        "unknownRevision",
+        "generatedMutationConflict",
+        "immediateAfterRevision",
+        "offline",
+        "aborted",
+        "afterLateOld",
+        "conflict",
+        "staleAndRevisionless",
+        "missingRevision",
+    ):
+        phase = result[phase_name]
+        assert phase["oldGone"] is True, phase_name
+        assert phase["staleGone"] is True, phase_name
+        assert phase["noPriorityLeak"] is True, phase_name
+        assert phase["noAcceptanceToken"] is True, phase_name
+        assert phase["noAddAction"] is True, phase_name
+        assert phase["genericUnavailable"] is True, phase_name
+        assert phase["manualVisible"] is True, phase_name
+        assert phase["manualCached"] is True, phase_name
+        assert phase["acceptedSnapshot"] == "KEEP ACCEPTED SNAPSHOT", phase_name
+        assert phase["acceptedDom"] == "Accepted generated snapshot: KEEP ACCEPTED", phase_name
+        assert phase["manualDraft"] == "KEEP MANUAL DRAFT", phase_name
+
+    current = result["current"]
+    assert current["generatedQuestionsUnavailable"] is False
+    assert "NEW CURRENT QUESTION" in current["questions"]
+    assert "NEW CURRENT QUESTION" in current["picker"]
+    assert "NEW CURRENT TOKEN" in current["picker"]
+    assert ">Add</button>" in current["picker"]
+    assert "OLD GENERATED TEXT" not in current["cache"]
+    assert current["manualDraft"] == "KEEP MANUAL DRAFT"
+    assert current["acceptedSnapshot"] == "KEEP ACCEPTED SNAPSHOT"
+    assert result["loadErrors"] == [
+        ["appointment-workflow", 409],
+        ["questions", "TypeError"],
+        ["questions", "AbortError"],
+        ["questions", 409],
+    ]
+
+
+def test_decision_controls_match_the_server_lifecycle_matrix_at_runtime():
+    result = _run_decision_lifecycle_probe()
+    lifecycle = result["lifecycle"]
+
+    assert "Needs confirmation" in lifecycle["active"]["controls"]
+    assert "Correct with successor" in lifecycle["active"]["controls"]
+    assert "Retract" in lifecycle["active"]["controls"]
+    assert "Confirm active" in lifecycle["needs_confirmation"]["controls"]
+    assert "Retract" in lifecycle["needs_confirmation"]["controls"]
+    assert "Correct with successor" not in lifecycle["needs_confirmation"]["controls"]
+    assert lifecycle["superseded"]["controls"] == ""
+    assert lifecycle["retracted"]["controls"] == ""
+    assert "only after confirmation" in lifecycle["needs_confirmation"]["copy"]
+    assert "immutable history" in lifecycle["superseded"]["copy"]
+    assert "immutable history" in lifecycle["retracted"]["copy"]
+
+    assert result["html"].count("Correct with successor") == 1
+    assert result["html"].count("Confirm active") == 1
+    assert result["html"].count(">Retract</button>") == 2
+    assert "decision-active" in result["followupOptions"]
+    assert "decision-needs_confirmation" in result["followupOptions"]
+    assert "decision-superseded" not in result["followupOptions"]
+    assert "decision-retracted" not in result["followupOptions"]
+    assert "Correct with successor" not in result["conflictedHtml"]
+    assert "Reload this changed decision" in result["conflictedHtml"]
+    assert result["activeDraft"] == {
+        "supersedesId": "decision-active",
+        "correctionLabel": "Correct with a successor decision",
+        "cancelHidden": False,
+    }
+    assert result["immediateInvalidation"] == {
+        "supersedesId": "",
+        "correctionLabel": "Caregiver-entered decision attributed to the clinician",
+        "cancelHidden": True,
+        "storedSupersedesId": "",
+    }
+    assert result["nonActiveDraft"] == {
+        "supersedesId": "",
+        "correctionLabel": "Caregiver-entered decision attributed to the clinician",
+        "cancelHidden": True,
+        "decisionText": "Corrected decision wording",
+        "storedSupersedesId": "",
+    }
+    consume = _function_source("consumeWorkflowResponse", "handleWorkflowConflict")
+    assert "revalidateDecisionSuccessorState(data.visit)" in consume
+    assert "renderAppointmentWorkspace()" in consume
+    assert consume.index("revalidateDecisionSuccessorState(data.visit)") < consume.index(
+        "if (profileChanged)"
+    )
+    assert consume.index("renderAppointmentWorkspace()") < consume.index("if (profileChanged)")
+    conflicts = _function_source("handleWorkflowConflict", "performWorkflowIntent")
+    assert "decisionSuccessorConflicts.add(intent.body.supersedes_id)" in conflicts
+    assert "renderVisitDecisions()" in conflicts
+    successor = _function_source("prepareDecisionSuccessor", "cancelDecisionSuccessor")
+    assert "decision.status !== 'active'" in successor
+    assert "decisionSuccessorConflicts.has(id)" in successor
+    assert "loadVisits()" in successor
+
+
+def test_narrow_appointment_order_controls_render_without_overflow_and_keep_focus():
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    markup = """
+      <main class="appointment-dialog">
+        <div class="appointment-dialog-body">
+          <section class="appointment-tab-panel active">
+            <article class="visit-question">
+              <div class="visit-question-order">
+                <button class="button secondary" data-control="move-up">Move up</button>
+                <button class="button secondary" data-control="move-down">Move down</button>
+                <label><span>Rank</span><select data-control="rank"><option>1</option></select></label>
+              </div>
+            </article>
+          </section>
+        </div>
+      </main>
+    """
+
+    with playwright_api.sync_playwright() as playwright:
+        executable = Path(playwright.chromium.executable_path)
+        if not executable.exists():
+            pytest.skip("Installed Playwright browser is unavailable")
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 360, "height": 800})
+        page.set_content(markup)
+        page.add_style_tag(content=CSS)
+
+        controls = page.locator(".visit-question-order .button, .visit-question-order select")
+        narrow_heights = controls.evaluate_all(
+            "(items) => items.map(item => item.getBoundingClientRect().height)"
+        )
+        overflow = page.evaluate(
+            """() => ({
+              document: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+              dialog: document.querySelector('.appointment-dialog').scrollWidth
+                - document.querySelector('.appointment-dialog').clientWidth,
+              question: document.querySelector('.visit-question').scrollWidth
+                - document.querySelector('.visit-question').clientWidth,
+            })"""
+        )
+        assert len(narrow_heights) == 3
+        assert all(height >= 44 for height in narrow_heights)
+        assert overflow == {"document": 0, "dialog": 0, "question": 0}
+
+        page.keyboard.press("Tab")
+        assert page.evaluate("document.activeElement.dataset.control") == "move-up"
+        page.keyboard.press("Tab")
+        assert page.evaluate("document.activeElement.dataset.control") == "move-down"
+        page.keyboard.press("Tab")
+        assert page.evaluate("document.activeElement.dataset.control") == "rank"
+        focus = page.evaluate(
+            """() => {
+              const style = getComputedStyle(document.activeElement);
+              return { style: style.outlineStyle, width: parseFloat(style.outlineWidth) };
+            }"""
+        )
+        assert focus["style"] != "none"
+        assert focus["width"] >= 3
+
+        page.set_viewport_size({"width": 1024, "height": 800})
+        desktop_heights = controls.evaluate_all(
+            "(items) => items.map(item => item.getBoundingClientRect().height)"
+        )
+        assert all(35 <= height < 44 for height in desktop_heights)
+        browser.close()
+
+
+def test_appointment_mutations_use_stable_contracts_and_explicit_retry_only():
+    mutation = _function_source("newMutationId", "setAppointmentMessage")
+    intent = _function_source("createWorkflowIntent", "workflowIntentCanRender")
+    performer = _function_source("performWorkflowIntent", "submitWorkflowMutation")
+    retry = _function_source("retryWorkflowIntent", "readJsonResponse")
+    invalidation = _function_source(
+        "invalidateWorkflowRetryOnDraftChange", "setAppointmentMutationBusy"
+    )
+    generated = _function_source("addGeneratedVisitQuestion", "addManualVisitQuestion")
+    ordering = _function_source("persistVisitQuestionOrder", "reorderedQuestionList")
+
+    assert "crypto?.randomUUID" in mutation
+    assert "mutation_id: newMutationId()" in intent
+    assert "workflowMutationPending" in performer
+    assert "setAppointmentMutationBusy(true)" in performer
+    assert "response.status === 409" not in performer
+    assert "error?.status === 409" in performer
+    assert "performWorkflowIntent(intent, true)" in retry
+    assert "clearWorkflowRetry()" in invalidation
+    assert "The draft changed" in invalidation
+    assert "addEventListener('input', handleAppointmentDraftChange)" in APP_JS
+    assert "expected_source_token: sourceToken" in generated
+    assert "source_question_id: sourceId" in generated
+    assert "text:" not in generated
+    assert "/questions/order" in ordering
+    assert "questions: ordered.map" in ordering
+    assert "/questions/${encodeURIComponent" not in ordering
+
+
+def test_appointment_revision_epoch_conflict_and_eviction_guards_are_complete():
+    context = _function_source("workflowIntentCanRender", "refreshClinicalWorkflowState")
+    refresh = _function_source("refreshClinicalWorkflowState", "consumeWorkflowResponse")
+    consume = _function_source("consumeWorkflowResponse", "handleWorkflowConflict")
+    conflicts = _function_source("handleWorkflowConflict", "performWorkflowIntent")
+    performer = _function_source("performWorkflowIntent", "submitWorkflowMutation")
+    eviction = _function_source("evictClientPhi", "renderLatestResearchUpdate")
+
+    assert "requestPhiEpoch !== phiEpoch" in context
+    assert "requestVisitEpoch !== visitSelectionEpoch" in context
+    assert consume.index("if (!workflowIntentCanRender(intent)) return false") < consume.index(
+        "captureAppointmentDraft()"
+    )
+    assert consume.index("if (!workflowIntentCanRender(intent)) return false") < consume.index(
+        "workflowRevision = data.workflow_revision"
+    )
+    assert "return true" in consume
+    assert conflicts.index("if (!workflowIntentCanRender(intent)) return false") < conflicts.index(
+        "clearWorkflowRetry()"
+    )
+    consumed_guard = performer.index("if (!consumed) return null")
+    assert consumed_guard < performer.index("clearWorkflowRetry()", consumed_guard)
+    catch_source = performer[performer.index("catch (error)") :]
+    assert catch_source.index("if (!workflowIntentCanRender(intent)) return null") < (
+        catch_source.index("error?.status === 409")
+    )
+    assert "phiEpoch += 1" in refresh
+    assert "taskSelectionEpoch += 1" in refresh
+    assert "syncChatRevision(profileRevision, true, false)" in refresh
+    assert refresh.index("redactGeneratedQuestionChoices()") < refresh.index("loadQuestions()")
+    assert "loadSummary()" in refresh
+    assert "loadTasks()" in refresh
+    assert "loadVisits()" in refresh
+    assert "loadVisitFollowUps()" in refresh
+    assert "loadQuestions()" in conflicts
+    assert conflicts.index("redactGeneratedQuestionChoices()") < conflicts.index(
+        "Promise.allSettled"
+    )
+    assert "performWorkflowIntent" not in conflicts
+
+    for expression in (
+        "workflowRevision = null",
+        "visitsById = new Map()",
+        "appointmentOptions = []",
+        "appointmentQuestionSources = []",
+        "visitFollowUps = []",
+        "selectedVisitId = null",
+        "visitSelectionEpoch += 1",
+        "appointmentDialogOpen = false",
+        "pendingWorkflowIntent = null",
+        "workflowMutationPending = false",
+        "appointmentDrafts = new Map()",
+        "decisionSuccessorConflicts = new Set()",
+        "clear('visit-list')",
+        "clear('visit-question-list')",
+        "clear('visit-decision-list')",
+        "clear('visit-followup-list')",
+    ):
+        assert expression in eviction
+
+
+def test_appointment_loops_use_arrays_and_live_drafts_survive_rerenders():
+    assert not re.search(r"for \(const [^)]+ of \(", APP_JS)
+    retry_clear = _function_source("clearWorkflowRetry", "invalidateWorkflowRetryOnDraftChange")
+    assert "['appointment-retry', 'visit-create-retry']" in retry_clear
+    tabs = _function_source("switchAppointmentTab", "handleAppointmentTabKeydown")
+    assert "['questions', 'decisions', 'followups']" in tabs
+
+    capture = _function_source("captureAppointmentDraft", "restoreAppointmentDraft")
+    restore = _function_source("restoreAppointmentDraft", "openAppointmentWorkspace")
+    consume = _function_source("consumeWorkflowResponse", "handleWorkflowConflict")
+    assert "querySelectorAll('#visit-question-list .visit-question')" in capture
+    assert "answers[row.dataset.visitQuestionId]" in capture
+    assert "answers," in capture
+    assert "Object.entries(values.answers || {})" in restore
+    assert "toggleVisitAnswerText(status)" in restore
+    assert "captureAppointmentDraft()" in consume
+    assert "addEventListener('change', handleAppointmentDraftChange)" in APP_JS
+
+
+def test_appointment_provenance_and_stale_source_wording_are_fixed():
+    assert APP_JS.count("Caregiver-entered · attributed to clinician · unverified") >= 2
+    source_picker = _function_source("renderVisitSourceQuestions", "addGeneratedVisitQuestion")
+    assert "Generated questions unavailable" in source_picker
+    assert "Reload the current questions" in source_picker
+    unavailable = source_picker[
+        source_picker.index("if (generatedQuestionsUnavailable)") : source_picker.index(
+            "container.innerHTML = currentRows.join"
+        )
+    ]
+    assert "question.text" not in unavailable
+    assert "question.rationale" not in unavailable
+    assert "data-source-token" not in unavailable
+    assert ">Add</button>" not in unavailable
+    accepted = _function_source("renderVisitQuestions", "toggleVisitAnswerText")
+    assert "Generated snapshot · generation" in accepted
+    assert "Manual caregiver question" in accepted
+
+
+def test_appointment_flows_never_call_deferred_or_legacy_routes():
+    assert "/api/visits/${encodeURIComponent(visit.id)}/follow-ups" in APP_JS
+    assert "visitFollowUps.filter" in APP_JS
+    assert "/api/alerts/resolve/" not in APP_JS
+    assert "/api/follow-ups/" not in APP_JS
+    assert "Save as follow-up" not in APP_JS
+    assert "follow-up filters" not in APP_JS

@@ -9,6 +9,27 @@ incremented when something user-visible or operationally meaningful changes.
 ## [Unreleased]
 
 ### Fixed
+- **Late appointment responses and authorization PHI teardown.** Appointment
+  mutations now validate their patient-data and visit-selection epochs before
+  changing workflow/profile revisions, visit caches, retry state, drafts, or
+  rendered content. Late visit A responses cannot repaint visit B or trigger
+  success cleanup. Authorization eviction now scrubs appointment titles,
+  clinician/location metadata, visit and decision options, statuses, dynamic
+  tab content, form values, drafts, retry intents, and dialog references while
+  safely resetting focus and inert state. Ordinary offline failures continue to
+  preserve the caregiver's in-progress draft for explicit retry.
+- **Generated-question revision redaction.** A clinical revision now removes
+  generated appointment choices from browser cache and both Questions surfaces
+  before the authoritative reload. Offline, stale, revisionless, and late
+  responses show only a generic retry state without prior text, metadata,
+  priority styling, acceptance tokens, or Add controls, while manual drafts and
+  accepted visit snapshots remain intact.
+- **Appointment decision controls and phone targets.** Decision actions now match
+  the server lifecycle: only active decisions offer immutable successor
+  correction, needs-confirmation decisions offer confirm/retract, and terminal
+  decisions remain read-only history. At 360px, Move/rank controls retain at
+  least 44px targets, visible keyboard focus, wrapping, and no horizontal
+  overflow without enlarging their desktop presentation.
 - **Mutation replay identity and immutable results.** Layer 2 and alert-resolution
   idempotency is now bound to endpoint, operation, target, and the complete
   accepted request, including CAS/source tokens. Unsupported fields are rejected
@@ -27,6 +48,17 @@ incremented when something user-visible or operationally meaningful changes.
   not block snapshot/backup recovery or permit duplicate initialization.
 
 ### Added
+- **Responsive appointment working mode.** Questions now includes visit
+  preparation and one focused desktop/phone workspace for current generated or
+  manual question snapshots, atomic pin/rank ordering, answered versus explicitly
+  unknown clinician-attributed capture, immutable decision successors/lifecycle,
+  and visit-linked resulting follow-ups. Imported appointment choices are
+  limited to active/linkable bounded projections, stale generated question text
+  is withheld, and every caregiver capture is visibly labelled
+  caregiver-entered, clinician-attributed, and unverified. Stable target tokens,
+  one-intent mutation IDs, profile/workflow revision handling, visit/PHI epochs,
+  offline draft preservation, conflict reloads, focus trapping, and narrow-phone
+  controls prevent stale or late responses from repainting the active visit.
 - **Durable caregiver follow-through backend.** Schema v8 adds independent
   workflow revisioning, accepted/generated action snapshots, visit working
   records with ordered question snapshots, explicit unknowns, caregiver-entered
@@ -36,7 +68,7 @@ incremented when something user-visible or operationally meaningful changes.
   no longer stales clinical artifacts, while new clinical capture and alert
   resolution still invalidate every revision-bound generated context. Alert
   resolution can atomically record an outcome/link a follow-up or decision
-  without changing sibling alerts. No appointment UI, generic review inbox,
+  without changing sibling alerts. No generic review inbox,
   autonomous treatment instruction, database, or scheduler is introduced.
   Generated summary actions and questions are now acceptable only from an
   explicitly current, fully identified generation with an exact source token;

@@ -183,6 +183,33 @@
         <button class="button secondary" id="q-gen-btn" onclick="generateQuestions()">✦ Generate questions</button>
       </div>
 
+      <section class="content-card appointment-prep-card" aria-labelledby="appointment-prep-heading">
+        <div class="card-header compact split-header">
+          <div><p class="eyebrow">Visit working mode</p><h2 id="appointment-prep-heading">Appointment workspace</h2></div>
+          <button class="button secondary" id="visit-create-toggle" aria-controls="visit-create-panel" aria-expanded="false" onclick="toggleVisitCreateForm()">＋ New visit</button>
+        </div>
+        <div id="visit-create-panel" class="visit-create-panel" hidden>
+          <div class="visit-form-grid">
+            <label><span>Imported appointment (optional)</span><select id="visit-source-appointment" onchange="prefillVisitFromAppointment()"><option value="">Create without imported appointment</option></select></label>
+            <label><span>Visit title</span><input id="visit-create-title" maxlength="200" placeholder="Oncology follow-up"></label>
+            <label><span>Date</span><input id="visit-create-date" type="date"></label>
+            <label><span>Time</span><input id="visit-create-time" maxlength="40" placeholder="e.g. 10:30"></label>
+            <label><span>Clinician</span><input id="visit-create-clinician" maxlength="200" placeholder="Treating clinician"></label>
+            <label><span>Location</span><input id="visit-create-location" maxlength="300" placeholder="Clinic or video visit"></label>
+          </div>
+          <div class="visit-form-actions">
+            <button class="button primary" id="visit-create-submit" onclick="createVisit()" disabled>Create visit</button>
+            <button class="button secondary" onclick="toggleVisitCreateForm(false)">Cancel</button>
+          </div>
+          <p class="form-error" id="visit-create-error" role="alert" aria-live="polite"></p>
+          <div class="appointment-retry" id="visit-create-retry" hidden>
+            <span>The create request may not have reached the server. Your draft is still here.</span>
+            <button class="button secondary" onclick="retryWorkflowIntent()">Retry unchanged request</button>
+          </div>
+        </div>
+        <div id="visit-list" class="visit-list" aria-live="polite"><div class="loading-state">Loading visits…</div></div>
+      </section>
+
       <div class="questions-grid">
         <section class="content-card" aria-labelledby="question-list-heading">
           <div class="card-header compact"><div><p class="eyebrow">For the next visit</p><h2 id="question-list-heading">Questions for the doctor</h2></div></div>
@@ -233,6 +260,106 @@
       </section>
     </section>
   </main>
+</div>
+
+<div class="appointment-overlay" id="appointment-overlay" aria-hidden="true" onclick="closeAppointmentFromBackdrop(event)">
+  <section class="appointment-dialog" id="appointment-dialog" role="dialog" aria-modal="true" aria-labelledby="appointment-dialog-title" tabindex="-1">
+    <header class="appointment-dialog-header">
+      <div>
+        <p class="eyebrow">Appointment working mode</p>
+        <h2 id="appointment-dialog-title">Visit</h2>
+        <p id="appointment-dialog-meta" class="helper-text"></p>
+      </div>
+      <label class="appointment-visit-selector"><span class="sr-only">Selected visit</span><select id="appointment-visit-select" onchange="selectVisitInWorkspace(this.value)"></select></label>
+      <button class="icon-button" onclick="closeAppointmentWorkspace()" aria-label="Close appointment workspace">×</button>
+    </header>
+
+    <div id="appointment-status-message" class="appointment-status-message" role="status" aria-live="polite"></div>
+
+    <section class="appointment-metadata" aria-labelledby="visit-details-heading">
+      <div class="appointment-section-heading">
+        <div><p class="eyebrow">Session details</p><h3 id="visit-details-heading">Visit details</h3></div>
+        <span id="visit-status-badge" class="visit-status-badge"></span>
+      </div>
+      <div class="visit-form-grid">
+        <label><span>Title</span><input id="visit-edit-title" maxlength="200"></label>
+        <label><span>Date</span><input id="visit-edit-date" type="date"></label>
+        <label><span>Time</span><input id="visit-edit-time" maxlength="40"></label>
+        <label><span>Clinician</span><input id="visit-edit-clinician" maxlength="200"></label>
+        <label><span>Location</span><input id="visit-edit-location" maxlength="300"></label>
+      </div>
+      <div class="visit-form-actions">
+        <button class="button secondary" id="visit-save-details" onclick="saveVisitDetails()">Save details</button>
+        <button class="button primary" id="visit-start-button" onclick="changeVisitStatus('in_progress')">Start visit</button>
+        <button class="button secondary" id="visit-complete-button" onclick="changeVisitStatus('completed')">Complete</button>
+        <button class="button secondary danger" id="visit-cancel-button" onclick="changeVisitStatus('cancelled')">Cancel visit</button>
+      </div>
+      <p class="form-error" id="visit-details-error" role="alert" aria-live="polite"></p>
+    </section>
+
+    <div class="appointment-tabs" role="tablist" aria-label="Appointment workspace sections" onkeydown="handleAppointmentTabKeydown(event)">
+      <button id="appointment-tab-questions" class="appointment-tab active" role="tab" tabindex="0" aria-selected="true" aria-controls="appointment-panel-questions" onclick="switchAppointmentTab('questions')">Questions</button>
+      <button id="appointment-tab-decisions" class="appointment-tab" role="tab" tabindex="-1" aria-selected="false" aria-controls="appointment-panel-decisions" onclick="switchAppointmentTab('decisions')">Decisions</button>
+      <button id="appointment-tab-followups" class="appointment-tab" role="tab" tabindex="-1" aria-selected="false" aria-controls="appointment-panel-followups" onclick="switchAppointmentTab('followups')">Follow-ups</button>
+    </div>
+
+    <div class="appointment-dialog-body">
+      <section id="appointment-panel-questions" class="appointment-tab-panel active" role="tabpanel" aria-labelledby="appointment-tab-questions">
+        <div class="appointment-two-column">
+          <section class="appointment-subcard" aria-labelledby="available-question-heading">
+            <div class="appointment-section-heading"><div><p class="eyebrow">Preparation</p><h3 id="available-question-heading">Add a question</h3></div></div>
+            <div id="visit-source-questions" class="visit-source-questions"><div class="loading-state">Loading generated questions…</div></div>
+            <div class="appointment-form">
+              <label><span>Manual caregiver question</span><textarea id="visit-manual-question" maxlength="1000" rows="3" placeholder="What do we need to ask?"></textarea></label>
+              <div class="visit-form-grid compact">
+                <label><span>Category</span><select id="visit-manual-category"><option value="Other">Other</option><option value="Treatment">Treatment</option><option value="Diagnostics">Diagnostics</option><option value="Symptoms">Symptoms</option><option value="Trials">Trials</option><option value="Monitoring">Monitoring</option></select></label>
+                <label><span>Priority</span><select id="visit-manual-priority"><option value="medium">Medium</option><option value="high">High</option><option value="urgent">Urgent</option></select></label>
+              </div>
+              <button class="button secondary" id="visit-manual-question-submit" onclick="addManualVisitQuestion()" disabled>Add manual question</button>
+              <p class="form-error" id="visit-question-error" role="alert" aria-live="polite"></p>
+            </div>
+          </section>
+          <section class="appointment-subcard" aria-labelledby="visit-question-list-heading">
+            <div class="appointment-section-heading"><div><p class="eyebrow">During the visit</p><h3 id="visit-question-list-heading">Visit questions</h3></div></div>
+            <div id="visit-question-list" class="visit-question-list" aria-live="polite"></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="appointment-panel-decisions" class="appointment-tab-panel" role="tabpanel" aria-labelledby="appointment-tab-decisions" hidden>
+        <div class="appointment-form">
+          <input id="visit-decision-supersedes" type="hidden">
+          <label><span id="visit-decision-label">Caregiver-entered decision attributed to the clinician</span><textarea id="visit-decision-text" maxlength="4000" rows="4" placeholder="Record what the clinician decided or said needs confirmation."></textarea></label>
+          <div class="visit-form-actions">
+            <button class="button primary" id="visit-decision-submit" onclick="addVisitDecision()" disabled>Add decision</button>
+            <button class="button secondary" id="visit-decision-cancel-supersede" onclick="cancelDecisionSuccessor()" hidden>Cancel correction</button>
+          </div>
+          <p class="capture-provenance">Caregiver-entered · attributed to clinician · unverified</p>
+          <p class="form-error" id="visit-decision-error" role="alert" aria-live="polite"></p>
+        </div>
+        <div id="visit-decision-list" class="visit-decision-list" aria-live="polite"></div>
+      </section>
+
+      <section id="appointment-panel-followups" class="appointment-tab-panel" role="tabpanel" aria-labelledby="appointment-tab-followups" hidden>
+        <div class="appointment-form">
+          <label><span>Resulting follow-up</span><textarea id="visit-followup-text" maxlength="1000" rows="3" placeholder="Contact, ask, discuss, or confirm with the treating team."></textarea></label>
+          <div class="visit-form-grid compact">
+            <label><span>Linked decision (optional)</span><select id="visit-followup-decision"><option value="">No linked decision</option></select></label>
+            <label><span>Owner</span><input id="visit-followup-owner" maxlength="100"></label>
+            <label><span>Due date</span><input id="visit-followup-due" type="date"></label>
+          </div>
+          <button class="button primary" id="visit-followup-submit" onclick="createVisitFollowUp()" disabled>Create follow-up</button>
+          <p class="form-error" id="visit-followup-error" role="alert" aria-live="polite"></p>
+        </div>
+        <div id="visit-followup-list" class="visit-followup-list" aria-live="polite"></div>
+      </section>
+    </div>
+
+    <div class="appointment-retry" id="appointment-retry" hidden>
+      <span>The last request may not have reached the server. Your draft is still here.</span>
+      <button class="button secondary" onclick="retryWorkflowIntent()">Retry unchanged request</button>
+    </div>
+  </section>
 </div>
 
 <div class="feed-backdrop" id="feed-backdrop" onclick="toggleFeedPopover(false)"></div>

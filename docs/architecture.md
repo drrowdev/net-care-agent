@@ -184,6 +184,17 @@ append immutable caregiver-entered, clinician-attributed statements and change
 only explicit lifecycle state. Resulting follow-ups are durable action records
 linked by ID. Generated questions never become clinician facts.
 
+The Questions view now exposes those contracts through one responsive appointment
+working mode rather than another top-level SPA view. `GET /api/visits` includes a
+bounded picker projection only for imported appointments whose source/import is
+still active and linkable; paths, raw text, source quotes, evidence offsets, and
+receipt internals are excluded. Visit creation revalidates the selected source ID
+under the mutation lock. Question ranking uses one complete-order visit mutation:
+the server verifies the visit token, exact current question ID/token membership,
+normalizes all ranks, appends one audit event, advances only
+`workflow_revision`, and saves once. A conflict cannot leave a partially reordered
+authoritative list.
+
 Every new Layer 2 mutation carries a bounded `mutation_id`, appends an immutable
 endpoint/operation/target scope plus request-hash/before-token/after-token event,
 compares only the addressed semantic target, and saves once under
@@ -272,7 +283,7 @@ only with exact `APP_ORIGIN` or canonical HTTPS `WEBSITE_HOSTNAME`.
 | Decision | Why |
 |---|---|
 | JSON file, not Postgres | Single patient, single writer; auditable diffs; trivial backup. |
-| Vanilla SPA, not React | Caregiver runs the UI on a phone occasionally — zero build pipeline beats lighter frameworks. The split SPA uses one responsive Today/Patient/Questions/Activity shell on every screen size. `static/index.html` owns semantic markup and dialogs, `static/app.js` owns API state/rendering, receipt reconciliation, focus/inert behavior, and load states, and `static/styles.css` provides the green/amber desktop rail and fixed phone navigation. |
+| Vanilla SPA, not React | Caregiver runs the UI on a phone occasionally — zero build pipeline beats lighter frameworks. The split SPA uses one responsive Today/Patient/Questions/Activity shell on every screen size. `static/index.html` owns semantic markup and dialogs, `static/app.js` owns API state/rendering, receipt reconciliation, appointment epochs/drafts, focus/inert behavior, and load states, and `static/styles.css` provides the green/amber desktop rail, full-height phone appointment sheet, and fixed phone navigation. |
 | Flask + gunicorn, not FastAPI/Containers | App Service runs Python natively; no Docker needed; rapid `az webapp deploy` cycle. |
 | No MSAL | Single user. App Service Easy Auth gates hosted APIs except health/liveness. Local API bypass is explicit (`ALLOW_LOCAL_AUTH_BYPASS=1`), never implicit. |
 | Per-agent model env vars | Lets us downgrade exec_summary or chat to Haiku independently for cost without touching code. |

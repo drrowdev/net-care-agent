@@ -53,6 +53,112 @@ def _without_replay_marker(body):
     return result
 
 
+def _append_imported_appointment(
+    profile,
+    suffix,
+    *,
+    document_excluded=False,
+    import_status="active",
+    change_state="active",
+    source_status=None,
+):
+    source_id = f"source-{suffix}"
+    appointment = {
+        "id": f"appointment-{suffix}",
+        "date": "2026-10-01",
+        "time": "09:30",
+        "with": "Dr Example",
+        "location": "Clinic",
+        "description": f"Review {suffix}",
+        "type": "review",
+        "source": "ai",
+        "source_document_id": source_id,
+        "source_quote": "Private source quote",
+        "evidence_status": "verified",
+        "evidence_start": 7,
+        "evidence_end": 27,
+        "receipt_internal": "must not leak",
+    }
+    source = {
+        "id": source_id,
+        "ingested_at": "2026-08-01T10:00:00+00:00",
+        "source": {"path": f"sources\\{suffix}", "sha256": "a" * 64, "length": 20},
+        "text": {"path": f"text\\{suffix}", "sha256": "b" * 64, "length": 20},
+    }
+    if source_status is not None:
+        source["status"] = source_status
+    profile.setdefault("source_documents", []).append(source)
+    profile.setdefault("documents", []).append(
+        {
+            "id": f"document-{suffix}",
+            "date": "2026-08-01",
+            "type": "doctor_note",
+            "summary": "Appointment source",
+            "source_document_id": source_id,
+            "excluded_from_clinical_context": document_excluded,
+        }
+    )
+    profile.setdefault("appointments", []).append(appointment)
+    profile.setdefault("document_imports", []).append(
+        {
+            "id": f"import-{suffix}",
+            "job_id": f"job-{suffix}",
+            "source_document_id": source_id,
+            "ingested_at": "2026-08-01T10:00:00+00:00",
+            "applied_revision": 1,
+            "receipt_revision": 1,
+            "status": import_status,
+            "changes": [
+                {
+                    "id": f"change-{suffix}",
+                    "category": "appointments",
+                    "label": f"Review {suffix}",
+                    "operation": "added",
+                    "target": {
+                        "kind": "collection",
+                        "collection": "appointments",
+                        "record_id": appointment["id"],
+                        "path": [],
+                    },
+                    "effective_value": json.loads(json.dumps(appointment)),
+                    "source_document_id": source_id,
+                    "state": change_state,
+                    "history": [],
+                }
+            ],
+        }
+    )
+    return appointment
+
+
+def _create_visit_with_questions(client, count=2, *, prefix="reorder"):
+    visit = _create_visit(client, mutation_id=f"{prefix}-visit-create")
+    for index in range(count):
+        response = client.post(
+            f"/api/visits/{visit['id']}/questions",
+            json={
+                "mutation_id": f"{prefix}-question-{index}",
+                "expected_visit_token": visit["token"],
+                "source_kind": "manual",
+                "text": f"Question {index}?",
+            },
+        )
+        assert response.status_code == 201
+        visit = response.get_json()["visit"]
+    return visit
+
+
+def _reorder_request(visit, *, mutation_id="reorder-mutation-001"):
+    return {
+        "mutation_id": mutation_id,
+        "expected_visit_token": visit["token"],
+        "questions": [
+            {"id": item["id"], "expected_token": item["token"]}
+            for item in reversed(visit["question_snapshots"])
+        ],
+    }
+
+
 def test_request_hash_is_deterministic_and_preserves_cas_tokens():
     from agent.follow_through import request_hash
 
@@ -75,6 +181,299 @@ def test_request_hash_is_deterministic_and_preserves_cas_tokens():
             "nested": {"answer": "same", "source_token": "source-b"},
         }
     )
+
+
+def test_visits_projects_only_current_linkable_imported_appointments(
+    app_client, agent, empty_profile
+):
+    _, client = app_client
+    current = _append_imported_appointment(empty_profile, "current")
+    _append_imported_appointment(empty_profile, "undone", import_status="undone")
+    _append_imported_appointment(empty_profile, "excluded", document_excluded=True)
+    _append_imported_appointment(empty_profile, "removed", change_state="removed")
+    _append_imported_appointment(empty_profile, "inactive", source_status="inactive")
+    empty_profile["appointments"].extend(
+        [
+            {"id": "manual-appointment", "date": "2026-11-01", "description": "Manual"},
+            {
+                "id": "legacy-appointment",
+                "date": "2026-11-02",
+                "description": "Legacy",
+                "source_document_id": "source-current",
+            },
+        ]
+    )
+    agent.save_profile(empty_profile, clinical_change=False)
+
+    response = client.get("/api/visits")
+
+    assert response.status_code == 200
+    assert response.get_json()["appointments"] == [
+        {
+            key: current[key]
+            for key in ("id", "date", "time", "with", "location", "description", "type")
+        }
+    ]
+    serialized = json.dumps(response.get_json()["appointments"])
+    for private_field in (
+        "source_document_id",
+        "source_quote",
+        "evidence_start",
+        "receipt_internal",
+        "path",
+    ):
+        assert private_field not in serialized
+
+
+def test_visits_appointment_projection_is_bounded(app_client, agent, empty_profile):
+    _, client = app_client
+    for index in range(101):
+        _append_imported_appointment(empty_profile, f"bounded-{index:03d}")
+    agent.save_profile(empty_profile, clinical_change=False)
+
+    appointments = client.get("/api/visits").get_json()["appointments"]
+
+    assert len(appointments) == 100
+    assert appointments[0]["id"] == "appointment-bounded-000"
+    assert appointments[-1]["id"] == "appointment-bounded-099"
+
+
+def test_visit_source_must_be_in_linkable_projection(app_client, agent, empty_profile):
+    _, client = app_client
+    current = _append_imported_appointment(empty_profile, "linkable")
+    stale = _append_imported_appointment(empty_profile, "stale", document_excluded=True)
+    agent.save_profile(empty_profile, clinical_change=False)
+
+    accepted = client.post(
+        "/api/visits",
+        json={
+            "mutation_id": "source-linkable-visit",
+            "title": "Imported appointment",
+            "source_appointment_id": current["id"],
+        },
+    )
+    rejected = client.post(
+        "/api/visits",
+        json={
+            "mutation_id": "source-stale-visit",
+            "title": "Stale imported appointment",
+            "source_appointment_id": stale["id"],
+        },
+    )
+
+    assert accepted.status_code == 201
+    assert accepted.get_json()["item"]["source_appointment_id"] == current["id"]
+    assert rejected.status_code == 404
+    assert [item["source_appointment_id"] for item in agent.load_profile()["visits"]] == [
+        current["id"]
+    ]
+
+
+def test_visit_question_reorder_is_single_workflow_only_mutation(
+    app_client, agent, empty_profile, monkeypatch
+):
+    app_module, client = app_client
+    empty_profile["profile_revision"] = 9
+    agent.save_profile(empty_profile, clinical_change=False)
+    visit = _create_visit_with_questions(client, prefix="happy-reorder")
+    before = agent.load_profile()
+    previous_tokens = {item["id"]: item["token"] for item in visit["question_snapshots"]}
+    original_save = app_module.agent.save_profile
+    save_count = 0
+
+    def counting_save(*args, **kwargs):
+        nonlocal save_count
+        save_count += 1
+        return original_save(*args, **kwargs)
+
+    monkeypatch.setattr(app_module.agent, "save_profile", counting_save)
+    response = client.patch(
+        f"/api/visits/{visit['id']}/questions/order",
+        json=_reorder_request(visit, mutation_id="happy-reorder-mutation"),
+    )
+    saved = agent.load_profile()
+    public_visit = response.get_json()["visit"]
+    ordered = public_visit["question_snapshots"]
+
+    assert response.status_code == 200
+    assert [item["id"] for item in ordered] == [
+        item["id"] for item in reversed(visit["question_snapshots"])
+    ]
+    assert [item["order"] for item in ordered] == [0, 1]
+    assert public_visit["token"] != visit["token"]
+    assert all(item["token"] != previous_tokens[item["id"]] for item in ordered)
+    assert response.get_json()["workflow_revision"] == before["workflow_revision"] + 1
+    assert response.get_json()["profile_revision"] == 9
+    assert saved["profile_revision"] == 9
+    assert save_count == 1
+    assert len(saved["visits"][0]["history"]) == len(before["visits"][0]["history"]) + 1
+    event = saved["visits"][0]["history"][-1]
+    assert event["operation"] == "questions_reordered"
+    assert event["changes"]["order"] == {
+        "before": [item["id"] for item in visit["question_snapshots"]],
+        "after": [item["id"] for item in reversed(visit["question_snapshots"])],
+    }
+
+
+def test_visit_question_reorder_exact_replay_returns_original_without_save(
+    app_client, agent, empty_profile, monkeypatch
+):
+    app_module, client = app_client
+    agent.save_profile(empty_profile, clinical_change=False)
+    visit = _create_visit_with_questions(client, prefix="replay-reorder")
+    request_body = _reorder_request(visit, mutation_id="replay-reorder-mutation")
+    original_save = app_module.agent.save_profile
+    save_count = 0
+
+    def counting_save(*args, **kwargs):
+        nonlocal save_count
+        save_count += 1
+        return original_save(*args, **kwargs)
+
+    monkeypatch.setattr(app_module.agent, "save_profile", counting_save)
+    first = client.patch(f"/api/visits/{visit['id']}/questions/order", json=request_body)
+    changed = client.post(
+        f"/api/visits/{visit['id']}/questions",
+        json={
+            "mutation_id": "replay-reorder-later-question",
+            "expected_visit_token": first.get_json()["visit"]["token"],
+            "source_kind": "manual",
+            "text": "A later question?",
+        },
+    )
+    revision_after_change = changed.get_json()["workflow_revision"]
+    replay = client.patch(f"/api/visits/{visit['id']}/questions/order", json=request_body)
+
+    assert first.status_code == 200
+    assert changed.status_code == 201
+    assert replay.status_code == 200
+    assert _without_replay_marker(replay.get_json()) == first.get_json()
+    assert save_count == 2
+    saved = agent.load_profile()
+    assert saved["workflow_revision"] == revision_after_change
+    assert len(saved["visits"][0]["history"]) == 5
+
+
+def test_visit_question_reorder_changed_replays_conflict(app_client, agent, empty_profile):
+    _, client = app_client
+    agent.save_profile(empty_profile, clinical_change=False)
+    visit = _create_visit_with_questions(client, prefix="changed-reorder")
+    request_body = _reorder_request(visit, mutation_id="changed-reorder-mutation")
+    assert (
+        client.patch(f"/api/visits/{visit['id']}/questions/order", json=request_body).status_code
+        == 200
+    )
+
+    changed_order = {
+        **request_body,
+        "questions": list(reversed(request_body["questions"])),
+    }
+    changed_membership = {
+        **request_body,
+        "questions": request_body["questions"][:1],
+    }
+    changed_token = json.loads(json.dumps(request_body))
+    changed_token["questions"][0]["expected_token"] = "different"
+    second_visit = _create_visit(client, mutation_id="changed-reorder-second-visit")
+
+    for body in (changed_order, changed_membership, changed_token):
+        response = client.patch(f"/api/visits/{visit['id']}/questions/order", json=body)
+        assert response.status_code == 409
+    changed_identity = client.patch(
+        f"/api/visits/{second_visit['id']}/questions/order",
+        json=request_body,
+    )
+    assert changed_identity.status_code == 409
+
+
+def test_visit_question_reorder_rejects_cas_membership_and_validation_errors(
+    app_client, agent, empty_profile
+):
+    _, client = app_client
+    agent.save_profile(empty_profile, clinical_change=False)
+    visit = _create_visit_with_questions(client, prefix="invalid-reorder")
+    valid = _reorder_request(visit, mutation_id="invalid-reorder-base")
+    url = f"/api/visits/{visit['id']}/questions/order"
+
+    bad_visit = client.patch(
+        url,
+        json={**valid, "mutation_id": "invalid-reorder-visit", "expected_visit_token": "stale"},
+    )
+    missing = client.patch(
+        url,
+        json={
+            **valid,
+            "mutation_id": "invalid-reorder-membership",
+            "questions": valid["questions"][:1],
+        },
+    )
+    bad_question = json.loads(json.dumps(valid))
+    bad_question["mutation_id"] = "invalid-reorder-question"
+    bad_question["questions"][0]["expected_token"] = "stale"
+    question_conflict = client.patch(url, json=bad_question)
+    duplicate = client.patch(
+        url,
+        json={
+            **valid,
+            "mutation_id": "invalid-reorder-duplicate",
+            "questions": [valid["questions"][0], valid["questions"][0]],
+        },
+    )
+    unsupported = client.patch(
+        url,
+        json={**valid, "mutation_id": "invalid-reorder-unsupported", "extra": True},
+    )
+    unsupported_item = json.loads(json.dumps(valid))
+    unsupported_item["mutation_id"] = "invalid-reorder-item"
+    unsupported_item["questions"][0]["text"] = "client-owned"
+    item_response = client.patch(url, json=unsupported_item)
+    no_op_questions = [
+        {"id": item["id"], "expected_token": item["token"]} for item in visit["question_snapshots"]
+    ]
+    no_op = client.patch(
+        url,
+        json={
+            "mutation_id": "invalid-reorder-noop",
+            "expected_visit_token": visit["token"],
+            "questions": no_op_questions,
+        },
+    )
+
+    assert bad_visit.status_code == 409
+    assert missing.status_code == 409
+    assert question_conflict.status_code == 409
+    assert duplicate.status_code == 400
+    assert unsupported.status_code == 400
+    assert item_response.status_code == 400
+    assert no_op.status_code == 400
+    saved = agent.load_profile()
+    assert saved["workflow_revision"] == 3
+    assert len(saved["visits"][0]["history"]) == 3
+
+
+def test_visit_question_reorder_save_failure_is_atomic(
+    app_client, agent, empty_profile, monkeypatch
+):
+    app_module, client = app_client
+    agent.save_profile(empty_profile, clinical_change=False)
+    visit = _create_visit_with_questions(client, prefix="failed-reorder")
+    before = agent.load_profile()
+    save_count = 0
+
+    def fail_save(*args, **kwargs):
+        nonlocal save_count
+        save_count += 1
+        raise OSError("simulated save failure")
+
+    monkeypatch.setattr(app_module.agent, "save_profile", fail_save)
+    with pytest.raises(OSError, match="simulated save failure"):
+        client.patch(
+            f"/api/visits/{visit['id']}/questions/order",
+            json=_reorder_request(visit, mutation_id="failed-reorder-mutation"),
+        )
+
+    assert save_count == 1
+    assert agent.load_profile() == before
 
 
 def test_manual_follow_up_is_idempotent_and_workflow_only(app_client, agent, empty_profile):
@@ -1106,11 +1505,29 @@ def test_model_context_labels_captured_statements_as_unverified(agent, empty_pro
             ],
             "decisions": [
                 {
-                    "id": "decision",
-                    "text": "Continue monitoring",
+                    "id": "decision-active",
+                    "text": "Active decision remains in context",
                     "status": "active",
                     "provenance": agent.capture_provenance(),
-                }
+                },
+                {
+                    "id": "decision-needs-confirmation",
+                    "text": "Unconfirmed decision stays out of context",
+                    "status": "needs_confirmation",
+                    "provenance": agent.capture_provenance(),
+                },
+                {
+                    "id": "decision-superseded",
+                    "text": "Superseded decision stays out of context",
+                    "status": "superseded",
+                    "provenance": agent.capture_provenance(),
+                },
+                {
+                    "id": "decision-retracted",
+                    "text": "Retracted decision stays out of context",
+                    "status": "retracted",
+                    "provenance": agent.capture_provenance(),
+                },
             ],
         }
     ]
@@ -1120,6 +1537,10 @@ def test_model_context_labels_captured_statements_as_unverified(agent, empty_pro
     assert "Caregiver-captured clinician statements (attributed, unverified)" in context
     assert "caregiver-recorded clinician answer" in context
     assert "caregiver-recorded clinician decision" in context
+    assert "Active decision remains in context" in context
+    assert "Unconfirmed decision stays out of context" not in context
+    assert "Superseded decision stays out of context" not in context
+    assert "Retracted decision stays out of context" not in context
 
 
 def test_visit_follow_up_snapshots_decision_and_replays(app_client, agent, empty_profile):

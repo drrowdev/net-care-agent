@@ -104,12 +104,14 @@ let generatedQuestionsUnavailable = false;
 let followUpsById = new Map([['follow-up-phi', { patient: true }]]);
 let followUpFilter = 'active';
 let followUpLoadEpoch = 0;
+let followUpProjectionStale = false;
 let selectedFollowUpId = 'follow-up-phi';
 let followUpSelectionEpoch = 0;
 let followUpDialogOpen = true;
 let followUpDialogMode = 'edit';
 let followUpOutcomeStatus = null;
 let pendingFollowUpIntent = { patient: true };
+let activeFollowUpIntent = null;
 let followUpMutationPending = true;
 let followUpDrafts = new Map([['edit:follow-up-phi', { patient: true }]]);
 let selectedVisitId = 'visit-phi';
@@ -117,6 +119,7 @@ let visitSelectionEpoch = 0;
 let appointmentDialogOpen = true;
 let activeAppointmentTab = 'decisions';
 let pendingWorkflowIntent = { patient: true };
+let activeWorkflowIntent = null;
 let workflowMutationPending = true;
 let appointmentDrafts = new Map([['visit-phi', { patient: true }]]);
 let renderSummaryCalls = 0;
@@ -819,6 +822,7 @@ let visitsById = new Map([
 ]);
 let followUpsById = new Map();
 let pendingWorkflowIntent = null;
+let activeWorkflowIntent = null;
 let workflowMutationPending = false;
 let appointmentDrafts = new Map();
 let renderPreparationCalls = 0;
@@ -827,6 +831,8 @@ let successReports = 0;
 let callerCleanupCalls = 0;
 const evictions = [];
 const loadErrors = [];
+let followUpProjectionStale = false;
+let followUpStaleMarks = 0;
 
 function captureAppointmentDraft() {}
 function renderVisitPreparation() { renderPreparationCalls += 1; }
@@ -844,6 +850,10 @@ function advancePatientAuthority(revision) {
   latestProfileRevision = revision;
   phiEpoch += 1;
   return true;
+}
+function markFollowUpProjectionStale() {
+  followUpProjectionStale = true;
+  followUpStaleMarks += 1;
 }
 """,
             _response_authority_source(),
@@ -913,6 +923,23 @@ function response(data) {
     requestVisitEpoch: 5,
   };
   const offlineResult = await performWorkflowIntent(offlineIntent);
+  const offlineRetryPreserved = pendingWorkflowIntent === offlineIntent;
+
+  globalThis.fetch = async () => { throw new TypeError('offline follow-up'); };
+  const offlineFollowUpResult = await performWorkflowIntent({
+    ...offlineIntent,
+    url: '/api/visits/visit-b/follow-ups',
+    body: { text: 'caregiver follow-up', mutation_id: 'mutation-follow-up-offline' },
+  });
+  followUpProjectionStale = false;
+  const abortError = new Error('aborted follow-up');
+  abortError.name = 'AbortError';
+  globalThis.fetch = async () => { throw abortError; };
+  const abortedFollowUpResult = await performWorkflowIntent({
+    ...offlineIntent,
+    url: '/api/visits/visit-b/follow-ups',
+    body: { text: 'caregiver follow-up', mutation_id: 'mutation-follow-up-abort' },
+  });
 
   console.log(JSON.stringify({
     lateResult,
@@ -928,10 +955,14 @@ function response(data) {
     hardFailureResult,
     evictions,
     loadErrors,
-    retryPreserved: pendingWorkflowIntent === offlineIntent,
+    retryPreserved: offlineRetryPreserved,
     offlineRetryVisible: element('appointment-retry').hidden === false,
     offlineDraft: appointmentDrafts.get('visit-b').manualQuestion,
     offlineResult,
+    offlineFollowUpResult,
+    abortedFollowUpResult,
+    followUpStaleMarks,
+    followUpProjectionStale,
   }));
 })().catch(error => {
   console.error(error);
@@ -940,7 +971,7 @@ function response(data) {
 """,
         ]
     )
-    completed = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    completed = subprocess.run(["node"], input=script, capture_output=True, text=True)
     assert completed.returncode == 0, completed.stderr
     return json.loads(completed.stdout)
 
@@ -964,11 +995,17 @@ def test_late_visit_a_response_cannot_mutate_visit_b_or_trigger_success_cleanup(
         "loadErrors": [
             ["appointment-workflow", 500],
             ["appointment-workflow", None],
+            ["appointment-workflow", None],
+            ["appointment-workflow", None],
         ],
         "retryPreserved": True,
         "offlineRetryVisible": True,
         "offlineDraft": "caregiver draft",
         "offlineResult": None,
+        "offlineFollowUpResult": None,
+        "abortedFollowUpResult": None,
+        "followUpStaleMarks": 2,
+        "followUpProjectionStale": True,
     }
 
 
@@ -1071,9 +1108,16 @@ element('visit-create-retry').hidden = false;
 element('visit-decision-cancel-supersede').hidden = false;
 element('visit-decision-label').textContent = 'SECRET successor';
 element('follow-up-dialog-status').textContent = 'SECRET action status';
+element('follow-up-dialog-title').textContent = 'SECRET follow-up title';
+element('follow-up-edit-copy').textContent = 'SECRET edit copy';
+element('follow-up-outcome-copy').textContent = 'SECRET outcome copy';
+element('follow-up-outcome-guidance').textContent = 'SECRET outcome guidance';
 element('follow-up-retry').hidden = false;
 element('follow-up-dialog-retry').hidden = false;
 element('follow-up-outcome-kind').value = 'clinician_attributed';
+for (const id of [
+  'follow-up-create-form', 'follow-up-edit-form', 'follow-up-outcome-form'
+]) element(id).hidden = false;
 for (const name of ['questions', 'decisions', 'followups']) {
   element(`appointment-tab-${name}`);
   element(`appointment-panel-${name}`);
@@ -1096,19 +1140,26 @@ let generatedQuestionsUnavailable = true;
 let followUpsById = new Map([['follow-up-phi', { patient: true }]]);
 let followUpFilter = 'active';
 let followUpLoadEpoch = 3;
+let followUpProjectionStale = true;
 let selectedFollowUpId = 'follow-up-phi';
 let followUpSelectionEpoch = 4;
 let followUpDialogOpen = true;
 let followUpDialogMode = 'outcome';
 let followUpOutcomeStatus = 'completed';
-let pendingFollowUpIntent = { patient: true };
+const pendingFollowUpIntentRef = { body: { text: 'SECRET pending body' } };
+let pendingFollowUpIntent = pendingFollowUpIntentRef;
+const activeFollowUpIntentRef = { body: { text: 'SECRET active body' } };
+let activeFollowUpIntent = activeFollowUpIntentRef;
 let followUpMutationPending = true;
 let followUpDrafts = new Map([['outcome:follow-up-phi:completed', { patient: true }]]);
 let selectedVisitId = 'visit-phi';
 let visitSelectionEpoch = 8;
 let appointmentDialogOpen = true;
 let activeAppointmentTab = 'decisions';
-let pendingWorkflowIntent = { patient: true };
+const pendingWorkflowIntentRef = { body: { text: 'SECRET pending workflow body' } };
+let pendingWorkflowIntent = pendingWorkflowIntentRef;
+const activeWorkflowIntentRef = { body: { text: 'SECRET active workflow body' } };
+let activeWorkflowIntent = activeWorkflowIntentRef;
 let workflowMutationPending = true;
 let appointmentDrafts = new Map([['visit-phi', { patient: true }]]);
 let chatHistory = [{ patient: true }];
@@ -1166,7 +1217,9 @@ function updateAppointmentFormValidity() {}
     'visit-create-error', 'visit-details-error', 'visit-question-error',
     'visit-decision-error', 'visit-followup-error', 'visit-decision-label',
     'follow-up-list', 'follow-up-status', 'follow-up-dialog-status',
-    'follow-up-create-error', 'follow-up-edit-error', 'follow-up-outcome-error'
+    'follow-up-dialog-title', 'follow-up-edit-copy', 'follow-up-outcome-copy',
+    'follow-up-outcome-guidance', 'follow-up-create-error',
+    'follow-up-edit-error', 'follow-up-outcome-error'
   ];
   const formIds = [
     'visit-create-title', 'visit-create-date', 'visit-create-time',
@@ -1194,7 +1247,12 @@ function updateAppointmentFormValidity() {}
     intentCleared: pendingWorkflowIntent === null
       && workflowMutationPending === false
       && pendingFollowUpIntent === null
+      && activeFollowUpIntent === null
       && followUpMutationPending === false,
+    intentBodiesScrubbed: Object.keys(pendingFollowUpIntentRef.body).length === 0
+      && Object.keys(activeFollowUpIntentRef.body).length === 0
+      && Object.keys(pendingWorkflowIntentRef.body).length === 0
+      && Object.keys(activeWorkflowIntentRef.body).length === 0,
     projectionsScrubbed: projectionIds.every(id => {
       const node = element(id);
       return !`${node.innerHTML} ${node.textContent} ${node.value}`.includes('SECRET');
@@ -1218,6 +1276,9 @@ function updateAppointmentFormValidity() {}
       && element('visit-create-retry').hidden
       && element('follow-up-retry').hidden
       && element('follow-up-dialog-retry').hidden,
+    followUpFormsHidden: element('follow-up-create-form').hidden
+      && element('follow-up-edit-form').hidden
+      && element('follow-up-outcome-form').hidden,
     questionsTabReset: element('appointment-tab-questions').attributes['aria-selected']
       === 'true'
       && element('appointment-panel-questions').hidden === false
@@ -1252,6 +1313,7 @@ def test_auth_eviction_scrubs_appointment_phi_and_rejects_all_late_successes(sta
         "mapsEmpty": True,
         "selectionCleared": True,
         "intentCleared": True,
+        "intentBodiesScrubbed": True,
         "projectionsScrubbed": True,
         "formsScrubbed": True,
         "overlayClosed": True,
@@ -1262,6 +1324,7 @@ def test_auth_eviction_scrubs_appointment_phi_and_rejects_all_late_successes(sta
         "bodyReset": True,
         "createClosed": True,
         "retriesHidden": True,
+        "followUpFormsHidden": True,
         "questionsTabReset": True,
     }
 
@@ -2207,6 +2270,7 @@ const calls = [];
 let selectedFollowUpId = 'action-1';
 let followUpDialogMode = 'outcome';
 let followUpOutcomeStatus = 'completed';
+let followUpProjectionStale = false;
 const followUpsById = new Map([['action-1', {
   id: 'action-1',
   token: 'full-action-token',
@@ -2327,6 +2391,378 @@ def test_follow_up_requests_use_stable_ids_tokens_and_exact_bodies():
     ]
     assert "generatedActionSourceId" not in json.dumps(calls[0]["body"])
     assert "text" not in calls[0]["body"]
+
+
+def _run_follow_up_offline_projection_probe() -> dict:
+    script = "\n".join(
+        [
+            """
+class FakeClassList {
+  constructor() { this.values = new Set(); }
+  add(name) { this.values.add(name); }
+  remove(name) { this.values.delete(name); }
+  toggle(name, active) { active ? this.values.add(name) : this.values.delete(name); }
+  contains(name) { return this.values.has(name); }
+}
+function fakeElement() {
+  return {
+    attributes: {},
+    classList: new FakeClassList(),
+    className: '',
+    dataset: {},
+    disabled: false,
+    hidden: false,
+    inert: false,
+    innerHTML: '',
+    textContent: '',
+    value: '',
+    removeAttribute(name) { delete this.attributes[name]; },
+    setAttribute(name, value) { this.attributes[name] = value; },
+  };
+}
+const elements = new Map();
+const element = id => {
+  if (!elements.has(id)) elements.set(id, fakeElement());
+  return elements.get(id);
+};
+for (const id of [
+  'follow-up-list', 'follow-up-status', 'follow-up-dialog-status',
+  'follow-up-create-button', 'follow-up-create-submit', 'follow-up-edit-submit',
+  'follow-up-outcome-submit', 'follow-up-retry-button',
+  'follow-up-dialog-retry-button', 'follow-up-create-text',
+  'follow-up-create-owner', 'follow-up-create-due', 'follow-up-edit-owner',
+  'follow-up-edit-due', 'follow-up-outcome-kind', 'follow-up-outcome-text',
+  'visit-followup-list', 'visit-followup-submit', 'visit-followup-text',
+  'visit-create-title', 'visit-manual-question', 'visit-decision-text',
+  'visit-create-submit', 'visit-manual-question-submit', 'visit-decision-submit',
+  'follow-up-create-error', 'follow-up-edit-error', 'follow-up-outcome-error',
+  'visit-create-error', 'visit-question-error', 'visit-decision-error',
+  'visit-followup-error'
+]) element(id);
+for (const name of ['active', 'completed', 'cancelled', 'all']) {
+  element(`follow-up-count-${name}`);
+}
+
+function summaryRow(sourceId) {
+  const button = fakeElement();
+  button.textContent = 'Add to follow-through';
+  return {
+    button,
+    classList: new FakeClassList(),
+    dataset: { generatedActionSourceId: sourceId },
+    querySelector(selector) { return selector === '.action-accept-btn' ? button : null; },
+  };
+}
+const acceptedRow = summaryRow('summary-accepted');
+const availableRow = summaryRow('summary-available');
+const background = fakeElement();
+background.inert = true;
+background.attributes['aria-hidden'] = 'true';
+background.dataset.dialogAriaHidden = 'true';
+const body = { children: [background], classList: new FakeClassList() };
+body.classList.add('dialog-open');
+const document = {
+  activeElement: null,
+  body,
+  getElementById: element,
+  querySelectorAll(selector) {
+    if (selector === '[data-generated-action-source-id]') {
+      return [acceptedRow, availableRow];
+    }
+    return [];
+  },
+};
+const navigator = { onLine: true };
+const fetchQueue = [];
+globalThis.fetch = () => {
+  if (!fetchQueue.length) throw new Error('missing queued response');
+  return fetchQueue.shift();
+};
+async function readJsonResponse(response) { return response; }
+function escHtml(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+function safeClassToken(value, fallback = '') {
+  const token = String(value == null ? '' : value);
+  return /^[a-z0-9_-]+$/i.test(token) ? token : fallback;
+}
+function fmtDate(value) { return value || ''; }
+function setFormError(id, message) { element(id).textContent = message || ''; }
+function syncChatRevision() {}
+function reportLoadSuccess() {}
+function reportLoadError() {}
+function shouldEvictClientPhi(error) { return error?.status === 401 || error?.status === 403; }
+function evictClientPhi() { throw new Error('unexpected authorization eviction'); }
+function loadFailureMarkup() { return '<div>load failed</div>'; }
+
+let phiEpoch = 3;
+let workflowRevision = 9;
+let followUpLoadEpoch = 0;
+let followUpProjectionStale = false;
+let followUpFilter = 'all';
+let selectedFollowUpId = 'action-today';
+let followUpSelectionEpoch = 2;
+let followUpDialogOpen = true;
+let followUpDialogMode = 'outcome';
+let followUpOutcomeStatus = 'completed';
+let pendingFollowUpIntent = null;
+let activeFollowUpIntent = null;
+let pendingWorkflowIntent = null;
+let activeWorkflowIntent = null;
+let followUpMutationPending = false;
+let followUpDrafts = new Map();
+let appointmentDialogOpen = true;
+let selectedVisitId = 'visit-1';
+let visitSelectionEpoch = 4;
+let visitsById = new Map([['visit-1', {
+  id: 'visit-1',
+  follow_up_ids: ['action-visit'],
+}]]);
+let activeDialogSurface = null;
+let lastDialogTrigger = null;
+let followUpsById = new Map([
+  ['action-today', {
+    id: 'action-today',
+    token: 'today-token-old',
+    text: 'Today cached action',
+    status: 'open',
+    origin_snapshot: {
+      kind: 'executive_summary_action',
+      source_id: 'summary-accepted',
+      source_profile_revision: 10,
+      generation_id: 'generation-10',
+    },
+    created_at: '2026-08-01T10:00:00Z',
+    updated_at: '2026-08-01T10:00:00Z',
+  }],
+  ['action-visit', {
+    id: 'action-visit',
+    token: 'visit-token-old',
+    text: 'Visit cached action',
+    status: 'in_progress',
+    visit_id: 'visit-1',
+    origin_snapshot: { kind: 'manual' },
+    created_at: '2026-08-02T10:00:00Z',
+    updated_at: '2026-08-02T10:00:00Z',
+  }],
+]);
+function currentVisit() {
+  return selectedVisitId ? visitsById.get(selectedVisitId) || null : null;
+}
+element('follow-up-outcome-kind').value = 'caregiver_reported';
+element('follow-up-outcome-text').value = 'Draft for Today action';
+element('visit-followup-text').value = 'Draft resulting visit follow-up';
+""",
+            _function_source("generatedActionAccepted", "redactGeneratedSummaryActions"),
+            _function_source("followUpItems", "setFollowUpFilter"),
+            _function_source("followUpDraftKey", "invalidateFollowUpRetryOnDraftChange"),
+            _function_source("updateFollowUpOutcomeGuidance", "updateFollowUpFormValidity"),
+            _function_source("updateFollowUpFormValidity", "renderFollowUpDialog"),
+            _function_source("clearFollowUpCachedProjection", "createFollowUpIntent"),
+            _function_source("updateAppointmentFormValidity", "visitCreateBody"),
+            _executable_function_source("renderVisitFollowUps", "createVisitFollowUp"),
+            """
+(async () => {
+  renderFollowUps();
+  renderVisitFollowUps();
+  refreshGeneratedActionControls();
+
+  fetchQueue.push(Promise.reject(new TypeError('offline')));
+  const typeErrorItems = await loadFollowUps();
+  const typeError = {
+    returnedItems: typeErrorItems.length,
+    mapSize: followUpsById.size,
+    todayRows: element('follow-up-list').innerHTML,
+    visitRows: element('visit-followup-list').innerHTML,
+    headerDisabled: element('follow-up-create-button').disabled,
+    visitSubmitDisabled: element('visit-followup-submit').disabled,
+    acceptedText: acceptedRow.button.textContent,
+    acceptedDisabled: acceptedRow.button.disabled,
+    availableDisabled: availableRow.button.disabled,
+    todayDraft: followUpDrafts.get('outcome:action-today:completed')?.text,
+  };
+
+  selectedFollowUpId = 'action-visit';
+  element('follow-up-outcome-text').value = 'Draft for Visit action';
+  captureFollowUpDraft();
+  element('follow-up-outcome-text').value = '';
+  selectedFollowUpId = 'action-today';
+  restoreFollowUpDraft();
+  const isolatedDrafts = {
+    today: element('follow-up-outcome-text').value,
+    visit: followUpDrafts.get('outcome:action-visit:completed')?.text,
+  };
+  followUpDialogOpen = false;
+
+  const abortError = new Error('aborted');
+  abortError.name = 'AbortError';
+  fetchQueue.push(Promise.reject(abortError));
+  const abortItems = await loadFollowUps();
+  const abortState = {
+    returnedItems: abortItems.length,
+    mapSize: followUpsById.size,
+    stale: followUpProjectionStale,
+    todayRows: element('follow-up-list').innerHTML,
+    visitRows: element('visit-followup-list').innerHTML,
+  };
+
+  fetchQueue.push(Promise.resolve({
+    workflow_revision: 10,
+    profile_revision: 10,
+    items: [
+      {
+        ...followUpsById.get('action-today'),
+        token: 'today-token-fresh',
+        updated_at: '2026-08-03T10:00:00Z',
+      },
+      {
+        ...followUpsById.get('action-visit'),
+        token: 'visit-token-fresh',
+        updated_at: '2026-08-03T10:00:00Z',
+      },
+    ],
+  }));
+  await loadFollowUps();
+  const fresh = {
+    stale: followUpProjectionStale,
+    todayRows: element('follow-up-list').innerHTML,
+    visitRows: element('visit-followup-list').innerHTML,
+    headerDisabled: element('follow-up-create-button').disabled,
+    visitSubmitDisabled: element('visit-followup-submit').disabled,
+    acceptedText: acceptedRow.button.textContent,
+    availableDisabled: availableRow.button.disabled,
+    todayToken: followUpsById.get('action-today').token,
+    visitToken: followUpsById.get('action-visit').token,
+  };
+
+  followUpDialogOpen = true;
+  selectedFollowUpId = 'action-today';
+  followUpDrafts.set('edit:action-today', { owner: 'SECRET hard draft' });
+  const pendingWorkflowRef = {
+    url: '/api/visits/visit-1/follow-ups',
+    body: { text: 'SECRET pending appointment follow-up' },
+  };
+  const activeWorkflowRef = {
+    url: '/api/visits/visit-1/follow-ups',
+    body: { text: 'SECRET active appointment follow-up' },
+  };
+  pendingWorkflowIntent = pendingWorkflowRef;
+  activeWorkflowIntent = activeWorkflowRef;
+  activeDialogSurface = element('follow-up-dialog');
+  lastDialogTrigger = { patient: true };
+  element('follow-up-overlay').classList.add('open');
+  element('follow-up-edit-copy').textContent = 'SECRET hard copy';
+  element('follow-up-outcome-kind').value = 'clinician_attributed';
+  for (const id of [
+    'follow-up-create-form', 'follow-up-edit-form', 'follow-up-outcome-form',
+    'follow-up-retry', 'follow-up-dialog-retry'
+  ]) element(id).hidden = false;
+  const hardError = new Error('hard failure');
+  hardError.status = 500;
+  fetchQueue.push(Promise.reject(hardError));
+  await loadFollowUps();
+  const hard = {
+    mapSize: followUpsById.size,
+    drafts: followUpDrafts.size,
+    selectedFollowUpId,
+    pendingWorkflowIntent,
+    activeWorkflowIntent,
+    pendingBody: pendingWorkflowRef.body,
+    activeBody: activeWorkflowRef.body,
+    visitSelectionEpoch,
+    copy: element('follow-up-edit-copy').textContent,
+    outcomeKind: element('follow-up-outcome-kind').value,
+    formsHidden: element('follow-up-create-form').hidden
+      && element('follow-up-edit-form').hidden
+      && element('follow-up-outcome-form').hidden,
+    retriesHidden: element('follow-up-retry').hidden
+      && element('follow-up-dialog-retry').hidden,
+    overlayClosed: !element('follow-up-overlay').classList.contains('open')
+      && element('follow-up-overlay').inert,
+    focusRefsCleared: activeDialogSurface === null && lastDialogTrigger === null,
+    bodyReset: !body.classList.contains('dialog-open')
+      && background.inert === false
+      && !('aria-hidden' in background.attributes),
+    todayRows: element('follow-up-list').innerHTML,
+  };
+  console.log(JSON.stringify({ typeError, isolatedDrafts, abortState, fresh, hard }));
+})().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
+""",
+        ]
+    )
+    completed = subprocess.run(["node"], input=script, capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
+def test_follow_up_transport_failures_keep_authoritative_rows_stale_and_read_only():
+    result = _run_follow_up_offline_projection_probe()
+
+    offline = result["typeError"]
+    assert offline["mapSize"] == 2
+    assert offline["returnedItems"] == 2
+    assert "Today cached action" in offline["todayRows"]
+    assert "Visit cached action" in offline["todayRows"]
+    assert "Visit cached action" in offline["visitRows"]
+    assert "Offline snapshot" in offline["todayRows"]
+    assert "read-only" in offline["todayRows"]
+    assert "Offline snapshot" in offline["visitRows"]
+    assert "read-only" in offline["visitRows"]
+    assert 'disabled onclick="changeFollowUpStatus' in offline["todayRows"]
+    assert 'disabled onclick="openFollowUpEditDialog' in offline["todayRows"]
+    assert offline["headerDisabled"] is True
+    assert offline["visitSubmitDisabled"] is True
+    assert offline["acceptedText"] == "Accepted"
+    assert offline["acceptedDisabled"] is True
+    assert offline["availableDisabled"] is True
+    assert offline["todayDraft"] == "Draft for Today action"
+
+    assert result["isolatedDrafts"] == {
+        "today": "Draft for Today action",
+        "visit": "Draft for Visit action",
+    }
+    aborted = result["abortState"]
+    assert aborted["mapSize"] == 2
+    assert aborted["returnedItems"] == 2
+    assert aborted["stale"] is True
+    assert "Today cached action" in aborted["todayRows"]
+    assert "Visit cached action" in aborted["visitRows"]
+
+    fresh = result["fresh"]
+    assert fresh["stale"] is False
+    assert "Offline snapshot" not in fresh["todayRows"]
+    assert "Offline snapshot" not in fresh["visitRows"]
+    assert fresh["headerDisabled"] is False
+    assert fresh["visitSubmitDisabled"] is False
+    assert fresh["acceptedText"] == "Accepted"
+    assert fresh["availableDisabled"] is False
+    assert fresh["todayToken"] == "today-token-fresh"
+    assert fresh["visitToken"] == "visit-token-fresh"
+    assert 'data-follow-up-token="today-token-fresh"' in fresh["todayRows"]
+
+    hard = result["hard"]
+    assert hard["mapSize"] == 0
+    assert hard["drafts"] == 0
+    assert hard["selectedFollowUpId"] is None
+    assert hard["pendingWorkflowIntent"] is None
+    assert hard["activeWorkflowIntent"] is None
+    assert hard["pendingBody"] == {}
+    assert hard["activeBody"] == {}
+    assert hard["visitSelectionEpoch"] == 5
+    assert hard["copy"] == ""
+    assert hard["outcomeKind"] == "administrative"
+    assert hard["formsHidden"] is True
+    assert hard["retriesHidden"] is True
+    assert hard["overlayClosed"] is True
+    assert hard["focusRefsCleared"] is True
+    assert hard["bodyReset"] is True
+    assert "load failed" in hard["todayRows"]
+    assert "Today cached action" not in hard["todayRows"]
 
 
 def _run_follow_up_epoch_probe() -> dict:

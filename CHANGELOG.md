@@ -17,6 +17,13 @@ incremented when something user-visible or operationally meaningful changes.
   token-authorized results cannot roll global workflow state backward. Chat
   history revisions are monotonic, and stale authorization, catch, and cleanup
   paths cannot repaint or restore older patient projections.
+- **Follow-through authorization eviction and offline projections.**
+  Authorization loss now also scrubs hidden follow-through dialog copies,
+  guidance, forms, intent bodies, focus, and inert state before invalidating
+  late responses. Transient offline or aborted refreshes retain the last
+  authoritative Today and visit-linked rows as visibly stale read-only
+  snapshots, preserve action-scoped drafts in memory, keep accepted assessment
+  actions accepted, and re-enable mutations only after fresh tokens reload.
 - **Late appointment responses and authorization PHI teardown.** Appointment
   mutations now validate their patient-data and visit-selection epochs before
   changing workflow/profile revisions, visit caches, retry state, drafts, or

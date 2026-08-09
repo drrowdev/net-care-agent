@@ -28,12 +28,14 @@
   let followUpsById = new Map();
   let followUpFilter = 'active';
   let followUpLoadEpoch = 0;
+  let followUpProjectionStale = false;
   let selectedFollowUpId = null;
   let followUpSelectionEpoch = 0;
   let followUpDialogOpen = false;
   let followUpDialogMode = null;
   let followUpOutcomeStatus = null;
   let pendingFollowUpIntent = null;
+  let activeFollowUpIntent = null;
   let followUpMutationPending = false;
   let followUpDrafts = new Map();
   let selectedVisitId = null;
@@ -41,6 +43,7 @@
   let appointmentDialogOpen = false;
   let activeAppointmentTab = 'questions';
   let pendingWorkflowIntent = null;
+  let activeWorkflowIntent = null;
   let workflowMutationPending = false;
   let appointmentDrafts = new Map();
   let decisionSuccessorConflicts = new Set();
@@ -261,6 +264,7 @@
   }
 
   function clearWorkflowRetry() {
+    if (pendingWorkflowIntent?.body) pendingWorkflowIntent.body = {};
     pendingWorkflowIntent = null;
     for (const id of ['appointment-retry', 'visit-create-retry']) {
       const retry = document.getElementById(id);
@@ -390,6 +394,7 @@
     if (workflowMutationPending) return null;
     workflowMutationPending = true;
     let consumedSuccessfully = false;
+    activeWorkflowIntent = intent;
     setAppointmentMutationBusy(true);
     if (!explicitRetry) clearWorkflowRetry();
     setAppointmentMessage(explicitRetry ? 'Retrying the unchanged request…' : 'Saving…', 'saving');
@@ -423,8 +428,17 @@
         await handleWorkflowConflict(error, intent);
         return null;
       }
-      if (error instanceof TypeError || navigator.onLine === false) {
+      if (
+        error instanceof TypeError
+        || error?.name === 'AbortError'
+        || navigator.onLine === false
+      ) {
         pendingWorkflowIntent = intent;
+        if (String(intent.url || '').includes('/follow-ups')) {
+          markFollowUpProjectionStale(
+            'Follow-through is offline. The last loaded actions are read-only; caregiver-entered drafts remain available in this tab.',
+          );
+        }
         const retry = document.getElementById(
           intent.visitId ? 'appointment-retry' : 'visit-create-retry'
         );
@@ -442,6 +456,7 @@
     } finally {
       const ownsCleanup = consumedSuccessfully || workflowIntentCanRender(intent);
       workflowMutationPending = false;
+      if (activeWorkflowIntent === intent) activeWorkflowIntent = null;
       if (ownsCleanup) {
         setAppointmentMutationBusy(false);
         updateAppointmentFormValidity();
@@ -897,19 +912,26 @@
     generatedQuestionsUnavailable = false;
     followUpsById = new Map();
     followUpLoadEpoch += 1;
+    followUpProjectionStale = false;
     selectedFollowUpId = null;
     followUpSelectionEpoch += 1;
     followUpDialogOpen = false;
     followUpDialogMode = null;
     followUpOutcomeStatus = null;
+    if (pendingFollowUpIntent?.body) pendingFollowUpIntent.body = {};
+    if (activeFollowUpIntent?.body) activeFollowUpIntent.body = {};
     pendingFollowUpIntent = null;
+    activeFollowUpIntent = null;
     followUpMutationPending = false;
     followUpDrafts = new Map();
     selectedVisitId = null;
     visitSelectionEpoch += 1;
     appointmentDialogOpen = false;
     activeAppointmentTab = 'questions';
+    if (pendingWorkflowIntent?.body) pendingWorkflowIntent.body = {};
+    if (activeWorkflowIntent?.body) activeWorkflowIntent.body = {};
     pendingWorkflowIntent = null;
+    activeWorkflowIntent = null;
     workflowMutationPending = false;
     appointmentDrafts = new Map();
     decisionSuccessorConflicts = new Set();
@@ -939,6 +961,10 @@
     clear('visit-followup-list');
     clear('follow-up-list');
     clear('follow-up-status');
+    clear('follow-up-edit-copy');
+    clear('follow-up-outcome-copy');
+    clear('follow-up-outcome-guidance');
+    clear('follow-up-dialog-status');
     clear('judgments-list');
     clear('symptoms-list');
     clear('summary-status-inline');
@@ -1093,6 +1119,24 @@
     if (followUpDialogStatus) {
       followUpDialogStatus.textContent = '';
       followUpDialogStatus.className = 'follow-up-dialog-status';
+    }
+    const followUpTitle = document.getElementById('follow-up-dialog-title');
+    if (followUpTitle) followUpTitle.textContent = 'Follow-up unavailable';
+    for (const id of [
+      'follow-up-edit-copy', 'follow-up-outcome-copy', 'follow-up-outcome-guidance'
+    ]) {
+      const node = document.getElementById(id);
+      if (node) node.textContent = '';
+    }
+    for (const id of [
+      'follow-up-create-form', 'follow-up-edit-form', 'follow-up-outcome-form'
+    ]) {
+      const form = document.getElementById(id);
+      if (form) form.hidden = true;
+    }
+    for (const name of ['active', 'completed', 'cancelled', 'all']) {
+      const count = document.getElementById(`follow-up-count-${name}`);
+      if (count) count.textContent = '0';
     }
     const followUpRetry = document.getElementById('follow-up-retry');
     if (followUpRetry) followUpRetry.hidden = true;
@@ -2019,8 +2063,9 @@
       const button = row.querySelector('.action-accept-btn');
       if (!button) return;
       const accepted = generatedActionAccepted(row.dataset.generatedActionSourceId);
-      button.disabled = accepted;
+      button.disabled = followUpProjectionStale || accepted;
       button.textContent = accepted ? 'Accepted' : 'Add to follow-through';
+      row.classList?.toggle('stale-projection', followUpProjectionStale);
     });
   }
 
@@ -2034,6 +2079,10 @@
   }
 
   async function acceptGeneratedFollowUp(row) {
+    if (followUpProjectionStale) {
+      setFollowUpStatus('Reload the current action list before accepting an assessment action.', 'offline');
+      return;
+    }
     const sourceId = row?.dataset.generatedActionSourceId;
     const sourceToken = row?.dataset.generatedActionSourceToken;
     if (!sourceId || !sourceToken) return;
@@ -3388,6 +3437,14 @@
     const list = document.getElementById('follow-up-list');
     if (!list) return;
     const items = followUpItems();
+    const staleNotice = followUpProjectionStale
+      ? `<div class="follow-up-stale-note" role="status">
+          <div><strong>Offline snapshot · read-only</strong><span>Reload the current action list before making changes.</span></div>
+          <button class="button secondary follow-up-refresh-button" onclick="loadFollowUps()">Reload actions</button>
+        </div>`
+      : '';
+    const createButton = document.getElementById('follow-up-create-button');
+    if (createButton) createButton.disabled = followUpProjectionStale || followUpMutationPending;
     const counts = {
       active: items.filter(item => ['open', 'in_progress'].includes(item.status)).length,
       completed: items.filter(item => item.status === 'completed').length,
@@ -3419,7 +3476,7 @@
         cancelled: 'No cancelled follow-through tasks.',
         all: 'No follow-through tasks yet.',
       }[followUpFilter];
-      list.innerHTML = `<div class="empty-state">${escHtml(empty)}</div>`;
+      list.innerHTML = `${staleNotice}<div class="empty-state">${escHtml(empty)}</div>`;
       refreshGeneratedActionControls();
       if (followUpMutationPending) setFollowUpMutationBusy(true);
       return;
@@ -3434,13 +3491,13 @@
       ].filter(Boolean);
       const lifecycle = [];
       if (item.status === 'open') {
-        lifecycle.push(`<button class="button primary" onclick="changeFollowUpStatus(this.closest('.follow-up-item'),'in_progress')">Start</button>`);
+        lifecycle.push(`<button class="button primary" ${followUpProjectionStale ? 'disabled' : ''} onclick="changeFollowUpStatus(this.closest('.follow-up-item'),'in_progress')">Start</button>`);
       } else if (item.status === 'in_progress') {
-        lifecycle.push(`<button class="button secondary" onclick="changeFollowUpStatus(this.closest('.follow-up-item'),'open')">Move to open</button>`);
+        lifecycle.push(`<button class="button secondary" ${followUpProjectionStale ? 'disabled' : ''} onclick="changeFollowUpStatus(this.closest('.follow-up-item'),'open')">Move to open</button>`);
       }
       if (['open', 'in_progress'].includes(item.status)) {
-        lifecycle.push(`<button class="button secondary" onclick="openFollowUpOutcomeDialog(this,this.closest('.follow-up-item').dataset.followUpId,'completed')">Complete</button>`);
-        lifecycle.push(`<button class="button secondary danger" onclick="openFollowUpOutcomeDialog(this,this.closest('.follow-up-item').dataset.followUpId,'cancelled')">Cancel</button>`);
+        lifecycle.push(`<button class="button secondary" ${followUpProjectionStale ? 'disabled' : ''} onclick="openFollowUpOutcomeDialog(this,this.closest('.follow-up-item').dataset.followUpId,'completed')">Complete</button>`);
+        lifecycle.push(`<button class="button secondary danger" ${followUpProjectionStale ? 'disabled' : ''} onclick="openFollowUpOutcomeDialog(this,this.closest('.follow-up-item').dataset.followUpId,'cancelled')">Cancel</button>`);
       }
       const terminalAt = item.status === 'completed' ? item.completed_at : item.cancelled_at;
       return `<article class="follow-up-item" data-follow-up-id="${escHtml(item.id)}" data-follow-up-token="${escHtml(item.token)}">
@@ -3459,11 +3516,12 @@
         ${links.length ? `<div class="follow-up-links">${links.map(link => `<span>${escHtml(link)}</span>`).join('')}</div>` : ''}
         ${item.outcome ? `<div class="follow-up-outcome ${safeClassToken(outcome.className)}"><strong>Outcome</strong><p>${escHtml(item.outcome.text)}</p><span>${escHtml(outcome.label)}</span>${item.outcome.recorded_at ? `<time>${escHtml(formatActionTimestamp(item.outcome.recorded_at))}</time>` : ''}</div>` : ''}
         <div class="follow-up-actions">
-          <button class="button secondary" onclick="openFollowUpEditDialog(this,this.closest('.follow-up-item').dataset.followUpId)">Edit owner or due date</button>
+          <button class="button secondary" ${followUpProjectionStale ? 'disabled' : ''} onclick="openFollowUpEditDialog(this,this.closest('.follow-up-item').dataset.followUpId)">Edit owner or due date</button>
           ${lifecycle.join('')}
         </div>
       </article>`;
     }).join('');
+    list.innerHTML = staleNotice + list.innerHTML;
     refreshGeneratedActionControls();
     if (followUpMutationPending) setFollowUpMutationBusy(true);
   }
@@ -3498,6 +3556,7 @@
   }
 
   function clearFollowUpRetry() {
+    if (pendingFollowUpIntent?.body) pendingFollowUpIntent.body = {};
     pendingFollowUpIntent = null;
     for (const id of ['follow-up-retry', 'follow-up-dialog-retry']) {
       const retry = document.getElementById(id);
@@ -3596,9 +3655,23 @@
     const createText = (document.getElementById('follow-up-create-text')?.value || '').trim();
     const outcomeText = (document.getElementById('follow-up-outcome-text')?.value || '').trim();
     const createButton = document.getElementById('follow-up-create-submit');
+    const editButton = document.getElementById('follow-up-edit-submit');
     const outcomeButton = document.getElementById('follow-up-outcome-submit');
-    if (createButton && !followUpMutationPending) createButton.disabled = !createText;
-    if (outcomeButton && !followUpMutationPending) outcomeButton.disabled = !outcomeText;
+    const headerButton = document.getElementById('follow-up-create-button');
+    const retryButton = document.getElementById('follow-up-retry-button');
+    const dialogRetryButton = document.getElementById('follow-up-dialog-retry-button');
+    if (createButton && !followUpMutationPending) {
+      createButton.disabled = followUpProjectionStale || !createText;
+    }
+    if (editButton && !followUpMutationPending) editButton.disabled = followUpProjectionStale;
+    if (outcomeButton && !followUpMutationPending) {
+      outcomeButton.disabled = followUpProjectionStale || !outcomeText;
+    }
+    if (headerButton && !followUpMutationPending) headerButton.disabled = followUpProjectionStale;
+    if (retryButton) retryButton.disabled = followUpProjectionStale || followUpMutationPending;
+    if (dialogRetryButton) {
+      dialogRetryButton.disabled = followUpProjectionStale || followUpMutationPending;
+    }
     if (createText) setFormError('follow-up-create-error', '');
     if (outcomeText) setFormError('follow-up-outcome-error', '');
   }
@@ -3636,6 +3709,10 @@
   }
 
   function openFollowUpDialog(mode, trigger, actionId = null, status = null) {
+    if (followUpProjectionStale) {
+      setFollowUpStatus('Reload the current action list before making changes.', 'offline');
+      return;
+    }
     if (!['create', 'edit', 'outcome'].includes(mode)) return;
     if (actionId && !followUpsById.has(actionId)) {
       setFollowUpStatus('This action is no longer available. Reload before continuing.', 'conflict');
@@ -3672,6 +3749,10 @@
   }
 
   function openFollowUpOutcomeDialog(trigger, actionId, status) {
+    if (followUpProjectionStale) {
+      setFollowUpStatus('Reload the current action list before recording an outcome.', 'offline');
+      return;
+    }
     if (!['completed', 'cancelled'].includes(status)) return;
     const action = followUpsById.get(actionId);
     if (!action || !['open', 'in_progress'].includes(action.status)) {
@@ -3710,17 +3791,111 @@
     }
   }
 
-  function clearFollowUpCachedProjection(message, tone = 'offline') {
-    if (followUpDialogOpen) captureFollowUpDraft();
+  function clearFollowUpCachedProjection(message, tone = 'error') {
+    const followUpDialog = document.getElementById('follow-up-dialog');
+    const wasFollowUpDialogActive = followUpDialogOpen || activeDialogSurface === followUpDialog;
+    if (pendingFollowUpIntent?.body) pendingFollowUpIntent.body = {};
+    if (activeFollowUpIntent?.body) activeFollowUpIntent.body = {};
+    if (
+      pendingWorkflowIntent
+      && String(pendingWorkflowIntent.url || '').includes('/follow-ups')
+    ) {
+      if (pendingWorkflowIntent.body) pendingWorkflowIntent.body = {};
+      pendingWorkflowIntent = null;
+    }
+    if (
+      activeWorkflowIntent
+      && String(activeWorkflowIntent.url || '').includes('/follow-ups')
+    ) {
+      if (activeWorkflowIntent.body) activeWorkflowIntent.body = {};
+      activeWorkflowIntent = null;
+    }
     followUpsById = new Map();
+    followUpLoadEpoch += 1;
+    followUpProjectionStale = false;
+    selectedFollowUpId = null;
+    followUpSelectionEpoch += 1;
+    followUpDialogOpen = false;
+    followUpDialogMode = null;
+    followUpOutcomeStatus = null;
+    pendingFollowUpIntent = null;
+    activeFollowUpIntent = null;
+    followUpMutationPending = false;
+    followUpDrafts = new Map();
+    visitSelectionEpoch += 1;
     renderFollowUps();
     renderVisitFollowUps();
     setFollowUpStatus(message, tone);
-    if (followUpDialogOpen && followUpDialogMode !== 'create') {
-      document.getElementById('follow-up-edit-copy').textContent = '';
-      document.getElementById('follow-up-outcome-copy').textContent = '';
+    for (const id of [
+      'follow-up-edit-copy', 'follow-up-outcome-copy', 'follow-up-outcome-guidance',
+      'follow-up-dialog-status', 'follow-up-create-error', 'follow-up-edit-error',
+      'follow-up-outcome-error'
+    ]) {
+      const node = document.getElementById(id);
+      if (node) node.textContent = '';
+    }
+    for (const id of [
+      'follow-up-create-text', 'follow-up-create-owner', 'follow-up-create-due',
+      'follow-up-edit-owner', 'follow-up-edit-due', 'follow-up-outcome-text'
+    ]) {
+      const control = document.getElementById(id);
+      if (control) control.value = '';
+    }
+    const outcomeKind = document.getElementById('follow-up-outcome-kind');
+    if (outcomeKind) outcomeKind.value = 'administrative';
+    const title = document.getElementById('follow-up-dialog-title');
+    if (title) title.textContent = 'Follow-up unavailable';
+    for (const id of [
+      'follow-up-create-form', 'follow-up-edit-form', 'follow-up-outcome-form',
+      'follow-up-retry', 'follow-up-dialog-retry'
+    ]) {
+      const node = document.getElementById(id);
+      if (node) node.hidden = true;
+    }
+    const overlay = document.getElementById('follow-up-overlay');
+    overlay?.classList.remove('open');
+    overlay?.setAttribute('aria-hidden', 'true');
+    if (overlay) overlay.inert = true;
+    if (followUpDialog) followUpDialog.inert = true;
+    if (wasFollowUpDialogActive) {
+      document.activeElement?.blur();
+      activeDialogSurface = null;
+      lastDialogTrigger = null;
+      document.body.classList.remove('dialog-open');
+      [...document.body.children].forEach(child => { child.inert = false; });
+      [...document.body.children].forEach(child => {
+        if (child.dataset.dialogAriaHidden === 'true') {
+          child.removeAttribute('aria-hidden');
+          delete child.dataset.dialogAriaHidden;
+        }
+      });
+      if (overlay) overlay.inert = true;
+      if (followUpDialog) followUpDialog.inert = true;
     }
     refreshGeneratedActionControls();
+    updateFollowUpFormValidity();
+    updateAppointmentFormValidity();
+  }
+
+  function markFollowUpProjectionStale(message) {
+    if (followUpDialogOpen) captureFollowUpDraft();
+    followUpProjectionStale = true;
+    renderFollowUps();
+    renderVisitFollowUps();
+    setFollowUpStatus(message, 'offline');
+    setFollowUpDialogStatus(
+      'The action list is offline and read-only. Your draft remains available in this tab.',
+      'offline',
+    );
+    refreshGeneratedActionControls();
+    updateFollowUpFormValidity();
+    updateAppointmentFormValidity();
+  }
+
+  function isTransientFollowUpTransportError(error) {
+    return error instanceof TypeError
+      || error?.name === 'AbortError'
+      || navigator.onLine === false;
   }
 
   async function loadFollowUps() {
@@ -3732,6 +3907,7 @@
       const authority = authorizePatientResponse(request, data, { workflow: 'projection' });
       if (!authority.accepted) return [];
       if (followUpDialogOpen) captureFollowUpDraft();
+      followUpProjectionStale = false;
       followUpsById = new Map(
         (Array.isArray(data.items) ? data.items : [])
           .filter(item => item && typeof item.id === 'string')
@@ -3741,6 +3917,8 @@
       renderVisitFollowUps();
       if (followUpDialogOpen) renderFollowUpDialog();
       setFollowUpStatus('');
+      updateFollowUpFormValidity();
+      updateAppointmentFormValidity();
       reportLoadSuccess('follow-ups');
       return followUpItems();
     } catch (error) {
@@ -3748,18 +3926,23 @@
       if (shouldEvictClientPhi(error)) {
         evictClientPhi(error);
       } else {
-        const offline = error instanceof TypeError || navigator.onLine === false;
-        clearFollowUpCachedProjection(
-          offline
-            ? 'Follow-through is offline. Caregiver-entered drafts remain available in this tab.'
-            : 'Follow-through could not be loaded. Retry to get the current action list.',
-          offline ? 'offline' : 'error',
-        );
-        const list = document.getElementById('follow-up-list');
-        if (list) list.innerHTML = loadFailureMarkup('Follow-through', 'loadFollowUps()');
-        const visitList = document.getElementById('visit-followup-list');
-        if (visitList && appointmentDialogOpen) {
-          visitList.innerHTML = loadFailureMarkup('Visit follow-ups', 'loadFollowUps()');
+        if (isTransientFollowUpTransportError(error)) {
+          markFollowUpProjectionStale(
+            'Follow-through is offline. The last loaded actions are read-only; caregiver-entered drafts remain available in this tab.',
+          );
+          reportLoadError('follow-ups', error);
+          return followUpItems();
+        } else {
+          clearFollowUpCachedProjection(
+            'Follow-through could not be loaded. Retry to get the current action list.',
+            'error',
+          );
+          const list = document.getElementById('follow-up-list');
+          if (list) list.innerHTML = loadFailureMarkup('Follow-through', 'loadFollowUps()');
+          const visitList = document.getElementById('visit-followup-list');
+          if (visitList && appointmentDialogOpen) {
+            visitList.innerHTML = loadFailureMarkup('Visit follow-ups', 'loadFollowUps()');
+          }
         }
       }
       if (patientRequestIsCurrent(request)) reportLoadError('follow-ups', error);
@@ -3837,8 +4020,9 @@
   }
 
   async function performFollowUpIntent(intent, explicitRetry = false) {
-    if (followUpMutationPending) return null;
+    if (followUpMutationPending || followUpProjectionStale) return null;
     followUpMutationPending = true;
+    activeFollowUpIntent = intent;
     let consumedSuccessfully = false;
     setFollowUpMutationBusy(true);
     if (!explicitRetry) clearFollowUpRetry();
@@ -3873,11 +4057,10 @@
         await handleFollowUpConflict(error, intent);
         return null;
       }
-      if (error instanceof TypeError || navigator.onLine === false) {
+      if (isTransientFollowUpTransportError(error)) {
         pendingFollowUpIntent = intent;
-        clearFollowUpCachedProjection(
+        markFollowUpProjectionStale(
           'Connection lost. Caregiver-entered drafts remain available in this tab.',
-          'offline',
         );
         const retry = document.getElementById(
           followUpDialogOpen ? 'follow-up-dialog-retry' : 'follow-up-retry'
@@ -3902,6 +4085,7 @@
     } finally {
       const ownsCleanup = consumedSuccessfully || followUpIntentCanRender(intent);
       followUpMutationPending = false;
+      if (activeFollowUpIntent === intent) activeFollowUpIntent = null;
       if (ownsCleanup) {
         setFollowUpMutationBusy(false);
         updateFollowUpFormValidity();
@@ -3911,6 +4095,10 @@
   }
 
   async function submitFollowUpMutation(url, body, options = {}) {
+    if (followUpProjectionStale) {
+      setFollowUpStatus('Reload the current action list before making changes.', 'offline');
+      return null;
+    }
     selectedFollowUpId = options.actionId || null;
     followUpSelectionEpoch += 1;
     const intent = createFollowUpIntent(url, body, options);
@@ -3918,6 +4106,10 @@
   }
 
   async function retryFollowUpIntent() {
+    if (followUpProjectionStale) {
+      setFollowUpStatus('Reload the current action list before retrying a mutation.', 'offline');
+      return;
+    }
     const intent = pendingFollowUpIntent;
     if (!intent) return;
     if (!followUpIntentCanRender(intent)) {
@@ -4003,6 +4195,10 @@
   }
 
   async function changeFollowUpStatus(row, status) {
+    if (followUpProjectionStale) {
+      setFollowUpStatus('Reload the current action list before changing status.', 'offline');
+      return;
+    }
     const actionId = row?.dataset.followUpId;
     const token = row?.dataset.followUpToken;
     const action = actionId ? followUpsById.get(actionId) : null;
@@ -4104,7 +4300,7 @@
     if (createButton) createButton.disabled = !createTitle;
     if (questionButton) questionButton.disabled = !manualQuestion;
     if (decisionButton) decisionButton.disabled = !decision;
-    if (followUpButton) followUpButton.disabled = !followUp;
+    if (followUpButton) followUpButton.disabled = followUpProjectionStale || !followUp;
     if (createTitle) setFormError('visit-create-error', '');
     if (manualQuestion) setFormError('visit-question-error', '');
     if (decision) setFormError('visit-decision-error', '');
@@ -4845,11 +5041,14 @@
     const items = followUpItems().filter(item =>
       item.visit_id === visit.id || (visit.follow_up_ids || []).includes(item.id)
     );
+    const staleNotice = followUpProjectionStale
+      ? '<div class="follow-up-stale-note compact" role="status"><div><strong>Offline snapshot · read-only</strong><span>Reload actions before adding or changing follow-through.</span></div></div>'
+      : '';
     if (!items.length) {
-      list.innerHTML = '<div class="empty-state">No resulting follow-ups for this visit.</div>';
+      list.innerHTML = `${staleNotice}<div class="empty-state">No resulting follow-ups for this visit.</div>`;
       return;
     }
-    list.innerHTML = items.map(item => {
+    list.innerHTML = staleNotice + items.map(item => {
       const outcome = followUpOutcomePresentation(item.outcome);
       return `<article class="visit-followup" data-followup-id="${escHtml(item.id)}">
       <div class="visit-decision-heading"><strong>${escHtml(item.text)}</strong><span class="visit-status-badge ${safeClassToken(item.status, 'open')}">${escHtml(item.status.replaceAll('_', ' '))}</span></div>
@@ -4862,6 +5061,10 @@
   }
 
   async function createVisitFollowUp() {
+    if (followUpProjectionStale) {
+      setAppointmentMessage('Reload the current action list before creating a follow-up.', 'offline');
+      return;
+    }
     const visit = currentVisit();
     const text = (document.getElementById('visit-followup-text')?.value || '').trim();
     if (!visit || !text) {

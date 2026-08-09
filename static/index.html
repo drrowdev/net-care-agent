@@ -111,7 +111,7 @@
         </div>
         <div class="follow-up-retry" id="follow-up-retry" hidden>
           <span>The last request may not have reached the server. Your draft is still available.</span>
-          <button class="button secondary" onclick="retryFollowUpIntent()">Retry unchanged request</button>
+          <button class="button secondary" id="follow-up-retry-button" onclick="retryFollowUpIntent()">Retry unchanged request</button>
         </div>
       </section>
 
@@ -339,7 +339,7 @@
     </div>
     <div class="follow-up-retry dialog-retry" id="follow-up-dialog-retry" hidden>
       <span>The request may not have reached the server. Your draft is still available.</span>
-      <button class="button secondary" onclick="retryFollowUpIntent()">Retry unchanged request</button>
+      <button class="button secondary" id="follow-up-dialog-retry-button" onclick="retryFollowUpIntent()">Retry unchanged request</button>
     </div>
   </section>
 </div>

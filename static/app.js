@@ -51,6 +51,7 @@
   let pendingWorkflowIntent = null;
   let activeWorkflowIntent = null;
   let workflowMutationPending = false;
+  let workflowMutationOwner = null;
   let appointmentDrafts = new Map();
   let decisionSuccessorConflicts = new Set();
   const failedLoads = new Map();
@@ -241,7 +242,14 @@
     }
     const currentWorkflowRevision = normalizedRevision(workflowRevision);
     const strictWorkflowProjection = options.workflow === 'projection';
+    const targetedWorkflowResponse = options.workflow === 'targeted';
     const staleWorkflowProjection = strictWorkflowProjection
+      && Number.isSafeInteger(currentWorkflowRevision)
+      && (
+        !Number.isSafeInteger(responseWorkflowRevision)
+        || responseWorkflowRevision < currentWorkflowRevision
+      );
+    const staleTargetedWorkflow = targetedWorkflowResponse
       && Number.isSafeInteger(currentWorkflowRevision)
       && (
         !Number.isSafeInteger(responseWorkflowRevision)
@@ -256,7 +264,7 @@
     if (profileAdvanced) {
       advancePatientAuthority(responseProfileRevision);
     }
-    if (staleWorkflowProjection) {
+    if (staleWorkflowProjection || staleTargetedWorkflow) {
       if (profileAdvanced) requestClinicalConvergence(responseProfileRevision);
       return { accepted: false, profileAdvanced };
     }
@@ -324,6 +332,14 @@
     });
   }
 
+  function beginWorkflowMutation() {
+    if (followUpControlsLocked()) return null;
+    const owner = {};
+    workflowMutationOwner = owner;
+    workflowMutationPending = true;
+    return owner;
+  }
+
   function createWorkflowIntent(url, body, visitId = selectedVisitId) {
     return {
       method: 'POST',
@@ -333,13 +349,39 @@
       requestPhiEpoch: phiEpoch,
       requestVisitEpoch: visitSelectionEpoch,
       requestVisitId: selectedVisitId,
+      mutationOwner: null,
     };
   }
 
-  function workflowIntentCanRender(intent) {
-    if (intent.requestPhiEpoch !== phiEpoch) return false;
+  function workflowIntentCanRender(
+    intent,
+    expectedPhiEpoch = intent.pendingPhiEpoch ?? intent.requestPhiEpoch,
+  ) {
+    if (expectedPhiEpoch !== phiEpoch) return false;
     if (intent.requestVisitEpoch !== visitSelectionEpoch) return false;
     return !intent.visitId || intent.visitId === selectedVisitId;
+  }
+
+  function workflowIntentOwnsMutation(intent) {
+    return workflowMutationPending
+      && workflowMutationOwner === intent.mutationOwner
+      && workflowIntentCanRender(intent);
+  }
+
+  function releaseWorkflowMutation(intent) {
+    if (
+      !workflowMutationPending
+      || workflowMutationOwner !== intent.mutationOwner
+    ) return false;
+    workflowMutationPending = false;
+    workflowMutationOwner = null;
+    if (activeWorkflowIntent === intent) activeWorkflowIntent = null;
+    setFollowUpMutationBusy(false);
+    setAppointmentMutationBusy(false);
+    refreshGeneratedActionControls();
+    updateFollowUpFormValidity();
+    updateAppointmentFormValidity();
+    return true;
   }
 
   async function refreshClinicalWorkflowState(profileRevision, expectedWorkflowRevision = null) {
@@ -389,9 +431,11 @@
   }
 
   async function consumeWorkflowResponse(data, intent) {
-    if (!workflowIntentCanRender(intent)) return false;
+    if (!workflowIntentOwnsMutation(intent)) return false;
     const authority = authorizePatientResponse(intent, data, { workflow: 'targeted' });
     if (!authority.accepted) return false;
+    intent.pendingPhiEpoch = phiEpoch;
+    if (!workflowIntentOwnsMutation(intent)) return false;
     const responseVisitEpoch = visitSelectionEpoch;
     const responseVisitId = selectedVisitId;
     if (appointmentDialogOpen) captureAppointmentDraft();
@@ -415,6 +459,7 @@
         data.workflow_revision,
       );
       return refreshed?.verified === true
+        && workflowIntentOwnsMutation(intent)
         && responseVisitEpoch === visitSelectionEpoch
         && responseVisitId === selectedVisitId;
     }
@@ -428,7 +473,7 @@
   }
 
   async function handleWorkflowConflict(error, intent) {
-    if (!workflowIntentCanRender(intent)) return false;
+    if (!workflowIntentOwnsMutation(intent)) return false;
     if (appointmentDialogOpen) captureAppointmentDraft();
     clearWorkflowRetry();
     if (intent.body.supersedes_id) {
@@ -448,9 +493,7 @@
   }
 
   async function performWorkflowIntent(intent, explicitRetry = false) {
-    if (followUpControlsLocked() || workflowMutationPending) return null;
-    workflowMutationPending = true;
-    let consumedSuccessfully = false;
+    if (!workflowIntentOwnsMutation(intent)) return null;
     activeWorkflowIntent = intent;
     setAppointmentMutationBusy(true);
     setFollowUpMutationBusy(true);
@@ -462,26 +505,24 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(intent.body),
       });
-      const data = await readJsonResponse(response);
+      if (!workflowIntentOwnsMutation(intent)) return null;
+      const data = await readJsonResponse(
+        response,
+        () => workflowIntentOwnsMutation(intent),
+      );
+      if (!workflowIntentOwnsMutation(intent)) return null;
       const consumed = await consumeWorkflowResponse(data, intent);
-      if (!consumed) return null;
-      consumedSuccessfully = true;
+      if (!consumed || !workflowIntentOwnsMutation(intent)) return null;
       clearWorkflowRetry();
-      if (workflowIntentCanRender(intent)) setAppointmentMessage('Saved.', 'success');
+      if (workflowIntentOwnsMutation(intent)) setAppointmentMessage('Saved.', 'success');
       return data;
     } catch (error) {
-      if (intent.requestPhiEpoch !== phiEpoch) {
-        if (error?.status === 401 || error?.status === 403) {
-          reportLoadError('appointment-workflow', error);
-        }
-        return null;
-      }
+      if (!workflowIntentOwnsMutation(intent)) return null;
       if (shouldEvictClientPhi(error)) {
-        evictClientPhi(error);
         reportLoadError('appointment-workflow', error);
+        if (workflowIntentOwnsMutation(intent)) evictClientPhi(error);
         return null;
       }
-      if (!workflowIntentCanRender(intent)) return null;
       if (error?.status === 409) {
         await handleWorkflowConflict(error, intent);
         return null;
@@ -512,21 +553,16 @@
       reportLoadError('appointment-workflow', error);
       return null;
     } finally {
-      const ownsCleanup = consumedSuccessfully || workflowIntentCanRender(intent);
-      workflowMutationPending = false;
-      if (activeWorkflowIntent === intent) activeWorkflowIntent = null;
-      if (ownsCleanup) {
-        setFollowUpMutationBusy(false);
-        setAppointmentMutationBusy(false);
-        updateAppointmentFormValidity();
-      }
+      releaseWorkflowMutation(intent);
     }
   }
 
   async function submitWorkflowMutation(url, body, visitId = selectedVisitId, method = 'POST') {
-    if (followUpControlsLocked() || workflowMutationPending) return null;
+    const mutationOwner = beginWorkflowMutation();
+    if (!mutationOwner) return null;
     const intent = createWorkflowIntent(url, body, visitId);
     intent.method = method;
+    intent.mutationOwner = mutationOwner;
     return performWorkflowIntent(intent);
   }
 
@@ -538,6 +574,9 @@
       setAppointmentMessage('The visit changed. Review it before submitting a new request.', 'conflict');
       return;
     }
+    const mutationOwner = beginWorkflowMutation();
+    if (!mutationOwner) return;
+    intent.mutationOwner = mutationOwner;
     const result = await performWorkflowIntent(intent, true);
     finalizeRetriedWorkflowIntent(intent, result);
   }
@@ -1009,6 +1048,7 @@
     pendingWorkflowIntent = null;
     activeWorkflowIntent = null;
     workflowMutationPending = false;
+    workflowMutationOwner = null;
     appointmentDrafts = new Map();
     decisionSuccessorConflicts = new Set();
     chatHistory = [];

@@ -828,6 +828,7 @@ let followUpsById = new Map();
 let pendingWorkflowIntent = null;
 let activeWorkflowIntent = null;
 let workflowMutationPending = false;
+let workflowMutationOwner = null;
 let followUpMutationPending = false;
 let pendingFollowUpCompletion = null;
 let summaryActionMutationOwner = null;
@@ -852,6 +853,8 @@ function shouldEvictClientPhi(error) { return Number(error?.status) >= 500; }
 function evictClientPhi(error) { evictions.push(error.status); }
 function setAppointmentMutationBusy() {}
 function setFollowUpMutationBusy() {}
+function refreshGeneratedActionControls() {}
+function updateFollowUpFormValidity() {}
 function followUpControlsLocked() {
   return followUpMutationPending
     || pendingFollowUpCompletion !== null
@@ -898,6 +901,9 @@ function response(data) {
     requestPhiEpoch: 0,
     requestVisitEpoch: 4,
   };
+  workflowMutationOwner = {};
+  workflowMutationPending = true;
+  visitAIntent.mutationOwner = workflowMutationOwner;
   const lateRequest = performWorkflowIntent(visitAIntent);
   await Promise.resolve();
 
@@ -921,10 +927,16 @@ function response(data) {
     error.status = 500;
     throw error;
   };
-  const hardFailureResult = await performWorkflowIntent({
+  const hardIntent = {
     ...visitAIntent,
     body: { source_kind: 'manual', mutation_id: 'mutation-a-hard-failure' },
-  });
+    visitId: 'visit-b',
+    requestVisitEpoch: 5,
+  };
+  workflowMutationOwner = {};
+  workflowMutationPending = true;
+  hardIntent.mutationOwner = workflowMutationOwner;
+  const hardFailureResult = await performWorkflowIntent(hardIntent);
 
   appointmentDrafts = new Map([['visit-b', { manualQuestion: 'caregiver draft' }]]);
   globalThis.fetch = async () => { throw new TypeError('offline'); };
@@ -936,24 +948,35 @@ function response(data) {
     requestPhiEpoch: 0,
     requestVisitEpoch: 5,
   };
+  workflowMutationOwner = {};
+  workflowMutationPending = true;
+  offlineIntent.mutationOwner = workflowMutationOwner;
   const offlineResult = await performWorkflowIntent(offlineIntent);
   const offlineRetryPreserved = pendingWorkflowIntent === offlineIntent;
 
   globalThis.fetch = async () => { throw new TypeError('offline follow-up'); };
-  const offlineFollowUpResult = await performWorkflowIntent({
+  const offlineFollowUpIntent = {
     ...offlineIntent,
     url: '/api/visits/visit-b/follow-ups',
     body: { text: 'caregiver follow-up', mutation_id: 'mutation-follow-up-offline' },
-  });
+  };
+  workflowMutationOwner = {};
+  workflowMutationPending = true;
+  offlineFollowUpIntent.mutationOwner = workflowMutationOwner;
+  const offlineFollowUpResult = await performWorkflowIntent(offlineFollowUpIntent);
   followUpProjectionStale = false;
   const abortError = new Error('aborted follow-up');
   abortError.name = 'AbortError';
   globalThis.fetch = async () => { throw abortError; };
-  const abortedFollowUpResult = await performWorkflowIntent({
+  const abortedFollowUpIntent = {
     ...offlineIntent,
     url: '/api/visits/visit-b/follow-ups',
     body: { text: 'caregiver follow-up', mutation_id: 'mutation-follow-up-abort' },
-  });
+  };
+  workflowMutationOwner = {};
+  workflowMutationPending = true;
+  abortedFollowUpIntent.mutationOwner = workflowMutationOwner;
+  const abortedFollowUpResult = await performWorkflowIntent(abortedFollowUpIntent);
 
   console.log(JSON.stringify({
     lateResult,
@@ -1652,6 +1675,7 @@ function shouldEvictClientPhi(error) { return error?.status === 401 || error?.st
 function evictClientPhi() { throw new Error('unexpected auth eviction'); }
 function setAppointmentMessage() {}
 function workflowIntentCanRender() { return true; }
+function workflowIntentOwnsMutation() { return true; }
 function captureAppointmentDraft() {}
 function clearWorkflowRetry() {}
 function redactGeneratedSummaryActions() {}
@@ -2145,8 +2169,10 @@ def test_narrow_appointment_order_controls_render_without_overflow_and_keep_focu
 
 def test_appointment_mutations_use_stable_contracts_and_explicit_retry_only():
     mutation = _function_source("newMutationId", "setAppointmentMessage")
+    owner = _function_source("beginWorkflowMutation", "createWorkflowIntent")
     intent = _function_source("createWorkflowIntent", "workflowIntentCanRender")
     performer = _function_source("performWorkflowIntent", "submitWorkflowMutation")
+    submitter = _function_source("submitWorkflowMutation", "retryWorkflowIntent")
     retry = _function_source("retryWorkflowIntent", "readJsonResponse")
     invalidation = _function_source(
         "invalidateWorkflowRetryOnDraftChange", "setAppointmentMutationBusy"
@@ -2156,7 +2182,12 @@ def test_appointment_mutations_use_stable_contracts_and_explicit_retry_only():
 
     assert "crypto?.randomUUID" in mutation
     assert "mutation_id: newMutationId()" in intent
-    assert "workflowMutationPending" in performer
+    assert owner.index("workflowMutationOwner = owner") < owner.index(
+        "workflowMutationPending = true"
+    )
+    assert submitter.index("beginWorkflowMutation()") < submitter.index("createWorkflowIntent(")
+    assert "workflowIntentOwnsMutation(intent)" in performer
+    assert "releaseWorkflowMutation(intent)" in performer
     assert "setAppointmentMutationBusy(true)" in performer
     assert "response.status === 409" not in performer
     assert "error?.status === 409" in performer
@@ -2172,6 +2203,125 @@ def test_appointment_mutations_use_stable_contracts_and_explicit_retry_only():
     assert "/questions/${encodeURIComponent" not in ordering
 
 
+def test_stale_workflow_finally_cannot_release_newer_mutation_owner():
+    script = "\n".join(
+        [
+            """
+let phiEpoch = 4;
+let visitSelectionEpoch = 7;
+let selectedVisitId = 'visit-1';
+let workflowMutationPending = false;
+let workflowMutationOwner = null;
+let activeWorkflowIntent = null;
+let pendingWorkflowIntent = null;
+let followUpMutationPending = false;
+let pendingFollowUpCompletion = null;
+let summaryActionMutationOwner = null;
+let mutationIds = 0;
+let busyReleases = 0;
+let resolveA;
+let resolveB;
+const fetches = [];
+const document = { getElementById() { return null; } };
+
+function newMutationId() { mutationIds += 1; return `mutation-${mutationIds}`; }
+function setAppointmentMutationBusy(busy) { if (!busy) busyReleases += 1; }
+function setFollowUpMutationBusy() {}
+function refreshGeneratedActionControls() {}
+function updateFollowUpFormValidity() {}
+function updateAppointmentFormValidity() {}
+function setAppointmentMessage() {}
+function clearWorkflowRetry() { pendingWorkflowIntent = null; }
+function reportLoadError() {}
+function shouldEvictClientPhi() { return false; }
+function handleWorkflowConflict() { return Promise.resolve(true); }
+function consumeWorkflowResponse(data, intent) {
+  return Promise.resolve(workflowIntentOwnsMutation(intent) && data.ok);
+}
+function followUpControlsLocked() {
+  return followUpMutationPending
+    || pendingFollowUpCompletion !== null
+    || summaryActionMutationOwner !== null
+    || workflowMutationPending;
+}
+function response(data) {
+  return {
+    status: 200,
+    ok: true,
+    headers: { get() { return null; } },
+    async json() { return data; },
+  };
+}
+function fetch(url) {
+  fetches.push(url);
+  return new Promise(resolve => {
+    if (url === '/a') resolveA = resolve;
+    else resolveB = resolve;
+  });
+}
+""",
+            _function_source("beginWorkflowMutation", "createWorkflowIntent"),
+            _function_source("createWorkflowIntent", "workflowIntentCanRender"),
+            _executable_function_source("workflowIntentCanRender", "refreshClinicalWorkflowState"),
+            _executable_function_source("readJsonResponse", "readJobSubmission"),
+            _executable_function_source("performWorkflowIntent", "submitWorkflowMutation"),
+            _executable_function_source("submitWorkflowMutation", "retryWorkflowIntent"),
+            """
+(async () => {
+  const a = submitWorkflowMutation('/a', { value: 'a' }, 'visit-1');
+  await Promise.resolve();
+  const ownerA = workflowMutationOwner;
+
+  // Simulate central eviction releasing A before its transport resolves.
+  workflowMutationPending = false;
+  workflowMutationOwner = null;
+  activeWorkflowIntent = null;
+
+  const b = submitWorkflowMutation('/b', { value: 'b' }, 'visit-1');
+  await Promise.resolve();
+  const ownerB = workflowMutationOwner;
+  resolveA(response({ ok: true, item: { id: 'a' } }));
+  const aResult = await a;
+  const afterA = {
+    pending: workflowMutationPending,
+    ownerIsB: workflowMutationOwner === ownerB,
+    activeIsB: activeWorkflowIntent?.mutationOwner === ownerB,
+  };
+  resolveB(response({ ok: true, item: { id: 'b' } }));
+  const bResult = await b;
+  console.log(JSON.stringify({
+    distinctOwners: ownerA !== ownerB,
+    aResult,
+    bResult,
+    afterA,
+    finalPending: workflowMutationPending,
+    finalOwner: workflowMutationOwner,
+    fetches,
+    mutationIds,
+    busyReleases,
+  }));
+})().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
+""",
+        ]
+    )
+    completed = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {
+        "distinctOwners": True,
+        "aResult": None,
+        "bResult": {"ok": True, "item": {"id": "b"}},
+        "afterA": {"pending": True, "ownerIsB": True, "activeIsB": True},
+        "finalPending": False,
+        "finalOwner": None,
+        "fetches": ["/a", "/b"],
+        "mutationIds": 2,
+        "busyReleases": 1,
+    }
+
+
 def test_appointment_revision_epoch_conflict_and_eviction_guards_are_complete():
     context = _function_source("workflowIntentCanRender", "refreshClinicalWorkflowState")
     refresh = _function_source("refreshClinicalWorkflowState", "consumeWorkflowResponse")
@@ -2180,22 +2330,22 @@ def test_appointment_revision_epoch_conflict_and_eviction_guards_are_complete():
     performer = _function_source("performWorkflowIntent", "submitWorkflowMutation")
     eviction = _function_source("evictClientPhi", "renderLatestResearchUpdate")
 
-    assert "requestPhiEpoch !== phiEpoch" in context
+    assert "expectedPhiEpoch !== phiEpoch" in context
     assert "requestVisitEpoch !== visitSelectionEpoch" in context
-    assert consume.index("if (!workflowIntentCanRender(intent)) return false") < consume.index(
+    assert consume.index("if (!workflowIntentOwnsMutation(intent)) return false") < consume.index(
         "captureAppointmentDraft()"
     )
-    assert consume.index("if (!workflowIntentCanRender(intent)) return false") < consume.index(
+    assert consume.index("if (!workflowIntentOwnsMutation(intent)) return false") < consume.index(
         "authorizePatientResponse(intent, data, { workflow: 'targeted' })"
     )
     assert "return true" in consume
-    assert conflicts.index("if (!workflowIntentCanRender(intent)) return false") < conflicts.index(
-        "clearWorkflowRetry()"
-    )
-    consumed_guard = performer.index("if (!consumed) return null")
+    assert conflicts.index(
+        "if (!workflowIntentOwnsMutation(intent)) return false"
+    ) < conflicts.index("clearWorkflowRetry()")
+    consumed_guard = performer.index("if (!consumed")
     assert consumed_guard < performer.index("clearWorkflowRetry()", consumed_guard)
     catch_source = performer[performer.index("catch (error)") :]
-    assert catch_source.index("if (!workflowIntentCanRender(intent)) return null") < (
+    assert catch_source.index("if (!workflowIntentOwnsMutation(intent)) return null") < (
         catch_source.index("error?.status === 409")
     )
     authority = _function_source("advancePatientAuthority", "authorizePatientResponse")
@@ -2218,6 +2368,11 @@ def test_appointment_revision_epoch_conflict_and_eviction_guards_are_complete():
         "Promise.allSettled"
     )
     assert "performWorkflowIntent" not in conflicts
+    release = _function_source("releaseWorkflowMutation", "refreshClinicalWorkflowState")
+    assert "workflowMutationOwner !== intent.mutationOwner" in release
+    assert "refreshGeneratedActionControls()" in release
+    assert "updateFollowUpFormValidity()" in release
+    assert "updateAppointmentFormValidity()" in release
 
     for expression in (
         "workflowRevision = null",
@@ -4454,7 +4609,7 @@ def test_response_authority_is_monotonic_across_patient_surface_interleavings():
     assert result["missingProfile"] is True
     assert result["currentRevisionless"] is True
     assert result["lateRevisionless"] is False
-    assert result["targetedLowerWorkflow"] is True
+    assert result["targetedLowerWorkflow"] is False
     assert result["workflowAfterTargeted"] == 9
     assert result["chatAfterLower"] == {
         "chatHistoryRevision": 13,

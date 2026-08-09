@@ -90,6 +90,31 @@
         </div>
       </section>
 
+      <section class="content-card follow-through-card" aria-labelledby="follow-through-heading">
+        <div class="card-header compact split-header">
+          <div>
+            <p class="eyebrow">Caregiver actions</p>
+            <h2 id="follow-through-heading">Follow-through</h2>
+            <p class="helper-text">Tasks and reminders to contact, ask, discuss, or confirm with the care team.</p>
+          </div>
+          <button class="button primary" id="follow-up-create-button" onclick="openFollowUpCreateDialog(this)">＋ Add follow-up</button>
+        </div>
+        <div class="follow-up-filters" role="tablist" aria-label="Filter follow-through actions" onkeydown="handleFollowUpFilterKeydown(event)">
+          <button class="follow-up-filter active" id="follow-up-filter-active" role="tab" tabindex="0" aria-selected="true" aria-controls="follow-up-list" onclick="setFollowUpFilter('active')">Active <span id="follow-up-count-active">0</span></button>
+          <button class="follow-up-filter" id="follow-up-filter-completed" role="tab" tabindex="-1" aria-selected="false" aria-controls="follow-up-list" onclick="setFollowUpFilter('completed')">Completed <span id="follow-up-count-completed">0</span></button>
+          <button class="follow-up-filter" id="follow-up-filter-cancelled" role="tab" tabindex="-1" aria-selected="false" aria-controls="follow-up-list" onclick="setFollowUpFilter('cancelled')">Cancelled <span id="follow-up-count-cancelled">0</span></button>
+          <button class="follow-up-filter" id="follow-up-filter-all" role="tab" tabindex="-1" aria-selected="false" aria-controls="follow-up-list" onclick="setFollowUpFilter('all')">All <span id="follow-up-count-all">0</span></button>
+        </div>
+        <div id="follow-up-status" class="follow-up-status" role="status" aria-live="polite"></div>
+        <div id="follow-up-list" class="follow-up-list" role="tabpanel" aria-labelledby="follow-up-filter-active" aria-live="polite">
+          <div class="loading-state"><span class="loading-spinner" aria-hidden="true"></span>Loading follow-through…</div>
+        </div>
+        <div class="follow-up-retry" id="follow-up-retry" hidden>
+          <span>The last request may not have reached the server. Your draft is still available.</span>
+          <button class="button secondary" id="follow-up-retry-button" onclick="retryFollowUpIntent()">Retry unchanged request</button>
+        </div>
+      </section>
+
       <section class="content-card summary-card" id="summary-card" aria-labelledby="summary-heading">
         <div class="card-header">
           <div>
@@ -260,6 +285,63 @@
       </section>
     </section>
   </main>
+</div>
+
+<div class="follow-up-overlay" id="follow-up-overlay" aria-hidden="true" onclick="closeFollowUpFromBackdrop(event)">
+  <section class="follow-up-dialog" id="follow-up-dialog" role="dialog" aria-modal="true" aria-labelledby="follow-up-dialog-title" tabindex="-1">
+    <header class="dialog-header">
+      <div>
+        <p class="eyebrow">Durable caregiver task</p>
+        <h2 id="follow-up-dialog-title">Follow-up</h2>
+      </div>
+      <button class="icon-button" onclick="closeFollowUpDialog()" aria-label="Close follow-up dialog">×</button>
+    </header>
+    <div id="follow-up-dialog-status" class="follow-up-dialog-status" role="status" aria-live="polite"></div>
+    <div class="follow-up-dialog-body">
+      <form id="follow-up-create-form" class="follow-up-form" onsubmit="event.preventDefault();createManualFollowUp()">
+        <label><span>What needs follow-through?</span><textarea id="follow-up-create-text" maxlength="1000" rows="4" placeholder="Contact the clinic to confirm the next appointment date."></textarea></label>
+        <p class="helper-text">Use contact, ask, discuss, or confirm wording. This creates a caregiver task, not a treatment instruction.</p>
+        <div class="follow-up-form-grid">
+          <label><span>Owner</span><input id="follow-up-create-owner" maxlength="100" placeholder="Caregiver"></label>
+          <label><span>Due date</span><input id="follow-up-create-due" type="date"></label>
+        </div>
+        <p class="form-error" id="follow-up-create-error" role="alert" aria-live="polite"></p>
+        <div class="follow-up-dialog-actions">
+          <button class="button primary" id="follow-up-create-submit" type="submit" disabled>Create follow-up</button>
+          <button class="button secondary" type="button" onclick="closeFollowUpDialog()">Cancel</button>
+        </div>
+      </form>
+
+      <form id="follow-up-edit-form" class="follow-up-form" onsubmit="event.preventDefault();saveFollowUpDetails()" hidden>
+        <p class="follow-up-dialog-copy" id="follow-up-edit-copy"></p>
+        <div class="follow-up-form-grid">
+          <label><span>Owner</span><input id="follow-up-edit-owner" maxlength="100"></label>
+          <label><span>Due date</span><input id="follow-up-edit-due" type="date"></label>
+        </div>
+        <p class="form-error" id="follow-up-edit-error" role="alert" aria-live="polite"></p>
+        <div class="follow-up-dialog-actions">
+          <button class="button primary" id="follow-up-edit-submit" type="submit">Save details</button>
+          <button class="button secondary" type="button" onclick="closeFollowUpDialog()">Cancel</button>
+        </div>
+      </form>
+
+      <form id="follow-up-outcome-form" class="follow-up-form" onsubmit="event.preventDefault();submitFollowUpOutcome()" hidden>
+        <p class="follow-up-dialog-copy" id="follow-up-outcome-copy"></p>
+        <label><span>Outcome source</span><select id="follow-up-outcome-kind" onchange="updateFollowUpOutcomeGuidance()"><option value="administrative">Administrative</option><option value="caregiver_reported">Caregiver reported</option><option value="clinician_attributed">Attributed to clinician</option></select></label>
+        <label><span>What happened?</span><textarea id="follow-up-outcome-text" maxlength="4000" rows="4" placeholder="Record the result of this follow-up."></textarea></label>
+        <p class="capture-provenance" id="follow-up-outcome-guidance"></p>
+        <p class="form-error" id="follow-up-outcome-error" role="alert" aria-live="polite"></p>
+        <div class="follow-up-dialog-actions">
+          <button class="button primary" id="follow-up-outcome-submit" type="submit" disabled>Save outcome</button>
+          <button class="button secondary" type="button" onclick="closeFollowUpDialog()">Cancel</button>
+        </div>
+      </form>
+    </div>
+    <div class="follow-up-retry dialog-retry" id="follow-up-dialog-retry" hidden>
+      <span>The request may not have reached the server. Your draft is still available.</span>
+      <button class="button secondary" id="follow-up-dialog-retry-button" onclick="retryFollowUpIntent()">Retry unchanged request</button>
+    </div>
+  </section>
 </div>
 
 <div class="appointment-overlay" id="appointment-overlay" aria-hidden="true" onclick="closeAppointmentFromBackdrop(event)">

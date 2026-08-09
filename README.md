@@ -338,6 +338,7 @@ The most common loops:
 | Action | Where | What happens |
 |---|---|---|
 | Review current priorities | **Today** | Shows assessment freshness, the key concern, and task-oriented next actions before supporting detail |
+| Track durable caregiver follow-through | **Today** → **Follow-through** | Create safe caregiver tasks, accept only current generated actions, filter active/completed/cancelled history, edit owner/due date, and record typed completion or cancellation outcomes with explicit provenance; offline snapshots stay visible but read-only, and one mutation owns all related controls until authoritative reload finishes |
 | See newly discovered research | **Today** → **Latest research additions** | Shows the exact net-new trials and papers from the latest digest or document analysis; opening either list highlights those records |
 | Add a clinical document | Header → **Add document** → paste text or upload file | Queued on the independent feed executor; PDF parsing is child-only, then intake → orchestrator → exec summary |
 | Reconcile or correct an import | **Activity** → select that feed job | Shows only that document's additions, old → new changes, conflicts, and evidence; correct/remove a value or safely undo the document's direct structured changes |

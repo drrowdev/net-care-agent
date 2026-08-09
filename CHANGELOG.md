@@ -9,6 +9,32 @@ incremented when something user-visible or operationally meaningful changes.
 ## [Unreleased]
 
 ### Fixed
+- **Cross-surface revision authority.** Patient-data responses now pass one
+  monotonic profile/workflow authority guard before changing caches, revisions,
+  drafts, retries, or rendered content. Observing a newer clinical revision
+  invalidates every older in-flight patient read, including revisionless legacy
+  responses, while equal independent workflow reads remain usable and targeted
+  token-authorized results cannot roll global workflow state backward. Chat
+  history revisions are monotonic, and stale authorization, catch, and cleanup
+  paths cannot repaint or restore older patient projections.
+- **Follow-through authorization eviction and offline projections.**
+  Authorization loss now also scrubs hidden follow-through dialog copies,
+  guidance, forms, intent bodies, focus, and inert state before invalidating
+  late responses. Transient offline or aborted refreshes retain the last
+  authoritative Today and visit-linked rows as visibly stale read-only
+  snapshots, preserve action-scoped drafts in memory, keep accepted assessment
+  actions accepted, and re-enable mutations only after fresh tokens reload.
+- **Follow-through action intent ownership.** Generated acceptance, manual and
+  visit-linked creation, lifecycle, edit, outcome, and filter controls share one
+  in-flight mutation owner before selection epochs or mutation IDs can change.
+  Duplicate or competing clicks cannot allocate or fetch, saving dialogs remain
+  non-dismissible, and only an explicit ambiguous-request retry reuses the exact
+  mutation. Authoritative reload completion now revalidates mutation, patient,
+  action, and request identity after every await, so nested authorization/hard
+  eviction and stale authorization responses cannot announce success, clear a
+  draft, restore focus, repaint evicted data, or unlock a newer owner. Targeted
+  visit/action responses must also satisfy non-regressive workflow revision
+  bounds before changing the shared cache.
 - **Late appointment responses and authorization PHI teardown.** Appointment
   mutations now validate their patient-data and visit-selection epochs before
   changing workflow/profile revisions, visit caches, retry state, drafts, or
@@ -48,6 +74,19 @@ incremented when something user-visible or operationally meaningful changes.
   not block snapshot/backup recovery or permit duplicate initialization.
 
 ### Added
+- **Today durable follow-through workflow.** Today now has one responsive
+  caregiver-action surface with Active, Completed, Cancelled, and All filters,
+  safe manual task creation, current generated-action acceptance by opaque
+  source ID/token only, owner/due edits, backend-valid lifecycle controls, and
+  required typed completion/cancellation outcomes. Generated, manual,
+  visit/decision/alert provenance and caregiver-reported or
+  clinician-attributed unverified outcomes remain explicit without promoting
+  administrative or generated text into clinician facts. Stable-ID/full-token
+  CAS, one-intent mutation IDs, exact explicit retry, strict conflict reloads,
+  independent workflow/clinical revision handling, action/PHI response epochs,
+  complete hard eviction, draft-only offline retention, keyboard dialogs, and
+  44px overflow-safe phone controls prevent stale copies and late responses from
+  changing the visible action.
 - **Responsive appointment working mode.** Questions now includes visit
   preparation and one focused desktop/phone workspace for current generated or
   manual question snapshots, atomic pin/rank ordering, answered versus explicitly

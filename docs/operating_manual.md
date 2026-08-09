@@ -270,6 +270,15 @@ keeps only the eligible caregiver-entered draft, and requires a new explicit
 submission. Drafts are keyed to their action and intent and live only in the
 current SPA memory.
 
+While one follow-through save is in flight, every generated acceptance button,
+manual/action mutation control, and filter is disabled, and an open saving
+dialog cannot be dismissed. A duplicate click does not create a second mutation
+ID or request. This is browser-side intent serialization, not a claim that the
+server can deduplicate actions created by another browser. Success is announced
+only after the authoritative reload still belongs to the same patient-data,
+action-selection, and mutation owner; authorization or hard reload eviction
+silently cancels stale completion cleanup and focus restoration.
+
 Owner, due-date, and administrative lifecycle changes advance only
 `workflow_revision`, so they refresh action UI without clearing chat, reports,
 summary, questions, tasks, or status. Caregiver-reported and

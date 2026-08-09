@@ -24,6 +24,15 @@ incremented when something user-visible or operationally meaningful changes.
   authoritative Today and visit-linked rows as visibly stale read-only
   snapshots, preserve action-scoped drafts in memory, keep accepted assessment
   actions accepted, and re-enable mutations only after fresh tokens reload.
+- **Follow-through action intent ownership.** Generated acceptance, manual
+  creation, lifecycle, edit, outcome, and filter controls now share one
+  in-flight mutation owner before selection epochs or mutation IDs can change.
+  Duplicate or competing clicks cannot allocate or fetch, saving dialogs remain
+  non-dismissible, and only an explicit ambiguous-request retry reuses the exact
+  mutation. Authoritative reload completion now revalidates mutation, patient,
+  action, and request identity after every await, so nested authorization/hard
+  eviction and stale authorization responses cannot announce success, clear a
+  draft, restore focus, repaint evicted data, or unlock a newer owner.
 - **Late appointment responses and authorization PHI teardown.** Appointment
   mutations now validate their patient-data and visit-selection epochs before
   changing workflow/profile revisions, visit caches, retry state, drafts, or

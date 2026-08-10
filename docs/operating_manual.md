@@ -225,13 +225,37 @@ visible but is no longer a hard constraint until a clinician reactivates it.
 ## 4. Resolve / dismiss an alert
 
 1. UI → **Patient** → **Active alerts**.
-2. Click **Mark resolved** on the card.
-3. The alert is marked `resolved=true` in the profile but kept for audit.
-   New API clients may also record what happened and link a visit decision or
-   durable follow-up; the outcome and append-only history remain attached to the
-   stable alert ID.
-4. Prior chat turns clear and open generated reports/results become outdated;
+2. Click **Resolve alert** on the card. The shared desktop/phone dialog reloads
+   the current action, visit, and decision choices before enabling submission.
+3. Optionally record what happened. A blank outcome is omitted. A nonblank
+   outcome must be one of:
+   - **Administrative (not clinical evidence)**
+   - **Caregiver-entered · caregiver reported · unverified**
+   - **Caregiver-entered · attributed to clinician · unverified**
+4. Choose exactly one link mode: no link; one active follow-up; a new caregiver
+   follow-up containing only safe contact/ask/discuss/confirm text, owner, and due
+   date; or one planned/in-progress visit with an optional active or
+   needs-confirmation decision. Existing records are sent by stable ID only.
+   These links organize caregiver follow-through; they are not autonomous
+   treatment instructions or eligibility findings.
+5. Confirm and submit. The alert is marked `resolved=true` but retained for
+   audit, with its structured outcome, links, and append-only history attached to
+   the stable alert ID. The returned confirmation contains only the bounded saved
+   outcome/link projection; the old alert message is removed and sibling alerts
+   remain visible.
+6. Prior chat turns clear and open generated reports/results become outdated;
    regenerate only after reviewing the remaining active alerts.
+
+The browser acquires one resolution owner before reading the selected alert or
+allocating a mutation ID. While loading or saving, competing Resolve controls
+and dismissal are locked. A connection loss keeps the last authoritative alert
+and link choices visibly stale and read-only, plus the caregiver draft and one
+exact unchanged retry. Editing the draft invalidates that retry. A `409` never
+auto-retries: the old card/dialog copy and retry are cleared, eligible caregiver
+draft text is retained, and fresh alert ID/token/revision and link projections
+must reload before a new submission. Authorization loss or a hard load failure
+scrubs visible and hidden alert copies, choices, forms, drafts, retries, focus,
+and late responses. Alert resolution loading is event-driven; it adds no polling.
 
 ## 4a. Track caregiver follow-through
 

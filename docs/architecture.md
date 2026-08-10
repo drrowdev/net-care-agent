@@ -160,6 +160,29 @@ invalidates prior chat history, in-flight chat responses, reports/results,
 summaries, and generated questions while durable/source-scoped sibling alerts
 remain active under their own lifecycle.
 
+The SPA exposes this contract through one semantic Resolve alert dialog in the
+existing Patient alert list. Four mutually exclusive modes send either no link,
+one stable action ID, a bounded caregiver-authored follow-up, or one stable visit
+ID plus an optional eligible decision ID. Blank outcomes are omitted; nonblank
+outcomes retain administrative, caregiver-reported-unverified, or
+clinician-attributed-unverified provenance without verified styling. Selector
+rows are projected only from the current action/visit caches and eligible
+statuses.
+
+One client intent owner is acquired before selection, source loading, or
+mutation-ID allocation. Every alert/source/convergence response must still match
+that owner, patient-data epoch, alert ID/selection epoch/token, and monotonic
+profile/workflow authority before it can change state, DOM, drafts, retry, focus,
+or cleanup. Ambiguous transport retry reuses the exact immutable request; `409`
+redacts the old card/dialog copy and reloads fresh authority while preserving
+only eligible caregiver draft fields. Offline transport keeps the last
+authoritative alert/link projections visibly stale and read-only. Authorization
+or hard failure centrally evicts every visible and hidden alert copy, selector,
+form value, cache, draft, retry body, owner, focus/inert reference, and late
+response. Successful rendering waits for accepted revisions plus authoritative
+status/action/visit convergence and shows only the bounded returned outcome/link
+confirmation.
+
 Schema v8 separates clinical freshness from durable workflow bookkeeping.
 `profile_revision` remains the clinical/effective dependency identity for
 summaries, questions, chat, reports, alerts, and treatment classification.
@@ -304,7 +327,7 @@ only with exact `APP_ORIGIN` or canonical HTTPS `WEBSITE_HOSTNAME`.
 | Decision | Why |
 |---|---|
 | JSON file, not Postgres | Single patient, single writer; auditable diffs; trivial backup. |
-| Vanilla SPA, not React | Caregiver runs the UI on a phone occasionally — zero build pipeline beats lighter frameworks. The split SPA uses one responsive Today/Patient/Questions/Activity shell on every screen size. `static/index.html` owns semantic markup and dialogs, `static/app.js` owns API state/rendering, receipt reconciliation, appointment epochs/drafts, focus/inert behavior, and load states, and `static/styles.css` provides the green/amber desktop rail, full-height phone appointment sheet, and fixed phone navigation. |
+| Vanilla SPA, not React | Caregiver runs the UI on a phone occasionally — zero build pipeline beats lighter frameworks. The split SPA uses one responsive Today/Patient/Questions/Activity shell on every screen size. `static/index.html` owns semantic markup and dialogs, `static/app.js` owns API state/rendering, receipt reconciliation, appointment and alert-resolution owners/epochs/drafts, focus/inert behavior, and load states, and `static/styles.css` provides the green/amber desktop rail, overflow-safe alert sheet, full-height phone appointment sheet, and fixed phone navigation. |
 | Flask + gunicorn, not FastAPI/Containers | App Service runs Python natively; no Docker needed; rapid `az webapp deploy` cycle. |
 | No MSAL | Single user. App Service Easy Auth gates hosted APIs except health/liveness. Local API bypass is explicit (`ALLOW_LOCAL_AUTH_BYPASS=1`), never implicit. |
 | Per-agent model env vars | Lets us downgrade exec_summary or chat to Haiku independently for cost without touching code. |

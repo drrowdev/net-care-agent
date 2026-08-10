@@ -310,12 +310,12 @@
 
         <fieldset class="alert-resolution-fieldset">
           <legend>Optional outcome</legend>
-          <label><span>Outcome source</span><select id="alert-resolution-outcome-kind" onchange="updateAlertResolutionProvenance()"><option value="administrative">Administrative</option><option value="caregiver_reported">Caregiver reported</option><option value="clinician_attributed">Attributed to clinician</option></select></label>
+          <label><span>Outcome source</span><select id="alert-resolution-outcome-kind" onchange="updateAlertResolutionProvenance()"><option value="administrative">Administrative (not clinical evidence)</option><option value="caregiver_reported">Caregiver reported (unverified)</option><option value="clinician_attributed">Attributed to clinician (unverified)</option></select></label>
           <label><span>What happened?</span><textarea id="alert-resolution-outcome-text" maxlength="2000" rows="3" placeholder="Optional: record the outcome of reviewing this alert."></textarea></label>
           <p class="capture-provenance" id="alert-resolution-provenance"></p>
         </fieldset>
 
-        <fieldset class="alert-resolution-fieldset alert-resolution-link-modes">
+        <fieldset class="alert-resolution-fieldset alert-resolution-link-modes" id="alert-resolution-link-modes">
           <legend>Optional link or follow-up</legend>
           <label><input type="radio" name="alert-resolution-link-mode" value="none" checked onchange="renderAlertResolutionLinkMode()"> No link</label>
           <label><input type="radio" name="alert-resolution-link-mode" value="follow_up" onchange="renderAlertResolutionLinkMode()"> Link an active follow-up</label>

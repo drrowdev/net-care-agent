@@ -656,6 +656,65 @@ def test_alert_resolution_uses_stable_id_token_and_revision():
     assert "mutation_id: newMutationId()" in body
     assert "authorizePatientResponse(intent, data" in resolver
     assert "alertResolution: true" in resolver
+    submitter = _function_source("submitAlertResolution", "retryAlertResolution")
+    assert "requestAlertId: alert.id" in submitter
+
+
+def test_alert_resolution_intent_passes_real_shared_authority_guard():
+    script = "\n".join(
+        [
+            """
+let phiEpoch = 0;
+let latestProfileRevision = 5;
+let workflowRevision = 2;
+let selectedTaskId = null;
+let taskSelectionEpoch = 0;
+let selectedVisitId = null;
+let visitSelectionEpoch = 0;
+let selectedFollowUpId = null;
+let followUpSelectionEpoch = 0;
+let selectedAlertId = 'alert-stable-id';
+let alertSelectionEpoch = 3;
+function advancePatientAuthority() { throw new Error('unexpected revision advance'); }
+function requestClinicalConvergence() {
+  throw new Error('unexpected convergence request');
+}
+""",
+            _function_source("normalizedRevision", "capturePatientRequest"),
+            _function_source("patientRequestIsCurrent", "requestClinicalConvergence"),
+            _function_source("authorizePatientResponse", "setAppointmentMessage"),
+            """
+const intent = {
+  requestPhiEpoch: 0,
+  requestAlertEpoch: 3,
+  requestAlertId: 'alert-stable-id',
+  alertId: 'alert-stable-id',
+};
+const accepted = authorizePatientResponse(intent, {
+  profile_revision: 5,
+  workflow_revision: 2,
+}, {
+  workflow: 'targeted',
+  alertResolution: true,
+}).accepted;
+selectedAlertId = 'different-alert';
+const rejectedAfterSelectionChange = authorizePatientResponse(intent, {
+  profile_revision: 5,
+  workflow_revision: 2,
+}, {
+  workflow: 'targeted',
+  alertResolution: true,
+}).accepted;
+console.log(JSON.stringify({ accepted, rejectedAfterSelectionChange }));
+""",
+        ]
+    )
+    completed = _run_node_script(script)
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {
+        "accepted": True,
+        "rejectedAfterSelectionChange": False,
+    }
 
 
 def _run_alert_resolution_body_probe() -> dict:
@@ -665,6 +724,9 @@ def _run_alert_resolution_body_probe() -> dict:
 let latestProfileRevision = 42;
 let mutationIds = 0;
 let mode = 'none';
+const ALERT_RESOLUTION_OUTCOME_KINDS = new Set([
+  'administrative', 'caregiver_reported', 'clinician_attributed'
+]);
 const elements = new Map([
   ['alert-resolution-outcome-kind', { value: 'clinician_attributed' }],
   ['alert-resolution-outcome-text', { value: 'Treating team confirmed monitoring' }],
@@ -745,6 +807,71 @@ def test_alert_resolution_bodies_use_only_server_contract_ids_and_optional_outco
     assert "/api/alerts/resolve/" not in APP_JS
 
 
+def test_alert_resolution_modes_disable_non_selected_fields_and_reject_bad_provenance():
+    script = "\n".join(
+        [
+            """
+let mode = 'none';
+let alertLinkSourcesStale = false;
+let alertResolutionMutationPending = false;
+const panels = new Map();
+for (const id of [
+  'alert-resolution-existing-follow-up',
+  'alert-resolution-inline-follow-up',
+  'alert-resolution-visit-link'
+]) {
+  const controls = [{ disabled: false }, { disabled: false }];
+  panels.set(id, {
+    hidden: false,
+    controls,
+    querySelectorAll() { return controls; },
+  });
+}
+const document = {
+  getElementById(id) { return panels.get(id); },
+  querySelector() { return { value: mode }; },
+};
+function updateAlertResolutionFormValidity() {}
+""",
+            _function_source("selectedAlertResolutionMode", "alertResolutionDraftKey"),
+            _function_source(
+                "renderAlertResolutionLinkMode", "setAlertResolutionProjectionReadOnly"
+            ),
+            """
+const states = {};
+for (const value of ['none', 'follow_up', 'inline', 'visit']) {
+  mode = value;
+  renderAlertResolutionLinkMode();
+  states[value] = Object.fromEntries([...panels].map(([id, panel]) => [
+    id,
+    { hidden: panel.hidden, disabled: panel.controls.every(control => control.disabled) },
+  ]));
+}
+console.log(JSON.stringify(states));
+""",
+        ]
+    )
+    completed = _run_node_script(script)
+    assert completed.returncode == 0, completed.stderr
+    states = json.loads(completed.stdout)
+    expected_panel = {
+        "none": None,
+        "follow_up": "alert-resolution-existing-follow-up",
+        "inline": "alert-resolution-inline-follow-up",
+        "visit": "alert-resolution-visit-link",
+    }
+    for mode, panels in states.items():
+        for panel_id, state in panels.items():
+            selected = panel_id == expected_panel[mode]
+            assert state == {"hidden": not selected, "disabled": not selected}
+
+    invalid_probe = _run_alert_resolution_body_probe()
+    assert invalid_probe["bodies"]["noOutcome"].get("outcome") is None
+    body = _function_source("createAlertResolutionBody", "alertResolutionIntentOwnsMutation")
+    assert "ALERT_RESOLUTION_OUTCOME_KINDS.has(kind)" in body
+    assert "throw new Error('Choose a valid outcome source.')" in body
+
+
 def test_alert_resolution_owns_intent_before_epoch_id_fetch_and_revalidates_awaits():
     opener = _function_source("openAlertResolutionDialog", "closeAlertResolutionDialog")
     submitter = _function_source("submitAlertResolution", "retryAlertResolution")
@@ -766,11 +893,103 @@ def test_alert_resolution_owns_intent_before_epoch_id_fetch_and_revalidates_awai
     assert "readJsonResponse(" in performer
     assert "refreshClinicalWorkflowState(" in performer
     assert "authorizePatientResponse(intent, data" in performer
-    assert "Promise.allSettled([" in conflict
-    assert "loadStatus()" in conflict
-    assert "loadFollowUps()" in conflict
-    assert "loadVisits()" in conflict
+    assert "redactAlertResolutionCard(intent.alertId)" in conflict
+    assert "loadStatus({" in conflict
+    assert "refreshClinicalWorkflowState(" in conflict
+    assert "responseGuard: refreshedGuard" in conflict
+    assert "intent.body = {}" in conflict
     assert "performAlertResolutionIntent" not in conflict
+
+
+def test_alert_resolution_locks_sources_while_loading_and_converges_removed_conflict():
+    source_refresh = _function_source("refreshAlertResolutionSources", "openAlertResolutionDialog")
+    assert source_refresh.index("alertLinkSourcesStale = true") < source_refresh.index(
+        "Promise.allSettled"
+    )
+    assert source_refresh.index("setAlertResolutionProjectionReadOnly(true)") < (
+        source_refresh.index("Promise.allSettled")
+    )
+    renderer = _function_source("renderAlerts", "alertResolutionProvenanceLabel")
+    assert "alertResolutionIntentOwner !== null" in renderer
+
+    script = "\n".join(
+        [
+            """
+let phiEpoch = 0;
+let latestProfileRevision = 5;
+let selectedAlertId = 'alert-removed';
+let selectedAlertToken = 'token-old';
+let selectedAlertProfileRevision = 5;
+let alertSelectionEpoch = 1;
+let alertResolutionDialogOpen = true;
+let alertResolutionMutationPending = true;
+const owner = {};
+let alertResolutionIntentOwner = owner;
+let alertProjectionStale = false;
+let alertLinkSourcesStale = false;
+let alertsById = new Map([
+  ['alert-removed', { id: 'alert-removed', resolve_token: 'token-old' }],
+]);
+let convergenceCalls = 0;
+let contextRedactions = 0;
+function alertResolutionIntentOwnsMutation(intent) {
+  return alertResolutionMutationPending
+    && alertResolutionIntentOwner === intent.owner
+    && intent.requestAlertEpoch === alertSelectionEpoch
+    && intent.alertId === selectedAlertId;
+}
+function captureAlertResolutionDraft() {}
+function clearAlertResolutionRetry() {}
+function redactAlertResolutionCard(id) { alertsById.delete(id); }
+function redactAlertResolutionContext() { contextRedactions += 1; }
+function renderAlerts() {}
+function setAlertResolutionProjectionReadOnly() {}
+function updateAlertResolutionFormValidity() {}
+async function loadStatus() {
+  latestProfileRevision = 6;
+  return { profile_revision: 6, workflow_revision: 2 };
+}
+async function refreshClinicalWorkflowState() {
+  convergenceCalls += 1;
+  return { verified: true };
+}
+""",
+            _executable_function_source(
+                "handleAlertResolutionConflict", "performAlertResolutionIntent"
+            ),
+            """
+(async () => {
+  const intent = {
+    owner,
+    alertId: 'alert-removed',
+    requestPhiEpoch: 0,
+    requestAlertEpoch: 1,
+    body: { mutation_id: 'must-be-scrubbed' },
+  };
+  await handleAlertResolutionConflict(new Error('changed'), intent);
+  console.log(JSON.stringify({
+    convergenceCalls,
+    contextRedactions,
+    bodyCleared: Object.keys(intent.body).length === 0,
+    projectionAuthoritative: alertProjectionStale === false,
+    linksLockedForMissingTarget: alertLinkSourcesStale === true,
+  }));
+})().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
+""",
+        ]
+    )
+    completed = _run_node_script(script)
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {
+        "convergenceCalls": 1,
+        "contextRedactions": 2,
+        "bodyCleared": True,
+        "projectionAuthoritative": True,
+        "linksLockedForMissingTarget": True,
+    }
 
 
 def test_alert_resolution_filters_link_sources_and_labels_provenance_precisely():
@@ -822,6 +1041,10 @@ def test_alert_resolution_conflict_offline_and_eviction_fail_closed():
     assert "alertSelectionEpoch += 1" in eviction
     assert "clear('alert-resolution-message')" in eviction
     assert "alertResolutionOverlay.inert = true" in eviction
+    assert "'alert-resolution-outcome-text'" in eviction
+    assert "'alert-resolution-follow-up-select'" in eviction
+    assert '"alert-resolution-link-mode"' in eviction
+    assert "alertResolutionDrafts = new Map()" in eviction
     assert "loadFollowUps()" not in polling
     assert "loadVisits()" not in polling
 
@@ -920,6 +1143,354 @@ def test_alert_resolution_dialog_is_responsive_focusable_and_overflow_safe():
         browser.close()
 
 
+def test_alert_resolution_live_browser_modes_conflict_offline_auth_and_late_response():
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    html = re.sub(r"<script[^>]+src=[^>]+></script>", "", INDEX_HTML)
+    html = html.replace("<head>", '<head><base href="http://app.test/">', 1)
+    status_v5 = {
+        "profile_revision": 5,
+        "workflow_revision": 1,
+        "patient": {},
+        "stats": {},
+        "alerts": [
+            {
+                "id": "alert-a",
+                "resolve_token": "token-a",
+                "message": "Sensitive alert A",
+                "action_required": "Ask the treating team",
+                "priority": "high",
+            },
+            {
+                "id": "alert-b",
+                "resolve_token": "token-b",
+                "message": "Sibling alert B",
+                "priority": "normal",
+            },
+        ],
+        "treatments_classified": [],
+        "recent_biomarkers": [],
+    }
+    follow_ups_v5 = {
+        "profile_revision": 5,
+        "workflow_revision": 1,
+        "items": [{"id": "action-a", "text": "Call clinic", "status": "open"}],
+    }
+    visits_v5 = {
+        "profile_revision": 5,
+        "workflow_revision": 1,
+        "appointments": [],
+        "items": [
+            {
+                "id": "visit-a",
+                "title": "Oncology",
+                "status": "planned",
+                "decisions": [
+                    {
+                        "id": "decision-a",
+                        "text": "Continue discussion",
+                        "status": "active",
+                    }
+                ],
+            }
+        ],
+    }
+    summary_v5 = {"status": "not_generated", "profile_revision": 5}
+    payloads = {
+        "/api/status": status_v5,
+        "/api/follow-ups": follow_ups_v5,
+        "/api/visits": visits_v5,
+        "/api/summary": summary_v5,
+        "/api/jobs": [],
+        "/api/questions": [],
+        "/api/judgments": [],
+        "/api/symptoms": [],
+        "/api/patient/evidence": {},
+    }
+
+    with playwright_api.sync_playwright() as playwright:
+        executable = Path(playwright.chromium.executable_path)
+        if not executable.exists():
+            pytest.skip("Installed Playwright browser is unavailable")
+        browser = playwright.chromium.launch()
+        for width, height in ((1280, 900), (360, 800)):
+            page = browser.new_page(viewport={"width": width, "height": height})
+            page_errors = []
+            page.on(
+                "pageerror",
+                lambda error, errors=page_errors: errors.append(str(error)),
+            )
+
+            def fulfill(route):
+                path = "/" + route.request.url.split("/", 3)[-1].split("?", 1)[0]
+                payload = payloads.get(path, {})
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps(payload),
+                )
+
+            page.route("**/api/**", fulfill)
+            page.set_content(html)
+            page.add_style_tag(content=CSS)
+            page.add_script_tag(content=APP_JS)
+            page.wait_for_function("() => !clinicalConvergenceRunning")
+            page.evaluate(
+                """() => {
+                  clearTimeout(pollingInterval);
+                  pollingInterval = null;
+                }"""
+            )
+            page.locator("#nav-patient").click()
+            page.locator('[data-alert-id="alert-a"] .resolve-btn').click()
+            page.locator("#alert-resolution-dialog").wait_for(state="visible")
+            page.wait_for_function(
+                "() => document.getElementById('alert-resolution-follow-up-select').options.length > 1"
+            )
+
+            bodies = {}
+            mode_inputs = {
+                "none": None,
+                "follow_up": ("#alert-resolution-follow-up-select", "action-a"),
+                "inline": ("#alert-resolution-follow-up-text", "Ask the treating team"),
+                "visit": ("#alert-resolution-visit-select", "visit-a"),
+            }
+            for mode, entry in mode_inputs.items():
+                page.locator(f'input[name="alert-resolution-link-mode"][value="{mode}"]').check()
+                if entry:
+                    page.locator(entry[0]).fill(entry[1]) if entry[0].endswith(
+                        "text"
+                    ) else page.locator(entry[0]).select_option(entry[1])
+                if mode == "visit":
+                    page.locator("#alert-resolution-decision-select").select_option("decision-a")
+                bodies[mode] = page.evaluate(
+                    """() => {
+                      const body = createAlertResolutionBody(alertsById.get('alert-a'));
+                      delete body.mutation_id;
+                      return body;
+                    }"""
+                )
+                visible_panels = page.locator(
+                    "#alert-resolution-existing-follow-up:not([hidden]), "
+                    "#alert-resolution-inline-follow-up:not([hidden]), "
+                    "#alert-resolution-visit-link:not([hidden])"
+                ).count()
+                assert visible_panels == (0 if mode == "none" else 1)
+
+            assert set(bodies["none"]) == {
+                "expected_token",
+                "expected_profile_revision",
+            }
+            assert bodies["follow_up"]["follow_up_id"] == "action-a"
+            assert bodies["inline"]["follow_up"] == {
+                "text": "Ask the treating team",
+                "owner": None,
+                "due_date": None,
+            }
+            assert bodies["visit"]["visit_id"] == "visit-a"
+            assert bodies["visit"]["decision_id"] == "decision-a"
+            if width == 360:
+                hit_targets = page.locator(
+                    "#alert-resolution-close, "
+                    ".alert-resolution-link-modes label, "
+                    ".alert-resolution-confirm, "
+                    ".follow-up-dialog-actions .button"
+                )
+                heights = hit_targets.evaluate_all(
+                    """items => items
+                      .filter(item => item.offsetParent !== null)
+                      .map(item => item.getBoundingClientRect().height)"""
+                )
+                assert heights and all(item >= 44 for item in heights)
+                assert page.evaluate(
+                    "() => document.documentElement.scrollWidth === document.documentElement.clientWidth"
+                )
+
+            page.evaluate("alertResolutionMutationPending = true")
+            page.keyboard.press("Escape")
+            assert page.locator("#alert-resolution-overlay").get_attribute("aria-hidden") == "false"
+            page.evaluate("alertResolutionMutationPending = false")
+            page.keyboard.press("Escape")
+            assert page.locator("#alert-resolution-overlay").get_attribute("aria-hidden") == "true"
+            assert page.locator('[data-alert-id="alert-a"] .resolve-btn').evaluate(
+                "button => button === document.activeElement"
+            )
+
+            page.locator('[data-alert-id="alert-a"] .resolve-btn').click()
+            page.locator('input[name="alert-resolution-link-mode"][value="inline"]').check()
+            page.locator("#alert-resolution-follow-up-text").fill(
+                "Ask the treating team about timing"
+            )
+            page.locator("#alert-resolution-outcome-text").fill("Caregiver draft survives conflict")
+            page.locator("#alert-resolution-confirm").check()
+            page.evaluate(
+                """({ status, followUps, visits, summary }) => {
+                  const response = (value, code = 200) => new Response(
+                    JSON.stringify(value),
+                    { status: code, headers: { 'Content-Type': 'application/json' } }
+                  );
+                  const originalFetch = window.fetch;
+                  window.__authoritativeFetch = (url, options = {}) => {
+                    const path = new URL(String(url), document.baseURI).pathname;
+                    if (path.endsWith('/resolve')) {
+                      return Promise.resolve(response({ error: 'Alert changed' }, 409));
+                    }
+                    if (path === '/api/status') return Promise.resolve(response(status));
+                    if (path === '/api/follow-ups') {
+                      return Promise.resolve(response(followUps));
+                    }
+                    if (path === '/api/visits') return Promise.resolve(response(visits));
+                    if (path === '/api/summary') return Promise.resolve(response(summary));
+                    if (path === '/api/jobs' || path === '/api/questions') {
+                      return Promise.resolve(response([]));
+                    }
+                    return originalFetch(url, options);
+                  };
+                  window.fetch = window.__authoritativeFetch;
+                }""",
+                {
+                    "status": {
+                        **status_v5,
+                        "profile_revision": 6,
+                        "workflow_revision": 2,
+                        "alerts": [
+                            {
+                                **status_v5["alerts"][0],
+                                "resolve_token": "token-a-fresh",
+                                "message": "Fresh alert A",
+                            },
+                            status_v5["alerts"][1],
+                        ],
+                    },
+                    "followUps": {
+                        **follow_ups_v5,
+                        "profile_revision": 6,
+                        "workflow_revision": 2,
+                    },
+                    "visits": {
+                        **visits_v5,
+                        "profile_revision": 6,
+                        "workflow_revision": 2,
+                    },
+                    "summary": {
+                        "status": "not_generated",
+                        "profile_revision": 6,
+                    },
+                },
+            )
+            page.locator("#alert-resolution-submit").click()
+            page.wait_for_timeout(1000)
+            conflict_state = page.evaluate(
+                """() => ({
+                  status: document.getElementById('alert-resolution-status').textContent,
+                  pending: alertResolutionMutationPending,
+                  owner: alertResolutionIntentOwner !== null,
+                  selectedAlertId,
+                  selectedAlertToken,
+                  selectedAlertProfileRevision,
+                  latestProfileRevision,
+                  alertProjectionStale,
+                  alertLinkSourcesStale,
+                })"""
+            )
+            assert "Review the reloaded alert" in conflict_state["status"], json.dumps(
+                {"state": conflict_state, "errors": page_errors}
+            )
+            assert (
+                page.locator("#alert-resolution-outcome-text").input_value()
+                == "Caregiver draft survives conflict"
+            )
+            assert page.locator("#alert-resolution-retry").is_hidden()
+            assert page.locator('[data-alert-id="alert-b"]').count() == 1
+            assert page.locator("#alert-resolution-message").text_content() == "Fresh alert A"
+
+            page.evaluate(
+                """async () => {
+                  const authoritativeFetch = window.fetch;
+                  let resolveLate;
+                  window.fetch = (url, options = {}) => {
+                    const path = new URL(String(url), document.baseURI).pathname;
+                    if (path === '/api/follow-ups') {
+                      return new Promise(resolve => { resolveLate = resolve; });
+                    }
+                    return authoritativeFetch(url, options);
+                  };
+                  const pending = refreshAlertResolutionSources(
+                    alertResolutionIntentOwner
+                  );
+                  await Promise.resolve();
+                  closeAlertResolutionDialog();
+                  resolveLate(new Response(JSON.stringify({
+                    profile_revision: 6,
+                    workflow_revision: 2,
+                    items: [{
+                      id: 'late-action',
+                      text: 'Late PHI must not render',
+                      status: 'open'
+                    }]
+                  }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' }
+                  }));
+                  await pending;
+                  window.fetch = authoritativeFetch;
+                }"""
+            )
+            assert page.locator("#alert-resolution-overlay").get_attribute("aria-hidden") == "true"
+            assert (
+                "Late PHI must not render"
+                not in page.locator("#alert-resolution-follow-up-select").inner_text()
+            )
+
+            page.locator('[data-alert-id="alert-a"] .resolve-btn').click()
+            page.locator('input[name="alert-resolution-link-mode"][value="inline"]').check()
+            page.locator("#alert-resolution-follow-up-text").fill("Caregiver offline draft")
+            page.evaluate(
+                """async () => {
+                  const authoritativeFetch = window.fetch;
+                  window.fetch = (url, options = {}) => {
+                    const path = new URL(String(url), document.baseURI).pathname;
+                    if (path === '/api/follow-ups' || path === '/api/visits') {
+                      return Promise.reject(new TypeError('offline'));
+                    }
+                    return authoritativeFetch(url, options);
+                  };
+                  await refreshAlertResolutionSources(alertResolutionIntentOwner);
+                }"""
+            )
+            assert (
+                page.locator("#alert-resolution-follow-up-text").input_value()
+                == "Caregiver offline draft"
+            )
+            assert (
+                page.locator("#alert-resolution-link-modes").get_attribute("aria-disabled")
+                == "true"
+            )
+            assert page.locator('[data-alert-id="alert-a"] .resolve-btn').is_disabled()
+
+            page.locator("#alert-resolution-outcome-text").fill("Secret draft")
+            page.evaluate(
+                """async () => {
+                  window.fetch = async () => new Response(
+                    JSON.stringify({ error: 'denied' }),
+                    { status: 401, headers: { 'Content-Type': 'application/json' } }
+                  );
+                  await loadStatus();
+                }"""
+            )
+            assert page.locator("#alert-resolution-overlay").get_attribute("aria-hidden") == "true"
+            assert page.locator("#alert-resolution-outcome-text").input_value() == ""
+            assert page.locator("#alert-resolution-follow-up-select").inner_text() == ""
+            assert page.locator("#alerts-list").inner_text() == ""
+            assert page.evaluate(
+                """() => alertResolutionIntentOwner === null
+                  && alertResolutionDrafts.size === 0
+                  && selectedAlertId === null"""
+            )
+
+            page.close()
+        browser.close()
+
+
 def _run_alert_resolution_race_probe() -> dict:
     script = "\n".join(
         [
@@ -974,6 +1545,7 @@ function alertResolutionOwnerIsCurrent(owner, expectedPhiEpoch = phiEpoch) {
     && expectedPhiEpoch === phiEpoch;
 }
 function setAlertResolutionBusy() {}
+function setAlertResolutionProjectionReadOnly() {}
 function renderAlerts() {}
 function updateAlertResolutionFormValidity() {}
 function setAlertResolutionStatus(message, tone) { statuses.push([message, tone]); }
@@ -2900,13 +3472,17 @@ def test_appointment_revision_epoch_conflict_and_eviction_guards_are_complete():
     assert "taskSelectionEpoch += 1" in authority
     assert "syncChatRevision(revision, true, false)" in authority
     assert "taskSelectionEpoch += 1" in refresh
-    assert refresh.index("const status = await loadStatus()") < refresh.index("loadSummary()")
+    assert refresh.index("const status = await loadStatus(guardedOptions)") < refresh.index(
+        "loadSummary(guardedOptions)"
+    )
     assert "syncChatRevision(statusRevision, true, false)" in refresh
-    assert refresh.index("redactGeneratedQuestionChoices()") < refresh.index("loadQuestions()")
-    assert "loadSummary()" in refresh
-    assert "loadTasks()" in refresh
-    assert "loadVisits()" in refresh
-    assert "loadFollowUps()" in refresh
+    assert refresh.index("redactGeneratedQuestionChoices()") < refresh.index(
+        "loadQuestions(guardedOptions)"
+    )
+    assert "loadSummary(guardedOptions)" in refresh
+    assert "loadTasks(guardedOptions)" in refresh
+    assert "loadVisits(guardedOptions)" in refresh
+    assert "loadFollowUps(guardedOptions)" in refresh
     assert "return { verified }" in refresh
     assert "refreshResults.every" in refresh
     assert "setAppointmentMessage('Saved." not in refresh
@@ -4924,7 +5500,8 @@ def test_summary_action_sources_use_load_and_profile_revision_guards():
     assert "requestSummaryEpoch = ++summaryLoadEpoch" in loader
     assert "requestSummaryEpoch === summaryLoadEpoch" in loader
     assert "readJsonResponse(r, requestIsCurrent)" in loader
-    assert "authorizePatientResponse(request, d)" in loader
+    assert "authorizePatientResponse(" in loader
+    assert "options.authorizationOptions || {}" in loader
     assert loader.index("redactGeneratedSummaryActions()") < loader.index("renderSummary({")
     assert revision_sync.count("redactGeneratedSummaryActions()") >= 2
 

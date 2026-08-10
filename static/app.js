@@ -68,6 +68,11 @@
   let activeAlertResolutionIntent = null;
   let alertResolutionDrafts = new Map();
   let alertResolutionResult = null;
+  const ALERT_RESOLUTION_OUTCOME_KINDS = new Set([
+    'administrative',
+    'caregiver_reported',
+    'clinician_attributed',
+  ]);
   const failedLoads = new Map();
 
   // ── UI label localization ───────────────────────────────────────────────
@@ -254,7 +259,7 @@
       }
     }
     syncChatRevision(revision, true, false);
-    requestClinicalConvergence(revision);
+    if (!options.deferConvergence) requestClinicalConvergence(revision);
     return true;
   }
 
@@ -313,6 +318,7 @@
     if (profileAdvanced) {
       advancePatientAuthority(responseProfileRevision, {
         preserveAlertIntent: options.alertResolution === true,
+        deferConvergence: options.alertResolution === true,
       });
     }
     if (staleWorkflowProjection || staleTargetedWorkflow) {
@@ -326,7 +332,11 @@
       );
     if (workflowAdvanced) {
       workflowRevision = responseWorkflowRevision;
-      if (!profileAdvanced && Number.isSafeInteger(currentProfileRevision)) {
+      if (
+        !options.alertResolution
+        && !profileAdvanced
+        && Number.isSafeInteger(currentProfileRevision)
+      ) {
         requestClinicalConvergence(currentProfileRevision);
       }
     }
@@ -435,23 +445,37 @@
     return true;
   }
 
-  async function refreshClinicalWorkflowState(profileRevision, expectedWorkflowRevision = null) {
+  async function refreshClinicalWorkflowState(
+    profileRevision,
+    expectedWorkflowRevision = null,
+    options = {},
+  ) {
+    const responseGuard = options.responseGuard || (() => true);
+    if (!responseGuard()) return false;
     redactGeneratedQuestionChoices();
     redactGeneratedSummaryActions();
     const refreshPhiEpoch = phiEpoch;
     taskSelectionEpoch += 1;
-    const status = await loadStatus();
-    if (refreshPhiEpoch !== phiEpoch || status?.profile_revision == null) return false;
+    const guardedOptions = {
+      responseGuard,
+      authorizationOptions: options.authorizationOptions || {},
+    };
+    const status = await loadStatus(guardedOptions);
+    if (
+      !responseGuard()
+      || refreshPhiEpoch !== phiEpoch
+      || status?.profile_revision == null
+    ) return false;
     const statusRevision = status.profile_revision;
     syncChatRevision(statusRevision, true, false);
     const refreshResults = await Promise.allSettled([
-      loadSummary(),
-      loadQuestions(),
-      loadTasks(),
-      loadVisits(),
-      loadFollowUps(),
+      loadSummary(guardedOptions),
+      loadQuestions(guardedOptions),
+      loadTasks(guardedOptions),
+      loadVisits(guardedOptions),
+      loadFollowUps(guardedOptions),
     ]);
-    if (refreshPhiEpoch !== phiEpoch) return false;
+    if (!responseGuard() || refreshPhiEpoch !== phiEpoch) return false;
     const loadsSucceeded = refreshResults.every(
       result => result.status === 'fulfilled' && result.value !== null
     );
@@ -999,18 +1023,25 @@
   }
 
   // ── Status sidebar ──────────────────────────────────────────────────────
-  async function loadStatus() {
+  async function loadStatus(options = {}) {
     const request = capturePatientRequest();
     const requestLoadEpoch = ++statusLoadEpoch;
+    const responseGuard = options.responseGuard || (() => true);
     const requestIsCurrent = () => (
-      patientRequestIsCurrent(request) && requestLoadEpoch === statusLoadEpoch
+      responseGuard()
+      && patientRequestIsCurrent(request)
+      && requestLoadEpoch === statusLoadEpoch
     );
     try {
       const r = await fetch('/api/status');
       if (!requestIsCurrent()) return null;
       const d = await readJsonResponse(r, requestIsCurrent);
       if (!requestIsCurrent()) return null;
-      const authority = authorizePatientResponse(request, d);
+      const authority = authorizePatientResponse(
+        request,
+        d,
+        options.authorizationOptions || {},
+      );
       if (!authority.accepted) return null;
       renderSidebar(d);
       reportLoadSuccess('status');
@@ -1152,6 +1183,8 @@
     clear('alert-resolution-action');
     clear('alert-resolution-status');
     clear('alert-resolution-error');
+    clear('alert-resolution-priority');
+    clear('alert-resolution-provenance');
     clear('alert-resolution-result-outcome');
     clear('alert-resolution-result-provenance');
     clear('alert-resolution-result-links');
@@ -1304,6 +1337,8 @@
       'visit-followup-text', 'visit-followup-owner', 'visit-followup-due',
       'follow-up-create-text', 'follow-up-create-owner', 'follow-up-create-due',
       'follow-up-edit-owner', 'follow-up-edit-due', 'follow-up-outcome-text',
+      'alert-resolution-outcome-text', 'alert-resolution-follow-up-text',
+      'alert-resolution-follow-up-owner', 'alert-resolution-follow-up-due',
       'dismiss-text-0', 'dismiss-text-1', 'dismiss-text-2',
       'dismiss-text-3', 'dismiss-text-4'
     ]) {
@@ -1318,6 +1353,27 @@
     }
     const outcomeKind = document.getElementById('follow-up-outcome-kind');
     if (outcomeKind) outcomeKind.value = 'administrative';
+    const alertOutcomeKind = document.getElementById('alert-resolution-outcome-kind');
+    if (alertOutcomeKind) alertOutcomeKind.value = 'administrative';
+    for (const id of [
+      'alert-resolution-follow-up-select', 'alert-resolution-visit-select',
+      'alert-resolution-decision-select'
+    ]) {
+      const select = document.getElementById(id);
+      if (select) {
+        select.innerHTML = '';
+        select.value = '';
+      }
+    }
+    document.querySelectorAll('input[name="alert-resolution-link-mode"]').forEach(
+      input => { input.checked = input.value === 'none'; },
+    );
+    const alertConfirm = document.getElementById('alert-resolution-confirm');
+    if (alertConfirm) alertConfirm.checked = false;
+    const alertForm = document.getElementById('alert-resolution-form');
+    const alertResult = document.getElementById('alert-resolution-result');
+    if (alertForm) alertForm.hidden = false;
+    if (alertResult) alertResult.hidden = true;
     const followUpDialogStatus = document.getElementById('follow-up-dialog-status');
     if (followUpDialogStatus) {
       followUpDialogStatus.textContent = '';
@@ -1633,7 +1689,7 @@
           ${alert.action_required ? `<div class="alert-action">→ ${escHtml(alert.action_required)}</div>` : ''}
           <div class="alert-meta">
             <span class="alert-priority ${safeClassToken(alert.priority, 'normal')}">${escHtml(alert.priority || '—')}</span>
-            <button class="resolve-btn" ${alertProjectionStale || alertResolutionMutationPending ? 'disabled' : ''} onclick="openAlertResolutionDialog(this, this.closest('.alert-item'))">Resolve alert</button>
+            <button class="resolve-btn" ${alertProjectionStale || alertResolutionIntentOwner !== null || alertResolutionMutationPending ? 'disabled' : ''} onclick="openAlertResolutionDialog(this, this.closest('.alert-item'))">Resolve alert</button>
           </div>
         </div>`).join('')
       : '<div class="empty-state">No active alerts</div>');
@@ -1679,6 +1735,27 @@
     return document.querySelector(
       'input[name="alert-resolution-link-mode"]:checked'
     )?.value || 'none';
+  }
+
+  function captureAlertResolutionAuthority(owner = alertResolutionIntentOwner) {
+    return {
+      owner,
+      requestPhiEpoch: phiEpoch,
+      requestAlertEpoch: alertSelectionEpoch,
+      alertId: selectedAlertId,
+      expectedToken: selectedAlertToken,
+      expectedProfileRevision: selectedAlertProfileRevision,
+    };
+  }
+
+  function alertResolutionAuthorityIsCurrent(authority) {
+    return Boolean(authority)
+      && alertResolutionOwnerIsCurrent(authority.owner, authority.requestPhiEpoch)
+      && authority.requestAlertEpoch === alertSelectionEpoch
+      && authority.alertId === selectedAlertId
+      && authority.expectedToken === selectedAlertToken
+      && String(authority.expectedProfileRevision) === String(selectedAlertProfileRevision)
+      && String(authority.expectedProfileRevision) === String(latestProfileRevision);
   }
 
   function alertResolutionDraftKey(alertId = selectedAlertId) {
@@ -1750,9 +1827,16 @@
       priority.textContent = '';
       priority.className = 'alert-priority';
     }
+
     setAlertResolutionStatus(message, 'conflict');
     const submit = document.getElementById('alert-resolution-submit');
     if (submit) submit.disabled = true;
+  }
+
+  function redactAlertResolutionCard(alertId = selectedAlertId) {
+    if (!alertId || !alertsById.has(alertId)) return;
+    alertsById.delete(alertId);
+    renderAlerts();
   }
 
   function renderAlertResolutionContext(alert) {
@@ -1826,13 +1910,40 @@
 
   function renderAlertResolutionLinkMode() {
     const mode = selectedAlertResolutionMode();
-    document.getElementById('alert-resolution-existing-follow-up').hidden =
-      mode !== 'follow_up';
-    document.getElementById('alert-resolution-inline-follow-up').hidden =
-      mode !== 'inline';
-    document.getElementById('alert-resolution-visit-link').hidden =
-      mode !== 'visit';
+    const panels = [
+      ['alert-resolution-existing-follow-up', 'follow_up'],
+      ['alert-resolution-inline-follow-up', 'inline'],
+      ['alert-resolution-visit-link', 'visit'],
+    ];
+    for (const [id, panelMode] of panels) {
+      const panel = document.getElementById(id);
+      const enabled = mode === panelMode
+        && !alertResolutionMutationPending
+        && (panelMode === 'inline' || !alertLinkSourcesStale);
+      if (!panel) continue;
+      panel.hidden = mode !== panelMode;
+      panel.querySelectorAll('input, textarea, select').forEach(control => {
+        control.disabled = !enabled;
+      });
+    }
     updateAlertResolutionFormValidity();
+  }
+
+  function setAlertResolutionProjectionReadOnly(readOnly) {
+    const dialog = document.getElementById('alert-resolution-dialog');
+    dialog?.classList.toggle('projection-stale', readOnly);
+    document.getElementById('alert-resolution-link-modes')?.setAttribute(
+      'aria-disabled',
+      String(readOnly),
+    );
+    document.querySelectorAll(
+      'input[name="alert-resolution-link-mode"], '
+      + '#alert-resolution-follow-up-select, #alert-resolution-visit-select, '
+      + '#alert-resolution-decision-select'
+    ).forEach(control => {
+      control.disabled = readOnly || alertResolutionMutationPending;
+    });
+    renderAlertResolutionLinkMode();
   }
 
   function setAlertResolutionBusy(busy) {
@@ -1858,6 +1969,11 @@
     if (!submit) return;
     const alert = selectedAlertId ? alertsById.get(selectedAlertId) : null;
     const mode = selectedAlertResolutionMode();
+    const outcomeText =
+      (document.getElementById('alert-resolution-outcome-text')?.value || '').trim();
+    const outcomeKind = document.getElementById('alert-resolution-outcome-kind')?.value;
+    const outcomeIsValid = !outcomeText
+      || ALERT_RESOLUTION_OUTCOME_KINDS.has(outcomeKind);
     const hasModeTarget = mode === 'none'
       || (
         mode === 'follow_up'
@@ -1879,6 +1995,7 @@
       || !alert
       || !alert.resolve_token
       || latestProfileRevision == null
+      || !outcomeIsValid
       || !hasModeTarget
       || !document.getElementById('alert-resolution-confirm')?.checked;
   }
@@ -1904,9 +2021,16 @@
   }
 
   async function refreshAlertResolutionSources(owner) {
-    const expectedPhiEpoch = phiEpoch;
-    const results = await Promise.allSettled([loadFollowUps(), loadVisits()]);
-    if (!alertResolutionOwnerIsCurrent(owner, expectedPhiEpoch)) return false;
+    const authority = captureAlertResolutionAuthority(owner);
+    const responseGuard = () => alertResolutionAuthorityIsCurrent(authority);
+    alertLinkSourcesStale = true;
+    setAlertResolutionProjectionReadOnly(true);
+    updateAlertResolutionFormValidity();
+    const results = await Promise.allSettled([
+      loadFollowUps({ responseGuard }),
+      loadVisits({ responseGuard }),
+    ]);
+    if (!responseGuard()) return false;
     const loaded = results.every(
       result => result.status === 'fulfilled' && result.value !== null
     ) && !followUpProjectionStale;
@@ -1914,12 +2038,14 @@
     if (!loaded) {
       alertProjectionStale = true;
       renderAlerts();
+      setAlertResolutionProjectionReadOnly(true);
       setAlertResolutionStatus(
         'Current link sources could not be verified. The last loaded options are read-only.',
         'offline',
       );
     } else {
       renderAlertResolutionSourceOptions();
+      setAlertResolutionProjectionReadOnly(false);
       if (!alertProjectionStale) setAlertResolutionStatus('');
     }
     updateAlertResolutionFormValidity();
@@ -1948,6 +2074,7 @@
     selectedAlertProfileRevision = latestProfileRevision;
     alertSelectionEpoch += 1;
     alertResolutionDialogOpen = true;
+    alertLinkSourcesStale = true;
     alertResolutionResult = null;
     clearAlertResolutionRetry();
     setFormError('alert-resolution-error', '');
@@ -1964,6 +2091,8 @@
     overlay.classList.add('open');
     overlay.setAttribute('aria-hidden', 'false');
     dialog.inert = false;
+    setAlertResolutionProjectionReadOnly(true);
+    renderAlerts();
     activateDialog(dialog, trigger);
     await refreshAlertResolutionSources(owner);
   }
@@ -1977,6 +2106,7 @@
       );
       return;
     }
+    const closingAlertId = selectedAlertId;
     if (preserveDraft && !alertResolutionResult) captureAlertResolutionDraft();
     clearAlertResolutionRetry();
     if (activeAlertResolutionIntent?.body) activeAlertResolutionIntent.body = {};
@@ -1995,9 +2125,14 @@
     overlay?.setAttribute('aria-hidden', 'true');
     if (overlay) overlay.inert = true;
     if (dialog) dialog.inert = true;
-    deactivateDialog(dialog);
     setAlertResolutionBusy(false);
     renderAlerts();
+    if (closingAlertId && lastDialogTrigger) {
+      lastDialogTrigger = [...document.querySelectorAll('#alerts-list .resolve-btn')]
+        .find(button => button.closest('.alert-item')?.dataset.alertId === closingAlertId)
+        || lastDialogTrigger;
+    }
+    deactivateDialog(dialog);
   }
 
   function closeAlertResolutionFromBackdrop(event) {
@@ -2015,8 +2150,12 @@
     const outcomeText =
       (document.getElementById('alert-resolution-outcome-text')?.value || '').trim();
     if (outcomeText) {
+      const kind = document.getElementById('alert-resolution-outcome-kind')?.value;
+      if (!ALERT_RESOLUTION_OUTCOME_KINDS.has(kind)) {
+        throw new Error('Choose a valid outcome source.');
+      }
       body.outcome = {
-        kind: document.getElementById('alert-resolution-outcome-kind')?.value,
+        kind,
         text: outcomeText,
       };
     }
@@ -2069,6 +2208,9 @@
     alertResolutionMutationPending = false;
     if (activeAlertResolutionIntent === intent) activeAlertResolutionIntent = null;
     setAlertResolutionBusy(false);
+    setAlertResolutionProjectionReadOnly(
+      alertProjectionStale || alertLinkSourcesStale,
+    );
     renderAlerts();
     updateAlertResolutionFormValidity();
     return true;
@@ -2082,22 +2224,24 @@
     document.getElementById('alert-resolution-result-outcome').textContent =
       resolution.outcome_text || 'Marked resolved';
     document.getElementById('alert-resolution-result-provenance').textContent =
-      alertResolutionProvenanceLabel(
-        resolution.provenance || {},
-        resolution.outcome_kind || '',
-      );
+      resolution.outcome_text
+        ? alertResolutionProvenanceLabel(
+            resolution.provenance || {},
+            resolution.outcome_kind || '',
+          )
+        : '';
     const links = [];
     if (resolution.follow_up_id) {
       const followUp = followUpsById.get(resolution.follow_up_id) || data.follow_up;
       links.push(
         followUp
           ? `Follow-up · ${followUp.text}`
-          : `Follow-up · ${resolution.follow_up_id}`
+          : 'Follow-up linked'
       );
     }
     if (resolution.visit_id) {
       const visit = visitsById.get(resolution.visit_id);
-      links.push(visit ? `Visit · ${visit.title}` : `Visit · ${resolution.visit_id}`);
+      links.push(visit ? `Visit · ${visit.title}` : 'Visit linked');
       if (resolution.decision_id) {
         const decision = (visit?.decisions || []).find(
           item => item.id === resolution.decision_id
@@ -2105,7 +2249,7 @@
         links.push(
           decision
             ? `Decision · ${decision.text} · caregiver-entered, clinician-attributed, unverified`
-            : `Decision · ${resolution.decision_id}`
+            : 'Current visit decision linked'
         );
       }
     }
@@ -2124,42 +2268,114 @@
     clearAlertResolutionRetry();
     alertProjectionStale = true;
     alertLinkSourcesStale = true;
+    redactAlertResolutionCard(intent.alertId);
     redactAlertResolutionContext(
       error.message || 'This alert changed. Reloading the current record.',
     );
-    renderAlerts();
     const expectedOwner = intent.owner;
-    const results = await Promise.allSettled([
-      loadStatus(),
-      loadFollowUps(),
-      loadVisits(),
-    ]);
-    if (!alertResolutionOwnerIsCurrent(expectedOwner)) return;
-    const loaded = results.every(
-      result => result.status === 'fulfilled' && result.value !== null
-    ) && !followUpProjectionStale;
+    selectedAlertToken = null;
+    selectedAlertProfileRevision = null;
+    alertSelectionEpoch += 1;
+    intent.requestAlertEpoch = alertSelectionEpoch;
+    intent.conflictReloading = true;
+    const conflictPhiEpoch = phiEpoch;
+    const conflictGuard = () => (
+      alertResolutionIntentOwner === expectedOwner
+      && alertResolutionDialogOpen
+      && alertResolutionMutationPending
+      && selectedAlertId === intent.alertId
+      && intent.requestAlertEpoch === alertSelectionEpoch
+      && selectedAlertToken === null
+      && selectedAlertProfileRevision === null
+      && conflictPhiEpoch === phiEpoch
+    );
+    const status = await loadStatus({
+      responseGuard: conflictGuard,
+      authorizationOptions: { alertResolution: true },
+    });
+    if (
+      alertResolutionIntentOwner !== expectedOwner
+      || !alertResolutionDialogOpen
+      || !alertResolutionMutationPending
+      || selectedAlertId !== intent.alertId
+      || intent.requestAlertEpoch !== alertSelectionEpoch
+      || status?.profile_revision == null
+    ) {
+      intent.body = {};
+      return;
+    }
+    intent.pendingPhiEpoch = phiEpoch;
+    const alert = alertsById.get(intent.alertId);
+    if (!alert?.resolve_token) {
+      const absentPhiEpoch = phiEpoch;
+      const absentGuard = () => (
+        alertResolutionIntentOwner === expectedOwner
+        && alertResolutionDialogOpen
+        && alertResolutionMutationPending
+        && selectedAlertId === intent.alertId
+        && intent.requestAlertEpoch === alertSelectionEpoch
+        && selectedAlertToken === null
+        && selectedAlertProfileRevision === null
+        && absentPhiEpoch === phiEpoch
+      );
+      const refreshed = await refreshClinicalWorkflowState(
+        status.profile_revision,
+        status.workflow_revision,
+        {
+          responseGuard: absentGuard,
+          authorizationOptions: { alertResolution: true },
+        },
+      );
+      intent.body = {};
+      if (!absentGuard()) return;
+      alertProjectionStale = refreshed?.verified !== true;
+      alertLinkSourcesStale = true;
+      setAlertResolutionProjectionReadOnly(true);
+      renderAlerts();
+      redactAlertResolutionContext('This alert changed or is no longer available.');
+      return;
+    }
+    selectedAlertId = alert.id;
+    selectedAlertToken = alert.resolve_token;
+    selectedAlertProfileRevision = status.profile_revision;
+    const refreshedAuthority = captureAlertResolutionAuthority(expectedOwner);
+    const refreshedGuard = () => alertResolutionAuthorityIsCurrent(refreshedAuthority);
+    const refreshed = await refreshClinicalWorkflowState(
+      status.profile_revision,
+      status.workflow_revision,
+      {
+        responseGuard: refreshedGuard,
+        authorizationOptions: { alertResolution: true },
+      },
+    );
+    if (!refreshedGuard()) {
+      intent.body = {};
+      return;
+    }
+    const loaded = refreshed?.verified === true && !followUpProjectionStale;
     alertProjectionStale = !loaded;
     alertLinkSourcesStale = !loaded;
-    const alert = selectedAlertId ? alertsById.get(selectedAlertId) : null;
-    if (loaded && alert) {
-    selectedAlertToken = alert.resolve_token;
-    selectedAlertProfileRevision = latestProfileRevision;
-    renderAlertResolutionContext(alert);
+    const currentAlert = alertsById.get(intent.alertId);
+    if (loaded && currentAlert?.resolve_token === selectedAlertToken) {
+      renderAlertResolutionContext(currentAlert);
       restoreAlertResolutionDraft();
       renderAlertResolutionSourceOptions();
+      setAlertResolutionProjectionReadOnly(false);
       setAlertResolutionStatus(
         'The alert changed. Review the reloaded alert and submit a new request.',
         'conflict',
       );
     } else {
+      setAlertResolutionProjectionReadOnly(true);
       redactAlertResolutionContext(
-        alert
+        currentAlert
           ? 'The current record could not be verified. Retry loading before continuing.'
           : 'This alert changed or is no longer available.',
       );
     }
     renderAlerts();
     updateAlertResolutionFormValidity();
+    intent.body = {};
   }
 
   async function performAlertResolutionIntent(intent, explicitRetry = false) {
@@ -2197,6 +2413,10 @@
       const refreshed = await refreshClinicalWorkflowState(
         data.profile_revision,
         data.workflow_revision,
+        {
+          responseGuard: () => alertResolutionIntentOwnsMutation(intent),
+          authorizationOptions: { alertResolution: true },
+        },
       );
       if (
         refreshed?.verified !== true
@@ -2205,6 +2425,7 @@
         if (alertResolutionIntentOwnsMutation(intent)) {
           alertProjectionStale = true;
           alertLinkSourcesStale = true;
+          setAlertResolutionProjectionReadOnly(true);
           setAlertResolutionStatus(
             'The resolution was saved, but current patient views could not be verified. Reload before continuing.',
             'offline',
@@ -2242,6 +2463,7 @@
         alertProjectionStale = true;
         alertLinkSourcesStale = true;
         renderAlerts();
+        setAlertResolutionProjectionReadOnly(true);
         const retry = document.getElementById('alert-resolution-retry');
         if (retry) retry.hidden = false;
         setAlertResolutionStatus(
@@ -2284,6 +2506,7 @@
       expectedProfileRevision: latestProfileRevision,
       requestPhiEpoch: phiEpoch,
       requestAlertEpoch: alertSelectionEpoch,
+      requestAlertId: alert.id,
       body,
       draftKey: alertResolutionDraftKey(alert.id),
     };
@@ -2844,18 +3067,25 @@
     }
   }
 
-  async function loadSummary() {
+  async function loadSummary(options = {}) {
     const request = capturePatientRequest();
     const requestSummaryEpoch = ++summaryLoadEpoch;
+    const responseGuard = options.responseGuard || (() => true);
     const requestIsCurrent = () => (
-      patientRequestIsCurrent(request) && requestSummaryEpoch === summaryLoadEpoch
+      responseGuard()
+      && patientRequestIsCurrent(request)
+      && requestSummaryEpoch === summaryLoadEpoch
     );
     try {
       const r = await fetch('/api/summary');
       if (!requestIsCurrent()) return null;
       const d = await readJsonResponse(r, requestIsCurrent);
       if (!requestIsCurrent()) return null;
-      const authority = authorizePatientResponse(request, d);
+      const authority = authorizePatientResponse(
+        request,
+        d,
+        options.authorizationOptions || {},
+      );
       if (!authority.accepted) return null;
       if (
         latestProfileRevision != null
@@ -3335,18 +3565,27 @@
   }
 
   // ── Task log ────────────────────────────────────────────────────────────
-  async function loadTasks() {
+  async function loadTasks(options = {}) {
     const request = capturePatientRequest();
     const requestLoadEpoch = ++taskLoadEpoch;
+    const responseGuard = options.responseGuard || (() => true);
     const requestIsCurrent = () => (
-      patientRequestIsCurrent(request) && requestLoadEpoch === taskLoadEpoch
+      responseGuard()
+      && patientRequestIsCurrent(request)
+      && requestLoadEpoch === taskLoadEpoch
     );
     try {
       const r = await fetch('/api/jobs');
       if (!requestIsCurrent()) return null;
       const tasks = await readJsonResponse(r, requestIsCurrent);
       if (!requestIsCurrent()) return null;
-      if (!authorizePatientResponse(request, tasks).accepted) return [];
+      if (
+        !authorizePatientResponse(
+          request,
+          tasks,
+          options.authorizationOptions || {},
+        ).accepted
+      ) return [];
       if (tasks.some(t => t.status === 'running' || t.status === 'queued')) {
         hadActiveJobs = true;
       }
@@ -4275,18 +4514,24 @@
     return appointmentOptions.find(item => item.id === id) || null;
   }
 
-  async function loadVisits() {
+  async function loadVisits(options = {}) {
     const request = capturePatientRequest();
     const requestLoadEpoch = ++visitLoadEpoch;
+    const responseGuard = options.responseGuard || (() => true);
     const requestIsCurrent = () => (
-      patientRequestIsCurrent(request) && requestLoadEpoch === visitLoadEpoch
+      responseGuard()
+      && patientRequestIsCurrent(request)
+      && requestLoadEpoch === visitLoadEpoch
     );
     try {
       const response = await fetch('/api/visits');
       if (!requestIsCurrent()) return null;
       const data = await readJsonResponse(response, requestIsCurrent);
       if (!requestIsCurrent()) return null;
-      const authority = authorizePatientResponse(request, data, { workflow: 'projection' });
+      const authority = authorizePatientResponse(request, data, {
+        workflow: 'projection',
+        ...(options.authorizationOptions || {}),
+      });
       if (!authority.accepted) return null;
       if (appointmentDialogOpen) captureAppointmentDraft();
       visitsById = new Map((data.items || []).map(item => [item.id, item]));
@@ -4945,18 +5190,24 @@
       || navigator.onLine === false;
   }
 
-  async function loadFollowUps() {
+  async function loadFollowUps(options = {}) {
     const request = capturePatientRequest();
     const requestLoadEpoch = ++followUpLoadEpoch;
+    const responseGuard = options.responseGuard || (() => true);
     const requestIsCurrent = () => (
-      patientRequestIsCurrent(request) && requestLoadEpoch === followUpLoadEpoch
+      responseGuard()
+      && patientRequestIsCurrent(request)
+      && requestLoadEpoch === followUpLoadEpoch
     );
     try {
       const response = await fetch('/api/follow-ups');
       if (!requestIsCurrent()) return null;
       const data = await readJsonResponse(response, requestIsCurrent);
       if (!requestIsCurrent()) return null;
-      const authority = authorizePatientResponse(request, data, { workflow: 'projection' });
+      const authority = authorizePatientResponse(request, data, {
+        workflow: 'projection',
+        ...(options.authorizationOptions || {}),
+      });
       if (!authority.accepted) return null;
       if (followUpDialogOpen) captureFollowUpDraft();
       followUpProjectionStale = false;
@@ -6362,14 +6613,16 @@
     renderVisitSourceQuestions();
   }
 
-  async function loadQuestions() {
+  async function loadQuestions(options = {}) {
     const request = capturePatientRequest();
     const requestQuestionEpoch = ++questionLoadEpoch;
+    const responseGuard = options.responseGuard || (() => true);
     const requestProfileRevision = latestProfileRevision == null
       ? null
       : String(latestProfileRevision);
     const requestIsCurrent = () => (
-      patientRequestIsCurrent(request)
+      responseGuard()
+      && patientRequestIsCurrent(request)
       && requestQuestionEpoch === questionLoadEpoch
       && (
         requestProfileRevision == null
@@ -6381,7 +6634,13 @@
       if (!requestIsCurrent()) return null;
       const qs = await readJsonResponse(r, requestIsCurrent);
       if (!requestIsCurrent()) return null;
-      if (!authorizePatientResponse(request, qs).accepted) return [];
+      if (
+        !authorizePatientResponse(
+          request,
+          qs,
+          options.authorizationOptions || {},
+        ).accepted
+      ) return [];
       const projection = projectQuestionChoices(qs);
       appointmentQuestionSources = projection.items;
       generatedQuestionsUnavailable = projection.unavailable;

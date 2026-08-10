@@ -2847,6 +2847,11 @@ body.dialog-open { overflow: hidden; }
 }
 .alert-resolution-link-panel[hidden],
 .alert-resolution-result[hidden] { display: none; }
+.alert-resolution-dialog.projection-stale .alert-resolution-link-modes,
+.alert-resolution-dialog.projection-stale #alert-resolution-existing-follow-up,
+.alert-resolution-dialog.projection-stale #alert-resolution-visit-link {
+  opacity: .68;
+}
 .alert-resolution-result {
   gap: 10px;
 }
@@ -3318,9 +3323,12 @@ body.dialog-open { overflow: hidden; }
   .follow-up-form-grid { grid-template-columns: 1fr; }
   .follow-up-dialog-actions { align-items: stretch; flex-direction: column; }
   .follow-up-dialog-actions .button,
+  .alert-resolution-dialog .icon-button,
   .alert-resolution-link-modes label,
   .alert-resolution-confirm,
   .alert-resolution-result .button { min-height: 44px; }
+  .alert-resolution-dialog .icon-button { min-width: 44px; }
+  .resolve-btn { min-height: 44px; }
   .follow-up-retry { align-items: stretch; flex-direction: column; padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
   .visit-form-grid,
   .visit-form-grid.compact { grid-template-columns: 1fr; }

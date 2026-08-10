@@ -146,7 +146,7 @@ All patient state lives in a single JSON file at `${DATA_DIR}/patient_profile.js
   "document_imports": [ {job_id, source_document_id, status, receipt_revision, changes: [...]}, ... ],
   "trials":      [ {nct_id, title, status, ...}, ... ],
   "papers":      [ {pmid, title, journal, date}, ... ],
-  "alerts":      [ {priority, action, resolved, source_document_id, source_dependency_active}, ... ],
+  "alerts":      [ {id, priority, action, resolved, resolution, source_document_id, source_dependency_active}, ... ],
   "judgments":   [ {category, text, scope, status, review_after, valid_until, supersedes}, ... ],
   "questions":   [ {id, text, category, priority, asked, generation_job_id, stale}, ... ],
   "feedback":    [ {target, item_id, assessment, note, outcome, timestamps}, ... ],
@@ -345,7 +345,7 @@ The most common loops:
 | Review imaging and source history | **Patient** → **Imaging history** / **Documents and sources** | Opens exact authenticated evidence spans, immutable source text, and retained import receipts without exposing storage paths |
 | Run a research-only sweep | **Activity** → **Run digest** | Orchestrator runs without new input; new trials/papers added |
 | Record an oncologist's judgment | **Questions** → **Clinical notes** | Becomes a hard constraint for future runs |
-| Resolve / dismiss an alert | **Patient** → **Active alerts** → **Mark resolved** | Marked resolved, persisted in profile |
+| Resolve an alert with its outcome | **Patient** → **Active alerts** → **Resolve alert** | Review the current alert, optionally record an administrative, caregiver-reported, or clinician-attributed unverified outcome, and either create/link a caregiver follow-up or link a current visit and eligible decision; stable ID/token/revision checks, one intent owner, exact ambiguous retry, conflict reload, and stale read-only offline projections prevent the wrong alert or link from being saved |
 | Generate appointment questions | **Questions** → **Generate questions** | Async result is polled, then the question list is rendered |
 | Prepare and run an appointment | **Questions** → **Appointment workspace** | Create or link a visit, order current generated/manual question snapshots with phone-sized Move/rank targets, capture answered/unknown clinician-attributed responses, correct only active decisions through immutable successors, and create visit-linked follow-ups in one responsive working mode; a clinical revision immediately redacts generated choices until the current question list reloads |
 | Chat with the record | Header → **✦ Ask Claude** | Async result grounded in the full profile; chat remains stateless |

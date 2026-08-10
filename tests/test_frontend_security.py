@@ -3523,7 +3523,7 @@ def test_appointment_loops_use_arrays_and_live_drafts_survive_rerenders():
     retry_clear = _function_source("clearWorkflowRetry", "invalidateWorkflowRetryOnDraftChange")
     assert "['appointment-retry', 'visit-create-retry']" in retry_clear
     tabs = _function_source("switchAppointmentTab", "handleAppointmentTabKeydown")
-    assert "['questions', 'decisions', 'followups']" in tabs
+    assert "['questions', 'decisions', 'followups', 'recap']" in tabs
 
     capture = _function_source("captureAppointmentDraft", "restoreAppointmentDraft")
     restore = _function_source("restoreAppointmentDraft", "openAppointmentWorkspace")
@@ -3562,6 +3562,264 @@ def test_appointment_flows_never_call_deferred_or_legacy_routes():
     assert "/api/alerts/resolve/" not in APP_JS
     assert "/api/follow-ups/${encodeURIComponent(action.id)}" in APP_JS
     assert "Save as follow-up" not in APP_JS
+
+
+def test_visit_recap_uses_atomic_projection_and_strict_authority_gates():
+    loader = _function_source("loadVisitRecap", "requireCurrentVisitRecap")
+    authority = _function_source("visitRecapAuthorityIsCurrent", "updateVisitRecapExportControls")
+    stale = _function_source("markVisitRecapStale", "visitRecapAuthorityIsCurrent")
+    eviction = _function_source("evictClientPhi", "renderLatestResearchUpdate")
+    polling = _function_source("startPolling", "revokeVisitRecapDownloadUrl")
+
+    assert "/recap?expected_visit_token=" in loader
+    assert "capturePatientRequest({ visitSelection: true })" in loader
+    assert "requestLoadEpoch === visitRecapLoadEpoch" in loader
+    assert "currentVisit()?.token === requestVisitToken" in loader
+    assert "authorizePatientResponse(request, data, { workflow: 'projection' })" in loader
+    assert loader.index("authorizePatientResponse(") < loader.index(
+        "visitRecapProjection = data.recap"
+    )
+    for expression in (
+        "authority.phiEpoch === phiEpoch",
+        "authority.visitSelectionEpoch === visitSelectionEpoch",
+        "authority.visitId === selectedVisitId",
+        "authority.visitToken === visit?.token",
+        "authority.profileRevision === normalizedRevision(latestProfileRevision)",
+        "authority.workflowRevision === normalizedRevision(workflowRevision)",
+        "authority.recapToken === visitRecapAuthority?.recapToken",
+    ):
+        assert expression in authority
+    assert "visitRecapAuthority = null" in stale
+    assert "visitRecapExportText = ''" in stale
+    assert "revokeVisitRecapDownloadUrl()" in stale
+    assert "clearVisitRecap(true)" in eviction
+    assert "loadVisitRecap" not in polling
+    assert "localStorage" not in loader
+    assert "sessionStorage" not in loader
+    assert "console." not in loader
+
+
+def test_visit_recap_plain_text_is_deterministic_exact_and_control_safe():
+    script = "\n".join(
+        [
+            """
+function visitStatusLabel(status) {
+  return { in_progress: 'In progress', completed: 'Completed' }[status] || status;
+}
+""",
+            _function_source("recapPlainText", "buildVisitRecapText"),
+            _function_source("buildVisitRecapText", "recapSectionMarkup"),
+            """
+const recap = {
+  state: 'current',
+  exportable: true,
+  visit: {
+    title: 'Visit =SUM(A1:A2)',
+    date: '2026-08-10',
+    clinician: 'Dr <Exact>',
+    status: 'completed',
+  },
+  sections: {
+    what_was_asked: [{
+      text: 'What\\r\\nwas asked?',
+      status: 'answered',
+      provenance_label: 'Generated question snapshot · not clinician-attributed',
+    }],
+    what_we_heard: [{
+      question: 'What\\nwas asked?',
+      text: 'Exact answer\\nsecond line',
+      provenance_label: 'Caregiver-entered · attributed to clinician · unverified',
+    }],
+    decisions: [],
+    unresolved: [{
+      text: 'Unknown item',
+      kind: 'unknown',
+      provenance_label: 'Caregiver-entered · attributed to clinician · unverified',
+    }],
+  },
+};
+const text = buildVisitRecapText(recap);
+let controlError = '';
+try {
+  buildVisitRecapText({ ...recap, visit: { ...recap.visit, title: 'bad\\u0000value' } });
+} catch (error) {
+  controlError = error.message;
+}
+console.log(JSON.stringify({
+  text,
+  controlError,
+  formulaPreserved: text.includes('Title: Visit =SUM(A1:A2)'),
+  crNormalized: !text.includes('\\r') && text.includes('What\\nwas asked?'),
+  exactAnswer: text.includes('Answer: Exact answer\\nsecond line'),
+  omittedEmpty: !text.includes('Decisions / needs confirmation'),
+}));
+""",
+        ]
+    )
+    completed = _run_node_script(script)
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result["formulaPreserved"] is True
+    assert result["crNormalized"] is True
+    assert result["exactAnswer"] is True
+    assert result["omittedEmpty"] is True
+    assert "unsupported control characters" in result["controlError"]
+    assert result["text"].endswith("\n")
+
+
+def test_visit_recap_exports_recheck_authority_before_every_side_effect():
+    current = _function_source("visitRecapAuthorityIsCurrent", "updateVisitRecapExportControls")
+    require = _function_source("requireCurrentVisitRecap", "copyVisitRecap")
+    copy = _function_source("copyVisitRecap", "downloadVisitRecap")
+    download = _function_source("downloadVisitRecap", "prepareVisitRecapPrint")
+    printing = _function_source("printVisitRecap", "currentVisit")
+
+    assert "markVisitRecapStale" in require
+    assert copy.index("requireCurrentVisitRecap()") < copy.index("navigator.clipboard.writeText")
+    assert "if (!visitRecapAuthorityIsCurrent(authority)) return" in copy
+    assert download.count("requireCurrentVisitRecap()") >= 2
+    assert download.index("requireCurrentVisitRecap()") < download.index("new Blob")
+    assert download.index("requireCurrentVisitRecap()", 1) < download.index("link.click()")
+    assert "text/plain;charset=utf-8" in download
+    assert "visit-recap-${date}.txt" in download
+    assert "revokeVisitRecapDownloadUrl()" in download
+    assert printing.count("requireCurrentVisitRecap()") >= 2
+    assert printing.index("requireCurrentVisitRecap()") < printing.index("window.print()")
+    assert "visitRecapExportText" in current
+    assert "createObjectURL" not in copy
+    assert "text/html" not in download
+
+
+def test_visit_recap_markup_sections_are_shared_escaped_and_non_persistent():
+    assert 'id="appointment-tab-recap"' in INDEX_HTML
+    assert 'id="appointment-panel-recap"' in INDEX_HTML
+    assert INDEX_HTML.count('id="appointment-panel-recap"') == 1
+    assert "Copy" in INDEX_HTML
+    assert "Download text" in INDEX_HTML
+    assert "Print" in INDEX_HTML
+    renderer = _function_source("renderVisitRecap", "loadVisitRecap")
+    for label in (
+        "Visit details",
+        "What was asked",
+        "What we heard",
+        "Decisions / needs confirmation",
+        "Follow-ups",
+        "Related resolved alerts",
+        "Unresolved / unknown items",
+    ):
+        assert label in renderer
+    assert "recapSectionMarkup" in renderer
+    assert "escHtml(item.text)" in renderer
+    assert "innerHTML = `${html}</div>`" in renderer
+    assert "localStorage" not in renderer
+    assert "sessionStorage" not in renderer
+    assert "window.location" not in renderer
+    assert "console." not in renderer
+
+
+def test_visit_recap_desktop_phone_and_print_layout_is_accessible():
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    markup = """
+      <header class="app-header">Navigation</header>
+      <div class="appointment-overlay open">
+        <section class="appointment-dialog">
+          <header class="appointment-dialog-header"><h2>Visit</h2></header>
+          <section class="appointment-metadata">Editable details</section>
+          <div class="appointment-tabs"><button class="appointment-tab">Recap</button></div>
+          <div class="appointment-dialog-body">
+            <section id="appointment-panel-recap" class="appointment-tab-panel active visit-recap-panel">
+              <div class="visit-recap-toolbar">
+                <div><p class="eyebrow">Authoritative visit record</p><h3>Visit recap</h3></div>
+                <div class="visit-recap-actions">
+                  <button class="button secondary">Copy</button>
+                  <button class="button secondary">Download text</button>
+                  <button class="button secondary">Print</button>
+                </div>
+              </div>
+              <div class="visit-recap-status current">Current authoritative recap.</div>
+              <div class="visit-recap-content">
+                <div class="visit-recap-document">
+                  <section class="visit-recap-section visit-recap-details">
+                    <h4>Visit details</h4>
+                    <dl><div><dt>Title</dt><dd>Long exact visit wording that must wrap safely without horizontal overflow at phone width</dd></div></dl>
+                  </section>
+                  <section class="visit-recap-section">
+                    <h4>What we heard</h4>
+                    <div class="visit-recap-list"><article><strong>Exact answer</strong><p class="capture-provenance">Caregiver-entered · attributed to clinician · unverified</p></article></div>
+                  </section>
+                </div>
+              </div>
+            </section>
+          </div>
+          <div class="appointment-retry">Retry</div>
+        </section>
+      </div>
+    """
+    with playwright_api.sync_playwright() as playwright:
+        executable = Path(playwright.chromium.executable_path)
+        if not executable.exists():
+            pytest.skip("Installed Playwright browser is unavailable")
+        browser = playwright.chromium.launch()
+        for width in (1280, 360):
+            page = browser.new_page(viewport={"width": width, "height": 800})
+            page.set_content(markup)
+            page.add_style_tag(content=CSS)
+            overflow = page.evaluate(
+                """() => ({
+                  document: document.documentElement.scrollWidth
+                    - document.documentElement.clientWidth,
+                  panel: document.querySelector('.visit-recap-panel').scrollWidth
+                    - document.querySelector('.visit-recap-panel').clientWidth,
+                  section: document.querySelector('.visit-recap-section').scrollWidth
+                    - document.querySelector('.visit-recap-section').clientWidth,
+                })"""
+            )
+            assert overflow == {"document": 0, "panel": 0, "section": 0}
+            if width == 360:
+                heights = page.locator(".visit-recap-actions .button").evaluate_all(
+                    "(items) => items.map(item => item.getBoundingClientRect().height)"
+                )
+                assert heights and all(height >= 44 for height in heights)
+            page.keyboard.press("Tab")
+            focus = page.evaluate(
+                """() => ({
+                  tag: document.activeElement.tagName,
+                  outline: getComputedStyle(document.activeElement).outlineStyle,
+                })"""
+            )
+            assert focus["tag"] == "BUTTON"
+            assert focus["outline"] != "none"
+            page.close()
+
+        page = browser.new_page(viewport={"width": 1000, "height": 800})
+        page.set_content(markup)
+        page.add_style_tag(content=CSS)
+        page.evaluate("document.body.classList.add('visit-recap-printing')")
+        page.emulate_media(media="print")
+        print_state = page.evaluate(
+            """() => ({
+              appHeader: getComputedStyle(document.querySelector('.app-header')).display,
+              dialogHeader: getComputedStyle(document.querySelector('.appointment-dialog-header')).display,
+              tabs: getComputedStyle(document.querySelector('.appointment-tabs')).display,
+              actions: getComputedStyle(document.querySelector('.visit-recap-actions')).display,
+              recap: getComputedStyle(document.querySelector('#appointment-panel-recap')).display,
+              provenance: getComputedStyle(document.querySelector('.capture-provenance')).display,
+            })"""
+        )
+        assert print_state == {
+            "appHeader": "none",
+            "dialogHeader": "none",
+            "tabs": "none",
+            "actions": "none",
+            "recap": "block",
+            "provenance": "block",
+        }
+        page.evaluate("document.body.classList.remove('visit-recap-printing')")
+        unavailable = page.evaluate(
+            "getComputedStyle(document.querySelector('.appointment-overlay')).display"
+        )
+        assert unavailable == "none"
+        browser.close()
 
 
 def _run_follow_up_request_probe() -> list[dict]:

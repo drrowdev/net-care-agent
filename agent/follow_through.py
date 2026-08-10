@@ -19,6 +19,12 @@ VISIT_STATUSES = {"planned", "in_progress", "completed", "cancelled"}
 DECISION_STATUSES = {"active", "superseded", "retracted", "needs_confirmation"}
 OUTCOME_KINDS = {"administrative", "caregiver_reported", "clinician_attributed"}
 ORIGIN_KINDS = {"manual", "executive_summary_action", "alert", "visit_decision"}
+RECAP_MAX_ITEMS = 200
+RECAP_CLINICIAN_PROVENANCE = "Caregiver-entered · attributed to clinician · unverified"
+RECAP_CAREGIVER_PROVENANCE = "Caregiver-entered · caregiver reported · unverified"
+RECAP_ADMIN_PROVENANCE = "Caregiver-entered administrative outcome · not clinical evidence"
+RECAP_GENERATED_QUESTION_PROVENANCE = "Generated question snapshot · not clinician-attributed"
+RECAP_MANUAL_QUESTION_PROVENANCE = "Manual caregiver question"
 _MUTATION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}$")
 _DIRECT_TREATMENT_RE = re.compile(
     r"^\s*(?:start|stop|hold|pause|resume|switch|increase|decrease|administer|take|skip|"
@@ -626,6 +632,292 @@ def public_visit(visit: dict) -> dict:
         )
         decision["token"] = semantic_token(source)
     return result
+
+
+def _recap_text(value: object, field: str, *, limit: int, optional: bool = False) -> str | None:
+    if value in (None, "") and optional:
+        return None
+    if not isinstance(value, str) or not value:
+        raise FollowThroughError(f"{field} is unavailable for recap")
+    if len(value) > limit:
+        raise FollowThroughError(f"{field} exceeds the safe recap limit")
+    if any((ord(char) < 32 and char not in "\n\t\r") or ord(char) == 127 for char in value):
+        raise FollowThroughError(f"{field} contains unsupported control characters")
+    return value
+
+
+def _recap_id(value: object, field: str) -> str:
+    text = _recap_text(value, field, limit=128)
+    assert text is not None
+    if "\n" in text or "\r" in text:
+        raise FollowThroughError(f"{field} must be a single line")
+    return text
+
+
+def _recap_records(value: object, field: str) -> list[dict]:
+    if not isinstance(value, list):
+        raise FollowThroughError(f"{field} is unavailable for recap")
+    if any(not isinstance(item, dict) for item in value):
+        raise FollowThroughError(f"{field} contains an invalid recap record")
+    return value
+
+
+def _recap_items(value: object, field: str) -> list[dict]:
+    records = _recap_records(value, field)
+    if len(records) > RECAP_MAX_ITEMS:
+        raise FollowThroughError(f"{field} exceeds the safe recap limit")
+    return records
+
+
+def _recap_ids(value: object, field: str) -> set[str]:
+    if not isinstance(value, list):
+        raise FollowThroughError(f"{field} is unavailable for recap")
+    if len(value) > RECAP_MAX_ITEMS:
+        raise FollowThroughError(f"{field} exceeds the safe recap limit")
+    return {_recap_id(item, f"{field}[]") for item in value}
+
+
+def recap_outcome_projection(outcome: object, field: str) -> dict | None:
+    if outcome in (None, {}):
+        return None
+    if not isinstance(outcome, dict):
+        raise FollowThroughError(f"{field} is unavailable for recap")
+    kind = outcome.get("kind") or outcome.get("outcome_kind")
+    text = outcome.get("text") if "text" in outcome else outcome.get("outcome_text")
+    if kind not in OUTCOME_KINDS or text in (None, ""):
+        return None
+    if kind == "clinician_attributed":
+        label = RECAP_CLINICIAN_PROVENANCE
+    elif kind == "caregiver_reported":
+        label = RECAP_CAREGIVER_PROVENANCE
+    else:
+        label = RECAP_ADMIN_PROVENANCE
+    projected = {
+        "kind": kind,
+        "text": _recap_text(text, f"{field}.text", limit=4000),
+        "provenance_label": label,
+    }
+    recorded_at = outcome.get("recorded_at") or outcome.get("resolved_at")
+    if recorded_at not in (None, ""):
+        projected["recorded_at"] = _recap_text(recorded_at, f"{field}.recorded_at", limit=80)
+    return projected
+
+
+def project_visit_recap(profile: dict, visit: dict) -> dict:
+    """Build one bounded, read-only recap from authoritative workflow records."""
+    visit_id = _recap_id(visit.get("id"), "visit.id")
+    visit_status = visit.get("status")
+    if visit_status not in VISIT_STATUSES:
+        raise FollowThroughError("visit.status is unavailable for recap")
+    details = {
+        "id": visit_id,
+        "title": _recap_text(visit.get("title"), "visit.title", limit=200),
+        "date": _recap_text(visit.get("date"), "visit.date", limit=40, optional=True),
+        "time": _recap_text(visit.get("time"), "visit.time", limit=40, optional=True),
+        "clinician": _recap_text(
+            visit.get("clinician"), "visit.clinician", limit=200, optional=True
+        ),
+        "location": _recap_text(visit.get("location"), "visit.location", limit=300, optional=True),
+        "status": visit_status,
+    }
+    details = {key: value for key, value in details.items() if value is not None}
+    if visit_status == "planned":
+        return {
+            "state": "unavailable",
+            "exportable": False,
+            "visit": details,
+            "sections": {},
+        }
+    if visit_status == "cancelled":
+        return {
+            "state": "administrative",
+            "exportable": False,
+            "visit": details,
+            "sections": {},
+        }
+
+    questions = _recap_items(visit.get("question_snapshots", []), "visit.question_snapshots")
+    for question in questions:
+        order = question.get("order", 0)
+        if not isinstance(order, int) or isinstance(order, bool):
+            raise FollowThroughError("question.order is unavailable for recap")
+    questions = sorted(
+        questions,
+        key=lambda item: (
+            not bool(item.get("pinned")),
+            item.get("order", 0),
+            str(item.get("created_at") or ""),
+            str(item.get("id") or ""),
+        ),
+    )
+    asked = []
+    heard = []
+    unresolved = []
+    for question in questions:
+        question_id = _recap_id(question.get("id"), "question.id")
+        question_text = _recap_text(question.get("text"), "question.text", limit=1000)
+        source_kind = question.get("source_kind")
+        if source_kind not in {"manual", "generated"}:
+            raise FollowThroughError("question.source_kind is unavailable for recap")
+        source_label = (
+            RECAP_GENERATED_QUESTION_PROVENANCE
+            if source_kind == "generated"
+            else RECAP_MANUAL_QUESTION_PROVENANCE
+        )
+        answer = question.get("answer")
+        if answer is None:
+            unresolved.append(
+                {
+                    "kind": "not_recorded",
+                    "item_id": question_id,
+                    "text": question_text,
+                    "provenance_label": source_label,
+                }
+            )
+            continue
+        if not isinstance(answer, dict) or answer.get("status") not in {"answered", "unknown"}:
+            raise FollowThroughError("question.answer is unavailable for recap")
+        asked.append(
+            {
+                "id": question_id,
+                "text": question_text,
+                "status": answer["status"],
+                "provenance_label": source_label,
+            }
+        )
+        if answer["status"] == "unknown":
+            unresolved.append(
+                {
+                    "kind": "unknown",
+                    "item_id": question_id,
+                    "text": question_text,
+                    "provenance_label": RECAP_CLINICIAN_PROVENANCE,
+                }
+            )
+            continue
+        heard.append(
+            {
+                "question_id": question_id,
+                "question": question_text,
+                "text": _recap_text(answer.get("text"), "question.answer.text", limit=4000),
+                "provenance_label": RECAP_CLINICIAN_PROVENANCE,
+            }
+        )
+
+    all_decisions = _recap_items(visit.get("decisions", []), "visit.decisions")
+    decisions = []
+    decision_ids = set()
+    for decision in all_decisions:
+        decision_id = _recap_id(decision.get("id"), "decision.id")
+        decision_ids.add(decision_id)
+        if decision.get("status") not in {"active", "needs_confirmation"}:
+            continue
+        decisions.append(
+            {
+                "id": decision_id,
+                "text": _recap_text(decision.get("text"), "decision.text", limit=4000),
+                "status": decision["status"],
+                "provenance_label": RECAP_CLINICIAN_PROVENANCE,
+                "_created_at": str(decision.get("created_at") or ""),
+            }
+        )
+    decisions.sort(key=lambda item: (item.pop("_created_at"), item["id"]))
+
+    visit_follow_up_ids = _recap_ids(visit.get("follow_up_ids", []), "visit.follow_up_ids")
+    actions = _recap_records(profile.get("caregiver_actions", []), "caregiver_actions")
+    follow_ups = []
+    for action in actions:
+        action_id = _recap_id(action.get("id"), "follow_up.id")
+        if action.get("visit_id") != visit_id and action_id not in visit_follow_up_ids:
+            continue
+        status = action.get("status")
+        if status not in ACTION_STATUSES:
+            raise FollowThroughError("follow_up.status is unavailable for recap")
+        projected = {
+            "id": action_id,
+            "text": _recap_text(action.get("text"), "follow_up.text", limit=1000),
+            "status": status,
+            "owner": _recap_text(action.get("owner"), "follow_up.owner", limit=100, optional=True),
+            "due_date": _recap_text(
+                action.get("due_date"), "follow_up.due_date", limit=40, optional=True
+            ),
+            "decision_id": _recap_text(
+                action.get("decision_id"),
+                "follow_up.decision_id",
+                limit=128,
+                optional=True,
+            ),
+            "alert_id": _recap_text(
+                action.get("alert_id"), "follow_up.alert_id", limit=128, optional=True
+            ),
+            "outcome": recap_outcome_projection(action.get("outcome"), "follow_up.outcome"),
+            "_created_at": str(action.get("created_at") or ""),
+        }
+        follow_ups.append({key: value for key, value in projected.items() if value is not None})
+        if len(follow_ups) > RECAP_MAX_ITEMS:
+            raise FollowThroughError("visit follow-ups exceed the safe recap limit")
+    follow_ups.sort(key=lambda item: (item.pop("_created_at"), item["id"]))
+    follow_up_ids = {item["id"] for item in follow_ups}
+
+    alerts = _recap_records(profile.get("alerts", []), "alerts")
+    related_alerts = []
+    for alert in alerts:
+        if alert.get("resolved") is not True or not isinstance(alert.get("resolution"), dict):
+            continue
+        resolution = alert["resolution"]
+        if not (
+            resolution.get("visit_id") == visit_id
+            or resolution.get("decision_id") in decision_ids
+            or resolution.get("follow_up_id") in follow_up_ids
+        ):
+            continue
+        projected = {
+            "id": _recap_id(alert.get("id"), "alert.id"),
+            "resolved_at": _recap_text(
+                resolution.get("resolved_at"),
+                "alert.resolution.resolved_at",
+                limit=80,
+                optional=True,
+            ),
+            "visit_id": _recap_text(
+                resolution.get("visit_id"),
+                "alert.resolution.visit_id",
+                limit=128,
+                optional=True,
+            ),
+            "decision_id": _recap_text(
+                resolution.get("decision_id"),
+                "alert.resolution.decision_id",
+                limit=128,
+                optional=True,
+            ),
+            "follow_up_id": _recap_text(
+                resolution.get("follow_up_id"),
+                "alert.resolution.follow_up_id",
+                limit=128,
+                optional=True,
+            ),
+            "outcome": recap_outcome_projection(resolution, "alert.resolution"),
+        }
+        related_alerts.append({key: value for key, value in projected.items() if value is not None})
+        if len(related_alerts) > RECAP_MAX_ITEMS:
+            raise FollowThroughError("related alerts exceed the safe recap limit")
+    related_alerts.sort(key=lambda item: (item.get("resolved_at") or "", item["id"]))
+
+    sections = {
+        "what_was_asked": asked,
+        "what_we_heard": heard,
+        "decisions": decisions,
+        "follow_ups": follow_ups,
+        "related_resolved_alerts": related_alerts,
+        "unresolved": unresolved,
+    }
+    return {
+        "state": "current",
+        "exportable": True,
+        "visit": details,
+        "sections": {key: value for key, value in sections.items() if value},
+    }
 
 
 def public_alert(alert: dict) -> dict:

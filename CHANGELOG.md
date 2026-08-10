@@ -83,6 +83,18 @@ incremented when something user-visible or operationally meaningful changes.
   not block snapshot/backup recovery or permit duplicate initialization.
 
 ### Added
+- **Deterministic visit recap and safe export.** The appointment workspace now
+  has a fourth shared Recap tab for in-progress and completed visits. One
+  authenticated/no-store visit-token CAS projection assembles exact
+  provenance-labelled questions/answers, current decisions, visit-linked
+  follow-ups, related resolved-alert outcomes, and unresolved items with both
+  revisions plus a semantic recap token. Copy, generic UTF-8 text download, and
+  print use only that accepted snapshot; newer authority disables export before
+  refresh, offline content remains visibly stale/read-only, and auth/hard
+  failure scrubs visible and hidden recap data. Planned visits are unavailable
+  until started, while cancelled visits show a non-exportable administrative
+  state. Viewing or exporting never mutates the profile, invokes a model, or
+  creates a recap artifact.
 - **Accessible structured Resolve alert dialog.** Active alerts now open one
   responsive desktop/phone dialog with optional provenance-labelled outcome and
   mutually exclusive no-link, existing-follow-up, safe inline-follow-up, or

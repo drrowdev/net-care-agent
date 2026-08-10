@@ -375,12 +375,36 @@ working record; on a phone it opens as a full-height sheet.
    a decision, using contact/ask/discuss/confirm wording. Visit-linked follow-ups
    are displayed read-only here; general task editing remains outside this
    appointment slice.
+8. Open **Recap** during an in-progress visit or after completion. The recap
+   deterministically shows **Visit details**, **What was asked**, **What we
+   heard**, **Decisions / needs confirmation**, **Follow-ups**, **Related
+   resolved alerts**, and **Unresolved / unknown items**, omitting empty
+   sections. It preserves the stored wording exactly. Generated question
+   snapshots remain labelled generated; captured answers and current decisions
+   remain **Caregiver-entered · attributed to clinician · unverified**.
+   Administrative action/alert outcomes remain explicitly non-clinical.
+9. After reviewing the current recap, use **Copy**, **Download text**, or
+   **Print**. All three use the exact accepted recap currently displayed.
+   Download creates a UTF-8 plain-text file named generically, such as
+   `visit-recap-2026-08-10.txt`; the app does not create PDF/Word files, upload,
+   email, or share the record. Planned visits cannot be recapped until started.
+   Cancelled visits show only a non-exportable administrative state.
 
 Each request has one mutation ID and target token. An explicit retry after an
 ambiguous connection failure reuses only that exact unchanged request. A `409`
 never retries automatically: the workspace keeps eligible caregiver draft text,
 reloads authoritative tokens, and explains that the visit or assessment changed.
 Drafts remain only in memory.
+
+The recap is a read projection: opening, copying, downloading, or printing it
+does not change either revision, append audit history, or mark any item reviewed.
+If the selected visit, its follow-ups, a related alert, or any workflow/clinical
+authority changes, export controls disable immediately and the recap reloads.
+A connection failure may leave the previous recap visible as **Offline snapshot
+· read-only**, but Copy/Download/Print stay disabled. A conflict requires the
+visit and recap to reload; authorization loss or a hard failure removes the
+recap and its hidden export payload entirely. Returning to a visible browser tab
+refreshes an active recap; there is no recap polling.
 
 Pin/order/visit bookkeeping changes only `workflow_revision`. Captured answers
 and clinician-attributed decisions also advance `profile_revision`, clear

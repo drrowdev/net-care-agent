@@ -462,6 +462,7 @@
       <button id="appointment-tab-questions" class="appointment-tab active" role="tab" tabindex="0" aria-selected="true" aria-controls="appointment-panel-questions" onclick="switchAppointmentTab('questions')">Questions</button>
       <button id="appointment-tab-decisions" class="appointment-tab" role="tab" tabindex="-1" aria-selected="false" aria-controls="appointment-panel-decisions" onclick="switchAppointmentTab('decisions')">Decisions</button>
       <button id="appointment-tab-followups" class="appointment-tab" role="tab" tabindex="-1" aria-selected="false" aria-controls="appointment-panel-followups" onclick="switchAppointmentTab('followups')">Follow-ups</button>
+      <button id="appointment-tab-recap" class="appointment-tab" role="tab" tabindex="-1" aria-selected="false" aria-controls="appointment-panel-recap" onclick="switchAppointmentTab('recap')">Recap</button>
     </div>
 
     <div class="appointment-dialog-body">
@@ -513,6 +514,24 @@
           <p class="form-error" id="visit-followup-error" role="alert" aria-live="polite"></p>
         </div>
         <div id="visit-followup-list" class="visit-followup-list" aria-live="polite"></div>
+      </section>
+
+      <section id="appointment-panel-recap" class="appointment-tab-panel visit-recap-panel" role="tabpanel" aria-labelledby="appointment-tab-recap" hidden>
+        <div class="visit-recap-toolbar">
+          <div>
+            <p class="eyebrow">Authoritative visit record</p>
+            <h3>Visit recap</h3>
+          </div>
+          <div class="visit-recap-actions" aria-label="Export visit recap">
+            <button class="button secondary" id="visit-recap-copy" onclick="copyVisitRecap()" disabled>Copy</button>
+            <button class="button secondary" id="visit-recap-download" onclick="downloadVisitRecap()" disabled>Download text</button>
+            <button class="button secondary" id="visit-recap-print" onclick="printVisitRecap()" disabled>Print</button>
+          </div>
+        </div>
+        <div id="visit-recap-status" class="visit-recap-status" role="status" aria-live="polite"></div>
+        <div id="visit-recap-content" class="visit-recap-content">
+          <div class="empty-state">Open Recap to load the current visit record.</div>
+        </div>
       </section>
     </div>
 

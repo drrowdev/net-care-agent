@@ -943,10 +943,13 @@ def _linkable_appointment_projections(profile: dict) -> list[dict]:
     return projected
 
 
-def _outcome_from_request(value: object) -> dict:
+def _outcome_from_request(value: object) -> dict | None:
     _validate_outcome_request(value)
+    text_value = value.get("text")
+    if text_value is None or (isinstance(text_value, str) and not text_value.strip()):
+        return None
     kind = agent.validate_status(value.get("kind"), agent.OUTCOME_KINDS, "outcome kind")
-    text = agent.validate_text(value.get("text"), "outcome.text", limit=2000)
+    text = agent.validate_text(text_value, "outcome.text", limit=2000)
     if kind == "clinician_attributed":
         provenance = agent.capture_provenance()
     elif kind == "caregiver_reported":
@@ -973,6 +976,68 @@ def _validate_outcome_request(value: object) -> None:
     if not isinstance(value, dict):
         raise agent.FollowThroughError("outcome must be an object")
     _reject_unsupported_fields(value, {"kind", "text"}, "Unsupported outcome field")
+
+
+def _required_link_id(data: dict, field: str) -> str | None:
+    if field not in data:
+        return None
+    value = agent.validate_text(data[field], field, limit=100)
+    if "\n" in value or "\r" in value:
+        raise agent.FollowThroughError(f"{field} must be a single line")
+    return value
+
+
+def _eligible_alert_visit(profile: dict, visit_id: str) -> dict:
+    try:
+        visit = agent.find_record(profile.get("visits", []), visit_id, "Visit")
+    except KeyError as exc:
+        raise agent.FollowThroughConflict(
+            "The visit is no longer available for alert resolution. Reload visits."
+        ) from exc
+    if visit.get("status") not in {"planned", "in_progress"}:
+        raise agent.FollowThroughConflict(
+            "The visit is no longer available for alert resolution. Reload visits."
+        )
+    return visit
+
+
+def _eligible_alert_decision(profile: dict, visit: dict, decision_id: str) -> dict:
+    decision = next(
+        (item for item in visit.get("decisions", []) if item.get("id") == decision_id),
+        None,
+    )
+    if decision is None:
+        belongs_to_other_visit = any(
+            any(item.get("id") == decision_id for item in candidate.get("decisions", []))
+            for candidate in profile.get("visits", [])
+            if candidate.get("id") != visit.get("id")
+        )
+        if belongs_to_other_visit:
+            raise agent.FollowThroughError("decision_id does not belong to visit_id")
+        raise agent.FollowThroughConflict(
+            "The decision is no longer available for alert resolution. Reload visits."
+        )
+    if decision.get("status") not in {"active", "needs_confirmation"}:
+        raise agent.FollowThroughConflict(
+            "The decision is no longer available for alert resolution. Reload visits."
+        )
+    return decision
+
+
+def _eligible_alert_follow_up(profile: dict, follow_up_id: str) -> dict:
+    try:
+        follow_up = agent.find_record(
+            profile.get("caregiver_actions", []), follow_up_id, "Follow-up"
+        )
+    except KeyError as exc:
+        raise agent.FollowThroughConflict(
+            "The follow-up is no longer available for alert resolution. Reload follow-ups."
+        ) from exc
+    if follow_up.get("status") not in {"open", "in_progress"}:
+        raise agent.FollowThroughConflict(
+            "The follow-up is no longer available for alert resolution. Reload follow-ups."
+        )
+    return follow_up
 
 
 def _new_action(
@@ -1975,7 +2040,8 @@ def api_health():
 def api_status():
     profile = agent.load_profile()
     alerts = [
-        {**item, "resolve_token": agent.alert_token(item)} for item in agent.active_alerts(profile)
+        agent.public_alert(item)
+        for item in agent.active_alerts(profile)
     ]
     bms = sorted(profile.get("biomarkers", []), key=lambda x: x.get("date") or "", reverse=True)[
         :50
@@ -3350,11 +3416,28 @@ def api_resolve_alert(alert_id):
                 {"text", "owner", "due_date"},
                 "Unsupported inline follow-up field",
             )
+        has_follow_up_id = "follow_up_id" in data
+        has_inline_follow_up = "follow_up" in data
+        has_visit_link = "visit_id" in data
+        if sum((has_follow_up_id, has_inline_follow_up, has_visit_link)) > 1:
+            raise agent.FollowThroughError(
+                "Use only one alert link mode: an existing follow-up, an inline follow-up, or a visit"
+            )
+        if "decision_id" in data and not has_visit_link:
+            raise agent.FollowThroughError("decision_id requires visit_id")
         expected_token = str(data.get("expected_token") or "")
         expected_revision = data.get("expected_profile_revision")
         if not expected_token or expected_revision is None:
             raise agent.FollowThroughError(
                 "expected_token and expected_profile_revision are required"
+            )
+        if (
+            not isinstance(expected_revision, int)
+            or isinstance(expected_revision, bool)
+            or expected_revision < 0
+        ):
+            raise agent.FollowThroughError(
+                "expected_profile_revision must be a non-negative integer"
             )
         mutation_id = data.get("mutation_id")
         if mutation_id is None:
@@ -3378,53 +3461,26 @@ def api_resolve_alert(alert_id):
         if replay is not None:
             return jsonify(replay)
         alert = agent.find_record(profile.get("alerts", []), alert_id, "Alert")
-        kind = alert.get("dependency_kind") or "profile_snapshot"
         if (
             alert.get("resolved")
             or alert not in agent.active_alerts(profile)
             or agent.alert_token(alert) != expected_token
-            or (
-                kind == "profile_snapshot"
-                and str(expected_revision) != str(profile.get("profile_revision"))
-            )
+            or str(expected_revision) != str(profile.get("profile_revision"))
         ):
             raise agent.FollowThroughConflict(
                 "The alert changed or is no longer active. Reload alerts before resolving it."
             )
-        outcome = (
-            _outcome_from_request(data.get("outcome"))
-            if "outcome" in data
-            else {
-                "kind": "administrative",
-                "text": "Marked resolved",
-                "recorded_at": now_stamp(),
-                "provenance": {
-                    "capture_method": "caregiver_entered",
-                    "attributed_to": "caregiver",
-                    "source_verification": "not_applicable",
-                },
-            }
-        )
-        visit_id = agent.validate_optional_text(
-            data.get("visit_id"), "visit_id", limit=100, single_line=True
-        )
-        decision_id = agent.validate_optional_text(
-            data.get("decision_id"), "decision_id", limit=100, single_line=True
-        )
+        outcome = _outcome_from_request(data["outcome"]) if "outcome" in data else None
+        visit_id = _required_link_id(data, "visit_id")
+        decision_id = _required_link_id(data, "decision_id")
         if visit_id:
-            visit = agent.find_record(profile.get("visits", []), visit_id, "Visit")
+            visit = _eligible_alert_visit(profile, visit_id)
             if decision_id:
-                agent.find_record(visit.get("decisions", []), decision_id, "Decision")
-        elif decision_id:
-            raise agent.FollowThroughError("decision_id requires visit_id")
-        follow_up_id = agent.validate_optional_text(
-            data.get("follow_up_id"), "follow_up_id", limit=100, single_line=True
-        )
+                _eligible_alert_decision(profile, visit, decision_id)
+        follow_up_id = _required_link_id(data, "follow_up_id")
         follow_up = None
         if follow_up_id:
-            follow_up = agent.find_record(
-                profile.get("caregiver_actions", []), follow_up_id, "Follow-up"
-            )
+            follow_up = _eligible_alert_follow_up(profile, follow_up_id)
         if "follow_up" in data:
             if follow_up_id:
                 raise agent.FollowThroughError(
@@ -3453,13 +3509,18 @@ def api_resolve_alert(alert_id):
         alert["resolution"] = {
             "status": "resolved",
             "resolved_at": timestamp,
-            "outcome_kind": outcome["kind"],
-            "outcome_text": outcome["text"],
-            "provenance": outcome["provenance"],
             "follow_up_id": follow_up_id,
             "visit_id": visit_id,
             "decision_id": decision_id,
         }
+        if outcome is not None:
+            alert["resolution"].update(
+                {
+                    "outcome_kind": outcome["kind"],
+                    "outcome_text": outcome["text"],
+                    "provenance": outcome["provenance"],
+                }
+            )
         event = agent.append_history(
             alert,
             endpoint=endpoint,

@@ -287,6 +287,85 @@
   </main>
 </div>
 
+<div class="follow-up-overlay alert-resolution-overlay" id="alert-resolution-overlay" aria-hidden="true" onclick="closeAlertResolutionFromBackdrop(event)" inert>
+  <section class="follow-up-dialog alert-resolution-dialog" id="alert-resolution-dialog" role="dialog" aria-modal="true" aria-labelledby="alert-resolution-title" tabindex="-1" inert>
+    <header class="dialog-header">
+      <div>
+        <p class="eyebrow">Structured alert outcome</p>
+        <h2 id="alert-resolution-title">Resolve alert</h2>
+      </div>
+      <button class="icon-button" id="alert-resolution-close" type="button" onclick="closeAlertResolutionDialog()" aria-label="Close alert resolution dialog">×</button>
+    </header>
+    <div id="alert-resolution-status" class="follow-up-dialog-status" role="status" aria-live="polite"></div>
+    <div class="follow-up-dialog-body">
+      <form id="alert-resolution-form" class="follow-up-form" onsubmit="event.preventDefault();submitAlertResolution()">
+        <section class="alert-resolution-context" aria-labelledby="alert-resolution-context-heading">
+          <div class="alert-resolution-context-heading">
+            <h3 id="alert-resolution-context-heading">Alert context</h3>
+            <span id="alert-resolution-priority" class="alert-priority"></span>
+          </div>
+          <p id="alert-resolution-message" class="follow-up-dialog-copy"></p>
+          <p id="alert-resolution-action" class="alert-action"></p>
+        </section>
+
+        <fieldset class="alert-resolution-fieldset">
+          <legend>Optional outcome</legend>
+          <label><span>Outcome source</span><select id="alert-resolution-outcome-kind" onchange="updateAlertResolutionProvenance()"><option value="administrative">Administrative (not clinical evidence)</option><option value="caregiver_reported">Caregiver reported (unverified)</option><option value="clinician_attributed">Attributed to clinician (unverified)</option></select></label>
+          <label><span>What happened?</span><textarea id="alert-resolution-outcome-text" maxlength="2000" rows="3" placeholder="Optional: record the outcome of reviewing this alert."></textarea></label>
+          <p class="capture-provenance" id="alert-resolution-provenance"></p>
+        </fieldset>
+
+        <fieldset class="alert-resolution-fieldset alert-resolution-link-modes" id="alert-resolution-link-modes">
+          <legend>Optional link or follow-up</legend>
+          <label><input type="radio" name="alert-resolution-link-mode" value="none" checked onchange="renderAlertResolutionLinkMode()"> No link</label>
+          <label><input type="radio" name="alert-resolution-link-mode" value="follow_up" onchange="renderAlertResolutionLinkMode()"> Link an active follow-up</label>
+          <label><input type="radio" name="alert-resolution-link-mode" value="inline" onchange="renderAlertResolutionLinkMode()"> Create a follow-up</label>
+          <label><input type="radio" name="alert-resolution-link-mode" value="visit" onchange="renderAlertResolutionLinkMode()"> Link a current visit</label>
+        </fieldset>
+
+        <section id="alert-resolution-existing-follow-up" class="alert-resolution-link-panel" hidden>
+          <label><span>Active follow-up</span><select id="alert-resolution-follow-up-select"></select></label>
+          <p class="helper-text">Only open or in-progress durable follow-ups are available.</p>
+        </section>
+
+        <section id="alert-resolution-inline-follow-up" class="alert-resolution-link-panel" hidden>
+          <label><span>What needs follow-through?</span><textarea id="alert-resolution-follow-up-text" maxlength="1000" rows="3" placeholder="Ask the treating team to confirm the monitoring plan."></textarea></label>
+          <p class="helper-text">Use contact, ask, discuss, or confirm wording. This creates a caregiver task, not a treatment instruction.</p>
+          <div class="follow-up-form-grid">
+            <label><span>Owner</span><input id="alert-resolution-follow-up-owner" maxlength="100" placeholder="Caregiver"></label>
+            <label><span>Due date</span><input id="alert-resolution-follow-up-due" type="date"></label>
+          </div>
+        </section>
+
+        <section id="alert-resolution-visit-link" class="alert-resolution-link-panel" hidden>
+          <label><span>Current visit</span><select id="alert-resolution-visit-select" onchange="renderAlertResolutionDecisionOptions()"></select></label>
+          <label><span>Current decision (optional)</span><select id="alert-resolution-decision-select"><option value="">No linked decision</option></select></label>
+          <p class="capture-provenance">Visit decisions are caregiver-entered · attributed to clinician · unverified.</p>
+        </section>
+
+        <label class="alert-resolution-confirm"><input id="alert-resolution-confirm" type="checkbox"> I confirm that this alert can be marked resolved.</label>
+        <p class="form-error" id="alert-resolution-error" role="alert" aria-live="polite"></p>
+        <div class="follow-up-dialog-actions">
+          <button class="button primary" id="alert-resolution-submit" type="submit" disabled>Resolve alert</button>
+          <button class="button secondary" type="button" onclick="closeAlertResolutionDialog()">Cancel</button>
+        </div>
+      </form>
+
+      <section id="alert-resolution-result" class="alert-resolution-result" aria-live="polite" hidden>
+        <h3>Alert resolved</h3>
+        <p id="alert-resolution-result-outcome"></p>
+        <p id="alert-resolution-result-provenance" class="capture-provenance"></p>
+        <div id="alert-resolution-result-links" class="follow-up-links"></div>
+        <button class="button primary" type="button" onclick="closeAlertResolutionDialog(false)">Done</button>
+      </section>
+    </div>
+    <div class="follow-up-retry dialog-retry" id="alert-resolution-retry" hidden>
+      <span>The request may not have reached the server. Your draft is still available.</span>
+      <button class="button secondary" id="alert-resolution-retry-button" type="button" onclick="retryAlertResolution()">Retry unchanged request</button>
+    </div>
+  </section>
+</div>
+
 <div class="follow-up-overlay" id="follow-up-overlay" aria-hidden="true" onclick="closeFollowUpFromBackdrop(event)">
   <section class="follow-up-dialog" id="follow-up-dialog" role="dialog" aria-modal="true" aria-labelledby="follow-up-dialog-title" tabindex="-1">
     <header class="dialog-header">

@@ -9,6 +9,15 @@ incremented when something user-visible or operationally meaningful changes.
 ## [Unreleased]
 
 ### Fixed
+- **Structured alert-resolution authority and teardown.** The Patient alert
+  dialog now gates open/source/conflict/convergence/mutation responses on one
+  pre-selection owner, patient epoch, alert identity/token, and monotonic
+  revisions. Conflict reloads redact the old card and hidden copy before
+  obtaining fresh authority; offline projections remain visibly stale and
+  read-only with an exact unchanged retry; authorization and hard failures scrub
+  every visible/hidden alert value, selector, draft, retry, owner, and
+  focus/inert reference. Late alert A responses cannot populate alert B, unlock a
+  newer intent, or announce success after eviction.
 - **Cross-surface revision authority.** Patient-data responses now pass one
   monotonic profile/workflow authority guard before changing caches, revisions,
   drafts, retries, or rendered content. Observing a newer clinical revision
@@ -74,6 +83,14 @@ incremented when something user-visible or operationally meaningful changes.
   not block snapshot/backup recovery or permit duplicate initialization.
 
 ### Added
+- **Accessible structured Resolve alert dialog.** Active alerts now open one
+  responsive desktop/phone dialog with optional provenance-labelled outcome and
+  mutually exclusive no-link, existing-follow-up, safe inline-follow-up, or
+  current-visit/eligible-decision modes. Existing links submit stable IDs only;
+  blank outcomes are omitted; inline text is caregiver-authored treating-team
+  follow-through rather than treatment or eligibility advice. Success waits for
+  authoritative status/action/visit convergence, removes the old alert copy,
+  retains sibling alerts, and renders only the bounded returned confirmation.
 - **Today durable follow-through workflow.** Today now has one responsive
   caregiver-action surface with Active, Completed, Cancelled, and All filters,
   safe manual task creation, current generated-action acceptance by opaque

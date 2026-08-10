@@ -54,6 +54,25 @@
   let workflowMutationOwner = null;
   let appointmentDrafts = new Map();
   let decisionSuccessorConflicts = new Set();
+  let alertsById = new Map();
+  let alertProjectionStale = false;
+  let alertLinkSourcesStale = false;
+  let selectedAlertId = null;
+  let selectedAlertToken = null;
+  let selectedAlertProfileRevision = null;
+  let alertSelectionEpoch = 0;
+  let alertResolutionDialogOpen = false;
+  let alertResolutionIntentOwner = null;
+  let alertResolutionMutationPending = false;
+  let pendingAlertResolutionIntent = null;
+  let activeAlertResolutionIntent = null;
+  let alertResolutionDrafts = new Map();
+  let alertResolutionResult = null;
+  const ALERT_RESOLUTION_OUTCOME_KINDS = new Set([
+    'administrative',
+    'caregiver_reported',
+    'clinician_attributed',
+  ]);
   const failedLoads = new Map();
 
   // ── UI label localization ───────────────────────────────────────────────
@@ -103,6 +122,10 @@
       || pendingFollowUpCompletion !== null
       || summaryActionMutationOwner !== null
       || (
+        typeof alertResolutionMutationPending !== 'undefined'
+        && alertResolutionMutationPending
+      )
+      || (
         typeof workflowMutationPending !== 'undefined'
         && workflowMutationPending
       );
@@ -132,6 +155,10 @@
     if (options.followUpSelection) {
       request.requestActionEpoch = followUpSelectionEpoch;
       request.requestActionId = selectedFollowUpId;
+    }
+    if (options.alertSelection) {
+      request.requestAlertEpoch = alertSelectionEpoch;
+      request.requestAlertId = selectedAlertId;
     }
     return request;
   }
@@ -165,6 +192,13 @@
         )
       )
     ) return false;
+    if (
+      request.requestAlertEpoch != null
+      && (
+        request.requestAlertEpoch !== alertSelectionEpoch
+        || request.requestAlertId !== selectedAlertId
+      )
+    ) return false;
     return true;
   }
 
@@ -195,7 +229,7 @@
     });
   }
 
-  function advancePatientAuthority(profileRevision) {
+  function advancePatientAuthority(profileRevision, options = {}) {
     const revision = normalizedRevision(profileRevision);
     const current = normalizedRevision(latestProfileRevision);
     if (
@@ -204,8 +238,28 @@
     ) return false;
     phiEpoch += 1;
     taskSelectionEpoch += 1;
+    if (
+      typeof alertResolutionDialogOpen !== 'undefined'
+      && alertResolutionDialogOpen
+    ) {
+      redactAlertResolutionContext(
+        options.preserveAlertIntent
+          ? 'Saving the authoritative resolution…'
+          : 'The patient record changed. Reload the alert before continuing.'
+      );
+      if (!options.preserveAlertIntent) {
+        captureAlertResolutionDraft();
+        if (pendingAlertResolutionIntent?.body) pendingAlertResolutionIntent.body = {};
+        if (activeAlertResolutionIntent?.body) activeAlertResolutionIntent.body = {};
+        alertSelectionEpoch += 1;
+        alertResolutionIntentOwner = null;
+        alertResolutionMutationPending = false;
+        pendingAlertResolutionIntent = null;
+        activeAlertResolutionIntent = null;
+      }
+    }
     syncChatRevision(revision, true, false);
-    requestClinicalConvergence(revision);
+    if (!options.deferConvergence) requestClinicalConvergence(revision);
     return true;
   }
 
@@ -262,7 +316,10 @@
         || responseProfileRevision > currentProfileRevision
       );
     if (profileAdvanced) {
-      advancePatientAuthority(responseProfileRevision);
+      advancePatientAuthority(responseProfileRevision, {
+        preserveAlertIntent: options.alertResolution === true,
+        deferConvergence: options.alertResolution === true,
+      });
     }
     if (staleWorkflowProjection || staleTargetedWorkflow) {
       if (profileAdvanced) requestClinicalConvergence(responseProfileRevision);
@@ -275,7 +332,11 @@
       );
     if (workflowAdvanced) {
       workflowRevision = responseWorkflowRevision;
-      if (!profileAdvanced && Number.isSafeInteger(currentProfileRevision)) {
+      if (
+        !options.alertResolution
+        && !profileAdvanced
+        && Number.isSafeInteger(currentProfileRevision)
+      ) {
         requestClinicalConvergence(currentProfileRevision);
       }
     }
@@ -384,23 +445,37 @@
     return true;
   }
 
-  async function refreshClinicalWorkflowState(profileRevision, expectedWorkflowRevision = null) {
+  async function refreshClinicalWorkflowState(
+    profileRevision,
+    expectedWorkflowRevision = null,
+    options = {},
+  ) {
+    const responseGuard = options.responseGuard || (() => true);
+    if (!responseGuard()) return false;
     redactGeneratedQuestionChoices();
     redactGeneratedSummaryActions();
     const refreshPhiEpoch = phiEpoch;
     taskSelectionEpoch += 1;
-    const status = await loadStatus();
-    if (refreshPhiEpoch !== phiEpoch || status?.profile_revision == null) return false;
+    const guardedOptions = {
+      responseGuard,
+      authorizationOptions: options.authorizationOptions || {},
+    };
+    const status = await loadStatus(guardedOptions);
+    if (
+      !responseGuard()
+      || refreshPhiEpoch !== phiEpoch
+      || status?.profile_revision == null
+    ) return false;
     const statusRevision = status.profile_revision;
     syncChatRevision(statusRevision, true, false);
     const refreshResults = await Promise.allSettled([
-      loadSummary(),
-      loadQuestions(),
-      loadTasks(),
-      loadVisits(),
-      loadFollowUps(),
+      loadSummary(guardedOptions),
+      loadQuestions(guardedOptions),
+      loadTasks(guardedOptions),
+      loadVisits(guardedOptions),
+      loadFollowUps(guardedOptions),
     ]);
-    if (refreshPhiEpoch !== phiEpoch) return false;
+    if (!responseGuard() || refreshPhiEpoch !== phiEpoch) return false;
     const loadsSucceeded = refreshResults.every(
       result => result.status === 'fulfilled' && result.value !== null
     );
@@ -948,18 +1023,25 @@
   }
 
   // ── Status sidebar ──────────────────────────────────────────────────────
-  async function loadStatus() {
+  async function loadStatus(options = {}) {
     const request = capturePatientRequest();
     const requestLoadEpoch = ++statusLoadEpoch;
+    const responseGuard = options.responseGuard || (() => true);
     const requestIsCurrent = () => (
-      patientRequestIsCurrent(request) && requestLoadEpoch === statusLoadEpoch
+      responseGuard()
+      && patientRequestIsCurrent(request)
+      && requestLoadEpoch === statusLoadEpoch
     );
     try {
       const r = await fetch('/api/status');
       if (!requestIsCurrent()) return null;
       const d = await readJsonResponse(r, requestIsCurrent);
       if (!requestIsCurrent()) return null;
-      const authority = authorizePatientResponse(request, d);
+      const authority = authorizePatientResponse(
+        request,
+        d,
+        options.authorizationOptions || {},
+      );
       if (!authority.accepted) return null;
       renderSidebar(d);
       reportLoadSuccess('status');
@@ -1051,6 +1133,22 @@
     workflowMutationOwner = null;
     appointmentDrafts = new Map();
     decisionSuccessorConflicts = new Set();
+    alertsById = new Map();
+    alertProjectionStale = false;
+    alertLinkSourcesStale = false;
+    selectedAlertId = null;
+    selectedAlertToken = null;
+    selectedAlertProfileRevision = null;
+    alertSelectionEpoch += 1;
+    alertResolutionDialogOpen = false;
+    alertResolutionIntentOwner = null;
+    alertResolutionMutationPending = false;
+    if (pendingAlertResolutionIntent?.body) pendingAlertResolutionIntent.body = {};
+    if (activeAlertResolutionIntent?.body) activeAlertResolutionIntent.body = {};
+    pendingAlertResolutionIntent = null;
+    activeAlertResolutionIntent = null;
+    alertResolutionDrafts = new Map();
+    alertResolutionResult = null;
     chatHistory = [];
     chatHistoryRevision = null;
     document.querySelectorAll('.action-feedback').forEach(editor => editor.remove());
@@ -1081,6 +1179,15 @@
     clear('follow-up-outcome-copy');
     clear('follow-up-outcome-guidance');
     clear('follow-up-dialog-status');
+    clear('alert-resolution-message');
+    clear('alert-resolution-action');
+    clear('alert-resolution-status');
+    clear('alert-resolution-error');
+    clear('alert-resolution-priority');
+    clear('alert-resolution-provenance');
+    clear('alert-resolution-result-outcome');
+    clear('alert-resolution-result-provenance');
+    clear('alert-resolution-result-links');
     clear('judgments-list');
     clear('symptoms-list');
     clear('summary-status-inline');
@@ -1093,6 +1200,19 @@
     const appointmentDialog = document.getElementById('appointment-dialog');
     const followUpOverlay = document.getElementById('follow-up-overlay');
     const followUpDialog = document.getElementById('follow-up-dialog');
+    const alertResolutionOverlay = document.getElementById('alert-resolution-overlay');
+    const alertResolutionDialog = document.getElementById('alert-resolution-dialog');
+    if (
+      alertResolutionDialog
+      && typeof alertResolutionDialog.contains === 'function'
+      && alertResolutionDialog.contains(document.activeElement)
+    ) {
+      document.activeElement?.blur();
+    }
+    alertResolutionOverlay?.classList.remove('open');
+    alertResolutionOverlay?.setAttribute('aria-hidden', 'true');
+    if (alertResolutionOverlay) alertResolutionOverlay.inert = true;
+    if (alertResolutionDialog) alertResolutionDialog.inert = true;
     if (
       followUpDialog
       && typeof followUpDialog.contains === 'function'
@@ -1160,7 +1280,7 @@
     }
     for (const id of [
       'appointment-retry', 'visit-create-retry', 'visit-decision-cancel-supersede',
-      'follow-up-retry', 'follow-up-dialog-retry'
+      'follow-up-retry', 'follow-up-dialog-retry', 'alert-resolution-retry'
     ]) {
       const element = document.getElementById(id);
       if (element) element.hidden = true;
@@ -1217,6 +1337,8 @@
       'visit-followup-text', 'visit-followup-owner', 'visit-followup-due',
       'follow-up-create-text', 'follow-up-create-owner', 'follow-up-create-due',
       'follow-up-edit-owner', 'follow-up-edit-due', 'follow-up-outcome-text',
+      'alert-resolution-outcome-text', 'alert-resolution-follow-up-text',
+      'alert-resolution-follow-up-owner', 'alert-resolution-follow-up-due',
       'dismiss-text-0', 'dismiss-text-1', 'dismiss-text-2',
       'dismiss-text-3', 'dismiss-text-4'
     ]) {
@@ -1231,6 +1353,27 @@
     }
     const outcomeKind = document.getElementById('follow-up-outcome-kind');
     if (outcomeKind) outcomeKind.value = 'administrative';
+    const alertOutcomeKind = document.getElementById('alert-resolution-outcome-kind');
+    if (alertOutcomeKind) alertOutcomeKind.value = 'administrative';
+    for (const id of [
+      'alert-resolution-follow-up-select', 'alert-resolution-visit-select',
+      'alert-resolution-decision-select'
+    ]) {
+      const select = document.getElementById(id);
+      if (select) {
+        select.innerHTML = '';
+        select.value = '';
+      }
+    }
+    document.querySelectorAll('input[name="alert-resolution-link-mode"]').forEach(
+      input => { input.checked = input.value === 'none'; },
+    );
+    const alertConfirm = document.getElementById('alert-resolution-confirm');
+    if (alertConfirm) alertConfirm.checked = false;
+    const alertForm = document.getElementById('alert-resolution-form');
+    const alertResult = document.getElementById('alert-resolution-result');
+    if (alertForm) alertForm.hidden = false;
+    if (alertResult) alertResult.hidden = true;
     const followUpDialogStatus = document.getElementById('follow-up-dialog-status');
     if (followUpDialogStatus) {
       followUpDialogStatus.textContent = '';
@@ -1284,6 +1427,9 @@
     if (appointmentDialog) appointmentDialog.inert = true;
     if (followUpOverlay) followUpOverlay.inert = true;
     if (followUpDialog) followUpDialog.inert = true;
+    if (alertResolutionOverlay) alertResolutionOverlay.inert = true;
+    if (alertResolutionDialog) alertResolutionDialog.inert = true;
+    setAlertResolutionBusy(false);
     setFollowUpMutationBusy(false);
     setAppointmentMutationBusy(false);
     updateAppointmentFormValidity();
@@ -1497,41 +1643,891 @@
 
     filterBiomarkers();
 
-    // Alerts
-    const alerts = d.alerts || [];
-    document.getElementById('alerts-list').innerHTML = alerts.length
-      ? alerts.map(a => `
-        <div class="alert-item ${safeClassToken(a.priority, 'normal')}" data-alert-id="${escHtml(a.id)}" data-resolve-token="${escHtml(a.resolve_token)}">
-          <div class="alert-msg">${escHtml(a.message)}</div>
-          ${a.action_required ? `<div class="alert-action">→ ${escHtml(a.action_required)}</div>` : ''}
-          <div class="alert-meta">
-            <span class="alert-priority ${safeClassToken(a.priority, 'normal')}">${escHtml(a.priority || '—')}</span>
-            <button class="resolve-btn" onclick="resolveAlert(this.closest('.alert-item'))">Mark resolved</button>
-          </div>
-        </div>`).join('')
-      : '<div class="empty-state">No active alerts</div>';
+    const alerts = Array.isArray(d.alerts) ? d.alerts : [];
+    alertsById = new Map(
+      alerts
+        .filter(alert => alert && typeof alert.id === 'string')
+        .map(alert => [alert.id, alert])
+    );
+    alertProjectionStale = false;
+    renderAlerts();
+    if (alertResolutionDialogOpen) {
+      const selected = selectedAlertId ? alertsById.get(selectedAlertId) : null;
+      const selectionCurrent = selected
+        && selected.resolve_token === selectedAlertToken
+        && String(latestProfileRevision) === String(selectedAlertProfileRevision);
+      if (selectionCurrent && !alertResolutionMutationPending) {
+        renderAlertResolutionContext(selected);
+      } else if (!selectionCurrent) {
+        redactAlertResolutionContext(
+          alertResolutionMutationPending
+            ? 'Saving the authoritative resolution…'
+            : 'This alert changed or is no longer available.'
+        );
+        if (!alertResolutionMutationPending) {
+          alertProjectionStale = true;
+          alertLinkSourcesStale = true;
+          alertResolutionIntentOwner = null;
+          alertSelectionEpoch += 1;
+        }
+      }
+      updateAlertResolutionFormValidity();
+    }
   }
 
-  async function resolveAlert(row) {
-    const alertId = row?.dataset.alertId;
-    const expectedToken = row?.dataset.resolveToken;
-    if (!alertId || !expectedToken || latestProfileRevision == null) return;
-    const request = capturePatientRequest();
-    try {
-      const result = await readJsonResponse(await fetch(`/api/alerts/${encodeURIComponent(alertId)}/resolve`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          expected_token: expectedToken,
-          expected_profile_revision: latestProfileRevision,
-        }),
-      }));
-      if (!authorizePatientResponse(request, result).accepted) return;
-      await loadStatus();
-    } catch (error) {
-      if (!patientRequestIsCurrent(request)) return;
-      reportLoadError('action', error);
+  function renderAlerts() {
+    const list = document.getElementById('alerts-list');
+    if (!list) return;
+    const alerts = [...alertsById.values()];
+    const staleNotice = alertProjectionStale
+      ? '<div class="follow-up-stale-note" role="status">Alerts are offline and read-only until the current record reloads.</div>'
+      : '';
+    list.innerHTML = staleNotice + (alerts.length
+      ? alerts.map(alert => `
+        <div class="alert-item ${safeClassToken(alert.priority, 'normal')}" data-alert-id="${escHtml(alert.id)}" data-resolve-token="${escHtml(alert.resolve_token)}">
+          <div class="alert-msg">${escHtml(alert.message)}</div>
+          ${alert.action_required ? `<div class="alert-action">→ ${escHtml(alert.action_required)}</div>` : ''}
+          <div class="alert-meta">
+            <span class="alert-priority ${safeClassToken(alert.priority, 'normal')}">${escHtml(alert.priority || '—')}</span>
+            <button class="resolve-btn" ${alertProjectionStale || alertResolutionIntentOwner !== null || alertResolutionMutationPending ? 'disabled' : ''} onclick="openAlertResolutionDialog(this, this.closest('.alert-item'))">Resolve alert</button>
+          </div>
+        </div>`).join('')
+      : '<div class="empty-state">No active alerts</div>');
+  }
+
+  function alertResolutionProvenanceLabel(provenance = {}, kind = '') {
+    if (
+      provenance.capture_method === 'caregiver_entered'
+      && provenance.attributed_to === 'clinician'
+      && provenance.source_verification === 'unverified'
+    ) return 'Caregiver-entered · attributed to clinician · unverified';
+    if (
+      provenance.capture_method === 'caregiver_entered'
+      && provenance.attributed_to === 'patient_or_caregiver'
+      && provenance.source_verification === 'unverified'
+    ) return 'Caregiver-entered · caregiver reported · unverified';
+    if (
+      provenance.capture_method === 'caregiver_entered'
+      && provenance.attributed_to === 'caregiver'
+      && provenance.source_verification === 'not_applicable'
+    ) return 'Caregiver-entered administrative outcome · not clinical evidence';
+    return {
+      clinician_attributed: 'Caregiver-entered · attributed to clinician · unverified',
+      caregiver_reported: 'Caregiver-entered · caregiver reported · unverified',
+      administrative: 'Caregiver-entered administrative outcome · not clinical evidence',
+    }[kind] || 'Caregiver-entered outcome · provenance unavailable';
+  }
+
+  function updateAlertResolutionProvenance() {
+    const kind = document.getElementById('alert-resolution-outcome-kind')?.value;
+    const node = document.getElementById('alert-resolution-provenance');
+    if (node) node.textContent = alertResolutionProvenanceLabel({}, kind);
+  }
+
+  function setAlertResolutionStatus(message, tone = '') {
+    const status = document.getElementById('alert-resolution-status');
+    if (!status) return;
+    status.textContent = message || '';
+    status.className = `follow-up-dialog-status${tone ? ` ${safeClassToken(tone)}` : ''}`;
+  }
+
+  function selectedAlertResolutionMode() {
+    return document.querySelector(
+      'input[name="alert-resolution-link-mode"]:checked'
+    )?.value || 'none';
+  }
+
+  function captureAlertResolutionAuthority(owner = alertResolutionIntentOwner) {
+    return {
+      owner,
+      requestPhiEpoch: phiEpoch,
+      requestAlertEpoch: alertSelectionEpoch,
+      alertId: selectedAlertId,
+      expectedToken: selectedAlertToken,
+      expectedProfileRevision: selectedAlertProfileRevision,
+    };
+  }
+
+  function alertResolutionAuthorityIsCurrent(authority) {
+    return Boolean(authority)
+      && alertResolutionOwnerIsCurrent(authority.owner, authority.requestPhiEpoch)
+      && authority.requestAlertEpoch === alertSelectionEpoch
+      && authority.alertId === selectedAlertId
+      && authority.expectedToken === selectedAlertToken
+      && String(authority.expectedProfileRevision) === String(selectedAlertProfileRevision)
+      && String(authority.expectedProfileRevision) === String(latestProfileRevision);
+  }
+
+  function alertResolutionDraftKey(alertId = selectedAlertId) {
+    return `resolve:${alertId || 'unavailable'}`;
+  }
+
+  function captureAlertResolutionDraft() {
+    if (!alertResolutionDialogOpen || !selectedAlertId) return;
+    const mode = selectedAlertResolutionMode();
+    alertResolutionDrafts.set(alertResolutionDraftKey(), {
+      outcomeKind: document.getElementById('alert-resolution-outcome-kind')?.value
+        || 'administrative',
+      outcomeText: document.getElementById('alert-resolution-outcome-text')?.value || '',
+      mode: mode === 'inline' ? 'inline' : 'none',
+      followUpText: document.getElementById('alert-resolution-follow-up-text')?.value || '',
+      followUpOwner: document.getElementById('alert-resolution-follow-up-owner')?.value || '',
+      followUpDue: document.getElementById('alert-resolution-follow-up-due')?.value || '',
+    });
+  }
+
+  function restoreAlertResolutionDraft() {
+    const draft = alertResolutionDrafts.get(alertResolutionDraftKey());
+    document.getElementById('alert-resolution-outcome-kind').value =
+      draft?.outcomeKind || 'administrative';
+    document.getElementById('alert-resolution-outcome-text').value =
+      draft?.outcomeText || '';
+    document.getElementById('alert-resolution-follow-up-text').value =
+      draft?.followUpText || '';
+    document.getElementById('alert-resolution-follow-up-owner').value =
+      draft?.followUpOwner || '';
+    document.getElementById('alert-resolution-follow-up-due').value =
+      draft?.followUpDue || '';
+    const mode = draft?.mode === 'inline' ? 'inline' : 'none';
+    const radio = document.querySelector(
+      `input[name="alert-resolution-link-mode"][value="${mode}"]`
+    );
+    if (radio) radio.checked = true;
+    document.getElementById('alert-resolution-confirm').checked = false;
+    updateAlertResolutionProvenance();
+    renderAlertResolutionLinkMode();
+  }
+
+  function clearAlertResolutionRetry() {
+    if (pendingAlertResolutionIntent?.body) pendingAlertResolutionIntent.body = {};
+    pendingAlertResolutionIntent = null;
+    const retry = document.getElementById('alert-resolution-retry');
+    if (retry) retry.hidden = true;
+  }
+
+  function invalidateAlertResolutionRetryOnDraftChange() {
+    if (pendingAlertResolutionIntent) {
+      clearAlertResolutionRetry();
+      setAlertResolutionStatus(
+        'The draft changed. Reload the current sources and submit a new request.',
+        'conflict',
+      );
     }
+    captureAlertResolutionDraft();
+    updateAlertResolutionFormValidity();
+  }
+
+  function redactAlertResolutionContext(message) {
+    const contextMessage = document.getElementById('alert-resolution-message');
+    const contextAction = document.getElementById('alert-resolution-action');
+    const priority = document.getElementById('alert-resolution-priority');
+    if (contextMessage) contextMessage.textContent = 'Alert changed or unavailable.';
+    if (contextAction) contextAction.textContent = '';
+    if (priority) {
+      priority.textContent = '';
+      priority.className = 'alert-priority';
+    }
+
+    setAlertResolutionStatus(message, 'conflict');
+    const submit = document.getElementById('alert-resolution-submit');
+    if (submit) submit.disabled = true;
+  }
+
+  function redactAlertResolutionCard(alertId = selectedAlertId) {
+    if (!alertId || !alertsById.has(alertId)) return;
+    alertsById.delete(alertId);
+    renderAlerts();
+  }
+
+  function renderAlertResolutionContext(alert) {
+    if (!alert || alert.id !== selectedAlertId) {
+      redactAlertResolutionContext('This alert changed or is no longer available.');
+      return;
+    }
+    document.getElementById('alert-resolution-message').textContent =
+      alert.message || 'Alert details unavailable';
+    document.getElementById('alert-resolution-action').textContent =
+      alert.action_required ? `Suggested next step: ${alert.action_required}` : '';
+    const priority = document.getElementById('alert-resolution-priority');
+    priority.textContent = alert.priority || 'normal';
+    priority.className = `alert-priority ${safeClassToken(alert.priority, 'normal')}`;
+  }
+
+  function eligibleAlertFollowUps() {
+    return [...followUpsById.values()].filter(
+      item => item && ['open', 'in_progress'].includes(item.status)
+    );
+  }
+
+  function eligibleAlertVisits() {
+    return [...visitsById.values()].filter(
+      item => item && ['planned', 'in_progress'].includes(item.status)
+    );
+  }
+
+  function renderAlertResolutionSourceOptions() {
+    const followUpSelect = document.getElementById('alert-resolution-follow-up-select');
+    const visitSelect = document.getElementById('alert-resolution-visit-select');
+    const currentFollowUp = followUpSelect.value;
+    const currentVisit = visitSelect.value;
+    const followUps = eligibleAlertFollowUps();
+    const visits = eligibleAlertVisits();
+    followUpSelect.innerHTML = '<option value="">Choose an active follow-up</option>'
+      + followUps.map(item => {
+        const label = [item.text, item.owner ? `Owner: ${item.owner}` : 'Owner not set']
+          .filter(Boolean).join(' · ');
+        return `<option value="${escHtml(item.id)}">${escHtml(label)}</option>`;
+      }).join('');
+    visitSelect.innerHTML = '<option value="">Choose a current visit</option>'
+      + visits.map(visit => {
+        const label = [visit.title, visit.date ? fmtDate(visit.date) : null]
+          .filter(Boolean).join(' · ');
+        return `<option value="${escHtml(visit.id)}">${escHtml(label)}</option>`;
+      }).join('');
+    if (followUps.some(item => item.id === currentFollowUp)) {
+      followUpSelect.value = currentFollowUp;
+    }
+    if (visits.some(item => item.id === currentVisit)) visitSelect.value = currentVisit;
+    renderAlertResolutionDecisionOptions();
+  }
+
+  function renderAlertResolutionDecisionOptions() {
+    const visitId = document.getElementById('alert-resolution-visit-select')?.value;
+    const decisionSelect = document.getElementById('alert-resolution-decision-select');
+    if (!decisionSelect) return;
+    const current = decisionSelect.value;
+    const visit = visitId ? visitsById.get(visitId) : null;
+    const decisions = (visit?.decisions || []).filter(
+      item => ['active', 'needs_confirmation'].includes(item.status)
+    );
+    decisionSelect.innerHTML = '<option value="">No linked decision</option>'
+      + decisions.map(item => (
+        `<option value="${escHtml(item.id)}">${escHtml(item.text)}</option>`
+      )).join('');
+    if (decisions.some(item => item.id === current)) decisionSelect.value = current;
+    updateAlertResolutionFormValidity();
+  }
+
+  function renderAlertResolutionLinkMode() {
+    const mode = selectedAlertResolutionMode();
+    const panels = [
+      ['alert-resolution-existing-follow-up', 'follow_up'],
+      ['alert-resolution-inline-follow-up', 'inline'],
+      ['alert-resolution-visit-link', 'visit'],
+    ];
+    for (const [id, panelMode] of panels) {
+      const panel = document.getElementById(id);
+      const enabled = mode === panelMode
+        && !alertResolutionMutationPending
+        && (panelMode === 'inline' || !alertLinkSourcesStale);
+      if (!panel) continue;
+      panel.hidden = mode !== panelMode;
+      panel.querySelectorAll('input, textarea, select').forEach(control => {
+        control.disabled = !enabled;
+      });
+    }
+    updateAlertResolutionFormValidity();
+  }
+
+  function setAlertResolutionProjectionReadOnly(readOnly) {
+    const dialog = document.getElementById('alert-resolution-dialog');
+    dialog?.classList.toggle('projection-stale', readOnly);
+    document.getElementById('alert-resolution-link-modes')?.setAttribute(
+      'aria-disabled',
+      String(readOnly),
+    );
+    document.querySelectorAll(
+      'input[name="alert-resolution-link-mode"], '
+      + '#alert-resolution-follow-up-select, #alert-resolution-visit-select, '
+      + '#alert-resolution-decision-select'
+    ).forEach(control => {
+      control.disabled = readOnly || alertResolutionMutationPending;
+    });
+    renderAlertResolutionLinkMode();
+  }
+
+  function setAlertResolutionBusy(busy) {
+    document.querySelectorAll(
+      '#alerts-list .resolve-btn, #alert-resolution-dialog button, '
+      + '#alert-resolution-dialog input, #alert-resolution-dialog textarea, '
+      + '#alert-resolution-dialog select'
+    ).forEach(control => {
+      if (busy) {
+        if (!('alertWasDisabled' in control.dataset)) {
+          control.dataset.alertWasDisabled = String(control.disabled);
+        }
+        control.disabled = true;
+      } else if ('alertWasDisabled' in control.dataset) {
+        control.disabled = control.dataset.alertWasDisabled === 'true';
+        delete control.dataset.alertWasDisabled;
+      }
+    });
+  }
+
+  function updateAlertResolutionFormValidity() {
+    const submit = document.getElementById('alert-resolution-submit');
+    if (!submit) return;
+    const alert = selectedAlertId ? alertsById.get(selectedAlertId) : null;
+    const mode = selectedAlertResolutionMode();
+    const outcomeText =
+      (document.getElementById('alert-resolution-outcome-text')?.value || '').trim();
+    const outcomeKind = document.getElementById('alert-resolution-outcome-kind')?.value;
+    const outcomeIsValid = !outcomeText
+      || ALERT_RESOLUTION_OUTCOME_KINDS.has(outcomeKind);
+    const hasModeTarget = mode === 'none'
+      || (
+        mode === 'follow_up'
+        && Boolean(document.getElementById('alert-resolution-follow-up-select')?.value)
+      )
+      || (
+        mode === 'inline'
+        && Boolean(
+          (document.getElementById('alert-resolution-follow-up-text')?.value || '').trim()
+        )
+      )
+      || (
+        mode === 'visit'
+        && Boolean(document.getElementById('alert-resolution-visit-select')?.value)
+      );
+    submit.disabled = alertResolutionMutationPending
+      || alertProjectionStale
+      || alertLinkSourcesStale
+      || !alert
+      || !alert.resolve_token
+      || latestProfileRevision == null
+      || !outcomeIsValid
+      || !hasModeTarget
+      || !document.getElementById('alert-resolution-confirm')?.checked;
+  }
+
+  function beginAlertResolutionOwner() {
+    if (
+      alertResolutionIntentOwner !== null
+      || (
+        typeof alertResolutionMutationPending !== 'undefined'
+        && alertResolutionMutationPending
+      )
+      || followUpControlsLocked()
+    ) return null;
+    const owner = {};
+    alertResolutionIntentOwner = owner;
+    return owner;
+  }
+
+  function alertResolutionOwnerIsCurrent(owner, expectedPhiEpoch = phiEpoch) {
+    return alertResolutionIntentOwner === owner
+      && alertResolutionDialogOpen
+      && expectedPhiEpoch === phiEpoch;
+  }
+
+  async function refreshAlertResolutionSources(owner) {
+    const authority = captureAlertResolutionAuthority(owner);
+    const responseGuard = () => alertResolutionAuthorityIsCurrent(authority);
+    alertLinkSourcesStale = true;
+    setAlertResolutionProjectionReadOnly(true);
+    updateAlertResolutionFormValidity();
+    const results = await Promise.allSettled([
+      loadFollowUps({ responseGuard }),
+      loadVisits({ responseGuard }),
+    ]);
+    if (!responseGuard()) return false;
+    const loaded = results.every(
+      result => result.status === 'fulfilled' && result.value !== null
+    ) && !followUpProjectionStale;
+    alertLinkSourcesStale = !loaded;
+    if (!loaded) {
+      alertProjectionStale = true;
+      renderAlerts();
+      setAlertResolutionProjectionReadOnly(true);
+      setAlertResolutionStatus(
+        'Current link sources could not be verified. The last loaded options are read-only.',
+        'offline',
+      );
+    } else {
+      renderAlertResolutionSourceOptions();
+      setAlertResolutionProjectionReadOnly(false);
+      if (!alertProjectionStale) setAlertResolutionStatus('');
+    }
+    updateAlertResolutionFormValidity();
+    return loaded;
+  }
+
+  async function openAlertResolutionDialog(trigger, row) {
+    const owner = beginAlertResolutionOwner();
+    if (!owner) return;
+    const alertId = row?.dataset.alertId;
+    const token = row?.dataset.resolveToken;
+    const alert = alertId ? alertsById.get(alertId) : null;
+    if (
+      alertProjectionStale
+      || !alert
+      || !token
+      || token !== alert.resolve_token
+      || latestProfileRevision == null
+    ) {
+      alertResolutionIntentOwner = null;
+      renderAlerts();
+      return;
+    }
+    selectedAlertId = alertId;
+    selectedAlertToken = token;
+    selectedAlertProfileRevision = latestProfileRevision;
+    alertSelectionEpoch += 1;
+    alertResolutionDialogOpen = true;
+    alertLinkSourcesStale = true;
+    alertResolutionResult = null;
+    clearAlertResolutionRetry();
+    setFormError('alert-resolution-error', '');
+    setAlertResolutionStatus('Loading current link choices…', 'saving');
+    const form = document.getElementById('alert-resolution-form');
+    const result = document.getElementById('alert-resolution-result');
+    form.hidden = false;
+    result.hidden = true;
+    renderAlertResolutionContext(alert);
+    restoreAlertResolutionDraft();
+    const overlay = document.getElementById('alert-resolution-overlay');
+    const dialog = document.getElementById('alert-resolution-dialog');
+    overlay.inert = false;
+    overlay.classList.add('open');
+    overlay.setAttribute('aria-hidden', 'false');
+    dialog.inert = false;
+    setAlertResolutionProjectionReadOnly(true);
+    renderAlerts();
+    activateDialog(dialog, trigger);
+    await refreshAlertResolutionSources(owner);
+  }
+
+  function closeAlertResolutionDialog(preserveDraft = true, force = false) {
+    if (!alertResolutionDialogOpen) return;
+    if (alertResolutionMutationPending && !force) {
+      setAlertResolutionStatus(
+        'Saving is still in progress. Wait for the result before closing.',
+        'saving',
+      );
+      return;
+    }
+    const closingAlertId = selectedAlertId;
+    if (preserveDraft && !alertResolutionResult) captureAlertResolutionDraft();
+    clearAlertResolutionRetry();
+    if (activeAlertResolutionIntent?.body) activeAlertResolutionIntent.body = {};
+    activeAlertResolutionIntent = null;
+    alertResolutionDialogOpen = false;
+    alertResolutionIntentOwner = null;
+    alertResolutionMutationPending = false;
+    selectedAlertId = null;
+    selectedAlertToken = null;
+    selectedAlertProfileRevision = null;
+    alertSelectionEpoch += 1;
+    alertResolutionResult = null;
+    const overlay = document.getElementById('alert-resolution-overlay');
+    const dialog = document.getElementById('alert-resolution-dialog');
+    overlay?.classList.remove('open');
+    overlay?.setAttribute('aria-hidden', 'true');
+    if (overlay) overlay.inert = true;
+    if (dialog) dialog.inert = true;
+    setAlertResolutionBusy(false);
+    renderAlerts();
+    if (closingAlertId && lastDialogTrigger) {
+      lastDialogTrigger = [...document.querySelectorAll('#alerts-list .resolve-btn')]
+        .find(button => button.closest('.alert-item')?.dataset.alertId === closingAlertId)
+        || lastDialogTrigger;
+    }
+    deactivateDialog(dialog);
+  }
+
+  function closeAlertResolutionFromBackdrop(event) {
+    if (event?.target === document.getElementById('alert-resolution-overlay')) {
+      closeAlertResolutionDialog();
+    }
+  }
+
+  function createAlertResolutionBody(alert) {
+    const body = {
+      mutation_id: newMutationId(),
+      expected_token: alert.resolve_token,
+      expected_profile_revision: latestProfileRevision,
+    };
+    const outcomeText =
+      (document.getElementById('alert-resolution-outcome-text')?.value || '').trim();
+    if (outcomeText) {
+      const kind = document.getElementById('alert-resolution-outcome-kind')?.value;
+      if (!ALERT_RESOLUTION_OUTCOME_KINDS.has(kind)) {
+        throw new Error('Choose a valid outcome source.');
+      }
+      body.outcome = {
+        kind,
+        text: outcomeText,
+      };
+    }
+    const mode = selectedAlertResolutionMode();
+    if (mode === 'follow_up') {
+      body.follow_up_id =
+        document.getElementById('alert-resolution-follow-up-select')?.value;
+    } else if (mode === 'inline') {
+      body.follow_up = {
+        text:
+          (document.getElementById('alert-resolution-follow-up-text')?.value || '').trim(),
+        owner:
+          (document.getElementById('alert-resolution-follow-up-owner')?.value || '').trim()
+          || null,
+        due_date: document.getElementById('alert-resolution-follow-up-due')?.value || null,
+      };
+    } else if (mode === 'visit') {
+      body.visit_id = document.getElementById('alert-resolution-visit-select')?.value;
+      const decisionId =
+        document.getElementById('alert-resolution-decision-select')?.value;
+      if (decisionId) body.decision_id = decisionId;
+    }
+    return body;
+  }
+
+  function alertResolutionIntentOwnsMutation(
+    intent,
+    expectedPhiEpoch = intent.pendingPhiEpoch ?? intent.requestPhiEpoch,
+  ) {
+    const currentAlert = selectedAlertId ? alertsById.get(selectedAlertId) : null;
+    return alertResolutionMutationPending
+      && alertResolutionIntentOwner === intent.owner
+      && alertResolutionOwnerIsCurrent(intent.owner, expectedPhiEpoch)
+      && intent.requestAlertEpoch === alertSelectionEpoch
+      && intent.alertId === selectedAlertId
+      && (
+        intent.responseAuthorized
+        || (
+          currentAlert?.resolve_token === intent.expectedToken
+          && String(intent.expectedProfileRevision) === String(latestProfileRevision)
+        )
+      );
+  }
+
+  function releaseAlertResolutionMutation(intent) {
+    if (
+      !alertResolutionMutationPending
+      || alertResolutionIntentOwner !== intent.owner
+    ) return false;
+    alertResolutionMutationPending = false;
+    if (activeAlertResolutionIntent === intent) activeAlertResolutionIntent = null;
+    setAlertResolutionBusy(false);
+    setAlertResolutionProjectionReadOnly(
+      alertProjectionStale || alertLinkSourcesStale,
+    );
+    renderAlerts();
+    updateAlertResolutionFormValidity();
+    return true;
+  }
+
+  function renderAlertResolutionResult(data) {
+    const resolution = data.alert?.resolution || {};
+    alertResolutionResult = data;
+    document.getElementById('alert-resolution-form').hidden = true;
+    document.getElementById('alert-resolution-result').hidden = false;
+    document.getElementById('alert-resolution-result-outcome').textContent =
+      resolution.outcome_text || 'Marked resolved';
+    document.getElementById('alert-resolution-result-provenance').textContent =
+      resolution.outcome_text
+        ? alertResolutionProvenanceLabel(
+            resolution.provenance || {},
+            resolution.outcome_kind || '',
+          )
+        : '';
+    const links = [];
+    if (resolution.follow_up_id) {
+      const followUp = followUpsById.get(resolution.follow_up_id) || data.follow_up;
+      links.push(
+        followUp
+          ? `Follow-up · ${followUp.text}`
+          : 'Follow-up linked'
+      );
+    }
+    if (resolution.visit_id) {
+      const visit = visitsById.get(resolution.visit_id);
+      links.push(visit ? `Visit · ${visit.title}` : 'Visit linked');
+      if (resolution.decision_id) {
+        const decision = (visit?.decisions || []).find(
+          item => item.id === resolution.decision_id
+        );
+        links.push(
+          decision
+            ? `Decision · ${decision.text} · caregiver-entered, clinician-attributed, unverified`
+            : 'Current visit decision linked'
+        );
+      }
+    }
+    document.getElementById('alert-resolution-result-links').innerHTML =
+      links.length
+        ? links.map(link => `<span>${escHtml(link)}</span>`).join('')
+        : '<span>No follow-up or visit link recorded.</span>';
+    document.getElementById('alert-resolution-message').textContent = '';
+    document.getElementById('alert-resolution-action').textContent = '';
+    setAlertResolutionStatus('Resolution saved and current patient views reloaded.', 'success');
+  }
+
+  async function handleAlertResolutionConflict(error, intent) {
+    if (!alertResolutionIntentOwnsMutation(intent, intent.requestPhiEpoch)) return;
+    captureAlertResolutionDraft();
+    clearAlertResolutionRetry();
+    alertProjectionStale = true;
+    alertLinkSourcesStale = true;
+    redactAlertResolutionCard(intent.alertId);
+    redactAlertResolutionContext(
+      error.message || 'This alert changed. Reloading the current record.',
+    );
+    const expectedOwner = intent.owner;
+    selectedAlertToken = null;
+    selectedAlertProfileRevision = null;
+    alertSelectionEpoch += 1;
+    intent.requestAlertEpoch = alertSelectionEpoch;
+    intent.conflictReloading = true;
+    const conflictPhiEpoch = phiEpoch;
+    const conflictGuard = () => (
+      alertResolutionIntentOwner === expectedOwner
+      && alertResolutionDialogOpen
+      && alertResolutionMutationPending
+      && selectedAlertId === intent.alertId
+      && intent.requestAlertEpoch === alertSelectionEpoch
+      && selectedAlertToken === null
+      && selectedAlertProfileRevision === null
+      && conflictPhiEpoch === phiEpoch
+    );
+    const status = await loadStatus({
+      responseGuard: conflictGuard,
+      authorizationOptions: { alertResolution: true },
+    });
+    if (
+      alertResolutionIntentOwner !== expectedOwner
+      || !alertResolutionDialogOpen
+      || !alertResolutionMutationPending
+      || selectedAlertId !== intent.alertId
+      || intent.requestAlertEpoch !== alertSelectionEpoch
+      || status?.profile_revision == null
+    ) {
+      intent.body = {};
+      return;
+    }
+    intent.pendingPhiEpoch = phiEpoch;
+    const alert = alertsById.get(intent.alertId);
+    if (!alert?.resolve_token) {
+      const absentPhiEpoch = phiEpoch;
+      const absentGuard = () => (
+        alertResolutionIntentOwner === expectedOwner
+        && alertResolutionDialogOpen
+        && alertResolutionMutationPending
+        && selectedAlertId === intent.alertId
+        && intent.requestAlertEpoch === alertSelectionEpoch
+        && selectedAlertToken === null
+        && selectedAlertProfileRevision === null
+        && absentPhiEpoch === phiEpoch
+      );
+      const refreshed = await refreshClinicalWorkflowState(
+        status.profile_revision,
+        status.workflow_revision,
+        {
+          responseGuard: absentGuard,
+          authorizationOptions: { alertResolution: true },
+        },
+      );
+      intent.body = {};
+      if (!absentGuard()) return;
+      alertProjectionStale = refreshed?.verified !== true;
+      alertLinkSourcesStale = true;
+      setAlertResolutionProjectionReadOnly(true);
+      renderAlerts();
+      redactAlertResolutionContext('This alert changed or is no longer available.');
+      return;
+    }
+    selectedAlertId = alert.id;
+    selectedAlertToken = alert.resolve_token;
+    selectedAlertProfileRevision = status.profile_revision;
+    const refreshedAuthority = captureAlertResolutionAuthority(expectedOwner);
+    const refreshedGuard = () => alertResolutionAuthorityIsCurrent(refreshedAuthority);
+    const refreshed = await refreshClinicalWorkflowState(
+      status.profile_revision,
+      status.workflow_revision,
+      {
+        responseGuard: refreshedGuard,
+        authorizationOptions: { alertResolution: true },
+      },
+    );
+    if (!refreshedGuard()) {
+      intent.body = {};
+      return;
+    }
+    const loaded = refreshed?.verified === true && !followUpProjectionStale;
+    alertProjectionStale = !loaded;
+    alertLinkSourcesStale = !loaded;
+    const currentAlert = alertsById.get(intent.alertId);
+    if (loaded && currentAlert?.resolve_token === selectedAlertToken) {
+      renderAlertResolutionContext(currentAlert);
+      restoreAlertResolutionDraft();
+      renderAlertResolutionSourceOptions();
+      setAlertResolutionProjectionReadOnly(false);
+      setAlertResolutionStatus(
+        'The alert changed. Review the reloaded alert and submit a new request.',
+        'conflict',
+      );
+    } else {
+      setAlertResolutionProjectionReadOnly(true);
+      redactAlertResolutionContext(
+        currentAlert
+          ? 'The current record could not be verified. Retry loading before continuing.'
+          : 'This alert changed or is no longer available.',
+      );
+    }
+    renderAlerts();
+    updateAlertResolutionFormValidity();
+    intent.body = {};
+  }
+
+  async function performAlertResolutionIntent(intent, explicitRetry = false) {
+    if (!alertResolutionIntentOwnsMutation(intent, intent.requestPhiEpoch)) return null;
+    activeAlertResolutionIntent = intent;
+    setAlertResolutionBusy(true);
+    if (!explicitRetry) clearAlertResolutionRetry();
+    setAlertResolutionStatus(
+      explicitRetry ? 'Retrying the unchanged request…' : 'Saving resolution…',
+      'saving',
+    );
+    try {
+      const response = await fetch(
+        `/api/alerts/${encodeURIComponent(intent.alertId)}/resolve`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(intent.body),
+        },
+      );
+      if (!alertResolutionIntentOwnsMutation(intent, intent.requestPhiEpoch)) return null;
+      const data = await readJsonResponse(
+        response,
+        () => alertResolutionIntentOwnsMutation(intent, intent.requestPhiEpoch),
+      );
+      if (!alertResolutionIntentOwnsMutation(intent, intent.requestPhiEpoch)) return null;
+      const authority = authorizePatientResponse(intent, data, {
+        workflow: 'targeted',
+        alertResolution: true,
+      });
+      if (!authority.accepted) return null;
+      intent.responseAuthorized = true;
+      intent.pendingPhiEpoch = phiEpoch;
+      if (!alertResolutionIntentOwnsMutation(intent)) return null;
+      const refreshed = await refreshClinicalWorkflowState(
+        data.profile_revision,
+        data.workflow_revision,
+        {
+          responseGuard: () => alertResolutionIntentOwnsMutation(intent),
+          authorizationOptions: { alertResolution: true },
+        },
+      );
+      if (
+        refreshed?.verified !== true
+        || !alertResolutionIntentOwnsMutation(intent)
+      ) {
+        if (alertResolutionIntentOwnsMutation(intent)) {
+          alertProjectionStale = true;
+          alertLinkSourcesStale = true;
+          setAlertResolutionProjectionReadOnly(true);
+          setAlertResolutionStatus(
+            'The resolution was saved, but current patient views could not be verified. Reload before continuing.',
+            'offline',
+          );
+          renderAlerts();
+        }
+        return null;
+      }
+      alertResolutionDrafts.delete(intent.draftKey);
+      clearAlertResolutionRetry();
+      renderAlertResolutionResult(data);
+      reportLoadSuccess('alert-resolution');
+      releaseAlertResolutionMutation(intent);
+      return data;
+    } catch (error) {
+      if (!alertResolutionIntentOwnsMutation(intent, intent.requestPhiEpoch)) return null;
+      if (shouldEvictClientPhi(error)) {
+        reportLoadError('alert-resolution', error);
+        if (alertResolutionIntentOwnsMutation(intent, intent.requestPhiEpoch)) {
+          evictClientPhi(error);
+        }
+        return null;
+      }
+      if (error?.status === 409) {
+        await handleAlertResolutionConflict(error, intent);
+        return null;
+      }
+      if (
+        error instanceof TypeError
+        || error?.name === 'AbortError'
+        || navigator.onLine === false
+      ) {
+        pendingAlertResolutionIntent = intent;
+        captureAlertResolutionDraft();
+        alertProjectionStale = true;
+        alertLinkSourcesStale = true;
+        renderAlerts();
+        setAlertResolutionProjectionReadOnly(true);
+        const retry = document.getElementById('alert-resolution-retry');
+        if (retry) retry.hidden = false;
+        setAlertResolutionStatus(
+          'Connection lost. The last alert and link choices are read-only; retry only if the draft is unchanged.',
+          'offline',
+        );
+        reportLoadError('alert-resolution', error);
+        return null;
+      }
+      const message = error?.message || 'The alert resolution could not be saved.';
+      setFormError('alert-resolution-error', message);
+      setAlertResolutionStatus(message, 'error');
+      reportLoadError('alert-resolution', error);
+      return null;
+    } finally {
+      if (activeAlertResolutionIntent === intent) activeAlertResolutionIntent = null;
+      releaseAlertResolutionMutation(intent);
+    }
+  }
+
+  async function submitAlertResolution() {
+    if (
+      alertResolutionMutationPending
+      || alertProjectionStale
+      || alertLinkSourcesStale
+      || !alertResolutionDialogOpen
+    ) return;
+    const owner = alertResolutionIntentOwner;
+    const alert = selectedAlertId ? alertsById.get(selectedAlertId) : null;
+    if (!owner || !alert || !alert.resolve_token || latestProfileRevision == null) return;
+    updateAlertResolutionFormValidity();
+    if (document.getElementById('alert-resolution-submit')?.disabled) return;
+    captureAlertResolutionDraft();
+    alertResolutionMutationPending = true;
+    const body = createAlertResolutionBody(alert);
+    const intent = {
+      owner,
+      alertId: alert.id,
+      expectedToken: alert.resolve_token,
+      expectedProfileRevision: latestProfileRevision,
+      requestPhiEpoch: phiEpoch,
+      requestAlertEpoch: alertSelectionEpoch,
+      requestAlertId: alert.id,
+      body,
+      draftKey: alertResolutionDraftKey(alert.id),
+    };
+    await performAlertResolutionIntent(intent);
+  }
+
+  async function retryAlertResolution() {
+    const intent = pendingAlertResolutionIntent;
+    if (
+      !intent
+      || alertResolutionMutationPending
+      || alertResolutionIntentOwner !== intent.owner
+      || intent.requestAlertEpoch !== alertSelectionEpoch
+      || intent.alertId !== selectedAlertId
+      || intent.requestPhiEpoch !== phiEpoch
+    ) {
+      clearAlertResolutionRetry();
+      return;
+    }
+    alertResolutionMutationPending = true;
+    await performAlertResolutionIntent(intent, true);
   }
 
   // ── Executive Summary ───────────────────────────────────────────────────
@@ -2071,18 +3067,25 @@
     }
   }
 
-  async function loadSummary() {
+  async function loadSummary(options = {}) {
     const request = capturePatientRequest();
     const requestSummaryEpoch = ++summaryLoadEpoch;
+    const responseGuard = options.responseGuard || (() => true);
     const requestIsCurrent = () => (
-      patientRequestIsCurrent(request) && requestSummaryEpoch === summaryLoadEpoch
+      responseGuard()
+      && patientRequestIsCurrent(request)
+      && requestSummaryEpoch === summaryLoadEpoch
     );
     try {
       const r = await fetch('/api/summary');
       if (!requestIsCurrent()) return null;
       const d = await readJsonResponse(r, requestIsCurrent);
       if (!requestIsCurrent()) return null;
-      const authority = authorizePatientResponse(request, d);
+      const authority = authorizePatientResponse(
+        request,
+        d,
+        options.authorizationOptions || {},
+      );
       if (!authority.accepted) return null;
       if (
         latestProfileRevision != null
@@ -2562,18 +3565,27 @@
   }
 
   // ── Task log ────────────────────────────────────────────────────────────
-  async function loadTasks() {
+  async function loadTasks(options = {}) {
     const request = capturePatientRequest();
     const requestLoadEpoch = ++taskLoadEpoch;
+    const responseGuard = options.responseGuard || (() => true);
     const requestIsCurrent = () => (
-      patientRequestIsCurrent(request) && requestLoadEpoch === taskLoadEpoch
+      responseGuard()
+      && patientRequestIsCurrent(request)
+      && requestLoadEpoch === taskLoadEpoch
     );
     try {
       const r = await fetch('/api/jobs');
       if (!requestIsCurrent()) return null;
       const tasks = await readJsonResponse(r, requestIsCurrent);
       if (!requestIsCurrent()) return null;
-      if (!authorizePatientResponse(request, tasks).accepted) return [];
+      if (
+        !authorizePatientResponse(
+          request,
+          tasks,
+          options.authorizationOptions || {},
+        ).accepted
+      ) return [];
       if (tasks.some(t => t.status === 'running' || t.status === 'queued')) {
         hadActiveJobs = true;
       }
@@ -3233,6 +4245,10 @@
   document.addEventListener('keydown', (e) => {
     if (trapDialogFocus(e)) return;
     if (e.key !== 'Escape') return;
+    if (alertResolutionDialogOpen) {
+      closeAlertResolutionDialog();
+      return;
+    }
     if (followUpDialogOpen) {
       closeFollowUpDialog();
       return;
@@ -3498,18 +4514,24 @@
     return appointmentOptions.find(item => item.id === id) || null;
   }
 
-  async function loadVisits() {
+  async function loadVisits(options = {}) {
     const request = capturePatientRequest();
     const requestLoadEpoch = ++visitLoadEpoch;
+    const responseGuard = options.responseGuard || (() => true);
     const requestIsCurrent = () => (
-      patientRequestIsCurrent(request) && requestLoadEpoch === visitLoadEpoch
+      responseGuard()
+      && patientRequestIsCurrent(request)
+      && requestLoadEpoch === visitLoadEpoch
     );
     try {
       const response = await fetch('/api/visits');
       if (!requestIsCurrent()) return null;
       const data = await readJsonResponse(response, requestIsCurrent);
       if (!requestIsCurrent()) return null;
-      const authority = authorizePatientResponse(request, data, { workflow: 'projection' });
+      const authority = authorizePatientResponse(request, data, {
+        workflow: 'projection',
+        ...(options.authorizationOptions || {}),
+      });
       if (!authority.accepted) return null;
       if (appointmentDialogOpen) captureAppointmentDraft();
       visitsById = new Map((data.items || []).map(item => [item.id, item]));
@@ -3843,7 +4865,10 @@
       + '#appointment-dialog button, #appointment-dialog input, '
       + '#appointment-dialog textarea, #appointment-dialog select, '
       + '#visit-create-panel button, #visit-create-panel input, '
-      + '#visit-create-panel textarea, #visit-create-panel select'
+      + '#visit-create-panel textarea, #visit-create-panel select, '
+      + '#alerts-list .resolve-btn, #alert-resolution-dialog button, '
+      + '#alert-resolution-dialog input, #alert-resolution-dialog textarea, '
+      + '#alert-resolution-dialog select'
     ).forEach(control => {
       if (busy) {
         if (!('followUpWasDisabled' in control.dataset)) {
@@ -4083,6 +5108,31 @@
       const control = document.getElementById(id);
       if (control) control.value = '';
     }
+    for (const id of [
+      'alert-resolution-outcome-text', 'alert-resolution-follow-up-text',
+      'alert-resolution-follow-up-owner', 'alert-resolution-follow-up-due'
+    ]) {
+      const control = document.getElementById(id);
+      if (control) control.value = '';
+    }
+    for (const id of [
+      'alert-resolution-follow-up-select', 'alert-resolution-visit-select',
+      'alert-resolution-decision-select'
+    ]) {
+      const select = document.getElementById(id);
+      if (select) {
+        select.innerHTML = '';
+        select.value = '';
+      }
+    }
+    const alertOutcomeKind = document.getElementById('alert-resolution-outcome-kind');
+    if (alertOutcomeKind) alertOutcomeKind.value = 'administrative';
+    const alertConfirm = document.getElementById('alert-resolution-confirm');
+    if (alertConfirm) alertConfirm.checked = false;
+    const alertForm = document.getElementById('alert-resolution-form');
+    const alertResult = document.getElementById('alert-resolution-result');
+    if (alertForm) alertForm.hidden = false;
+    if (alertResult) alertResult.hidden = true;
     const outcomeKind = document.getElementById('follow-up-outcome-kind');
     if (outcomeKind) outcomeKind.value = 'administrative';
     const title = document.getElementById('follow-up-dialog-title');
@@ -4140,18 +5190,24 @@
       || navigator.onLine === false;
   }
 
-  async function loadFollowUps() {
+  async function loadFollowUps(options = {}) {
     const request = capturePatientRequest();
     const requestLoadEpoch = ++followUpLoadEpoch;
+    const responseGuard = options.responseGuard || (() => true);
     const requestIsCurrent = () => (
-      patientRequestIsCurrent(request) && requestLoadEpoch === followUpLoadEpoch
+      responseGuard()
+      && patientRequestIsCurrent(request)
+      && requestLoadEpoch === followUpLoadEpoch
     );
     try {
       const response = await fetch('/api/follow-ups');
       if (!requestIsCurrent()) return null;
       const data = await readJsonResponse(response, requestIsCurrent);
       if (!requestIsCurrent()) return null;
-      const authority = authorizePatientResponse(request, data, { workflow: 'projection' });
+      const authority = authorizePatientResponse(request, data, {
+        workflow: 'projection',
+        ...(options.authorizationOptions || {}),
+      });
       if (!authority.accepted) return null;
       if (followUpDialogOpen) captureFollowUpDraft();
       followUpProjectionStale = false;
@@ -4206,6 +5262,10 @@
     if (
       followUpMutationPending
       || summaryActionMutationOwner !== null
+      || (
+        typeof alertResolutionMutationPending !== 'undefined'
+        && alertResolutionMutationPending
+      )
       || (pendingFollowUpCompletion !== null && !allowPendingCompletion)
     ) return null;
     const owner = {};
@@ -5553,14 +6613,16 @@
     renderVisitSourceQuestions();
   }
 
-  async function loadQuestions() {
+  async function loadQuestions(options = {}) {
     const request = capturePatientRequest();
     const requestQuestionEpoch = ++questionLoadEpoch;
+    const responseGuard = options.responseGuard || (() => true);
     const requestProfileRevision = latestProfileRevision == null
       ? null
       : String(latestProfileRevision);
     const requestIsCurrent = () => (
-      patientRequestIsCurrent(request)
+      responseGuard()
+      && patientRequestIsCurrent(request)
       && requestQuestionEpoch === questionLoadEpoch
       && (
         requestProfileRevision == null
@@ -5572,7 +6634,13 @@
       if (!requestIsCurrent()) return null;
       const qs = await readJsonResponse(r, requestIsCurrent);
       if (!requestIsCurrent()) return null;
-      if (!authorizePatientResponse(request, qs).accepted) return [];
+      if (
+        !authorizePatientResponse(
+          request,
+          qs,
+          options.authorizationOptions || {},
+        ).accepted
+      ) return [];
       const projection = projectQuestionChoices(qs);
       appointmentQuestionSources = projection.items;
       generatedQuestionsUnavailable = projection.unavailable;
@@ -6052,6 +7120,9 @@
   const followUpSurface = document.getElementById('follow-up-dialog');
   followUpSurface?.addEventListener('input', invalidateFollowUpRetryOnDraftChange);
   followUpSurface?.addEventListener('change', invalidateFollowUpRetryOnDraftChange);
+  const alertResolutionSurface = document.getElementById('alert-resolution-dialog');
+  alertResolutionSurface?.addEventListener('input', invalidateAlertResolutionRetryOnDraftChange);
+  alertResolutionSurface?.addEventListener('change', invalidateAlertResolutionRetryOnDraftChange);
   updateFormValidity();
   startPolling();
   const requestedView = window.location.hash.replace('#', '');

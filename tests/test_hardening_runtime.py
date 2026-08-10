@@ -278,7 +278,7 @@ def test_job_file_contains_only_metadata_and_detail_hydrates(hardened_app):
             "type": "digest",
             "status": "done",
             "stage": "done",
-            "created_at": "2026-07-11T08:00:00",
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "report": "must not persist",
             "input_preview": "must not persist",
             "traceback": "must not persist",

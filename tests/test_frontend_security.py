@@ -404,11 +404,8 @@ def test_status_failure_clears_all_status_derived_phi_and_caches():
     for expression in (
         "redactGeneratedQuestionChoices()",
         "latestResearchUpdate = null",
-        "allBiomarkers = []",
         "renderLatestResearchUpdate(null)",
         "patientMeta.innerHTML = ''",
-        "search.value = ''",
-        "search.disabled = true",
     ):
         assert expression in failure
     evidence = _function_source("loadPatientEvidence", "evidenceBadge")
@@ -430,6 +427,7 @@ def test_central_phi_eviction_clears_patient_panels_dialogs_and_histories():
         "currentReportText = ''",
         "currentReceipt = null",
         "pendingSummary = null",
+        "clearBiomarkerProjection({",
         "chatHistory = []",
         "chatHistoryRevision = null",
         "clearFreshnessProjection()",
@@ -1860,8 +1858,8 @@ def test_stored_values_are_not_interpolated_into_event_handlers():
 
 def test_malicious_stored_display_fields_are_escaped():
     escaped_expressions = (
-        "escHtml(b.value + ' ' + (b.unit||''))",
-        "escHtml(b.reference_range || '—')",
+        "escHtml(biomarkerScalar(observation.value.raw))",
+        "escHtml(biomarkerScalar(observation.reference_range))",
         "escHtml(p.sex || '—')",
         "escHtml(alert.priority || '—')",
         "escHtml(j.date||'')",

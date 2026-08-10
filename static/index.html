@@ -161,12 +161,68 @@
           <div class="tx-list" id="tx-list"><div class="loading-state">Loading treatments…</div></div>
         </section>
 
-        <section class="content-card span-two" aria-labelledby="biomarkers-heading">
+        <section class="content-card span-two biomarker-explorer" id="biomarker-explorer" aria-labelledby="biomarkers-heading">
           <div class="card-header compact split-header">
-            <div><p class="eyebrow">Latest results</p><h2 id="biomarkers-heading">Biomarkers</h2></div>
-            <label class="search-field"><span class="sr-only">Search biomarkers</span><input id="bm-search" type="search" placeholder="Search biomarkers…" oninput="filterBiomarkers()"></label>
+            <div>
+              <p class="eyebrow">Complete recorded history</p>
+              <h2 id="biomarkers-heading">Biomarkers</h2>
+            </div>
+            <span class="biomarker-freshness loading" id="biomarker-freshness">Not loaded</span>
           </div>
-          <div class="bm-list" id="bm-list"><div class="loading-state">Loading biomarkers…</div></div>
+          <div class="biomarker-controls">
+            <label for="biomarker-analyte-select">
+              <span>Choose a biomarker</span>
+              <select id="biomarker-analyte-select" onchange="selectBiomarkerAnalyte(this.value)" disabled>
+                <option value="">Loading recorded biomarkers…</option>
+              </select>
+            </label>
+            <div class="biomarker-context" id="biomarker-context">
+              The table will show every bounded observation exactly as recorded.
+            </div>
+          </div>
+          <div class="biomarker-status" id="biomarker-status" role="status" aria-live="polite">
+            Loading the authoritative biomarker record…
+          </div>
+          <div
+            class="biomarker-table-region"
+            id="biomarker-table-region"
+            role="region"
+            aria-labelledby="biomarker-table-caption"
+            tabindex="0"
+          >
+            <table class="biomarker-table">
+              <caption id="biomarker-table-caption">Complete observations for the selected biomarker</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Date</th>
+                  <th scope="col">Recorded result</th>
+                  <th scope="col">Reference</th>
+                  <th scope="col">Reported flag</th>
+                  <th scope="col">Recorded context</th>
+                  <th scope="col">Chart eligibility</th>
+                  <th scope="col">Source and evidence</th>
+                </tr>
+              </thead>
+              <tbody id="biomarker-table-body">
+                <tr><td colspan="7"><div class="loading-state">Loading biomarker observations…</div></td></tr>
+              </tbody>
+            </table>
+          </div>
+          <section class="biomarker-charts" aria-labelledby="biomarker-charts-heading">
+            <div class="biomarker-section-heading">
+              <div>
+                <p class="eyebrow">Secondary view</p>
+                <h3 id="biomarker-charts-heading">Comparable point charts</h3>
+              </div>
+              <p>Only exact groups the server declares comparable are charted. The table above remains authoritative.</p>
+            </div>
+            <div id="biomarker-chart-region">
+              <div class="empty-state">Comparable charts will appear after the record loads.</div>
+            </div>
+          </section>
+          <div class="biomarker-retry" id="biomarker-retry" hidden>
+            <button class="button secondary" type="button" onclick="loadBiomarkerSeries()">Retry biomarker history</button>
+          </div>
         </section>
 
         <section class="content-card" aria-labelledby="alerts-heading">

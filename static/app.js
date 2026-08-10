@@ -12,6 +12,14 @@
   let patientEvidence = null;
   let imagingHistoryExpanded = false;
   let sourceHistoryExpanded = false;
+  let biomarkerProjection = null;
+  let biomarkerResponseOwner = null;
+  let selectedBiomarkerAnalyteId = null;
+  let biomarkerLoadEpoch = 0;
+  let biomarkerSelectionEpoch = 0;
+  let biomarkerRequestController = null;
+  let biomarkerProjectionState = 'idle';
+  let biomarkerNetworkAmbiguous = false;
   let receiptMutationPending = false;
   let taskSelectionEpoch = 0;
   let latestProfileRevision = null;
@@ -254,7 +262,24 @@
         options.preserveVisitRecapExportOwner === true,
       );
     }
+    const biomarkerWasLoaded = (
+      typeof biomarkerProjection !== 'undefined'
+      && biomarkerProjection !== null
+    );
+    const biomarkerRequestWasActive = (
+      typeof biomarkerRequestController !== 'undefined'
+      && biomarkerRequestController !== null
+    );
     phiEpoch += 1;
+    if (typeof markBiomarkerProjectionStale === 'function') {
+      markBiomarkerProjectionStale(
+        'The patient record changed. Reload biomarker history before relying on this snapshot.',
+        {
+          abortRequest: options.preserveBiomarkerRequest !== true,
+          ownerPhiEpoch: phiEpoch,
+        },
+      );
+    }
     taskSelectionEpoch += 1;
     if (
       typeof alertResolutionDialogOpen !== 'undefined'
@@ -278,6 +303,15 @@
     }
     syncChatRevision(revision, true, false);
     if (!options.deferConvergence) requestClinicalConvergence(revision);
+    if (
+      options.preserveBiomarkerRequest !== true
+      && (biomarkerWasLoaded || biomarkerRequestWasActive)
+      && typeof activeView !== 'undefined'
+      && activeView === 'patient'
+      && typeof loadBiomarkerSeries === 'function'
+    ) {
+      Promise.resolve().then(() => loadBiomarkerSeries());
+    }
     return true;
   }
 
@@ -336,6 +370,7 @@
     if (profileAdvanced) {
       advancePatientAuthority(responseProfileRevision, {
         preserveAlertIntent: options.alertResolution === true,
+        preserveBiomarkerRequest: options.biomarkerProjection === true,
         deferConvergence: options.alertResolution === true,
         preserveVisitRecapExportOwner: options.preserveVisitRecapExportOwner === true,
       });
@@ -358,6 +393,35 @@
         );
       }
       workflowRevision = responseWorkflowRevision;
+      const biomarkerNeedsWorkflowRefresh = (
+        options.biomarkerProjection !== true
+        && !profileAdvanced
+        && (
+          (
+            typeof biomarkerProjection !== 'undefined'
+            && biomarkerProjection !== null
+          )
+          || (
+            typeof biomarkerRequestController !== 'undefined'
+            && biomarkerRequestController !== null
+          )
+        )
+      );
+      if (
+        biomarkerNeedsWorkflowRefresh
+        && typeof markBiomarkerProjectionStale === 'function'
+      ) {
+        markBiomarkerProjectionStale(
+          'The patient workflow changed. Reload biomarker history before relying on this snapshot.',
+        );
+        if (
+          typeof activeView !== 'undefined'
+          && activeView === 'patient'
+          && typeof loadBiomarkerSeries === 'function'
+        ) {
+          Promise.resolve().then(() => loadBiomarkerSeries());
+        }
+      }
       if (
         !options.alertResolution
         && !profileAdvanced
@@ -933,6 +997,14 @@
   }
 
   function handleOfflineTransition() {
+    if (typeof markBiomarkerProjectionStale === 'function') {
+      biomarkerNetworkAmbiguous = true;
+      markBiomarkerProjectionStale(
+        biomarkerProjection
+          ? 'Offline snapshot · read-only. Reconnect to reload the current biomarker record.'
+          : 'Biomarker history is offline and no prior snapshot is available.',
+      );
+    }
     if (typeof markVisitRecapStale === 'function') {
       visitRecapNetworkAmbiguous = true;
       markVisitRecapStale(
@@ -957,6 +1029,9 @@
       loadVisits(),
       loadFollowUps(),
     ];
+    if (activeView === 'patient' || biomarkerProjection || biomarkerNetworkAmbiguous) {
+      refreshes.push(loadBiomarkerSeries());
+    }
     if (appointmentDialogOpen && activeAppointmentTab === 'recap') {
       refreshes.push(loadVisitRecap());
     }
@@ -987,6 +1062,7 @@
       loadStatus();
       loadSymptoms();
       loadPatientEvidence();
+      loadBiomarkerSeries();
     } else if (name === 'activity') {
       loadTasks();
     } else if (name === 'today') {
@@ -1010,6 +1086,9 @@
     if (activeView === 'today') refreshes.push(loadSummary(), loadFollowUps());
     if (activeView === 'questions' || appointmentDialogOpen) {
       refreshes.push(loadVisits(), loadFollowUps(), loadQuestions());
+    }
+    if (activeView === 'patient') {
+      refreshes.push(loadBiomarkerSeries(), loadPatientEvidence());
     }
     if (appointmentDialogOpen && activeAppointmentTab === 'recap') {
       refreshes.push(loadVisitRecap());
@@ -1054,28 +1133,730 @@
     return map[t.doc_type] || t.doc_type || '—';
   }
 
-  let allBiomarkers = [];
-
-  function filterBiomarkers() {
-    const query = (document.getElementById('bm-search')?.value || '').toLowerCase();
-    const filtered = query
-      ? allBiomarkers.filter(b =>
-          (b.marker||'').toLowerCase().includes(query) ||
-          (b.originalMarker||'').toLowerCase().includes(query))
-      : allBiomarkers;
-    renderBiomarkers(filtered);
+  function safeBiomarkerEvidenceUrl(value) {
+    if (!value) return '';
+    try {
+      const base = document.baseURI || window.location.href || window.location.origin;
+      const pageOrigin = new URL(base).origin;
+      const url = new URL(String(value), base);
+      const allowedPath = /^\/api\/(?:evidence|sources)\//.test(url.pathname);
+      return url.origin === pageOrigin && allowedPath
+        ? `${url.pathname}${url.search}`
+        : '';
+    } catch (_) {
+      return '';
+    }
   }
 
-  function renderBiomarkers(bms) {
-    document.getElementById('bm-list').innerHTML = bms.length
-      ? bms.map(b => `
-        <div class="bm-row">
-          <span class="bm-name">${escHtml(b.marker)}</span>
-          <span class="bm-val">${b.value != null ? escHtml(b.value + ' ' + (b.unit||'')) : '—'}</span>
-          <span class="bm-flag ${safeClassToken(b.flag, 'normal')}">${escHtml(b.flag || '—')}</span>
-          <span class="bm-date">${escHtml(b.date || '')} · ref: ${escHtml(b.reference_range || '—')}</span>
-        </div>`).join('')
-      : '<div class="empty-state">No biomarkers recorded</div>';
+  function biomarkerScalar(value, fallback = 'Not recorded') {
+    if (value == null) return fallback;
+    return value === '' ? 'Empty string ("")' : String(value);
+  }
+
+  function biomarkerProjectionPayloadIsValid(data) {
+    if (
+      !data
+      || typeof data !== 'object'
+      || Array.isArray(data)
+      || !Number.isSafeInteger(normalizedRevision(data.profile_revision))
+      || !Number.isSafeInteger(normalizedRevision(data.workflow_revision))
+      || typeof data.projection_token !== 'string'
+      || !data.projection_token
+      || !Number.isSafeInteger(data.observation_count)
+      || data.observation_count < 0
+      || !Number.isSafeInteger(data.source_row_count)
+      || data.source_row_count < 0
+      || !Array.isArray(data.analytes)
+    ) return false;
+
+    const analyteIds = new Set();
+    let projectedObservationCount = 0;
+    for (const analyte of data.analytes) {
+      if (
+        !analyte
+        || typeof analyte !== 'object'
+        || typeof analyte.id !== 'string'
+        || !analyte.id
+        || analyteIds.has(analyte.id)
+        || typeof analyte.token !== 'string'
+        || !analyte.token
+        || typeof analyte.display_name !== 'string'
+        || !Array.isArray(analyte.observed_aliases)
+        || !analyte.observed_aliases.every(alias => typeof alias === 'string')
+        || !Number.isSafeInteger(analyte.observation_count)
+        || analyte.observation_count < 0
+        || !Number.isSafeInteger(analyte.source_row_count)
+        || analyte.source_row_count < 0
+        || !Array.isArray(analyte.series)
+        || !Array.isArray(analyte.observations)
+        || analyte.observation_count !== analyte.observations.length
+      ) return false;
+      analyteIds.add(analyte.id);
+
+      const seriesById = new Map();
+      for (const series of analyte.series) {
+        if (
+          !series
+          || typeof series !== 'object'
+          || typeof series.id !== 'string'
+          || !series.id
+          || seriesById.has(series.id)
+          || typeof series.token !== 'string'
+          || !series.token
+          || typeof series.label !== 'string'
+          || typeof series.comparable !== 'boolean'
+          || !Array.isArray(series.observation_ids)
+          || !series.observation_ids.every(id => typeof id === 'string' && id)
+          || new Set(series.observation_ids).size !== series.observation_ids.length
+          || !Array.isArray(series.comparability_notes)
+          || !series.comparability_notes.every(note => typeof note === 'string')
+          || (series.comparable && series.observation_ids.length < 2)
+        ) return false;
+        seriesById.set(series.id, series);
+      }
+
+      const observationsById = new Map();
+      for (const observation of analyte.observations) {
+        if (
+          !observation
+          || typeof observation !== 'object'
+          || typeof observation.id !== 'string'
+          || !observation.id
+          || observationsById.has(observation.id)
+          || typeof observation.token !== 'string'
+          || !observation.token
+          || typeof observation.series_id !== 'string'
+          || !seriesById.has(observation.series_id)
+          || typeof observation.comparable !== 'boolean'
+          || !Number.isSafeInteger(observation.duplicate_count)
+          || observation.duplicate_count < 1
+          || !Array.isArray(observation.source_row_ids)
+          || !observation.source_row_ids.every(id => typeof id === 'string' && id)
+          || observation.source_row_ids.length !== observation.duplicate_count
+          || !Array.isArray(observation.comparability_notes)
+          || !observation.comparability_notes.every(note => typeof note === 'string')
+          || !observation.date
+          || typeof observation.date !== 'object'
+          || !observation.value
+          || typeof observation.value !== 'object'
+          || !observation.provenance
+          || typeof observation.provenance !== 'object'
+          || typeof observation.provenance.status !== 'string'
+          || typeof observation.provenance.label !== 'string'
+          || !Array.isArray(observation.provenance.source_document_ids)
+          || !observation.provenance.source_document_ids.every(id => typeof id === 'string')
+          || !Array.isArray(observation.provenance.evidence)
+          || !observation.provenance.evidence.every(item => (
+            item
+            && typeof item === 'object'
+            && typeof item.id === 'string'
+            && typeof item.status === 'string'
+          ))
+        ) return false;
+        if (!seriesById.get(observation.series_id).observation_ids.includes(observation.id)) {
+          return false;
+        }
+        observationsById.set(observation.id, observation);
+      }
+      for (const series of analyte.series) {
+        for (const observationId of series.observation_ids) {
+          const observation = observationsById.get(observationId);
+          if (
+            !observation
+            || observation.series_id !== series.id
+            || observation.comparable !== series.comparable
+            || (
+              series.comparable
+              && (
+                typeof observation.value.numeric_value !== 'number'
+                || !Number.isFinite(observation.value.numeric_value)
+              )
+            )
+          ) return false;
+        }
+      }
+      projectedObservationCount += analyte.observations.length;
+    }
+    return projectedObservationCount === data.observation_count;
+  }
+
+  function selectedBiomarkerAnalyte() {
+    if (!biomarkerProjection || !selectedBiomarkerAnalyteId) return null;
+    return biomarkerProjection.analytes.find(
+      analyte => analyte.id === selectedBiomarkerAnalyteId
+    ) || null;
+  }
+
+  function newBiomarkerResponseOwner(projection, analyte, ownerPhiEpoch = phiEpoch) {
+    return {
+      requestPhiEpoch: ownerPhiEpoch,
+      loadEpoch: biomarkerLoadEpoch,
+      selectionEpoch: biomarkerSelectionEpoch,
+      profileRevision: projection.profile_revision,
+      workflowRevision: projection.workflow_revision,
+      projectionToken: projection.projection_token,
+      analyteId: analyte?.id || null,
+      analyteToken: analyte?.token || null,
+      seriesTokens: new Map((analyte?.series || []).map(series => [series.id, series.token])),
+    };
+  }
+
+  function biomarkerResponseOwnerIsCurrent(owner) {
+    if (
+      !owner
+      || owner !== biomarkerResponseOwner
+      || owner.requestPhiEpoch !== phiEpoch
+      || owner.loadEpoch !== biomarkerLoadEpoch
+      || owner.selectionEpoch !== biomarkerSelectionEpoch
+      || !biomarkerProjection
+      || owner.projectionToken !== biomarkerProjection.projection_token
+      || String(owner.profileRevision) !== String(biomarkerProjection.profile_revision)
+      || String(owner.workflowRevision) !== String(biomarkerProjection.workflow_revision)
+      || (
+        biomarkerProjectionState !== 'stale'
+        && Number.isSafeInteger(normalizedRevision(workflowRevision))
+        && String(owner.workflowRevision) !== String(workflowRevision)
+      )
+      || owner.analyteId !== selectedBiomarkerAnalyteId
+    ) return false;
+    const analyte = selectedBiomarkerAnalyte();
+    return Boolean(
+      analyte
+      && owner.analyteToken === analyte.token
+      && analyte.series.every(series => owner.seriesTokens.get(series.id) === series.token)
+    );
+  }
+
+  function abortBiomarkerRequest() {
+    const controller = biomarkerRequestController;
+    biomarkerRequestController = null;
+    if (controller && !controller.signal.aborted) controller.abort();
+  }
+
+  function biomarkerFocusFallback() {
+    const explorer = document.getElementById('biomarker-explorer');
+    if (!explorer?.contains(document.activeElement)) return;
+    document.activeElement?.blur();
+    const fallback = activeView === 'patient'
+      ? document.getElementById('nav-patient')
+      : document.getElementById('main-content');
+    fallback?.focus();
+  }
+
+  function setBiomarkerFreshness(state, text) {
+    const freshness = document.getElementById('biomarker-freshness');
+    if (!freshness) return;
+    freshness.className = `biomarker-freshness ${safeClassToken(state, 'error')}`;
+    freshness.textContent = text;
+  }
+
+  function setBiomarkerStatus(message, state = '', retry = false) {
+    const status = document.getElementById('biomarker-status');
+    if (status) {
+      status.className = `biomarker-status ${safeClassToken(state)}`;
+      status.textContent = message || '';
+    }
+    const retrySurface = document.getElementById('biomarker-retry');
+    if (retrySurface) retrySurface.hidden = !retry;
+  }
+
+  function renderBiomarkerUnavailable(message, state, statusLabel, retry = true) {
+    const select = document.getElementById('biomarker-analyte-select');
+    if (select) {
+      select.innerHTML = '<option value="">No biomarker history available</option>';
+      select.value = '';
+      select.disabled = true;
+    }
+    const context = document.getElementById('biomarker-context');
+    if (context) context.textContent = 'No biomarker values are retained in this view.';
+    const caption = document.getElementById('biomarker-table-caption');
+    if (caption) caption.textContent = 'Complete observations for the selected biomarker';
+    const table = document.getElementById('biomarker-table-body');
+    if (table) {
+      table.innerHTML = `<tr><td colspan="7"><div class="empty-state">${escHtml(message)}</div></td></tr>`;
+    }
+    const charts = document.getElementById('biomarker-chart-region');
+    if (charts) charts.innerHTML = '<div class="empty-state">No comparable chart is available.</div>';
+    setBiomarkerFreshness(state, statusLabel);
+    setBiomarkerStatus(message, state, retry);
+  }
+
+  function clearBiomarkerProjection(options = {}) {
+    biomarkerLoadEpoch += 1;
+    biomarkerSelectionEpoch += 1;
+    abortBiomarkerRequest();
+    biomarkerProjection = null;
+    biomarkerResponseOwner = null;
+    selectedBiomarkerAnalyteId = null;
+    biomarkerNetworkAmbiguous = false;
+    biomarkerProjectionState = options.state || 'error';
+    biomarkerFocusFallback();
+    renderBiomarkerUnavailable(
+      options.message || 'Biomarker history could not be loaded.',
+      biomarkerProjectionState,
+      options.statusLabel || 'Unavailable',
+      options.retry !== false,
+    );
+  }
+
+  function biomarkerListMarkup(values, emptyText) {
+    if (!Array.isArray(values) || !values.length) {
+      return `<span class="biomarker-missing">${escHtml(emptyText)}</span>`;
+    }
+    return `<ul>${values.map(value => `<li>${escHtml(value)}</li>`).join('')}</ul>`;
+  }
+
+  function biomarkerEvidenceMarkup(observation) {
+    const evidence = observation.provenance.evidence || [];
+    const evidenceItems = evidence.map(item => {
+      const evidenceUrl = safeBiomarkerEvidenceUrl(item.evidence_url);
+      const sourceUrl = safeBiomarkerEvidenceUrl(item.source_url);
+      return `<li>
+        <span><strong>${escHtml(item.status)}</strong> · evidence ID ${escHtml(item.id)}</span>
+        <span class="biomarker-evidence-actions">
+          ${evidenceUrl ? `<a href="${escHtml(evidenceUrl)}" target="_blank" rel="noopener">Open exact span</a>` : ''}
+          ${sourceUrl ? `<a href="${escHtml(sourceUrl)}" target="_blank" rel="noopener">Open source</a>` : ''}
+        </span>
+      </li>`;
+    }).join('');
+    return `<details class="biomarker-source-details">
+      <summary>Source details</summary>
+      <div>
+        <p><strong>${escHtml(observation.provenance.label)}</strong> · ${escHtml(observation.provenance.status)}</p>
+        <p>Observation ID: <code>${escHtml(observation.id)}</code></p>
+        <p>Source row IDs:</p>
+        ${biomarkerListMarkup(observation.source_row_ids, 'No source row ID supplied')}
+        <p>Source document IDs:</p>
+        ${biomarkerListMarkup(
+          observation.provenance.source_document_ids,
+          'No source document linked',
+        )}
+        <p>Evidence records:</p>
+        ${evidenceItems ? `<ul class="biomarker-evidence-list">${evidenceItems}</ul>` : '<span class="biomarker-missing">No evidence record supplied</span>'}
+      </div>
+    </details>`;
+  }
+
+  function biomarkerObservationRow(analyte, observation) {
+    const date = observation.date || {};
+    const sourceDate = date.source_document_date == null
+      ? ''
+      : `<span>Source document date: ${escHtml(biomarkerScalar(date.source_document_date))} · precision ${escHtml(biomarkerScalar(date.source_document_date_precision))}</span>`;
+    const unit = observation.unit == null || observation.unit === ''
+      ? ''
+      : ` ${escHtml(observation.unit)}`;
+    const rangeComparison = observation.report_range_comparison == null
+      ? '<span class="biomarker-missing">No report-range comparison supplied</span>'
+      : `<span>${escHtml(biomarkerScalar(observation.report_range_label))}: <strong>${escHtml(observation.report_range_comparison)}</strong></span>`;
+    const series = analyte.series.find(item => item.id === observation.series_id);
+    const chartLabel = observation.comparable
+      ? escHtml(series?.label || 'Server-declared comparable')
+      : 'Not charted';
+    const notes = biomarkerListMarkup(
+      observation.comparability_notes,
+      observation.comparable
+        ? 'No comparability limitation supplied'
+        : 'No comparability reason supplied',
+    );
+    const duplicateLabel = observation.duplicate_count === 1
+      ? '1 recorded source row'
+      : `${observation.duplicate_count} recorded source rows`;
+    return `<tr data-observation-id="${escHtml(observation.id)}">
+      <td>
+        <strong>${escHtml(biomarkerScalar(date.value))}</strong>
+        <span>Precision: ${escHtml(biomarkerScalar(date.precision))}</span>
+        <span>Date kind: ${escHtml(biomarkerScalar(date.kind))}</span>
+        ${sourceDate}
+      </td>
+      <td>
+        <strong>${escHtml(biomarkerScalar(observation.value.raw))}${unit}</strong>
+        <span>Value kind: ${escHtml(biomarkerScalar(observation.value.kind))}</span>
+      </td>
+      <td>
+        <strong>${escHtml(biomarkerScalar(observation.reference_range))}</strong>
+        ${rangeComparison}
+      </td>
+      <td>
+        <strong>${escHtml(biomarkerScalar(observation.reported_flag))}</strong>
+        <span>Authority: ${escHtml(biomarkerScalar(observation.reported_flag_authority))}</span>
+      </td>
+      <td>
+        <span><strong>Specimen:</strong> ${escHtml(biomarkerScalar(observation.specimen))}</span>
+        <span><strong>Assay:</strong> ${escHtml(biomarkerScalar(observation.assay))}</span>
+        <span><strong>Method:</strong> ${escHtml(biomarkerScalar(observation.method))}</span>
+      </td>
+      <td>
+        <strong>${chartLabel}</strong>
+        ${notes}
+      </td>
+      <td>
+        <span class="biomarker-duplicate-count">${escHtml(duplicateLabel)}</span>
+        ${biomarkerEvidenceMarkup(observation)}
+      </td>
+    </tr>`;
+  }
+
+  function biomarkerSeriesChart(analyte, series, chartIndex) {
+    const observationsById = new Map(
+      analyte.observations.map(observation => [observation.id, observation])
+    );
+    const points = series.observation_ids.map(id => observationsById.get(id)).filter(
+      observation => (
+        observation
+        && observation.series_id === series.id
+        && observation.comparable === true
+      )
+    );
+    if (points.length < 2) return '';
+
+    const width = Math.max(640, points.length * 96);
+    const height = 250;
+    const left = 58;
+    const right = 24;
+    const top = 28;
+    const bottom = 58;
+    const values = points.map(point => Number(point.value.numeric_value));
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const spread = max - min;
+    const xStep = (width - left - right) / (points.length - 1);
+    const y = value => spread === 0
+      ? top + ((height - top - bottom) / 2)
+      : top + ((max - value) / spread) * (height - top - bottom);
+    const chartId = `biomarker-chart-${chartIndex}`;
+    const first = points[0];
+    const context = [
+      ['Unit', series.unit],
+      ['Specimen', series.specimen],
+      ['Assay', series.assay],
+      ['Method', series.method],
+      ['Date kind', series.date_kind],
+      ['Recorded reference', first.reference_range],
+    ];
+    const pointMarkup = points.map((point, index) => {
+      const x = left + (index * xStep);
+      const pointY = y(Number(point.value.numeric_value));
+      const displayResult = `${biomarkerScalar(point.value.raw)}${
+        point.unit == null || point.unit === '' ? '' : ` ${point.unit}`
+      }`;
+      return `<g>
+        <circle cx="${x}" cy="${pointY}" r="6">
+          <title>${escHtml(`${biomarkerScalar(point.date.value)} · ${displayResult}`)}</title>
+        </circle>
+        <text class="biomarker-chart-value" x="${x}" y="${Math.max(16, pointY - 12)}" text-anchor="middle">${escHtml(displayResult)}</text>
+        <text class="biomarker-chart-date" x="${x}" y="${height - 26}" text-anchor="middle">${escHtml(biomarkerScalar(point.date.value))}</text>
+      </g>`;
+    }).join('');
+    return `<figure class="biomarker-chart-card" data-series-id="${escHtml(series.id)}">
+      <figcaption>
+        <strong>${escHtml(series.label)}</strong>
+        <span>${context.map(([label, value]) => `${escHtml(label)}: ${escHtml(biomarkerScalar(value))}`).join(' · ')}</span>
+      </figcaption>
+      <div class="biomarker-chart-scroll" role="region" aria-label="${escHtml(`${analyte.display_name}, ${series.label} point chart`)}" tabindex="0">
+        <svg
+          viewBox="0 0 ${width} ${height}"
+          width="${width}"
+          height="${height}"
+          role="img"
+          aria-labelledby="${chartId}-title ${chartId}-description"
+        >
+          <title id="${chartId}-title">${escHtml(`${analyte.display_name}: ${series.label}`)}</title>
+          <desc id="${chartId}-description">Isolated recorded points in one exact server-declared comparable group. No connecting line or trend is inferred. Complete values are in the table above.</desc>
+          <line class="biomarker-chart-axis" x1="${left}" y1="${height - bottom}" x2="${width - right}" y2="${height - bottom}"></line>
+          ${pointMarkup}
+        </svg>
+      </div>
+    </figure>`;
+  }
+
+  function renderBiomarkerProjection(owner) {
+    if (!biomarkerResponseOwnerIsCurrent(owner)) return false;
+    const analyte = selectedBiomarkerAnalyte();
+    if (!analyte || owner.analyteToken !== analyte.token) return false;
+
+    const select = document.getElementById('biomarker-analyte-select');
+    if (select) {
+      select.innerHTML = biomarkerProjection.analytes.map(item => (
+        `<option value="${escHtml(item.id)}">${escHtml(item.display_name)} (${item.observation_count})</option>`
+      )).join('');
+      select.value = analyte.id;
+      select.disabled = false;
+    }
+    const context = document.getElementById('biomarker-context');
+    if (context) {
+      context.innerHTML = `<strong>${escHtml(analyte.display_name)}</strong>
+        <span>${analyte.observation_count} observations from ${analyte.source_row_count} source rows · ${analyte.series_count} exact comparison groups</span>
+        <span>Recorded aliases:</span>
+        ${biomarkerListMarkup(analyte.observed_aliases, 'No recorded alias supplied')}`;
+    }
+    const caption = document.getElementById('biomarker-table-caption');
+    if (caption) {
+      caption.textContent = `Complete recorded observations for ${analyte.display_name}`;
+    }
+    const table = document.getElementById('biomarker-table-body');
+    if (table) {
+      table.innerHTML = analyte.observations.length
+        ? analyte.observations.map(observation => (
+            biomarkerObservationRow(analyte, observation)
+          )).join('')
+        : '<tr><td colspan="7"><div class="empty-state">No observations are recorded for this biomarker.</div></td></tr>';
+    }
+
+    const comparableSeries = analyte.series.filter(series => series.comparable === true);
+    const charts = document.getElementById('biomarker-chart-region');
+    if (charts) {
+      const chartMarkup = comparableSeries.map((series, index) => {
+        if (owner.seriesTokens.get(series.id) !== series.token) return '';
+        return biomarkerSeriesChart(analyte, series, index);
+      }).filter(Boolean).join('');
+      charts.innerHTML = chartMarkup || `<div class="empty-state">
+        No chart is shown because this biomarker has fewer than two observations in any exact server-declared comparable group. Every recorded observation remains in the table.
+      </div>`;
+    }
+
+    if (biomarkerProjectionState === 'stale') {
+      setBiomarkerFreshness('stale', 'Stale snapshot');
+    } else {
+      setBiomarkerFreshness('current', 'Current');
+      setBiomarkerStatus(
+        `Authoritative record loaded · patient revision ${biomarkerProjection.profile_revision} · workflow revision ${biomarkerProjection.workflow_revision}.`,
+        'current',
+        false,
+      );
+    }
+    return true;
+  }
+
+  function selectBiomarkerAnalyte(analyteId) {
+    if (!biomarkerProjection) return false;
+    const analyte = biomarkerProjection.analytes.find(item => item.id === analyteId);
+    if (!analyte) return false;
+    biomarkerSelectionEpoch += 1;
+    selectedBiomarkerAnalyteId = analyte.id;
+    biomarkerResponseOwner = newBiomarkerResponseOwner(biomarkerProjection, analyte);
+    return renderBiomarkerProjection(biomarkerResponseOwner);
+  }
+
+  function markBiomarkerProjectionStale(message, options = {}) {
+    if (options.abortRequest !== false) {
+      biomarkerLoadEpoch += 1;
+      abortBiomarkerRequest();
+    }
+    biomarkerProjectionState = 'stale';
+    if (!biomarkerProjection) {
+      renderBiomarkerUnavailable(
+        message || 'Biomarker history is offline and no prior snapshot is available.',
+        'stale',
+        'Offline',
+        true,
+      );
+      return;
+    }
+    const analyte = selectedBiomarkerAnalyte()
+      || biomarkerProjection.analytes[0]
+      || null;
+    if (!analyte) {
+      renderBiomarkerUnavailable(
+        message || 'The prior biomarker snapshot is empty.',
+        'stale',
+        'Stale snapshot',
+        true,
+      );
+      return;
+    }
+    if (selectedBiomarkerAnalyteId !== analyte.id) biomarkerSelectionEpoch += 1;
+    selectedBiomarkerAnalyteId = analyte.id;
+    biomarkerResponseOwner = newBiomarkerResponseOwner(
+      biomarkerProjection,
+      analyte,
+      options.ownerPhiEpoch ?? phiEpoch,
+    );
+    if (!renderBiomarkerProjection(biomarkerResponseOwner)) return;
+    setBiomarkerFreshness('stale', 'Stale snapshot');
+    setBiomarkerStatus(
+      message || 'Offline snapshot · read-only. Reload before relying on it.',
+      'stale',
+      true,
+    );
+  }
+
+  function renderBiomarkerLoading() {
+    biomarkerProjectionState = 'loading';
+    if (biomarkerProjection) {
+      setBiomarkerFreshness('loading', 'Checking…');
+      setBiomarkerStatus(
+        'Checking the current authoritative biomarker record…',
+        'loading',
+        false,
+      );
+      return;
+    }
+    const select = document.getElementById('biomarker-analyte-select');
+    if (select) {
+      select.innerHTML = '<option value="">Loading recorded biomarkers…</option>';
+      select.disabled = true;
+    }
+    setBiomarkerFreshness('loading', 'Loading…');
+    setBiomarkerStatus('Loading the authoritative biomarker record…', 'loading', false);
+  }
+
+  function biomarkerTransportRequestIsCurrent(request, acceptedPhiEpoch = null) {
+    const phiOwner = acceptedPhiEpoch ?? request.requestPhiEpoch;
+    return Boolean(
+      request
+      && request.controller === biomarkerRequestController
+      && !request.controller.signal.aborted
+      && request.loadEpoch === biomarkerLoadEpoch
+      && phiOwner === phiEpoch
+    );
+  }
+
+  async function loadBiomarkerSeries() {
+    const previousController = biomarkerRequestController;
+    const controller = new AbortController();
+    const request = {
+      ...capturePatientRequest(),
+      loadEpoch: ++biomarkerLoadEpoch,
+      controller,
+    };
+    biomarkerRequestController = controller;
+    if (previousController && !previousController.signal.aborted) previousController.abort();
+    renderBiomarkerLoading();
+
+    try {
+      const response = await fetch('/api/patient/biomarker-series', {
+        headers: { Accept: 'application/json' },
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+      const requestIsCurrent = () => biomarkerTransportRequestIsCurrent(request);
+      if (!requestIsCurrent()) return null;
+      const data = await readJsonResponse(response, requestIsCurrent);
+      if (!requestIsCurrent()) return null;
+      if (!biomarkerProjectionPayloadIsValid(data)) {
+        const invalid = new Error('Biomarker history could not be verified safely.');
+        invalid.status = 422;
+        invalid.data = { code: 'biomarker_projection_invalid_response' };
+        throw invalid;
+      }
+      const authority = authorizePatientResponse(request, data, {
+        workflow: 'projection',
+        biomarkerProjection: true,
+      });
+      if (!authority.accepted) {
+        if (biomarkerTransportRequestIsCurrent(request)) {
+          markBiomarkerProjectionStale(
+            'A newer patient or workflow revision is available. Reload biomarker history.',
+          );
+        }
+        return null;
+      }
+      request.acceptedPhiEpoch = authority.requestPhiEpoch;
+      if (!biomarkerTransportRequestIsCurrent(request, request.acceptedPhiEpoch)) return null;
+
+      const retainedSelection = selectedBiomarkerAnalyteId;
+      const analyte = data.analytes.find(item => item.id === retainedSelection)
+        || data.analytes[0]
+        || null;
+      biomarkerSelectionEpoch += 1;
+      biomarkerProjection = data;
+      selectedBiomarkerAnalyteId = analyte?.id || null;
+      biomarkerNetworkAmbiguous = false;
+      biomarkerProjectionState = data.analytes.length ? 'current' : 'empty';
+      biomarkerResponseOwner = analyte
+        ? newBiomarkerResponseOwner(data, analyte, request.acceptedPhiEpoch)
+        : null;
+      if (!biomarkerTransportRequestIsCurrent(request, request.acceptedPhiEpoch)) return null;
+
+      if (!analyte) {
+        const select = document.getElementById('biomarker-analyte-select');
+        if (select) {
+          select.innerHTML = '<option value="">No biomarkers recorded</option>';
+          select.value = '';
+          select.disabled = true;
+        }
+        const context = document.getElementById('biomarker-context');
+        if (context) context.textContent = 'No biomarker observations are recorded.';
+        const caption = document.getElementById('biomarker-table-caption');
+        if (caption) caption.textContent = 'Complete observations for the selected biomarker';
+        const table = document.getElementById('biomarker-table-body');
+        if (table) {
+          table.innerHTML = '<tr><td colspan="7"><div class="empty-state">No biomarker observations are recorded.</div></td></tr>';
+        }
+        const charts = document.getElementById('biomarker-chart-region');
+        if (charts) charts.innerHTML = '<div class="empty-state">No comparable chart is available.</div>';
+        setBiomarkerFreshness('current', 'Current · empty');
+        setBiomarkerStatus(
+          `Authoritative record loaded · patient revision ${data.profile_revision} · no biomarker observations recorded.`,
+          'current',
+          false,
+        );
+      } else if (!renderBiomarkerProjection(biomarkerResponseOwner)) {
+        return null;
+      }
+      reportLoadSuccess('biomarkers');
+      return data;
+    } catch (error) {
+      const acceptedPhiEpoch = request.acceptedPhiEpoch ?? null;
+      if (
+        error?.name === 'AbortError'
+        || !biomarkerTransportRequestIsCurrent(request, acceptedPhiEpoch)
+      ) return null;
+      if (shouldEvictClientPhi(error)) {
+        const safeError = new Error(
+          error?.status === 401 || error?.status === 403
+            ? 'Biomarker authorization is unavailable.'
+            : 'Biomarker data could not be loaded safely.',
+        );
+        safeError.status = error?.status;
+        reportLoadError('biomarkers', safeError);
+        if (biomarkerTransportRequestIsCurrent(request, acceptedPhiEpoch)) {
+          evictClientPhi(safeError);
+        }
+        return null;
+      }
+      const ambiguous = error instanceof TypeError || navigator.onLine === false;
+      if (ambiguous) {
+        biomarkerNetworkAmbiguous = true;
+        markBiomarkerProjectionStale(
+          biomarkerProjection
+            ? 'Offline snapshot · read-only. Reconnect to reload the current biomarker record.'
+            : 'Biomarker history is offline and no prior snapshot is available.',
+          { abortRequest: false },
+        );
+        reportLoadError('biomarkers', error);
+        return null;
+      }
+      if (error?.status === 422) {
+        clearBiomarkerProjection({
+          state: 'corrupt',
+          statusLabel: 'Record unavailable',
+          message: 'Biomarker history is unavailable because the stored record could not be projected safely.',
+        });
+        const safeError = new Error(
+          'Biomarker history is unavailable because the stored record could not be projected safely.',
+        );
+        safeError.status = 422;
+        reportLoadError('biomarkers', safeError);
+      } else {
+        clearBiomarkerProjection({
+          state: 'error',
+          statusLabel: 'Load failed',
+          message: 'Biomarker history could not be loaded. No prior biomarker values remain in this view.',
+        });
+        const safeError = new Error('Biomarker history could not be loaded.');
+        safeError.status = error?.status;
+        reportLoadError('biomarkers', safeError);
+      }
+      return null;
+    } finally {
+      if (
+        biomarkerRequestController === controller
+        && request.loadEpoch === biomarkerLoadEpoch
+      ) {
+        biomarkerRequestController = null;
+      }
+    }
   }
 
   // ── Status sidebar ──────────────────────────────────────────────────────
@@ -1119,23 +1900,15 @@
     const patient = document.getElementById('patient-dx');
     const patientMeta = document.getElementById('patient-meta');
     const treatments = document.getElementById('tx-list');
-    const biomarkers = document.getElementById('bm-list');
     const alerts = document.getElementById('alerts-list');
-    const search = document.getElementById('bm-search');
     redactGeneratedQuestionChoices();
     latestResearchUpdate = null;
-    allBiomarkers = [];
     renderLatestResearchUpdate(null);
     clearFreshnessProjection();
     if (patient) patient.textContent = 'Patient profile unavailable';
     if (patientMeta) patientMeta.innerHTML = '';
     if (treatments) treatments.innerHTML = loadFailureMarkup('Treatments', 'loadStatus()');
-    if (biomarkers) biomarkers.innerHTML = loadFailureMarkup('Biomarkers', 'loadStatus()');
     if (alerts) alerts.innerHTML = loadFailureMarkup('Alerts', 'loadStatus()');
-    if (search) {
-      search.value = '';
-      search.disabled = true;
-    }
   }
 
   function evictClientPhi(error = null) {
@@ -1151,7 +1924,14 @@
     latestProfileRevision = null;
     latestResearchUpdate = null;
     patientEvidence = null;
-    allBiomarkers = [];
+    if (typeof clearBiomarkerProjection === 'function') {
+      clearBiomarkerProjection({
+        state: 'error',
+        statusLabel: 'Patient data unavailable',
+        message: 'Biomarker data was cleared because current authority is unavailable.',
+        retry: false,
+      });
+    }
     workflowRevision = null;
     clinicalConvergenceRevision = null;
     visitsById = new Map();
@@ -1220,7 +2000,6 @@
     if (patient) patient.textContent = 'Patient data unavailable';
     clear('patient-meta');
     clear('tx-list');
-    clear('bm-list');
     clear('alerts-list');
     clear('imaging-history');
     clear('source-history');
@@ -1357,11 +2136,6 @@
       if (status) status.textContent = '';
     }
 
-    const search = document.getElementById('bm-search');
-    if (search) {
-      search.value = '';
-      search.disabled = true;
-    }
     const report = document.getElementById('report-panel');
     report?.classList.add('collapsed');
     report?.setAttribute('aria-hidden', 'true');
@@ -1529,8 +2303,6 @@
   }
 
   function renderSidebar(d) {
-    const search = document.getElementById('bm-search');
-    if (search) search.disabled = false;
     const p = d.patient || {};
     latestResearchUpdate = d.latest_research_update || null;
     renderLatestResearchUpdate(latestResearchUpdate);
@@ -1641,66 +2413,6 @@
 
       document.getElementById('tx-list').innerHTML = txHtml;
     }
-
-    // Biomarkers — normalize names and filter out non-serum markers
-    const rawBms = d.recent_biomarkers || [];
-
-    // Name normalization — strip single-letter lab-name prefixes
-    // (S-, B-, U-, P-, fS- etc., common in Nordic/European lab systems)
-    // and normalize to clean display names
-    const bmNormalize = (name) => {
-      const stripped = name.replace(/^[fFsSpPbBuU]-/i, '').trim();
-      const n = stripped.toLowerCase();
-      const orig = name.toLowerCase();
-
-      // Exclude Ki-67/MIB-1 — shown in patient pane
-      if (n.includes('ki-67') || n.includes('ki67') || n.includes('mib-1') ||
-          n.includes('mib1') || n.includes('proliferation') ||
-          orig.includes('ki-67') || orig.includes('mib-1')) return null;
-      // Exclude non-serum metrics
-      if (n.includes('radiation dose') || n.includes(' gy') || orig.includes(' gy')) return null;
-
-      if (n.includes('chromogranin') || n === 'cga') return 'CgA (Chromogranin A)';
-      if (n === 'nse' || n.includes('neuron-specific enolase')) return 'NSE';
-      if (n.includes('5-hiaa') || n.includes('5hiaa') || n === '5hiaa') return '5-HIAA';
-      if (n.includes('hemoglobin') || n === 'hb' || n === 'hgb') return 'Hemoglobin';
-      if (n.includes('thrombocyte') || n.includes('platelet') || n === 'trom' || n === 'plt') return 'Thrombocytes';
-      if (n.includes('leukocyte') || n === 'leuk' || n === 'wbc') return 'Leukocytes';
-      if (n.includes('neutrophil') || n === 'neut') return 'Neutrophils';
-      if (n.includes('creatinine') || n === 'krea' || n === 'crea') return 'Creatinine';
-      if (n === 'alt' || n.includes('alanine aminotransferase')) return 'ALT';
-      if (n === 'ast' || n.includes('aspartate aminotransferase')) return 'AST';
-      if (n.includes('bilirubin') || n === 'bil') return 'Bilirubin';
-      if (n.includes('alkaline phosphatase') || n === 'afos' || n === 'alp') return 'ALP';
-      if (n.includes('albumin') || n === 'alb') return 'Albumin';
-      if (n.includes('calcium') || n === 'ca') return 'Calcium';
-      if (n.includes('sodium') || n === 'na') return 'Sodium';
-      if (n.includes('potassium') || n === 'k') return 'Potassium';
-      if (n.includes('glucose') || n === 'gluk' || n === 'gluc') return 'Glucose';
-      if (n.includes('hba1c') || n === 'a1c') return 'HbA1c';
-      if (n.includes('tsh')) return 'TSH';
-      if (n.includes('serotonin') || n === '5-ht') return 'Serotonin';
-      // Return stripped version (without S-/B- prefix) if no match
-      return stripped || name;
-    };
-
-    // Deduplicate by normalized name + date, filter nulls
-    const seen = new Set();
-    allBiomarkers = rawBms
-      .map(b => {
-        const normalized = bmNormalize(b.marker || '');
-        if (!normalized) return null;
-        return { ...b, marker: normalized, originalMarker: b.marker };
-      })
-      .filter(b => {
-        if (!b) return false;
-        const key = `${b.marker}|${b.date}`;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-
-    filterBiomarkers();
 
     const alerts = Array.isArray(d.alerts) ? d.alerts : [];
     alertsById = new Map(

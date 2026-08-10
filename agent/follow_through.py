@@ -631,7 +631,23 @@ def public_visit(visit: dict) -> dict:
 def public_alert(alert: dict) -> dict:
     from .profile import alert_token
 
-    return {**_public_value(alert), "resolve_token": alert_token(alert)}
+    result = {
+        key: _public_value(alert[key])
+        for key in (
+            "id",
+            "date",
+            "priority",
+            "message",
+            "action_required",
+            "resolved",
+            "dependency_kind",
+            "resolution",
+            "added_at",
+        )
+        if key in alert
+    }
+    result["resolve_token"] = alert_token(alert)
+    return result
 
 
 def find_record(records: list[dict], record_id: str, label: str) -> dict:

@@ -604,7 +604,23 @@ def _safe_result_snapshot(
             "profile_revision",
         }:
             return False
-        linked_id = record.get("caregiver_action_id")
+        changes = event.get("changes")
+        if not isinstance(changes, dict):
+            return False
+        link_change = changes.get("caregiver_action_id")
+        if link_change is not None:
+            if (
+                not isinstance(link_change, dict)
+                or set(link_change) != {"before", "after"}
+                or (
+                    link_change.get("after") is not None
+                    and (not isinstance(link_change.get("after"), str) or not link_change["after"])
+                )
+            ):
+                return False
+            linked_id = link_change.get("after")
+        else:
+            linked_id = follow_up.get("id") if isinstance(follow_up, dict) else None
         if linked_id is None:
             return follow_up is None
         return (

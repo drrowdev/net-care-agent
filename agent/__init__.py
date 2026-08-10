@@ -126,6 +126,7 @@ from .reconciliation import (
 from .recovery import get_recovery_state
 from .serialize import mutating_lock, serialized_mutation
 from .symptom_episodes import (
+    MAX_SYMPTOM_ACTIONS,
     SYMPTOM_EPISODE_STATUSES,
     SYMPTOM_REPORTED_SUBJECTS,
     SYMPTOM_SAFETY_GUIDANCE,
@@ -194,6 +195,7 @@ __all__ = [
     "ImagingProjectionError",
     "project_imaging_series",
     "imaging_record_text",
+    "MAX_SYMPTOM_ACTIONS",
     "SYMPTOM_EPISODE_STATUSES",
     "SYMPTOM_REPORTED_SUBJECTS",
     "SYMPTOM_SAFETY_GUIDANCE",

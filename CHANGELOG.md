@@ -9,6 +9,14 @@ incremented when something user-visible or operationally meaningful changes.
 ## [Unreleased]
 
 ### Added
+- **Atomic follow-up creation for an existing symptom episode.**
+  `PATCH /api/symptom-episodes/<episode_id>/follow-up` now accepts a third,
+  mutually exclusive bounded manual follow-up variant alongside exact existing
+  action link and unlink. It validates full CAS authority before generating the
+  action, records action and episode history against their exact IDs, advances
+  workflow revision only, saves once, and replays the immutable generated
+  action without duplication. Conflict or save failure commits no partial
+  state, and the caregiver UI remains deferred.
 - **Durable symptom episode backend foundation.** Schema v11 keeps every legacy
   `symptoms[]` observation separate while adding explicit caregiver-maintained
   current/resolved `symptom_episodes[]`. Migration preserves IDs, duplicates,

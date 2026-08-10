@@ -389,10 +389,14 @@ support explicit current/resolved lifecycle, neutral mild/moderate/severe
 caregiver-entered severity plus exact detail, precision-preserving dates,
 unverified provenance, replay/CAS-safe mutations, and optional durable
 `caregiver_actions[]` linkage. Creation can atomically link one exact eligible
-action or create and link one bounded manual action in the same save. Fixed
-safety copy states that NET/Care neither assesses urgency nor monitors symptoms.
-Episodes are excluded from all model prompts; legacy symptom context remains
-unchanged. The responsive episode UI is deliberately deferred.
+action or create and link one bounded manual action in the same save. The
+existing-episode follow-up endpoint also supports mutually exclusive exact
+link, exact unlink, or bounded manual-action create-and-link variants; these
+link-only workflow changes do not advance the clinical profile revision. Fixed
+safety copy states that NET/Care neither assesses urgency nor monitors
+symptoms. Episodes are excluded from all model prompts; legacy symptom context
+remains unchanged. The responsive episode UI, including existing-episode
+follow-up creation, is deliberately deferred.
 
 The orchestrator's behaviour is shaped by **clinical_judgments** captured from
 oncologist consultations. These act as hard constraints: anything the oncologist

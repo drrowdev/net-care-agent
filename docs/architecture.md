@@ -240,14 +240,20 @@ with bounded `422` and no save, quarantine, audit, model, or network call.
 Episode create/edit/resolve mutations require a mutation ID, exact projection
 and target authority, and both expected revisions under
 `serialized_mutation`. They append episode audit, advance both revisions, and
-save once. Pure existing-action link/unlink advances only workflow revision.
-Create supports mutually exclusive atomic variants: link one exact eligible
-existing action, or create one bounded manual action and link it. Validation
-precedes either mutation; conflict or save failure leaves neither record, and an
-exact retry returns the immutable original episode/action response. Existing
-visit/decision/alert action provenance is untouched and duplicate episode
-linkage is rejected. The legacy `/api/symptoms`, `/api/status`, SPA, and model
-contexts remain compatibility surfaces; only `symptoms[]` enters prompts.
+save once. `PATCH /api/symptom-episodes/<episode_id>/follow-up` has three
+mutually exclusive variants: link one exact eligible existing action, unlink
+the exact linked action, or create and link one bounded manual action. All three
+are workflow-only and preserve the episode's clinical revision and content.
+Episode creation separately supports mutually exclusive existing-action or
+inline manual-action linkage. Every inline variant validates complete authority
+and bounds before generating the action, creates both action and episode audit,
+and commits one save; conflict or save failure leaves neither action nor link.
+Exact replay returns the immutable original episode/action response. Existing
+visit/decision/alert action provenance is untouched, duplicate episode linkage
+is rejected, and neither lifecycle cascades. The legacy `/api/symptoms`,
+`/api/status`, SPA, and model contexts remain compatibility surfaces; only
+`symptoms[]` enters prompts. The existing-episode create-follow-up UI remains
+deferred.
 Static Patient/Today episode UI work is deferred.
 
 Receipt correction/removal and whole-document undo are serialized profile

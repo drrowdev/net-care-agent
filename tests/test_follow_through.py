@@ -159,6 +159,25 @@ def _reorder_request(visit, *, mutation_id="reorder-mutation-001"):
     }
 
 
+def _seed_alert(agent, client, profile, *, alert_id="alert-target", revision=3, **fields):
+    profile["profile_revision"] = revision
+    profile["alerts"] = [
+        {
+            "id": alert_id,
+            "priority": "high",
+            "message": "Monitoring needs review",
+            "resolved": False,
+            "dependency_kind": "durable",
+            "source_dependency_active": True,
+            "history": [],
+            **fields,
+        }
+    ]
+    agent.save_profile(profile, clinical_change=False)
+    status = client.get("/api/status").get_json()
+    return status, next(item for item in status["alerts"] if item["id"] == alert_id)
+
+
 def test_request_hash_is_deterministic_and_preserves_cas_tokens():
     from agent.follow_through import request_hash
 
@@ -1428,9 +1447,9 @@ def test_unrelated_workflow_revision_does_not_conflict_with_target_token(
 
 
 def test_alert_resolution_links_inline_follow_up_atomically_and_replays(
-    app_client, agent, empty_profile
+    app_client, agent, empty_profile, monkeypatch
 ):
-    _, client = app_client
+    app_module, client = app_client
     empty_profile["profile_revision"] = 3
     empty_profile["alerts"] = [
         {
@@ -1454,6 +1473,15 @@ def test_alert_resolution_links_inline_follow_up_atomically_and_replays(
         },
     ]
     agent.save_profile(empty_profile, clinical_change=False)
+    original_save = app_module.agent.save_profile
+    save_count = 0
+
+    def counting_save(*args, **kwargs):
+        nonlocal save_count
+        save_count += 1
+        return original_save(*args, **kwargs)
+
+    monkeypatch.setattr(app_module.agent, "save_profile", counting_save)
     status = client.get("/api/status").get_json()
     alert = next(item for item in status["alerts"] if item["id"] == "alert-target")
     request = {
@@ -1485,6 +1513,171 @@ def test_alert_resolution_links_inline_follow_up_atomically_and_replays(
     assert sibling["resolved"] is False
     assert saved["workflow_revision"] == 1
     assert saved["profile_revision"] == 4
+    assert save_count == 1
+    assert len(target["history"]) == 1
+    assert len(saved["caregiver_actions"][0]["history"]) == 1
+    assert target["history"][0]["mutation_id"] == request["mutation_id"]
+    assert target["history"][0]["result_snapshot"] == first.get_json()
+    assert target["resolution"]["outcome_kind"] == "administrative"
+    assert target["resolution"]["provenance"]["source_verification"] == "not_applicable"
+
+
+@pytest.mark.parametrize("mode", ["existing_follow_up", "visit", "visit_decision"])
+def test_alert_resolution_accepts_each_existing_link_mode(app_client, agent, empty_profile, mode):
+    _, client = app_client
+    status, alert = _seed_alert(agent, client, empty_profile)
+    links = {}
+    expected_follow_up_id = None
+    expected_visit_id = None
+    expected_decision_id = None
+    if mode == "existing_follow_up":
+        action = client.post(
+            "/api/follow-ups",
+            json={
+                "mutation_id": f"mode-{mode}-action",
+                "origin_kind": "manual",
+                "text": "Ask the treating team about monitoring",
+            },
+        ).get_json()["item"]
+        links = {"follow_up_id": action["id"]}
+        expected_follow_up_id = action["id"]
+    else:
+        visit = _create_visit(client, mutation_id=f"mode-{mode}-visit")
+        expected_visit_id = visit["id"]
+        if mode == "visit_decision":
+            decision_response = client.post(
+                f"/api/visits/{visit['id']}/decisions",
+                json={
+                    "mutation_id": "mode-visit-decision-create",
+                    "expected_visit_token": visit["token"],
+                    "text": "Confirm the monitoring interval",
+                },
+            )
+            visit = decision_response.get_json()["visit"]
+            expected_decision_id = visit["decisions"][0]["id"]
+        links = {"visit_id": visit["id"]}
+        if expected_decision_id:
+            links["decision_id"] = expected_decision_id
+    status = client.get("/api/status").get_json()
+    alert = status["alerts"][0]
+
+    response = client.post(
+        f"/api/alerts/{alert['id']}/resolve",
+        json={
+            "mutation_id": f"mode-{mode}-resolve",
+            "expected_token": alert["resolve_token"],
+            "expected_profile_revision": status["profile_revision"],
+            **links,
+        },
+    )
+
+    assert response.status_code == 200
+    resolution = response.get_json()["alert"]["resolution"]
+    assert resolution["follow_up_id"] == expected_follow_up_id
+    assert resolution["visit_id"] == expected_visit_id
+    assert resolution["decision_id"] == expected_decision_id
+
+
+@pytest.mark.parametrize(
+    "invalid_fields",
+    [
+        {"unexpected": True},
+        {"outcome": {"text": "Called", "kind": "administrative", "provenance": {}}},
+        {"follow_up": {"text": "Ask the treating team", "status": "open"}},
+        {"follow_up_id": None, "visit_id": None},
+        {"decision_id": "decision-without-visit"},
+        {"follow_up_id": ""},
+        {"visit_id": None},
+    ],
+)
+def test_alert_resolution_rejects_strict_or_ambiguous_payload_before_save(
+    app_client, agent, empty_profile, monkeypatch, invalid_fields
+):
+    app_module, client = app_client
+    status, alert = _seed_alert(agent, client, empty_profile)
+    save_count = 0
+
+    def fail_if_saved(*_args, **_kwargs):
+        nonlocal save_count
+        save_count += 1
+        raise AssertionError("invalid request attempted to save")
+
+    monkeypatch.setattr(app_module.agent, "save_profile", fail_if_saved)
+    response = client.post(
+        f"/api/alerts/{alert['id']}/resolve",
+        json={
+            "mutation_id": f"strict-alert-{len(json.dumps(invalid_fields))}",
+            "expected_token": alert["resolve_token"],
+            "expected_profile_revision": status["profile_revision"],
+            **invalid_fields,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["code"] == "invalid_workflow_request"
+    assert save_count == 0
+    saved = agent.load_profile()
+    assert saved["alerts"][0]["resolved"] is False
+    assert saved["alerts"][0]["history"] == []
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        None,
+        {},
+        {"kind": "administrative"},
+        {"kind": "caregiver_reported", "text": "   "},
+    ],
+)
+def test_alert_resolution_omits_blank_outcome(app_client, agent, empty_profile, outcome):
+    _, client = app_client
+    status, alert = _seed_alert(agent, client, empty_profile)
+    request = {
+        "mutation_id": f"blank-outcome-{len(json.dumps(outcome))}",
+        "expected_token": alert["resolve_token"],
+        "expected_profile_revision": status["profile_revision"],
+    }
+    if outcome is not None:
+        request["outcome"] = outcome
+
+    response = client.post(f"/api/alerts/{alert['id']}/resolve", json=request)
+
+    assert response.status_code == 200
+    resolution = response.get_json()["alert"]["resolution"]
+    assert "outcome_kind" not in resolution
+    assert "outcome_text" not in resolution
+    assert "provenance" not in resolution
+    assert agent.load_profile()["profile_revision"] == 4
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        {"text": "Called the clinic"},
+        {"kind": "unsupported", "text": "Called the clinic"},
+    ],
+)
+def test_alert_resolution_requires_allowed_kind_for_nonempty_outcome(
+    app_client, agent, empty_profile, outcome
+):
+    _, client = app_client
+    status, alert = _seed_alert(agent, client, empty_profile)
+
+    response = client.post(
+        f"/api/alerts/{alert['id']}/resolve",
+        json={
+            "mutation_id": f"invalid-outcome-{len(json.dumps(outcome))}",
+            "expected_token": alert["resolve_token"],
+            "expected_profile_revision": status["profile_revision"],
+            "outcome": outcome,
+        },
+    )
+
+    assert response.status_code == 400
+    saved = agent.load_profile()
+    assert saved["profile_revision"] == 3
+    assert saved["alerts"][0]["history"] == []
 
 
 def test_alert_resolution_rejects_multiple_link_modes_before_mutation(
@@ -1542,7 +1735,9 @@ def test_alert_resolution_rejects_multiple_link_modes_before_mutation(
     ("target_kind", "terminal_status"),
     [
         ("follow_up", "completed"),
+        ("follow_up", "cancelled"),
         ("visit", "completed"),
+        ("visit", "cancelled"),
         ("decision", "retracted"),
         ("decision", "superseded"),
     ],
@@ -1649,6 +1844,343 @@ def test_alert_resolution_rejects_terminal_link_targets(
     target = next(item for item in saved["alerts"] if item["id"] == alert["id"])
     assert target["resolved"] is False
     assert target["history"] == []
+
+
+def test_alert_resolution_rejects_cross_visit_decision_atomically(app_client, agent, empty_profile):
+    _, client = app_client
+    _seed_alert(agent, client, empty_profile)
+    first_visit = _create_visit(client, mutation_id="cross-decision-first-visit")
+    second_visit = _create_visit(client, mutation_id="cross-decision-second-visit")
+    decision_response = client.post(
+        f"/api/visits/{first_visit['id']}/decisions",
+        json={
+            "mutation_id": "cross-decision-create",
+            "expected_visit_token": first_visit["token"],
+            "text": "Confirm the monitoring interval",
+        },
+    )
+    decision = decision_response.get_json()["visit"]["decisions"][0]
+    status = client.get("/api/status").get_json()
+    alert = status["alerts"][0]
+    before = agent.load_profile()
+
+    response = client.post(
+        f"/api/alerts/{alert['id']}/resolve",
+        json={
+            "mutation_id": "cross-decision-resolve",
+            "expected_token": alert["resolve_token"],
+            "expected_profile_revision": status["profile_revision"],
+            "visit_id": second_visit["id"],
+            "decision_id": decision["id"],
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "decision_id does not belong to visit_id"
+    assert agent.load_profile() == before
+
+
+@pytest.mark.parametrize(
+    "links",
+    [
+        {"follow_up_id": "act_missing"},
+        {"visit_id": "visit_missing"},
+    ],
+)
+def test_alert_resolution_rejects_missing_link_target_as_conflict(
+    app_client, agent, empty_profile, links
+):
+    _, client = app_client
+    status, alert = _seed_alert(agent, client, empty_profile)
+
+    response = client.post(
+        f"/api/alerts/{alert['id']}/resolve",
+        json={
+            "mutation_id": f"missing-link-{next(iter(links))}",
+            "expected_token": alert["resolve_token"],
+            "expected_profile_revision": status["profile_revision"],
+            **links,
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.get_json()["code"] == "workflow_conflict"
+    saved = agent.load_profile()
+    assert saved["alerts"][0]["resolved"] is False
+    assert saved["alerts"][0]["history"] == []
+
+
+def test_alert_resolution_rejects_missing_decision_as_conflict(app_client, agent, empty_profile):
+    _, client = app_client
+    _seed_alert(agent, client, empty_profile)
+    visit = _create_visit(client, mutation_id="missing-decision-visit")
+    status = client.get("/api/status").get_json()
+    alert = status["alerts"][0]
+
+    response = client.post(
+        f"/api/alerts/{alert['id']}/resolve",
+        json={
+            "mutation_id": "missing-decision-resolve",
+            "expected_token": alert["resolve_token"],
+            "expected_profile_revision": status["profile_revision"],
+            "visit_id": visit["id"],
+            "decision_id": "decision_missing",
+        },
+    )
+
+    assert response.status_code == 409
+    assert agent.load_profile()["alerts"][0]["history"] == []
+
+
+@pytest.mark.parametrize("stale_part", ["token", "revision", "resolved"])
+def test_alert_resolution_rejects_stale_cas_for_durable_alert(
+    app_client, agent, empty_profile, stale_part
+):
+    _, client = app_client
+    status, alert = _seed_alert(agent, client, empty_profile, revision=8)
+    expected_token = alert["resolve_token"]
+    expected_revision = status["profile_revision"]
+    if stale_part == "token":
+        expected_token = "0" * 64
+    elif stale_part == "revision":
+        expected_revision -= 1
+    else:
+        changed = agent.load_profile()
+        changed["alerts"][0]["resolved"] = True
+        agent.save_profile(changed, clinical_change=False)
+
+    response = client.post(
+        f"/api/alerts/{alert['id']}/resolve",
+        json={
+            "mutation_id": f"stale-alert-{stale_part}",
+            "expected_token": expected_token,
+            "expected_profile_revision": expected_revision,
+        },
+    )
+
+    assert response.status_code == 409
+    saved = agent.load_profile()
+    assert saved["profile_revision"] == 8
+    assert saved["workflow_revision"] == 0
+    assert saved["alerts"][0]["history"] == []
+
+
+def test_alert_resolution_mutation_id_reuse_conflicts_for_changed_request_and_target(
+    app_client, agent, empty_profile
+):
+    _, client = app_client
+    empty_profile["profile_revision"] = 5
+    empty_profile["alerts"] = [
+        {
+            "id": alert_id,
+            "priority": "high",
+            "message": alert_id,
+            "resolved": False,
+            "dependency_kind": "durable",
+            "source_dependency_active": True,
+            "history": [],
+        }
+        for alert_id in ("alert-first", "alert-second")
+    ]
+    agent.save_profile(empty_profile, clinical_change=False)
+    status = client.get("/api/status").get_json()
+    first = next(item for item in status["alerts"] if item["id"] == "alert-first")
+    second = next(item for item in status["alerts"] if item["id"] == "alert-second")
+    request = {
+        "mutation_id": "alert-reused-mutation",
+        "expected_token": first["resolve_token"],
+        "expected_profile_revision": status["profile_revision"],
+    }
+    resolved = client.post("/api/alerts/alert-first/resolve", json=request)
+
+    changed_payload = client.post(
+        "/api/alerts/alert-first/resolve",
+        json={**request, "outcome": {"kind": "administrative", "text": "Called"}},
+    )
+    changed_revision = client.post(
+        "/api/alerts/alert-first/resolve",
+        json={**request, "expected_profile_revision": 6},
+    )
+    changed_target = client.post(
+        "/api/alerts/alert-second/resolve",
+        json={
+            **request,
+            "expected_token": second["resolve_token"],
+            "expected_profile_revision": 6,
+        },
+    )
+
+    assert resolved.status_code == 200
+    assert changed_payload.status_code == 409
+    assert changed_revision.status_code == 409
+    assert changed_target.status_code == 409
+    saved = agent.load_profile()
+    assert len(saved["alerts"][0]["history"]) == 1
+    assert saved["alerts"][1]["resolved"] is False
+    assert saved["workflow_revision"] == 1
+    assert saved["profile_revision"] == 6
+
+
+def test_alert_resolution_inline_safety_rejection_is_atomic(app_client, agent, empty_profile):
+    _, client = app_client
+    status, alert = _seed_alert(agent, client, empty_profile)
+    before = agent.load_profile()
+
+    response = client.post(
+        f"/api/alerts/{alert['id']}/resolve",
+        json={
+            "mutation_id": "unsafe-inline-follow-up",
+            "expected_token": alert["resolve_token"],
+            "expected_profile_revision": status["profile_revision"],
+            "follow_up": {"text": "Start treatment tomorrow"},
+        },
+    )
+
+    assert response.status_code == 400
+    assert "treating team" in response.get_json()["error"]
+    assert agent.load_profile() == before
+
+
+def test_alert_resolution_save_failure_rolls_back_inline_action_and_alert(
+    app_client, agent, empty_profile, monkeypatch
+):
+    app_module, client = app_client
+    status, alert = _seed_alert(agent, client, empty_profile)
+    before = agent.load_profile()
+    save_count = 0
+
+    def fail_save(*_args, **_kwargs):
+        nonlocal save_count
+        save_count += 1
+        raise OSError("simulated alert save failure")
+
+    monkeypatch.setattr(app_module.agent, "save_profile", fail_save)
+    with pytest.raises(OSError):
+        client.post(
+            f"/api/alerts/{alert['id']}/resolve",
+            json={
+                "mutation_id": "failed-alert-resolution",
+                "expected_token": alert["resolve_token"],
+                "expected_profile_revision": status["profile_revision"],
+                "follow_up": {"text": "Ask the treating team about monitoring"},
+            },
+        )
+
+    assert save_count == 1
+    assert agent.load_profile() == before
+
+
+def test_alert_resolution_preserves_sibling_lifecycle_and_hides_source_internals(
+    app_client, agent, empty_profile
+):
+    _, client = app_client
+    empty_profile["profile_revision"] = 10
+    empty_profile["alerts"] = [
+        {
+            "id": "target",
+            "priority": "high",
+            "message": "Resolve this",
+            "resolved": False,
+            "dependency_kind": "durable",
+            "source_dependency_active": True,
+            "source_job_id": "private-job-target",
+            "source_document_id": "private-source-target",
+            "history": [],
+        },
+        {
+            "id": "durable-sibling",
+            "priority": "medium",
+            "message": "Durable sibling",
+            "resolved": False,
+            "dependency_kind": "durable",
+            "source_dependency_active": True,
+            "history": [],
+        },
+        {
+            "id": "source-sibling",
+            "priority": "medium",
+            "message": "Source sibling",
+            "resolved": False,
+            "dependency_kind": "source",
+            "source_dependency_active": True,
+            "source_job_id": "private-job-sibling",
+            "history": [],
+        },
+        {
+            "id": "snapshot-sibling",
+            "priority": "low",
+            "message": "Snapshot sibling",
+            "resolved": False,
+            "dependency_kind": "profile_snapshot",
+            "generation_profile_revision": 10,
+            "source_dependency_active": True,
+            "history": [],
+        },
+    ]
+    agent.save_profile(empty_profile, clinical_change=False)
+    status = client.get("/api/status").get_json()
+    target = next(item for item in status["alerts"] if item["id"] == "target")
+    assert "source_job_id" not in target
+    assert "source_document_id" not in target
+    assert "history" not in target
+
+    response = client.post(
+        "/api/alerts/target/resolve",
+        json={
+            "mutation_id": "sibling-lifecycle-resolve",
+            "expected_token": target["resolve_token"],
+            "expected_profile_revision": status["profile_revision"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert "source_job_id" not in response.get_json()["alert"]
+    saved = agent.load_profile()
+    assert saved["profile_revision"] == 11
+    assert [item["id"] for item in agent.active_alerts(saved)] == [
+        "durable-sibling",
+        "source-sibling",
+    ]
+    assert all(item["resolved"] is False for item in saved["alerts"] if item["id"] != "target")
+
+
+@pytest.mark.parametrize(
+    ("kind", "verification"),
+    [
+        ("administrative", "not_applicable"),
+        ("caregiver_reported", "unverified"),
+        ("clinician_attributed", "unverified"),
+    ],
+)
+def test_alert_outcome_kind_is_server_provenanced_and_always_clinical(
+    app_client, agent, empty_profile, kind, verification
+):
+    _, client = app_client
+    status, alert = _seed_alert(agent, client, empty_profile, revision=12)
+
+    response = client.post(
+        f"/api/alerts/{alert['id']}/resolve",
+        json={
+            "mutation_id": f"outcome-kind-{kind}",
+            "expected_token": alert["resolve_token"],
+            "expected_profile_revision": status["profile_revision"],
+            "outcome": {"kind": kind, "text": "Follow-through recorded"},
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["profile_revision"] == 13
+    resolution = response.get_json()["alert"]["resolution"]
+    assert resolution["provenance"]["source_verification"] == verification
+    assert "path" not in json.dumps(response.get_json()).lower()
+
+
+def test_legacy_alert_index_route_is_retired(app_client):
+    _, client = app_client
+
+    response = client.post("/api/alerts/resolve/0", json={})
+
+    assert response.status_code == 410
 
 
 def test_model_context_labels_captured_statements_as_unverified(agent, empty_profile):

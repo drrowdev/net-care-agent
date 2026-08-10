@@ -2624,15 +2624,17 @@ def api_visit_recap(visit_id):
             raise agent.FollowThroughConflict(
                 "The visit changed. Reload it before viewing the recap."
             )
-        recap = agent.project_visit_recap(profile, visit)
+        recap, authority_manifest = agent.project_visit_recap_with_authority(profile, visit)
         profile_revision = profile.get("profile_revision", 0)
         workflow_revision = profile.get("workflow_revision", 0)
         recap_token = agent.semantic_token(
             {
+                "visit_id": visit_id,
                 "visit_token": expected_token,
                 "profile_revision": profile_revision,
                 "workflow_revision": workflow_revision,
                 "recap": recap,
+                "authority_manifest": authority_manifest,
             }
         )
         return jsonify(

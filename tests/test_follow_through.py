@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import importlib
 import json
 import threading
@@ -490,6 +491,216 @@ def test_visit_recap_is_deterministic_bounded_and_read_only(
     assert agent.load_profile() == before
 
 
+def test_visit_recap_private_authority_manifest_is_stable_and_ordered(agent, empty_profile):
+    visit = _seed_recap_profile(agent, empty_profile)
+    profile = agent.load_profile()
+    second_action = copy.deepcopy(profile["caregiver_actions"][0])
+    second_action["id"] = "action-alpha"
+    second_action["created_at"] = "2026-08-10T10:00:00+00:00"
+    profile["caregiver_actions"].append(second_action)
+    second_alert = copy.deepcopy(profile["alerts"][0])
+    second_alert["id"] = "alert-alpha"
+    second_alert["resolution"]["follow_up_id"] = second_action["id"]
+    profile["alerts"].append(second_alert)
+
+    recap, authority = agent.project_visit_recap_with_authority(profile, visit)
+    profile["caregiver_actions"].reverse()
+    profile["alerts"].reverse()
+    reordered_recap, reordered_authority = agent.project_visit_recap_with_authority(profile, visit)
+
+    assert recap == reordered_recap
+    assert authority == reordered_authority
+    assert [item["id"] for item in authority["questions"]] == [
+        "question-answered",
+        "question-unknown",
+        "question-unanswered",
+    ]
+    assert [item["id"] for item in authority["decisions"]] == [
+        "decision-active",
+        "decision-confirm",
+    ]
+    assert [item["id"] for item in authority["follow_ups"]] == [
+        "action-alpha",
+        "action-visit",
+    ]
+    assert [item["id"] for item in authority["resolved_alerts"]] == [
+        "alert-alpha",
+        "alert-related",
+    ]
+    assert all(len(item["authority_token"]) == 64 for item in authority["questions"])
+    assert "authority_token" not in json.dumps(recap)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "action_source",
+        "action_provenance",
+        "action_link",
+        "action_lifecycle",
+        "alert_source",
+        "alert_provenance",
+        "alert_link",
+        "alert_lifecycle",
+        "question_identity",
+        "question_token",
+        "decision_identity",
+        "decision_token",
+    ],
+)
+def test_visit_recap_token_binds_every_included_authority_change(
+    app_client, agent, empty_profile, change
+):
+    _, client = app_client
+    visit = _seed_recap_profile(agent, empty_profile)
+    expected_visit_token = agent.semantic_token(visit)
+    first = client.get(
+        f"/api/visits/{visit['id']}/recap",
+        query_string={"expected_visit_token": expected_visit_token},
+    ).get_json()
+    profile = agent.load_profile()
+    action = profile["caregiver_actions"][0]
+    alert = profile["alerts"][0]
+    question = profile["visits"][0]["question_snapshots"][1]
+    decision = profile["visits"][0]["decisions"][1]
+
+    if change == "action_source":
+        action["origin_snapshot"]["snapshot"]["path"] = "changed-source"
+    elif change == "action_provenance":
+        action["outcome"]["provenance"]["path"] = "changed-provenance"
+    elif change == "action_link":
+        action["alert_id"] = "alert-related"
+    elif change == "action_lifecycle":
+        action["status"] = "cancelled"
+    elif change == "alert_source":
+        alert["source_job_id"] = "changed-source-job"
+    elif change == "alert_provenance":
+        alert["resolution"]["provenance"]["path"] = "changed-provenance"
+    elif change == "alert_link":
+        alert["resolution"]["follow_up_id"] = None
+        alert["resolution"]["visit_id"] = visit["id"]
+    elif change == "alert_lifecycle":
+        alert["resolution"]["resolved_at"] = "2026-08-12T10:00:00+00:00"
+    elif change == "question_identity":
+        question["id"] = "question-answered-changed"
+    elif change == "question_token":
+        question["source_generation_id"] = "changed-generation"
+    elif change == "decision_identity":
+        decision["id"] = "decision-active-changed"
+        action["decision_id"] = decision["id"]
+    elif change == "decision_token":
+        decision["provenance"]["source_verification"] = "changed"
+
+    agent.save_profile(profile, clinical_change=False)
+    changed_visit = agent.load_profile()["visits"][0]
+    second = client.get(
+        f"/api/visits/{visit['id']}/recap",
+        query_string={"expected_visit_token": agent.semantic_token(changed_visit)},
+    )
+
+    assert second.status_code == 200
+    second_body = second.get_json()
+    assert second_body["recap_token"] != first["recap_token"]
+    assert "authority_manifest" not in second_body
+    if change in {
+        "action_source",
+        "action_provenance",
+        "alert_source",
+        "alert_provenance",
+        "question_token",
+        "decision_token",
+    }:
+        assert second_body["recap"] == first["recap"]
+
+
+@pytest.mark.parametrize(
+    "malformation",
+    [
+        "question_answer_status",
+        "question_answer_provenance",
+        "question_answer_bounds",
+        "question_source_control",
+        "decision_status",
+        "decision_provenance",
+        "action_status",
+        "action_outcome_lifecycle",
+        "action_nonterminal_outcome",
+        "action_outcome_kind",
+        "action_outcome_provenance",
+        "action_source_shape",
+        "action_link_shape",
+        "alert_outcome_kind",
+        "alert_outcome_provenance",
+        "alert_link_shape",
+        "alert_lifecycle",
+        "alert_control",
+    ],
+)
+def test_visit_recap_malformed_relevant_authority_fails_closed_without_side_effects(
+    app_client, agent, empty_profile, malformation
+):
+    _, client = app_client
+    visit = _seed_recap_profile(agent, empty_profile)
+    profile = agent.load_profile()
+    question = profile["visits"][0]["question_snapshots"][1]
+    decision = profile["visits"][0]["decisions"][1]
+    action = profile["caregiver_actions"][0]
+    alert_resolution = profile["alerts"][0]["resolution"]
+
+    if malformation == "question_answer_status":
+        question["answer"]["status"] = "partly_answered"
+    elif malformation == "question_answer_provenance":
+        question["answer"]["provenance"] = []
+    elif malformation == "question_answer_bounds":
+        question["answer"]["text"] = "x" * 4001
+    elif malformation == "question_source_control":
+        question["source_generation_id"] = "unsafe\u0000source"
+    elif malformation == "decision_status":
+        decision["status"] = "archived"
+    elif malformation == "decision_provenance":
+        decision["provenance"] = {"capture_method": "unsafe\u007fvalue"}
+    elif malformation == "action_status":
+        action["status"] = "archived"
+    elif malformation == "action_outcome_lifecycle":
+        action["outcome"] = None
+    elif malformation == "action_nonterminal_outcome":
+        action["status"] = "open"
+    elif malformation == "action_outcome_kind":
+        action["outcome"]["kind"] = "other"
+    elif malformation == "action_outcome_provenance":
+        action["outcome"]["provenance"] = {"path": "x" * 501}
+    elif malformation == "action_source_shape":
+        action["origin_snapshot"]["source_profile_revision"] = "twelve"
+    elif malformation == "action_link_shape":
+        action["visit_id"] = "visit-other"
+    elif malformation == "alert_outcome_kind":
+        alert_resolution["outcome_kind"] = "other"
+    elif malformation == "alert_outcome_provenance":
+        alert_resolution["provenance"] = []
+    elif malformation == "alert_link_shape":
+        alert_resolution["visit_id"] = visit["id"]
+    elif malformation == "alert_lifecycle":
+        alert_resolution["status"] = "closed"
+    elif malformation == "alert_control":
+        alert_resolution["resolved_at"] = "unsafe\u0000timestamp"
+
+    agent.save_profile(profile, clinical_change=False)
+    before = agent.load_profile()
+    malformed_visit = before["visits"][0]
+    with pytest.raises(agent.RecapIntegrityError):
+        agent.project_visit_recap_with_authority(before, malformed_visit)
+
+    response = client.get(
+        f"/api/visits/{visit['id']}/recap",
+        query_string={"expected_visit_token": agent.semantic_token(malformed_visit)},
+    )
+
+    assert response.status_code == 409
+    assert response.get_json()["code"] == "workflow_conflict"
+    assert "recap" not in response.get_json()
+    assert agent.load_profile() == before
+
+
 def test_visit_recap_requires_current_visit_token_and_changes_with_authority(
     app_client, agent, empty_profile
 ):
@@ -589,9 +800,9 @@ def test_visit_recap_rejects_unsafe_legacy_content_and_oversized_collections(
         query_string={"expected_visit_token": agent.semantic_token(oversized_visit)},
     )
 
-    assert unsafe.status_code == 400
+    assert unsafe.status_code == 409
     assert "unsupported control characters" in unsafe.get_json()["error"]
-    assert oversized.status_code == 400
+    assert oversized.status_code == 409
     assert "safe recap limit" in oversized.get_json()["error"]
 
 

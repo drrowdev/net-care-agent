@@ -4642,7 +4642,7 @@
     const actions = document.getElementById('visit-recap-actions');
     const visible = visitRecapAuthorityIsCurrent();
     const enabled = visible && !visitRecapExportOwner;
-    if (!visible && actions?.contains(document.activeElement)) {
+    if (!visible && actions?.contains?.(document.activeElement)) {
       const fallback = appointmentDialogOpen
         ? document.getElementById('appointment-tab-recap')
         : null;

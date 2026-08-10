@@ -3660,6 +3660,9 @@ let visitRecapStale = false;
 let visitRecapState = 'idle';
 let visitRecapMessage = '';
 let visitRecapDownloadUrl = null;
+let visitRecapExportEpoch = 0;
+let visitRecapExportOwner = null;
+let visitRecapNetworkAmbiguous = false;
 let appointmentDialogOpen = true;
 let activeAppointmentTab = 'recap';
 let phiEpoch = 4;
@@ -3669,6 +3672,7 @@ let workflowRevision = 9;
 const revoked = [];
 const URL = { revokeObjectURL(value) { revoked.push(value); } };
 function normalizedRevision(value) { return value; }
+function appIsOffline() { return false; }
 """,
             _function_source("revokeVisitRecapDownloadUrl", "clearVisitRecap"),
             _function_source("clearVisitRecap", "scrubVisitRecapBeforeSelectionChange"),
@@ -3696,6 +3700,10 @@ function accept(status = 'in_progress', state = 'current', exportable = true) {
     profileRevision: latestProfileRevision,
     workflowRevision,
     recapToken: `recap-${selectedVisitId}`,
+    recapState: state,
+    exportable,
+    visitStatus: status,
+    requestEpoch: visitRecapLoadEpoch,
   };
   visitRecapExportText = exportable ? `Exact answer ${selectedVisitId}` : '';
   visitRecapStale = false;
@@ -4139,7 +4147,11 @@ function seed(data = recapData()) {
   visitRecapNetworkAmbiguous = false;
   appointmentDialogOpen = true;
   activeAppointmentTab = 'recap';
-  visitsById = new Map([['visit-a', { id: 'visit-a', token: data.visit_token }]]);
+  visitsById = new Map([['visit-a', {
+    id: 'visit-a',
+    token: data.visit_token,
+    status: data.recap.visit.status,
+  }]]);
   applyVisitRecapProjection(data, { requestEpoch: visitRecapLoadEpoch });
   resetEffects();
 }
@@ -4505,7 +4517,11 @@ window.__seedRecap = data => {
   visitRecapExportOwner = null;
   appointmentDialogOpen = true;
   activeAppointmentTab = 'recap';
-  visitsById = new Map([['visit-a', { id: 'visit-a', token: data.visit_token }]]);
+  visitsById = new Map([['visit-a', {
+    id: 'visit-a',
+    token: data.visit_token,
+    status: data.recap.visit.status,
+  }]]);
   const overlay = document.getElementById('appointment-overlay');
   overlay.inert = false;
   overlay.classList.add('open');

@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import importlib
 import json
+import threading
 
 import pytest
 
@@ -41,6 +42,29 @@ def _create_request(projection, *, mutation_id="symptom-create-001", **overrides
         "frequency_text": "A few times this week",
         "triggers_text": "After breakfast",
         "notes": "Caregiver-entered wording",
+    }
+    request.update(overrides)
+    return request
+
+
+def _follow_up_request(
+    projection,
+    episode,
+    *,
+    mutation_id="episode-follow-up-001",
+    **overrides,
+):
+    request = {
+        "mutation_id": mutation_id,
+        "expected_profile_revision": projection["profile_revision"],
+        "expected_workflow_revision": projection["workflow_revision"],
+        "expected_projection_token": projection["projection_token"],
+        "expected_episode_token": episode["token"],
+        "follow_up": {
+            "text": "Ask the treating team about this symptom",
+            "owner": "Caregiver",
+            "due_date": "2026-09-01",
+        },
     }
     request.update(overrides)
     return request
@@ -555,6 +579,399 @@ def test_link_and_unlink_are_workflow_only_and_allow_resolved_episode(
     assert unlinked.status_code == 200
     assert unlinked.get_json()["profile_revision"] == profile_revision
     assert unlinked.get_json()["episode"]["follow_up"] is None
+
+
+@pytest.mark.parametrize("episode_status", ["current", "resolved"])
+def test_existing_episode_inline_follow_up_is_atomic_replay_safe_and_workflow_only(
+    app_client, agent, empty_profile, monkeypatch, episode_status
+):
+    app_module, client = app_client
+    agent.save_profile(empty_profile, clinical_change=False)
+    created = client.post(
+        "/api/symptom-episodes",
+        json=_create_request(
+            _projection(client),
+            mutation_id=f"inline-patch-create-{episode_status}",
+        ),
+    ).get_json()
+    if episode_status == "resolved":
+        projection = _projection(client)
+        client.post(
+            f"/api/symptom-episodes/{created['episode']['id']}/resolve",
+            json={
+                "mutation_id": "inline-patch-resolve",
+                "expected_profile_revision": projection["profile_revision"],
+                "expected_workflow_revision": projection["workflow_revision"],
+                "expected_projection_token": projection["projection_token"],
+                "expected_episode_token": projection["episodes"][0]["token"],
+                "resolved_date": None,
+            },
+        )
+
+    projection = _projection(client)
+    episode = projection["episodes"][0]
+    request = _follow_up_request(
+        projection,
+        episode,
+        mutation_id=f"inline-patch-{episode_status}",
+    )
+    original_save = app_module.agent.save_profile
+    save_count = 0
+
+    def counting_save(*args, **kwargs):
+        nonlocal save_count
+        save_count += 1
+        return original_save(*args, **kwargs)
+
+    monkeypatch.setattr(app_module.agent, "save_profile", counting_save)
+    first = client.patch(
+        f"/api/symptom-episodes/{episode['id']}/follow-up",
+        json=request,
+    )
+    replay = client.patch(
+        f"/api/symptom-episodes/{episode['id']}/follow-up",
+        json=request,
+    )
+
+    assert first.status_code == 200
+    assert replay.status_code == 200
+    first_body = first.get_json()
+    replay_body = replay.get_json()
+    assert replay_body.pop("idempotent_replay") is True
+    assert replay_body == first_body
+    assert save_count == 1
+    assert first_body["profile_revision"] == projection["profile_revision"]
+    assert first_body["workflow_revision"] == projection["workflow_revision"] + 1
+    assert first_body["episode"]["status"] == episode_status
+
+    saved = agent.load_profile()
+    assert len(saved["caregiver_actions"]) == 1
+    action = saved["caregiver_actions"][0]
+    stored_episode = saved["symptom_episodes"][0]
+    assert stored_episode["caregiver_action_id"] == action["id"]
+    assert action["origin_snapshot"] == {
+        "kind": "manual",
+        "source_id": None,
+        "source_job_id": None,
+        "source_profile_revision": None,
+        "generation_id": None,
+        "text": request["follow_up"]["text"],
+        "snapshot": {},
+    }
+    assert action["owner"] == "Caregiver"
+    assert action["due_date"] == "2026-09-01"
+    assert action["status"] == "open"
+    assert action["visit_id"] is None
+    assert action["decision_id"] is None
+    assert action["alert_id"] is None
+    assert action["history"][0]["target"] == f"caregiver_action:{action['id']}"
+    assert stored_episode["history"][-1]["target"] == f"symptom_episode:{episode['id']}"
+    assert stored_episode["history"][-1]["operation"] == "follow_up_created_and_linked"
+
+    refreshed = _projection(client)
+    assert refreshed["episodes"][0]["follow_up"] == first_body["follow_up"]
+    changed = copy.deepcopy(request)
+    changed["follow_up"]["owner"] = "Another caregiver"
+    conflict = client.patch(
+        f"/api/symptom-episodes/{episode['id']}/follow-up",
+        json=changed,
+    )
+    assert conflict.status_code == 409
+    assert save_count == 1
+    assert len(agent.load_profile()["caregiver_actions"]) == 1
+
+
+def test_existing_episode_inline_follow_up_rejects_ambiguous_or_stale_authority(
+    app_client, agent, empty_profile
+):
+    _, client = app_client
+    agent.save_profile(empty_profile, clinical_change=False)
+    created = client.post(
+        "/api/symptom-episodes",
+        json=_create_request(_projection(client), mutation_id="inline-reject-create"),
+    ).get_json()
+    projection = _projection(client)
+    episode = projection["episodes"][0]
+    valid = _follow_up_request(projection, episode, mutation_id="inline-reject-valid")
+    before = agent.load_profile()
+    invalid_requests = []
+
+    no_operation = {key: value for key, value in valid.items() if key != "follow_up"}
+    invalid_requests.append(no_operation)
+    invalid_requests.append(
+        {
+            **valid,
+            "caregiver_action_id": "act_client_supplied",
+            "expected_action_token": "client-token",
+        }
+    )
+    invalid_requests.append({**valid, "expected_action_token": "client-token"})
+    invalid_requests.append({**valid, "follow_up": None})
+    invalid_requests.append({**valid, "follow_up": {}})
+    invalid_requests.append({**valid, "follow_up": {"text": "A" * 1001}})
+    invalid_requests.append(
+        {
+            **valid,
+            "follow_up": {
+                "text": "Ask the treating team about this symptom",
+                "owner": "A" * 101,
+            },
+        }
+    )
+    invalid_requests.append(
+        {
+            **valid,
+            "follow_up": {
+                "text": "Ask the treating team about this symptom",
+                "due_date": "next week",
+            },
+        }
+    )
+    for forbidden in ("id", "token", "status", "history", "provenance"):
+        invalid_requests.append(
+            {
+                **valid,
+                "follow_up": {
+                    "text": "Ask the treating team about this symptom",
+                    forbidden: "client authority",
+                },
+            }
+        )
+    invalid_requests.append({**valid, "status": "open"})
+    for required in (
+        "expected_profile_revision",
+        "expected_workflow_revision",
+        "expected_projection_token",
+        "expected_episode_token",
+    ):
+        invalid_requests.append({key: value for key, value in valid.items() if key != required})
+
+    for request in invalid_requests:
+        response = client.patch(
+            f"/api/symptom-episodes/{created['episode']['id']}/follow-up",
+            json=request,
+        )
+        assert response.status_code == 400
+        assert agent.load_profile() == before
+
+    stale_requests = [
+        {**valid, "expected_profile_revision": projection["profile_revision"] + 1},
+        {**valid, "expected_workflow_revision": projection["workflow_revision"] + 1},
+        {**valid, "expected_projection_token": projection["projection_token"] + "stale"},
+        {**valid, "expected_episode_token": episode["token"] + "stale"},
+    ]
+    for request in stale_requests:
+        response = client.patch(
+            f"/api/symptom-episodes/{created['episode']['id']}/follow-up",
+            json=request,
+        )
+        assert response.status_code == 409
+        assert agent.load_profile() == before
+
+
+def test_existing_episode_inline_follow_up_capacity_and_save_failure_are_atomic(
+    app_client, agent, empty_profile, monkeypatch
+):
+    app_module, client = app_client
+    agent.save_profile(empty_profile, clinical_change=False)
+    client.post(
+        "/api/symptom-episodes",
+        json=_create_request(_projection(client), mutation_id="inline-atomic-create"),
+    )
+    projection = _projection(client)
+    episode = projection["episodes"][0]
+    request = _follow_up_request(
+        projection,
+        episode,
+        mutation_id="inline-save-failure",
+    )
+    before = agent.load_profile()
+
+    def fail_save(*_args, **_kwargs):
+        raise OSError("simulated inline follow-up save failure")
+
+    monkeypatch.setattr(app_module.agent, "save_profile", fail_save)
+    with pytest.raises(OSError, match="simulated inline follow-up save failure"):
+        client.patch(
+            f"/api/symptom-episodes/{episode['id']}/follow-up",
+            json=request,
+        )
+    assert agent.load_profile() == before
+
+    monkeypatch.undo()
+    full = agent.load_profile()
+    prototype = _seed_action(agent, full, action_id="act_capacity_000")
+    full["caregiver_actions"] = [
+        {**copy.deepcopy(prototype), "id": f"act_capacity_{index:03d}"}
+        for index in range(agent.MAX_SYMPTOM_ACTIONS)
+    ]
+    agent.save_profile(full, clinical_change=False)
+    projection = _projection(client)
+    response = client.patch(
+        f"/api/symptom-episodes/{episode['id']}/follow-up",
+        json=_follow_up_request(
+            projection,
+            projection["episodes"][0],
+            mutation_id="inline-capacity-limit",
+        ),
+    )
+    assert response.status_code == 422
+    saved = agent.load_profile()
+    assert len(saved["caregiver_actions"]) == agent.MAX_SYMPTOM_ACTIONS
+    assert saved["symptom_episodes"][0]["caregiver_action_id"] is None
+
+
+def test_existing_episode_inline_follow_up_serializes_concurrent_intents(
+    app_client, agent, empty_profile
+):
+    app_module, client = app_client
+    agent.save_profile(empty_profile, clinical_change=False)
+    client.post(
+        "/api/symptom-episodes",
+        json=_create_request(_projection(client), mutation_id="inline-concurrent-create"),
+    )
+    projection = _projection(client)
+    episode = projection["episodes"][0]
+    barrier = threading.Barrier(2)
+    responses = []
+
+    def create_follow_up(index):
+        with app_module.app.test_client() as thread_client:
+            barrier.wait()
+            responses.append(
+                thread_client.patch(
+                    f"/api/symptom-episodes/{episode['id']}/follow-up",
+                    json=_follow_up_request(
+                        projection,
+                        episode,
+                        mutation_id=f"inline-concurrent-{index}",
+                        follow_up={"text": f"Ask the treating team about symptom intent {index}"},
+                    ),
+                )
+            )
+
+    threads = [threading.Thread(target=create_follow_up, args=(index,)) for index in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5)
+
+    assert sorted(response.status_code for response in responses) == [200, 409]
+    saved = agent.load_profile()
+    assert len(saved["caregiver_actions"]) == 1
+    assert (
+        saved["symptom_episodes"][0]["caregiver_action_id"] == (saved["caregiver_actions"][0]["id"])
+    )
+    assert saved["workflow_revision"] == projection["workflow_revision"] + 1
+
+
+def test_inline_follow_up_unlink_relink_and_lifecycle_remain_independent(
+    app_client, agent, empty_profile
+):
+    _, client = app_client
+    agent.save_profile(empty_profile, clinical_change=False)
+    client.post(
+        "/api/symptom-episodes",
+        json=_create_request(_projection(client), mutation_id="inline-compat-create"),
+    )
+    projection = _projection(client)
+    episode = projection["episodes"][0]
+    inline_request = _follow_up_request(
+        projection,
+        episode,
+        mutation_id="inline-compat-link",
+    )
+    linked = client.patch(
+        f"/api/symptom-episodes/{episode['id']}/follow-up",
+        json=inline_request,
+    )
+    assert linked.status_code == 200
+
+    old_projection_token = projection["projection_token"]
+    projection = _projection(client)
+    episode = projection["episodes"][0]
+    action = episode["follow_up"]
+    unlink = {
+        "mutation_id": "inline-compat-unlink",
+        "expected_profile_revision": projection["profile_revision"],
+        "expected_workflow_revision": projection["workflow_revision"],
+        "expected_projection_token": old_projection_token,
+        "expected_episode_token": episode["token"],
+        "caregiver_action_id": None,
+        "expected_action_token": action["token"],
+    }
+    assert (
+        client.patch(
+            f"/api/symptom-episodes/{episode['id']}/follow-up",
+            json=unlink,
+        ).status_code
+        == 409
+    )
+    unlink["expected_projection_token"] = projection["projection_token"]
+    assert (
+        client.patch(
+            f"/api/symptom-episodes/{episode['id']}/follow-up",
+            json=unlink,
+        ).status_code
+        == 200
+    )
+    replay_after_unlink = client.patch(
+        f"/api/symptom-episodes/{episode['id']}/follow-up",
+        json=inline_request,
+    )
+    assert replay_after_unlink.status_code == 200
+    replay_body = replay_after_unlink.get_json()
+    assert replay_body.pop("idempotent_replay") is True
+    assert replay_body == linked.get_json()
+
+    projection = _projection(client)
+    episode = projection["episodes"][0]
+    eligible = next(item for item in projection["eligible_actions"] if item["id"] == action["id"])
+    relink = client.patch(
+        f"/api/symptom-episodes/{episode['id']}/follow-up",
+        json={
+            "mutation_id": "inline-compat-relink",
+            "expected_profile_revision": projection["profile_revision"],
+            "expected_workflow_revision": projection["workflow_revision"],
+            "expected_projection_token": projection["projection_token"],
+            "expected_episode_token": episode["token"],
+            "caregiver_action_id": eligible["id"],
+            "expected_action_token": eligible["token"],
+        },
+    )
+    assert relink.status_code == 200
+    action_update = client.patch(
+        f"/api/follow-ups/{action['id']}",
+        json={
+            "mutation_id": "inline-compat-complete",
+            "expected_token": relink.get_json()["follow_up"]["token"],
+            "status": "completed",
+            "outcome": {
+                "kind": "administrative",
+                "text": "Confirmed the follow-up was completed",
+            },
+        },
+    )
+    assert action_update.status_code == 200
+    assert agent.load_profile()["symptom_episodes"][0]["status"] == "current"
+
+    projection = _projection(client)
+    episode = projection["episodes"][0]
+    resolved = client.post(
+        f"/api/symptom-episodes/{episode['id']}/resolve",
+        json={
+            "mutation_id": "inline-compat-resolve",
+            "expected_profile_revision": projection["profile_revision"],
+            "expected_workflow_revision": projection["workflow_revision"],
+            "expected_projection_token": projection["projection_token"],
+            "expected_episode_token": episode["token"],
+            "resolved_date": None,
+        },
+    )
+    assert resolved.status_code == 200
+    saved = agent.load_profile()
+    assert saved["caregiver_actions"][0]["status"] == "completed"
+    assert saved["symptom_episodes"][0]["caregiver_action_id"] == action["id"]
 
 
 def test_projection_fails_whole_read_on_duplicate_link_or_private_history_overflow(

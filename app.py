@@ -4601,7 +4601,7 @@ def api_resolve_symptom_episode(episode_id):
 
 @app.route("/api/symptom-episodes/<episode_id>/follow-up", methods=["PATCH"])
 def api_link_symptom_episode_follow_up(episode_id):
-    """Atomically link or unlink one exact durable caregiver follow-up."""
+    """Atomically create-link, link, or unlink one durable caregiver follow-up."""
     try:
         data = _workflow_request()
     except agent.FollowThroughError as exc:
@@ -4616,14 +4616,27 @@ def api_link_symptom_episode_follow_up(episode_id):
                 "expected_episode_token",
                 "caregiver_action_id",
                 "expected_action_token",
+                "follow_up",
             },
         )
-        if "caregiver_action_id" not in data:
-            raise ValueError("caregiver_action_id is required.")
+        has_action_id = "caregiver_action_id" in data
+        has_inline_follow_up = "follow_up" in data
+        if has_action_id == has_inline_follow_up:
+            raise ValueError(
+                "Use exactly one follow-up operation: caregiver_action_id or follow_up."
+            )
+        if has_inline_follow_up and "expected_action_token" in data:
+            raise ValueError("expected_action_token cannot be used with follow_up.")
         mutation_id = agent.validate_mutation_id(data.get("mutation_id"))
-        operation = (
-            "follow_up_unlinked" if data.get("caregiver_action_id") is None else "follow_up_linked"
-        )
+        if has_inline_follow_up:
+            operation = "follow_up_created_and_linked"
+            target = f"symptom_episode:{episode_id}"
+        else:
+            operation = (
+                "follow_up_unlinked"
+                if data.get("caregiver_action_id") is None
+                else "follow_up_linked"
+            )
         with agent.serialized_mutation():
             profile = agent.load_profile()
             replay = _idempotent_result(
@@ -4642,8 +4655,20 @@ def api_link_symptom_episode_follow_up(episode_id):
             _episode_projection_row(projection, episode_id, data.get("expected_episode_token"))
             episode = _episode_record(profile, episode_id)
             current_action_id = episode.get("caregiver_action_id")
-            new_action_id = data.get("caregiver_action_id")
-            if new_action_id is None:
+            new_action_id = data.get("caregiver_action_id") if has_action_id else None
+            inline_follow_up = None
+            if has_inline_follow_up:
+                if current_action_id is not None:
+                    raise _SymptomConflictError(
+                        "Unlink the current caregiver follow-up before creating another."
+                    )
+                inline_follow_up = _validate_inline_episode_follow_up(data.get("follow_up"))
+                if len(profile.get("caregiver_actions", [])) >= agent.MAX_SYMPTOM_ACTIONS:
+                    raise agent.SymptomProjectionError(
+                        "symptom_projection_too_large",
+                        "Symptom data exceeds the supported projection limits.",
+                    )
+            elif new_action_id is None:
                 if not isinstance(current_action_id, str) or not current_action_id:
                     raise _SymptomConflictError(
                         "The symptom episode has no linked caregiver follow-up."
@@ -4667,6 +4692,18 @@ def api_link_symptom_episode_follow_up(episode_id):
                     expected_token=data.get("expected_action_token"),
                     episode_id=episode_id,
                 )
+            if inline_follow_up is not None:
+                internal_mutation_id = (
+                    "symact:" + hashlib.sha256(mutation_id.encode("ascii")).hexdigest()[:32]
+                )
+                linked_action = _new_action(
+                    profile,
+                    inline_follow_up,
+                    mutation_id=mutation_id,
+                    history_mutation_id=internal_mutation_id,
+                    history_endpoint=endpoint,
+                )
+                new_action_id = linked_action["id"]
             before_token = agent.semantic_token(episode)
             episode["caregiver_action_id"] = new_action_id
             episode["updated_at"] = now_stamp()

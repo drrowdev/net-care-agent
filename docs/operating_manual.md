@@ -548,9 +548,13 @@ neutral mild/moderate/severe caregiver-entered severity plus optional exact
 detail, timing/frequency/triggers, explicit partial dates, current/resolved
 lifecycle, unverified provenance, and an optional durable caregiver follow-up.
 Creation can atomically link one eligible existing follow-up or create and link
-one bounded manual follow-up; retries cannot create a second action. Episode and
-follow-up lifecycles never change each other. The fixed safety statement for the
-future shared UI is:
+one bounded manual follow-up. The backend can also atomically create and link
+that same bounded manual follow-up later for an existing current or resolved
+episode. Exact retries cannot create a second action; mixed create/link/unlink
+requests and stale episode, action, projection, or revision authority are
+rejected without a partial save. Episode and follow-up lifecycles never change
+each other. The caregiver UI for this existing-episode operation remains
+deferred. The fixed safety statement for the future shared UI is:
 
 > NET/Care records what you enter but does not assess urgency or monitor
 > symptoms. Contact the treating team about symptoms or concerns. If you think

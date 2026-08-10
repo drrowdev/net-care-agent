@@ -184,14 +184,16 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
   internals, history, or unsafe route IDs. Corruption/inconsistency/overflow is
   a whole-read bounded `422`; reads never save, quarantine, audit, mutate,
   advance revisions, or call models/networks.
-- Episode create/edit/resolve and atomic create-link require exact projection,
-  episode/action authority, both revisions, canonical request, target, and
-  scoped mutation ID under `serialized_mutation`; they advance both revisions,
-  append audit, and save once. Exact replay returns the immutable response.
-  Existing-action link/unlink is workflow-only. Inline create-link validates
-  before creating either object and conflict/save failure commits neither.
-  Actions retain visit/decision/alert provenance, may link to at most one
-  episode, and never cascade lifecycle in either direction.
+- Episode create/edit/resolve and every atomic follow-up link variant require
+  exact projection, episode/action authority as applicable, both revisions,
+  canonical request, target, and scoped mutation ID under
+  `serialized_mutation`. Create/edit/resolve advance both revisions; existing
+  link, unlink, and existing-episode inline create-link are workflow-only.
+  Inline create-link validates before generating the action, appends action and
+  episode audit against their exact IDs, and saves once. Exact replay returns
+  the immutable response; conflict/save failure commits no action, link,
+  history, or revision. Actions retain visit/decision/alert provenance, may
+  link to at most one episode, and never cascade lifecycle in either direction.
 - Fixed episode safety copy is non-personalized: NET/Care records entries but
   does not assess urgency or monitor symptoms; contact the treating team about
   symptoms/concerns, and contact local emergency services if the caregiver

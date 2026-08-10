@@ -396,7 +396,8 @@ def test_load_failures_distinguish_auth_offline_and_retry_states():
     assert "updateHeaderStatus(null, e)" in APP_JS
     assert "loadFailureMarkup('Assessment'" in APP_JS
     assert "loadFailureMarkup('Processing activity'" in APP_JS
-    assert "loadFailureMarkup('Imaging history'" in APP_JS
+    assert "renderImagingUnavailable(" in APP_JS
+    assert "'Imaging history could not be loaded." in APP_JS
 
 
 def test_status_failure_clears_all_status_derived_phi_and_caches():
@@ -1739,7 +1740,7 @@ def test_alert_resolution_late_selection_offline_retry_and_auth_eviction_are_aut
 
 
 def test_patient_history_joins_documents_and_keeps_orphaned_legacy_records():
-    history = _function_source("renderPatientEvidence", "toggleImagingHistory")
+    history = _function_source("renderPatientEvidence", "toggleSourceHistory")
     assert "const documents = patientEvidence.documents || []" in history
     assert "const sourcesById = new Map" in history
     assert "history_kind: 'document'" in history

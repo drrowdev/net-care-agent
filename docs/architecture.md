@@ -153,8 +153,9 @@ explicitly unclassified/non-comparable rows rather than being silently omitted.
 The projection never saves, audits, advances revisions, persists state, or calls
 a network/model service, and it is not injected into any LLM context.
 
-`GET /api/patient/imaging-series` is a separate authenticated/no-store,
-backend-only foundation over every bounded `imaging[]` row. Schema v10 preserves
+`GET /api/patient/imaging-series` is a separate authenticated/no-store
+projection over every bounded `imaging[]` row and the sole longitudinal
+authority for the shared Patient imaging timeline/comparison UI. Schema v10 preserves
 all existing IDs, rows, duplicates, order, wording, evidence, and unknown fields;
 it derives only missing IDs from the strongest source/span/full-row authority and
 marks pre-v10 dates `legacy_unknown` without rewriting them. New imaging-report
@@ -184,9 +185,21 @@ path or offsets. The projector never saves, audits, advances revisions,
 quarantines, calls a model/network service, or enters LLM context. It performs no
 lesion matching, measurement parsing/conversion, comparison, change/response
 label, trend, treatment-suitability, or clinical interpretation. The current SPA
-remains unchanged; the responsive timeline and explicit two-record comparison
-workflow are deferred to a dedicated frontend PR with PHI/race/accessibility
-review and browser tests.
+validates the entire mechanical response and exact opaque link shapes before
+atomically accepting it, preserves response order, and keeps authority tokens
+only in owned JavaScript state. It does not use `/api/status` or the
+`/api/patient/evidence` imaging compatibility array.
+
+The timeline presents every record independently. Exactly two current record
+IDs plus an explicit caregiver confirmation are required before the SPA repeats
+their raw facts side by side; report-authored comparison language remains
+attributed text, never an app judgment. Imaging-specific request,
+selection/comparison, PHI, and revision ownership reject late work. Either
+revision advancing makes the projection stale/read-only immediately. Only an
+ambiguous imaging transport may retain the last accepted snapshot; auth evicts
+all client PHI, while malformed or hard imaging responses scrub only imaging
+state, hidden DOM, focus, and pending ownership. The table owns any horizontal
+overflow and the comparison stacks at phone width.
 
 Receipt correction/removal and whole-document undo are serialized profile
 mutations. Each request carries the receipt revision plus a canonical target

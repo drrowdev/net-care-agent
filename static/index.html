@@ -242,9 +242,67 @@
           <div id="symptoms-list"><div class="loading-state">Loading symptoms…</div></div>
         </section>
 
-        <section class="content-card span-two" aria-labelledby="imaging-heading">
-          <div class="card-header compact"><div><p class="eyebrow">Clinical evidence</p><h2 id="imaging-heading">Imaging history</h2></div></div>
-          <div id="imaging-history"><div class="loading-state">Loading imaging history…</div></div>
+        <section class="content-card span-two imaging-explorer" id="imaging-explorer" aria-labelledby="imaging-heading">
+          <div class="card-header compact split-header">
+            <div>
+              <p class="eyebrow">Complete recorded history</p>
+              <h2 id="imaging-heading">Imaging</h2>
+            </div>
+            <div class="imaging-header-actions">
+              <span class="imaging-freshness loading" id="imaging-freshness">Not loaded</span>
+              <button class="button secondary" id="imaging-refresh-button" type="button" onclick="loadImagingSeries({ force: true })">Refresh</button>
+            </div>
+          </div>
+          <div class="imaging-summary" id="imaging-summary">
+            The table will show every bounded imaging record exactly as supplied by the imaging authority.
+          </div>
+          <div class="imaging-status loading" id="imaging-status" role="status" aria-live="polite">
+            Imaging will load when this Patient view is used.
+          </div>
+          <div
+            class="imaging-table-region"
+            id="imaging-table-region"
+            role="region"
+            aria-labelledby="imaging-table-caption"
+            tabindex="0"
+          >
+            <table class="imaging-table">
+              <caption id="imaging-table-caption">Complete authoritative imaging records in server-supplied order</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Compare</th>
+                  <th scope="col">Study date authority</th>
+                  <th scope="col">Modality / type</th>
+                  <th scope="col">Findings</th>
+                  <th scope="col">Impression</th>
+                  <th scope="col">Source authority</th>
+                </tr>
+              </thead>
+              <tbody id="imaging-table-body">
+                <tr><td colspan="6"><div class="loading-state">Imaging has not been loaded yet.</div></td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="imaging-selection-toolbar">
+            <p id="imaging-selection-status" role="status" aria-live="polite">Select exactly two current records to compare their raw report facts.</p>
+            <div>
+              <button class="button secondary" id="imaging-clear-selection" type="button" onclick="clearImagingSelection()" disabled>Clear selection</button>
+              <button class="button primary" id="imaging-compare-button" type="button" onclick="compareSelectedImagingRecords()" disabled>Compare selected records</button>
+            </div>
+          </div>
+          <section class="imaging-comparison" id="imaging-comparison" aria-labelledby="imaging-comparison-heading" hidden>
+            <div class="imaging-comparison-heading">
+              <div>
+                <p class="eyebrow">Report facts side by side</p>
+                <h3 id="imaging-comparison-heading" tabindex="-1">Selected imaging records</h3>
+              </div>
+              <p>Any comparison, change, or response wording is attributed to the stored report text. NET/Care does not infer a clinical conclusion.</p>
+            </div>
+            <div class="imaging-comparison-grid" id="imaging-comparison-grid"></div>
+          </section>
+          <div class="imaging-retry" id="imaging-retry" hidden>
+            <button class="button secondary" type="button" onclick="loadImagingSeries({ force: true })">Retry imaging history</button>
+          </div>
         </section>
 
         <section class="content-card span-two" aria-labelledby="source-history-heading">

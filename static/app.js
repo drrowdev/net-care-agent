@@ -10,8 +10,17 @@
   let activeDialogSurface = null;
   let currentReceipt = null;
   let patientEvidence = null;
-  let imagingHistoryExpanded = false;
   let sourceHistoryExpanded = false;
+  let imagingProjection = null;
+  let imagingResponseOwner = null;
+  let selectedImagingRecordIds = [];
+  let comparedImagingRecordIds = [];
+  let imagingLoadEpoch = 0;
+  let imagingSelectionEpoch = 0;
+  let imagingComparisonEpoch = 0;
+  let imagingRequestController = null;
+  let imagingProjectionState = 'idle';
+  let imagingNetworkAmbiguous = false;
   let biomarkerProjection = null;
   let biomarkerResponseOwner = null;
   let selectedBiomarkerAnalyteId = null;
@@ -270,12 +279,32 @@
       typeof biomarkerRequestController !== 'undefined'
       && biomarkerRequestController !== null
     );
+    const imagingWasLoaded = (
+      typeof imagingProjection !== 'undefined'
+      && imagingProjection !== null
+    );
+    const imagingRequestWasActive = (
+      typeof imagingRequestController !== 'undefined'
+      && imagingRequestController !== null
+    );
     phiEpoch += 1;
     if (typeof markBiomarkerProjectionStale === 'function') {
       markBiomarkerProjectionStale(
         'The patient record changed. Reload biomarker history before relying on this snapshot.',
         {
           abortRequest: options.preserveBiomarkerRequest !== true,
+          ownerPhiEpoch: phiEpoch,
+        },
+      );
+    }
+    if (
+      (imagingWasLoaded || imagingRequestWasActive)
+      && typeof markImagingProjectionStale === 'function'
+    ) {
+      markImagingProjectionStale(
+        'The patient record changed. Imaging is read-only until the authoritative record reloads.',
+        {
+          abortRequest: options.preserveImagingRequest !== true,
           ownerPhiEpoch: phiEpoch,
         },
       );
@@ -311,6 +340,15 @@
       && typeof loadBiomarkerSeries === 'function'
     ) {
       Promise.resolve().then(() => loadBiomarkerSeries());
+    }
+    if (
+      options.preserveImagingRequest !== true
+      && (imagingWasLoaded || imagingRequestWasActive)
+      && typeof activeView !== 'undefined'
+      && activeView === 'patient'
+      && typeof ensureImagingSeries === 'function'
+    ) {
+      Promise.resolve().then(() => ensureImagingSeries());
     }
     return true;
   }
@@ -371,6 +409,7 @@
       advancePatientAuthority(responseProfileRevision, {
         preserveAlertIntent: options.alertResolution === true,
         preserveBiomarkerRequest: options.biomarkerProjection === true,
+        preserveImagingRequest: options.imagingProjection === true,
         deferConvergence: options.alertResolution === true,
         preserveVisitRecapExportOwner: options.preserveVisitRecapExportOwner === true,
       });
@@ -420,6 +459,35 @@
           && typeof loadBiomarkerSeries === 'function'
         ) {
           Promise.resolve().then(() => loadBiomarkerSeries());
+        }
+      }
+      const imagingNeedsWorkflowRefresh = (
+        options.imagingProjection !== true
+        && !profileAdvanced
+        && (
+          (
+            typeof imagingProjection !== 'undefined'
+            && imagingProjection !== null
+          )
+          || (
+            typeof imagingRequestController !== 'undefined'
+            && imagingRequestController !== null
+          )
+        )
+      );
+      if (
+        imagingNeedsWorkflowRefresh
+        && typeof markImagingProjectionStale === 'function'
+      ) {
+        markImagingProjectionStale(
+          'The patient workflow changed. Imaging is read-only until the authoritative record reloads.',
+        );
+        if (
+          typeof activeView !== 'undefined'
+          && activeView === 'patient'
+          && typeof ensureImagingSeries === 'function'
+        ) {
+          Promise.resolve().then(() => ensureImagingSeries());
         }
       }
       if (
@@ -1015,7 +1083,7 @@
     renderAppState();
   }
 
-  async function retryInitialLoad() {
+  async function retryInitialLoad(options = {}) {
     failedLoads.clear();
     renderAppState();
     const refreshes = [
@@ -1031,6 +1099,17 @@
     ];
     if (activeView === 'patient' || biomarkerProjection || biomarkerNetworkAmbiguous) {
       refreshes.push(loadBiomarkerSeries());
+    }
+    if (
+      imagingProjectionState === 'stale'
+      || imagingNetworkAmbiguous
+      || (
+        options.onlineRecovery !== true
+        && activeView === 'patient'
+        && !imagingProjection
+      )
+    ) {
+      refreshes.push(ensureImagingSeries());
     }
     if (appointmentDialogOpen && activeAppointmentTab === 'recap') {
       refreshes.push(loadVisitRecap());
@@ -1063,6 +1142,7 @@
       loadSymptoms();
       loadPatientEvidence();
       loadBiomarkerSeries();
+      ensureImagingSeries();
     } else if (name === 'activity') {
       loadTasks();
     } else if (name === 'today') {
@@ -1077,7 +1157,7 @@
     if (!trigger) document.getElementById(`nav-${name}`)?.focus();
   }
 
-  window.addEventListener('online', retryInitialLoad);
+  window.addEventListener('online', () => retryInitialLoad({ onlineRecovery: true }));
   window.addEventListener('offline', handleOfflineTransition);
 
   function refreshAfterVisibilityRestore() {
@@ -1088,7 +1168,7 @@
       refreshes.push(loadVisits(), loadFollowUps(), loadQuestions());
     }
     if (activeView === 'patient') {
-      refreshes.push(loadBiomarkerSeries(), loadPatientEvidence());
+      refreshes.push(loadBiomarkerSeries(), loadPatientEvidence(), ensureImagingSeries());
     }
     if (appointmentDialogOpen && activeAppointmentTab === 'recap') {
       refreshes.push(loadVisitRecap());
@@ -1859,6 +1939,848 @@
     }
   }
 
+  // ── Imaging longitudinal record ─────────────────────────────────────────
+  const IMAGING_MAX_RECORDS = 2000;
+  const IMAGING_MAX_AUTHORITY_CHARS = 4000000;
+  const IMAGING_DATE_PRECISIONS = new Set(['day', 'month', 'year', 'unknown']);
+  const IMAGING_DATE_KINDS = new Set(['study', 'legacy_unknown', 'unknown']);
+  const IMAGING_PROVENANCE_STATUSES = new Set([
+    'caregiver_corrected_unverified',
+    'source_verified',
+    'source_unverified',
+    'source_unavailable',
+    'unverified',
+  ]);
+
+  function imagingPlainObject(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+  }
+
+  function imagingHasExactKeys(value, keys) {
+    if (!imagingPlainObject(value)) return false;
+    const actual = Object.keys(value).sort();
+    const expected = [...keys].sort();
+    return actual.length === expected.length
+      && actual.every((key, index) => key === expected[index]);
+  }
+
+  function imagingBoundedString(value, maximum, nullable = false) {
+    if (nullable && value == null) return true;
+    return typeof value === 'string' && value.length <= maximum;
+  }
+
+  function imagingRecordUrlParts(value, expectedAction) {
+    if (typeof value !== 'string' || !value || value.length > 200) return null;
+    try {
+      const base = document.baseURI || window.location.href || window.location.origin;
+      const pageUrl = new URL(base);
+      const url = new URL(value, base);
+      const match = url.pathname.match(
+        /^\/api\/patient\/imaging-series\/(imref_[0-9a-f]{64})\/(source|evidence)$/,
+      );
+      if (
+        !/^(https?):$/.test(url.protocol)
+        || url.origin !== pageUrl.origin
+        || url.username
+        || url.password
+        || url.search
+        || url.hash
+        || !match
+        || match[2] !== expectedAction
+      ) return null;
+      return { href: url.pathname, recordRef: match[1], action: match[2] };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function safeImagingRecordUrl(value, expectedAction) {
+    return imagingRecordUrlParts(value, expectedAction)?.href || '';
+  }
+
+  function imagingProjectionPayloadIsValid(data) {
+    if (
+      !imagingHasExactKeys(data, [
+        'profile_revision',
+        'workflow_revision',
+        'source_row_count',
+        'projection_token',
+        'records',
+      ])
+      || !Number.isSafeInteger(data.profile_revision)
+      || data.profile_revision < 0
+      || !Number.isSafeInteger(data.workflow_revision)
+      || data.workflow_revision < 0
+      || !imagingBoundedString(data.projection_token, 200)
+      || !data.projection_token
+      || !Number.isSafeInteger(data.source_row_count)
+      || data.source_row_count < 0
+      || data.source_row_count > IMAGING_MAX_RECORDS
+      || !Array.isArray(data.records)
+      || data.records.length !== data.source_row_count
+      || data.records.length > IMAGING_MAX_RECORDS
+    ) return false;
+
+    const recordIds = new Set();
+    const recordTokens = new Set();
+    const recordRefs = new Set();
+    let authorityCharacters = data.projection_token.length;
+    for (const record of data.records) {
+      if (
+        !imagingHasExactKeys(record, [
+          'id',
+          'token',
+          'date',
+          'modality',
+          'findings',
+          'impression',
+          'provenance',
+        ])
+        || !imagingBoundedString(record.id, 200)
+        || !record.id
+        || recordIds.has(record.id)
+        || !imagingBoundedString(record.token, 200)
+        || !record.token
+        || recordTokens.has(record.token)
+        || !imagingBoundedString(record.modality, 200, true)
+        || !imagingBoundedString(record.findings, 50000, true)
+        || !imagingBoundedString(record.impression, 50000, true)
+        || !imagingHasExactKeys(record.date, [
+          'value',
+          'precision',
+          'kind',
+          'source_document_date',
+          'source_document_date_precision',
+        ])
+        || !imagingBoundedString(record.date.value, 32, true)
+        || !IMAGING_DATE_PRECISIONS.has(record.date.precision)
+        || !IMAGING_DATE_KINDS.has(record.date.kind)
+        || !imagingBoundedString(record.date.source_document_date, 32, true)
+        || !IMAGING_DATE_PRECISIONS.has(record.date.source_document_date_precision)
+        || !imagingHasExactKeys(record.provenance, [
+          'status',
+          'label',
+          'source_url',
+          'evidence_url',
+        ])
+        || !IMAGING_PROVENANCE_STATUSES.has(record.provenance.status)
+        || !imagingBoundedString(record.provenance.label, 200)
+        || !record.provenance.label
+        || !imagingBoundedString(record.provenance.source_url, 200, true)
+        || !imagingBoundedString(record.provenance.evidence_url, 200, true)
+      ) return false;
+
+      const source = record.provenance.source_url == null
+        ? null
+        : imagingRecordUrlParts(record.provenance.source_url, 'source');
+      const evidence = record.provenance.evidence_url == null
+        ? null
+        : imagingRecordUrlParts(record.provenance.evidence_url, 'evidence');
+      if (
+        (record.provenance.source_url != null && !source)
+        || (record.provenance.evidence_url != null && !evidence)
+        || (evidence && (!source || evidence.recordRef !== source.recordRef))
+        || (source && recordRefs.has(source.recordRef))
+      ) return false;
+
+      recordIds.add(record.id);
+      recordTokens.add(record.token);
+      if (source) recordRefs.add(source.recordRef);
+      authorityCharacters += record.id.length
+        + record.token.length
+        + (record.date.value?.length || 0)
+        + (record.date.source_document_date?.length || 0)
+        + (record.modality?.length || 0)
+        + (record.findings?.length || 0)
+        + (record.impression?.length || 0)
+        + record.provenance.status.length
+        + record.provenance.label.length
+        + (record.provenance.source_url?.length || 0)
+        + (record.provenance.evidence_url?.length || 0);
+      if (authorityCharacters > IMAGING_MAX_AUTHORITY_CHARS) return false;
+    }
+    return true;
+  }
+
+  function newImagingResponseOwner(projection, ownerPhiEpoch = phiEpoch) {
+    return {
+      requestPhiEpoch: ownerPhiEpoch,
+      loadEpoch: imagingLoadEpoch,
+      profileRevision: projection.profile_revision,
+      workflowRevision: projection.workflow_revision,
+      projectionToken: projection.projection_token,
+      rowTokens: new Map(projection.records.map(record => [record.id, record.token])),
+    };
+  }
+
+  function imagingResponseOwnerIsCurrent(owner = imagingResponseOwner) {
+    if (
+      !owner
+      || owner !== imagingResponseOwner
+      || owner.requestPhiEpoch !== phiEpoch
+      || owner.loadEpoch !== imagingLoadEpoch
+      || !imagingProjection
+      || owner.projectionToken !== imagingProjection.projection_token
+      || owner.profileRevision !== imagingProjection.profile_revision
+      || owner.workflowRevision !== imagingProjection.workflow_revision
+      || owner.rowTokens.size !== imagingProjection.records.length
+      || imagingProjection.records.some(record => owner.rowTokens.get(record.id) !== record.token)
+    ) return false;
+    if (imagingProjectionState === 'stale') return true;
+    const currentProfile = normalizedRevision(latestProfileRevision);
+    const currentWorkflow = normalizedRevision(workflowRevision);
+    return (
+      (!Number.isSafeInteger(currentProfile) || owner.profileRevision === currentProfile)
+      && (!Number.isSafeInteger(currentWorkflow) || owner.workflowRevision === currentWorkflow)
+    );
+  }
+
+  function abortImagingRequest() {
+    const controller = imagingRequestController;
+    imagingRequestController = null;
+    if (controller && !controller.signal.aborted) controller.abort();
+  }
+
+  function imagingFocusFallback() {
+    const explorer = document.getElementById('imaging-explorer');
+    if (!explorer?.contains(document.activeElement)) return;
+    document.activeElement?.blur();
+    const fallback = activeView === 'patient'
+      ? document.getElementById('nav-patient')
+      : document.getElementById('main-content');
+    fallback?.focus();
+  }
+
+  function imagingComparisonFocusFallback() {
+    const comparison = document.getElementById('imaging-comparison');
+    if (!comparison?.contains(document.activeElement)) return;
+    document.activeElement?.blur();
+    const tableRegion = document.getElementById('imaging-table-region');
+    if (tableRegion) tableRegion.focus();
+    else document.getElementById('nav-patient')?.focus();
+  }
+
+  function imagingElement(tag, className = '', text = null) {
+    const element = document.createElement(tag);
+    if (className) element.className = className;
+    if (text != null) element.textContent = text;
+    return element;
+  }
+
+  function imagingScalar(value) {
+    if (value == null) return 'Not recorded';
+    return value === '' ? 'Empty string recorded' : String(value);
+  }
+
+  function setImagingFreshness(state, text) {
+    const freshness = document.getElementById('imaging-freshness');
+    if (!freshness) return;
+    freshness.className = `imaging-freshness ${safeClassToken(state, 'error')}`;
+    freshness.textContent = text;
+  }
+
+  function setImagingStatus(message, state = '', retry = false) {
+    const status = document.getElementById('imaging-status');
+    if (status) {
+      status.className = `imaging-status${state ? ` ${safeClassToken(state)}` : ''}`;
+      status.textContent = message || '';
+    }
+    const retrySurface = document.getElementById('imaging-retry');
+    if (retrySurface) retrySurface.hidden = !retry;
+    const refresh = document.getElementById('imaging-refresh-button');
+    if (refresh) refresh.disabled = imagingRequestController !== null;
+  }
+
+  function imagingDateAuthority(date) {
+    const precisionLabels = {
+      day: 'day precision',
+      month: 'month precision',
+      year: 'year precision',
+      unknown: 'precision unknown',
+    };
+    let authority;
+    if (date.kind === 'study') {
+      authority = 'Study date';
+    } else if (date.kind === 'legacy_unknown') {
+      authority = 'Legacy date; study-date authority not confirmed';
+    } else {
+      authority = date.value == null ? 'Study date not recorded' : 'Date authority unknown';
+    }
+    return {
+      value: imagingScalar(date.value),
+      context: `${authority} · ${precisionLabels[date.precision]}`,
+    };
+  }
+
+  function imagingAppendFact(parent, label, value, className = '') {
+    const wrapper = imagingElement('div', `imaging-fact${className ? ` ${className}` : ''}`);
+    wrapper.append(
+      imagingElement('dt', '', label),
+      imagingElement('dd'),
+    );
+    const detail = wrapper.querySelector('dd');
+    detail.textContent = imagingScalar(value);
+    if (value == null || value === '') detail.classList.add('imaging-missing');
+    parent.append(wrapper);
+  }
+
+  function imagingSourceDetails(record) {
+    const details = imagingElement('details', 'imaging-source-details');
+    details.append(imagingElement('summary', '', 'Technical and source details'));
+    const content = imagingElement('div');
+    const provenance = imagingElement('p');
+    provenance.append(
+      imagingElement('strong', '', record.provenance.label),
+      document.createTextNode(` · ${record.provenance.status}`),
+    );
+    const identity = imagingElement('p');
+    identity.append(
+      document.createTextNode('Record ID: '),
+      imagingElement('code', '', record.id),
+    );
+    const sourceDate = imagingElement(
+      'p',
+      '',
+      `Source document date (not used for study chronology): ${
+        imagingScalar(record.date.source_document_date)
+      } · ${record.date.source_document_date_precision} precision`,
+    );
+    const actions = imagingElement('div', 'imaging-source-actions');
+    const evidenceUrl = safeImagingRecordUrl(record.provenance.evidence_url, 'evidence');
+    const sourceUrl = safeImagingRecordUrl(record.provenance.source_url, 'source');
+    if (evidenceUrl) {
+      const link = imagingElement('a', '', 'Open exact span');
+      link.href = evidenceUrl;
+      link.target = '_blank';
+      link.rel = 'noopener';
+      actions.append(link);
+    }
+    if (sourceUrl) {
+      const link = imagingElement('a', '', 'Open source');
+      link.href = sourceUrl;
+      link.target = '_blank';
+      link.rel = 'noopener';
+      actions.append(link);
+    }
+    if (!actions.childElementCount) {
+      actions.append(imagingElement('span', 'imaging-missing', 'No source link supplied'));
+    }
+    content.append(provenance, identity, sourceDate, actions);
+    details.append(content);
+    return details;
+  }
+
+  function clearImagingComparison(options = {}) {
+    if (options.moveFocus !== false) imagingComparisonFocusFallback();
+    imagingComparisonEpoch += 1;
+    comparedImagingRecordIds = [];
+    const comparison = document.getElementById('imaging-comparison');
+    const grid = document.getElementById('imaging-comparison-grid');
+    if (grid) grid.replaceChildren();
+    if (comparison) comparison.hidden = true;
+  }
+
+  function imagingComparisonCard(record, index) {
+    const card = imagingElement('article', 'imaging-comparison-card');
+    const date = imagingDateAuthority(record.date);
+    card.append(
+      imagingElement('p', 'eyebrow', `Selected record ${index + 1}`),
+      imagingElement('h4', '', record.modality == null || record.modality === ''
+        ? 'Modality / type not recorded'
+        : record.modality),
+    );
+    const facts = imagingElement('dl', 'imaging-comparison-facts');
+    imagingAppendFact(facts, 'Recorded date', record.date.value);
+    imagingAppendFact(facts, 'Date context', date.context);
+    imagingAppendFact(facts, 'Modality / type', record.modality);
+    imagingAppendFact(facts, 'Findings (report wording)', record.findings, 'report-wording');
+    imagingAppendFact(
+      facts,
+      'Impression, including any report-authored comparison wording',
+      record.impression,
+      'report-wording',
+    );
+    imagingAppendFact(facts, 'Source authority', record.provenance.label);
+    card.append(facts, imagingSourceDetails(record));
+    return card;
+  }
+
+  function renderImagingComparison() {
+    if (
+      !imagingResponseOwnerIsCurrent()
+      || comparedImagingRecordIds.length !== 2
+      || selectedImagingRecordIds.length !== 2
+      || comparedImagingRecordIds.some(id => !selectedImagingRecordIds.includes(id))
+    ) {
+      clearImagingComparison();
+      return false;
+    }
+    const records = comparedImagingRecordIds.map(
+      id => imagingProjection.records.find(record => record.id === id),
+    );
+    if (records.some(record => !record)) {
+      clearImagingComparison();
+      return false;
+    }
+    const grid = document.getElementById('imaging-comparison-grid');
+    const comparison = document.getElementById('imaging-comparison');
+    if (!grid || !comparison) return false;
+    grid.replaceChildren(...records.map(imagingComparisonCard));
+    comparison.hidden = false;
+    comparison.classList.toggle('stale', imagingProjectionState === 'stale');
+    return true;
+  }
+
+  function updateImagingSelectionControls() {
+    const current = (
+      ['current', 'empty'].includes(imagingProjectionState)
+      && imagingResponseOwnerIsCurrent()
+    );
+    const selected = new Set(selectedImagingRecordIds);
+    const checkboxes = document.querySelectorAll('input[name="imaging-record-select"]');
+    checkboxes.forEach((checkbox, index) => {
+      const record = imagingProjection?.records[index];
+      checkbox.checked = Boolean(record && selected.has(record.id));
+      checkbox.disabled = !current || (
+        selected.size >= 2
+        && record
+        && !selected.has(record.id)
+      );
+    });
+    const clearButton = document.getElementById('imaging-clear-selection');
+    const compareButton = document.getElementById('imaging-compare-button');
+    if (clearButton) clearButton.disabled = !current || selected.size === 0;
+    if (compareButton) compareButton.disabled = !current || selected.size !== 2;
+    const status = document.getElementById('imaging-selection-status');
+    if (status) {
+      if (!current && imagingProjection) {
+        status.textContent = 'Stale snapshot · selection and comparison changes are read-only until imaging reloads.';
+      } else if (imagingProjectionState === 'empty') {
+        status.textContent = 'No imaging records are available to select or compare.';
+      } else if (selected.size === 2) {
+        status.textContent = 'Two records selected. Confirm this exact pair to show their raw report facts side by side.';
+      } else {
+        status.textContent = `${selected.size} of 2 records selected. Select exactly two current records.`;
+      }
+    }
+  }
+
+  function selectImagingRecord(recordId, checked) {
+    if (
+      imagingProjectionState !== 'current'
+      || !imagingResponseOwnerIsCurrent()
+      || !imagingProjection.records.some(record => record.id === recordId)
+    ) {
+      updateImagingSelectionControls();
+      return false;
+    }
+    const selected = new Set(selectedImagingRecordIds);
+    if (checked) {
+      if (selected.size >= 2 && !selected.has(recordId)) {
+        updateImagingSelectionControls();
+        return false;
+      }
+      selected.add(recordId);
+    } else {
+      selected.delete(recordId);
+    }
+    imagingSelectionEpoch += 1;
+    selectedImagingRecordIds = imagingProjection.records
+      .filter(record => selected.has(record.id))
+      .map(record => record.id);
+    clearImagingComparison();
+    updateImagingSelectionControls();
+    return true;
+  }
+
+  function clearImagingSelection() {
+    if (imagingProjectionState !== 'current' || !imagingResponseOwnerIsCurrent()) return false;
+    imagingSelectionEpoch += 1;
+    selectedImagingRecordIds = [];
+    clearImagingComparison();
+    updateImagingSelectionControls();
+    return true;
+  }
+
+  function compareSelectedImagingRecords() {
+    if (
+      imagingProjectionState !== 'current'
+      || !imagingResponseOwnerIsCurrent()
+      || selectedImagingRecordIds.length !== 2
+      || selectedImagingRecordIds.some(
+        id => !imagingProjection.records.some(record => record.id === id),
+      )
+    ) return false;
+    imagingComparisonEpoch += 1;
+    comparedImagingRecordIds = [...selectedImagingRecordIds];
+    if (!renderImagingComparison()) return false;
+    document.getElementById('imaging-comparison-heading')?.focus();
+    return true;
+  }
+
+  function imagingRecordRow(record, index) {
+    const row = imagingElement('tr');
+    const selectCell = imagingElement('td', 'imaging-select-cell');
+    const selectLabel = imagingElement('label', 'imaging-select-label');
+    const checkbox = imagingElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.name = 'imaging-record-select';
+    checkbox.id = `imaging-record-select-${index}`;
+    checkbox.checked = selectedImagingRecordIds.includes(record.id);
+    checkbox.addEventListener('change', () => selectImagingRecord(record.id, checkbox.checked));
+    selectLabel.append(
+      checkbox,
+      imagingElement('span', '', `Select record ${index + 1}`),
+    );
+    selectCell.append(selectLabel);
+
+    const date = imagingDateAuthority(record.date);
+    const dateCell = imagingElement('td');
+    dateCell.append(
+      imagingElement('strong', '', date.value),
+      imagingElement('span', '', date.context),
+    );
+    const modalityCell = imagingElement('td');
+    modalityCell.append(imagingElement(
+      'strong',
+      record.modality == null || record.modality === '' ? 'imaging-missing' : '',
+      imagingScalar(record.modality),
+    ));
+    const findingsCell = imagingElement('td', 'imaging-report-text');
+    findingsCell.append(imagingElement(
+      'p',
+      record.findings == null || record.findings === '' ? 'imaging-missing' : '',
+      imagingScalar(record.findings),
+    ));
+    const impressionCell = imagingElement('td', 'imaging-report-text');
+    impressionCell.append(imagingElement(
+      'p',
+      record.impression == null || record.impression === '' ? 'imaging-missing' : '',
+      imagingScalar(record.impression),
+    ));
+    const sourceCell = imagingElement('td');
+    sourceCell.append(
+      imagingElement('strong', '', record.provenance.label),
+      imagingSourceDetails(record),
+    );
+    row.append(
+      selectCell,
+      dateCell,
+      modalityCell,
+      findingsCell,
+      impressionCell,
+      sourceCell,
+    );
+    return row;
+  }
+
+  function renderImagingProjection(owner = imagingResponseOwner) {
+    if (!imagingResponseOwnerIsCurrent(owner)) return false;
+    const summary = document.getElementById('imaging-summary');
+    if (summary) {
+      summary.textContent = `${imagingProjection.records.length} authoritative records from ${
+        imagingProjection.source_row_count
+      } source rows. Records remain independent and in server-supplied order; NET/Care does not infer chronology or change.`;
+    }
+    const caption = document.getElementById('imaging-table-caption');
+    if (caption) {
+      caption.textContent = 'Complete authoritative imaging records in server-supplied order';
+    }
+    const table = document.getElementById('imaging-table-body');
+    if (table) {
+      if (imagingProjection.records.length) {
+        table.replaceChildren(...imagingProjection.records.map(imagingRecordRow));
+      } else {
+        const row = imagingElement('tr');
+        const cell = imagingElement('td');
+        cell.colSpan = 6;
+        cell.append(imagingElement('div', 'empty-state', 'No imaging records are recorded.'));
+        row.append(cell);
+        table.replaceChildren(row);
+      }
+    }
+    if (imagingProjectionState === 'stale') {
+      setImagingFreshness('stale', 'Stale snapshot');
+    } else if (imagingProjection.records.length) {
+      imagingProjectionState = 'current';
+      setImagingFreshness('current', 'Current');
+      setImagingStatus(
+        `Authoritative imaging loaded · patient revision ${
+          imagingProjection.profile_revision
+        } · workflow revision ${imagingProjection.workflow_revision}.`,
+        'current',
+        false,
+      );
+    } else {
+      imagingProjectionState = 'empty';
+      setImagingFreshness('current', 'Current · empty');
+      setImagingStatus(
+        `Authoritative imaging loaded · patient revision ${
+          imagingProjection.profile_revision
+        } · no imaging records recorded.`,
+        'current',
+        false,
+      );
+    }
+    updateImagingSelectionControls();
+    if (comparedImagingRecordIds.length === 2) renderImagingComparison();
+    else clearImagingComparison({ moveFocus: false });
+    return true;
+  }
+
+  function renderImagingUnavailable(message, state, statusLabel, retry = true) {
+    const summary = document.getElementById('imaging-summary');
+    if (summary) summary.textContent = 'No imaging facts are retained in this view.';
+    const caption = document.getElementById('imaging-table-caption');
+    if (caption) {
+      caption.textContent = 'Complete authoritative imaging records in server-supplied order';
+    }
+    const table = document.getElementById('imaging-table-body');
+    if (table) {
+      const row = imagingElement('tr');
+      const cell = imagingElement('td');
+      cell.colSpan = 6;
+      cell.append(imagingElement('div', 'empty-state', message));
+      row.append(cell);
+      table.replaceChildren(row);
+    }
+    setImagingFreshness(state, statusLabel);
+    setImagingStatus(message, state, retry);
+    updateImagingSelectionControls();
+  }
+
+  function clearImagingProjection(options = {}) {
+    imagingFocusFallback();
+    imagingLoadEpoch += 1;
+    imagingSelectionEpoch += 1;
+    imagingComparisonEpoch += 1;
+    abortImagingRequest();
+    imagingProjection = null;
+    imagingResponseOwner = null;
+    selectedImagingRecordIds = [];
+    comparedImagingRecordIds = [];
+    imagingNetworkAmbiguous = false;
+    imagingProjectionState = options.state || 'error';
+    clearImagingComparison({ moveFocus: false });
+    renderImagingUnavailable(
+      options.message || 'Imaging history could not be loaded.',
+      imagingProjectionState,
+      options.statusLabel || 'Unavailable',
+      options.retry !== false,
+    );
+  }
+
+  function markImagingProjectionStale(message, options = {}) {
+    if (options.abortRequest !== false) {
+      imagingLoadEpoch += 1;
+      abortImagingRequest();
+    }
+    imagingProjectionState = 'stale';
+    if (!imagingProjection) {
+      renderImagingUnavailable(
+        message || 'Imaging is unavailable until an authoritative reload succeeds.',
+        'stale',
+        'Not current',
+        true,
+      );
+      return;
+    }
+    imagingResponseOwner = newImagingResponseOwner(
+      imagingProjection,
+      options.ownerPhiEpoch ?? phiEpoch,
+    );
+    setImagingFreshness('stale', 'Stale snapshot');
+    setImagingStatus(
+      message || 'Stale snapshot · read-only until imaging reloads.',
+      'stale',
+      true,
+    );
+    updateImagingSelectionControls();
+    if (comparedImagingRecordIds.length === 2) renderImagingComparison();
+  }
+
+  function renderImagingLoading() {
+    if (imagingProjection) {
+      imagingProjectionState = 'stale';
+      setImagingFreshness('loading', 'Checking…');
+      setImagingStatus(
+        'Checking the authoritative imaging record. The displayed snapshot is read-only.',
+        'loading',
+        false,
+      );
+      updateImagingSelectionControls();
+      return;
+    }
+    imagingProjectionState = 'loading';
+    renderImagingUnavailable(
+      'Loading the complete authoritative imaging record…',
+      'loading',
+      'Loading…',
+      false,
+    );
+  }
+
+  function imagingTransportRequestIsCurrent(request, acceptedPhiEpoch = null) {
+    const phiOwner = acceptedPhiEpoch ?? request.requestPhiEpoch;
+    return Boolean(
+      request
+      && request.controller === imagingRequestController
+      && !request.controller.signal.aborted
+      && request.loadEpoch === imagingLoadEpoch
+      && phiOwner === phiEpoch
+    );
+  }
+
+  function imagingAuthorityMatchesKnown() {
+    if (!imagingProjection || !imagingResponseOwnerIsCurrent()) return false;
+    const currentProfile = normalizedRevision(latestProfileRevision);
+    const currentWorkflow = normalizedRevision(workflowRevision);
+    return (
+      (!Number.isSafeInteger(currentProfile)
+        || imagingProjection.profile_revision === currentProfile)
+      && (!Number.isSafeInteger(currentWorkflow)
+        || imagingProjection.workflow_revision === currentWorkflow)
+    );
+  }
+
+  function ensureImagingSeries(options = {}) {
+    const current = (
+      imagingProjection
+      && ['current', 'empty'].includes(imagingProjectionState)
+      && !imagingNetworkAmbiguous
+      && imagingAuthorityMatchesKnown()
+    );
+    if (!options.force && current) return Promise.resolve(imagingProjection);
+    if (!options.force && imagingRequestController) return Promise.resolve(null);
+    return loadImagingSeries(options);
+  }
+
+  async function loadImagingSeries(options = {}) {
+    if (!options.force && imagingRequestController) return null;
+    const previousController = imagingRequestController;
+    const controller = new AbortController();
+    const request = {
+      ...capturePatientRequest(),
+      loadEpoch: ++imagingLoadEpoch,
+      controller,
+    };
+    imagingRequestController = controller;
+    if (previousController && !previousController.signal.aborted) previousController.abort();
+    renderImagingLoading();
+
+    try {
+      const response = await fetch('/api/patient/imaging-series', {
+        headers: { Accept: 'application/json' },
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+      const requestIsCurrent = () => imagingTransportRequestIsCurrent(request);
+      if (!requestIsCurrent()) return null;
+      const data = await readJsonResponse(response, () => false);
+      if (!requestIsCurrent()) return null;
+      if (!imagingProjectionPayloadIsValid(data)) {
+        const invalid = new Error('Imaging history could not be verified safely.');
+        invalid.status = 422;
+        invalid.data = { code: 'imaging_projection_invalid_response' };
+        throw invalid;
+      }
+      const authority = authorizePatientResponse(request, data, {
+        workflow: 'projection',
+        imagingProjection: true,
+      });
+      if (!authority.accepted) {
+        if (imagingTransportRequestIsCurrent(request)) {
+          markImagingProjectionStale(
+            'A newer patient or workflow revision is available. Imaging is read-only until reloaded.',
+          );
+        }
+        return null;
+      }
+      request.acceptedPhiEpoch = authority.requestPhiEpoch;
+      if (!imagingTransportRequestIsCurrent(request, request.acceptedPhiEpoch)) return null;
+
+      const recordIds = new Set(data.records.map(record => record.id));
+      const retainSelection = (
+        selectedImagingRecordIds.length === 2
+        && selectedImagingRecordIds.every(id => recordIds.has(id))
+      );
+      const nextSelection = retainSelection ? [...selectedImagingRecordIds] : [];
+      const retainComparison = (
+        retainSelection
+        && comparedImagingRecordIds.length === 2
+        && comparedImagingRecordIds.every(id => nextSelection.includes(id))
+      );
+      const nextComparison = retainComparison ? [...comparedImagingRecordIds] : [];
+      imagingFocusFallback();
+      imagingSelectionEpoch += 1;
+      imagingComparisonEpoch += 1;
+      imagingProjection = data;
+      selectedImagingRecordIds = nextSelection;
+      comparedImagingRecordIds = nextComparison;
+      imagingNetworkAmbiguous = false;
+      imagingProjectionState = data.records.length ? 'current' : 'empty';
+      imagingResponseOwner = newImagingResponseOwner(data, request.acceptedPhiEpoch);
+      if (!imagingTransportRequestIsCurrent(request, request.acceptedPhiEpoch)) return null;
+      if (!renderImagingProjection(imagingResponseOwner)) return null;
+      reportLoadSuccess('imaging');
+      return data;
+    } catch (error) {
+      const acceptedPhiEpoch = request.acceptedPhiEpoch ?? null;
+      if (
+        error?.name === 'AbortError'
+        || !imagingTransportRequestIsCurrent(request, acceptedPhiEpoch)
+      ) return null;
+      if (error?.status === 401 || error?.status === 403) {
+        const safeError = new Error('Imaging authorization is unavailable.');
+        safeError.status = error.status;
+        reportLoadError('imaging', safeError);
+        if (imagingTransportRequestIsCurrent(request, acceptedPhiEpoch)) {
+          evictClientPhi(safeError);
+        }
+        return null;
+      }
+      if (error instanceof TypeError) {
+        const safeError = new TypeError('The imaging endpoint could not be reached.');
+        imagingNetworkAmbiguous = true;
+        markImagingProjectionStale(
+          imagingProjection
+            ? 'Imaging transport is uncertain. The last accepted snapshot is stale and read-only.'
+            : 'The imaging endpoint could not be reached and no prior snapshot is available.',
+          { abortRequest: false },
+        );
+        reportLoadError('imaging', safeError);
+        return null;
+      }
+      const corrupt = error?.status === 422;
+      clearImagingProjection({
+        state: corrupt ? 'corrupt' : 'error',
+        statusLabel: corrupt ? 'Record unavailable' : 'Load failed',
+        message: corrupt
+          ? 'Imaging history is unavailable because the authoritative response could not be verified safely.'
+          : 'Imaging history could not be loaded. No prior imaging facts remain in this view.',
+      });
+      const safeError = new Error(
+        corrupt
+          ? 'Imaging history could not be verified safely.'
+          : 'Imaging history could not be loaded.',
+      );
+      safeError.status = error?.status;
+      reportLoadError('imaging', safeError);
+      return null;
+    } finally {
+      if (
+        imagingRequestController === controller
+        && request.loadEpoch === imagingLoadEpoch
+      ) {
+        imagingRequestController = null;
+        const refresh = document.getElementById('imaging-refresh-button');
+        if (refresh) refresh.disabled = false;
+      }
+    }
+  }
+
   // ── Status sidebar ──────────────────────────────────────────────────────
   async function loadStatus(options = {}) {
     const request = capturePatientRequest();
@@ -1924,6 +2846,14 @@
     latestProfileRevision = null;
     latestResearchUpdate = null;
     patientEvidence = null;
+    if (typeof clearImagingProjection === 'function') {
+      clearImagingProjection({
+        state: 'error',
+        statusLabel: 'Patient data unavailable',
+        message: 'Imaging data was cleared because current authority is unavailable.',
+        retry: false,
+      });
+    }
     if (typeof clearBiomarkerProjection === 'function') {
       clearBiomarkerProjection({
         state: 'error',
@@ -2001,7 +2931,6 @@
     clear('patient-meta');
     clear('tx-list');
     clear('alerts-list');
-    clear('imaging-history');
     clear('source-history');
     clear('q-list');
     clear('visit-list');
@@ -3318,7 +4247,6 @@
       if (shouldEvictClientPhi(error)) evictClientPhi(error);
       if (!patientRequestIsCurrent(request)) return null;
       patientEvidence = null;
-      document.getElementById('imaging-history').innerHTML = loadFailureMarkup('Imaging history', 'loadPatientEvidence()');
       document.getElementById('source-history').innerHTML = loadFailureMarkup('Source history', 'loadPatientEvidence()');
       reportLoadError('patient-evidence', error);
       return null;
@@ -3333,25 +4261,6 @@
 
   function renderPatientEvidence() {
     if (!patientEvidence) return;
-    const imaging = patientEvidence.imaging || [];
-    const visibleImaging = imagingHistoryExpanded ? imaging : imaging.slice(0, 3);
-    document.getElementById('imaging-history').innerHTML = visibleImaging.length
-      ? `${visibleImaging.map(item => `
-          <article class="evidence-history-row">
-            <div class="evidence-history-main">
-              <strong>${escHtml(item.modality || 'Imaging')}</strong>
-              <time>${escHtml(fmtDate(item.date || ''))}</time>
-              <p>${escHtml(item.impression || item.findings || 'No impression recorded')}</p>
-            </div>
-            <div class="evidence-history-actions">
-              ${evidenceBadge(item.evidence_status)}
-              ${item.evidence_url ? `<a class="evidence-link" href="${escHtml(item.evidence_url)}" target="_blank" rel="noopener">Open exact span</a>` : ''}
-              ${item.source_url ? `<a class="evidence-link" href="${escHtml(item.source_url)}" target="_blank" rel="noopener">Source details</a>` : ''}
-            </div>
-          </article>`).join('')}
-          ${imaging.length > 3 ? `<button class="history-toggle" onclick="toggleImagingHistory()">${imagingHistoryExpanded ? 'Show recent imaging only' : `Show all ${imaging.length} imaging records`}</button>` : ''}`
-      : '<div class="empty-state">No imaging records yet.</div>';
-
     const documents = patientEvidence.documents || [];
     const sources = patientEvidence.sources || [];
     const sourcesById = new Map(sources.map(source => [source.id, source]));
@@ -3386,11 +4295,6 @@
         }).join('')}
         ${history.length > 5 ? `<button class="history-toggle" onclick="toggleSourceHistory()">${sourceHistoryExpanded ? 'Show recent sources only' : `Show all ${history.length} sources`}</button>` : ''}`
       : '<div class="empty-state">No source documents have been fed yet.</div>';
-  }
-
-  function toggleImagingHistory() {
-    imagingHistoryExpanded = !imagingHistoryExpanded;
-    renderPatientEvidence();
   }
 
   function toggleSourceHistory() {

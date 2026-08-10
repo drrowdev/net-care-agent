@@ -541,10 +541,18 @@
     const responseVisitId = selectedVisitId;
     if (appointmentDialogOpen) captureAppointmentDraft();
     if (data.visit?.id) {
+      if (data.visit.id === selectedVisitId) {
+        scrubVisitRecapBeforeSelectionChange(data.visit.id, data.visit.token);
+      }
       visitsById.set(data.visit.id, data.visit);
       revalidateDecisionSuccessorState(data.visit);
     }
-    if (data.item?.question_snapshots && data.item.id) visitsById.set(data.item.id, data.item);
+    if (data.item?.question_snapshots && data.item.id) {
+      if (data.item.id === selectedVisitId) {
+        scrubVisitRecapBeforeSelectionChange(data.item.id, data.item.token);
+      }
+      visitsById.set(data.item.id, data.item);
+    }
     if (data.item?.visit_id && data.item.id) {
       followUpsById.set(data.item.id, data.item);
     }
@@ -4560,13 +4568,30 @@
     visitRecapState = 'idle';
     visitRecapMessage = '';
     revokeVisitRecapDownloadUrl();
+    document.body?.classList.remove('visit-recap-printing');
     if (scrubDom) {
       const status = document.getElementById('visit-recap-status');
       const content = document.getElementById('visit-recap-content');
-      if (status) status.textContent = '';
+      if (status) {
+        status.className = 'visit-recap-status idle';
+        status.textContent = '';
+      }
       if (content) content.textContent = '';
     }
     updateVisitRecapExportControls();
+  }
+
+  function scrubVisitRecapBeforeSelectionChange(nextVisitId, nextVisitToken = null) {
+    const selectedVisit = currentVisit();
+    const visitIdChanged = nextVisitId !== selectedVisitId;
+    const visitTokenChanged = Boolean(
+      !visitIdChanged
+      && nextVisitId
+      && selectedVisit?.token !== nextVisitToken
+    );
+    if (!visitIdChanged && !visitTokenChanged) return false;
+    clearVisitRecap(true);
+    return true;
   }
 
   function markVisitRecapStale(message, state = 'stale', preserveExportOwner = false) {
@@ -4590,6 +4615,9 @@
     return Boolean(
       authority
       && visitRecapProjection?.exportable === true
+      && visitRecapProjection?.state === 'current'
+      && ['in_progress', 'completed'].includes(visitRecapProjection?.visit?.status)
+      && visitRecapProjection?.visit?.status === visit?.status
       && !visitRecapStale
       && !appIsOffline()
       && appointmentDialogOpen
@@ -4611,7 +4639,17 @@
   }
 
   function updateVisitRecapExportControls() {
-    const enabled = !visitRecapExportOwner && visitRecapAuthorityIsCurrent();
+    const actions = document.getElementById('visit-recap-actions');
+    const visible = visitRecapAuthorityIsCurrent();
+    const enabled = visible && !visitRecapExportOwner;
+    if (!visible && actions?.contains(document.activeElement)) {
+      const fallback = appointmentDialogOpen
+        ? document.getElementById('appointment-tab-recap')
+        : null;
+      if (fallback && !fallback.hidden) fallback.focus({ preventScroll: true });
+      else document.activeElement?.blur();
+    }
+    if (actions) actions.hidden = !visible;
     for (const id of ['visit-recap-copy', 'visit-recap-download', 'visit-recap-print']) {
       const control = document.getElementById(id);
       if (control) control.disabled = !enabled;
@@ -5271,10 +5309,14 @@
       });
       if (!authority.accepted) return null;
       if (appointmentDialogOpen) captureAppointmentDraft();
-      const priorSelectedToken = selectedVisitId
-        ? visitsById.get(selectedVisitId)?.token || null
+      const nextVisitsById = new Map((data.items || []).map(item => [item.id, item]));
+      const nextSelectedToken = selectedVisitId
+        ? nextVisitsById.get(selectedVisitId)?.token || null
         : null;
-      visitsById = new Map((data.items || []).map(item => [item.id, item]));
+      if (selectedVisitId) {
+        scrubVisitRecapBeforeSelectionChange(selectedVisitId, nextSelectedToken);
+      }
+      visitsById = nextVisitsById;
       decisionSuccessorConflicts = new Set();
       appointmentOptions = Array.isArray(data.appointments) ? data.appointments : [];
       if (selectedVisitId && !visitsById.has(selectedVisitId)) {
@@ -5284,12 +5326,6 @@
       }
       renderAppointmentOptions();
       renderVisitPreparation();
-      const currentSelectedToken = selectedVisitId
-        ? visitsById.get(selectedVisitId)?.token || null
-        : null;
-      if (priorSelectedToken && priorSelectedToken !== currentSelectedToken) {
-        markVisitRecapStale('The selected visit changed. Reload the recap before exporting.');
-      }
       if (appointmentDialogOpen) renderAppointmentWorkspace();
       reportLoadSuccess('visits');
       const items = data.items || [];
@@ -6714,9 +6750,9 @@
       return;
     }
     if (selectedVisitId && selectedVisitId !== visitId) captureAppointmentDraft();
+    scrubVisitRecapBeforeSelectionChange(visitId, visit.token);
     selectedVisitId = visitId;
     visitSelectionEpoch += 1;
-    clearVisitRecap(true);
     appointmentDialogOpen = true;
     clearWorkflowRetry();
     const overlay = document.getElementById('appointment-overlay');
@@ -6752,6 +6788,8 @@
   function selectVisitInWorkspace(visitId) {
     if (!visitsById.has(visitId) || visitId === selectedVisitId) return;
     captureAppointmentDraft();
+    const visit = visitsById.get(visitId);
+    scrubVisitRecapBeforeSelectionChange(visitId, visit?.token);
     selectedVisitId = visitId;
     visitSelectionEpoch += 1;
     clearWorkflowRetry();

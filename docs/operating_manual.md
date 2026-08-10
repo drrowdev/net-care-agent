@@ -390,10 +390,12 @@ working record; on a phone it opens as a full-height sheet.
    you reviewed. If anything changed, the app shows the replacement for review
    but performs no clipboard, download, or print action; click export again only
    after reviewing it.
+   Export controls appear only when the displayed recap is the accepted current
+   in-progress or completed visit.
    Download creates a UTF-8 plain-text file named generically, such as
    `visit-recap-2026-08-10.txt`; the app does not create PDF/Word files, upload,
    email, or share the record. Planned visits cannot be recapped until started.
-   Cancelled visits show only a non-exportable administrative state.
+   Planned visits and cancelled administrative records show no export controls.
 
 Each request has one mutation ID and target token. An explicit retry after an
 ambiguous connection failure reuses only that exact unchanged request. A `409`
@@ -404,15 +406,18 @@ Drafts remain only in memory.
 The recap is a read projection: opening, copying, downloading, or printing it
 does not change either revision, append audit history, or mark any item reviewed.
 Only one export can own the controls at a time. If the selected visit, its
-follow-ups, a related alert, or any workflow/clinical authority changes, export
-controls disable immediately. A connection ambiguity leaves the previous recap
-visible as **Offline snapshot · read-only**, with no export side effect. The
-browser going offline revokes export authority and any prepared download URL
-synchronously; reconnecting alone does not restore it. A successful authoritative
-recap reload/review is required. A conflict requires the visit and recap to
-reload; authorization loss or a hard failure removes the recap and its hidden
-export payload entirely. Returning to a visible browser tab refreshes an active
-recap; there is no recap polling.
+If the selected visit or its complete visit token changes, the previous recap
+and export payload are removed before the new visit header renders or reload
+starts. If its follow-ups, a related alert, or any workflow/clinical authority
+changes, export controls disappear immediately and the recap reloads.
+A connection failure may leave the previous recap visible as **Offline snapshot
+· read-only** only for the same visit identity, but Copy/Download/Print remain
+absent and causes no export side effect. The browser going offline revokes export
+authority and any prepared download URL synchronously; reconnecting alone does
+not restore it. A successful authoritative recap reload/review is required. A
+conflict requires the visit and recap to reload; authorization loss or a hard
+failure removes the recap and its hidden export payload entirely. Returning to a
+visible browser tab refreshes an active recap; there is no recap polling.
 
 Pin/order/visit bookkeeping changes only `workflow_revision`. Captured answers
 and clinician-attributed decisions also advance `profile_revision`, clear

@@ -19,6 +19,13 @@ incremented when something user-visible or operationally meaningful changes.
   late responses export nothing. The browser offline event now immediately
   revokes recap tokens, text, controls, and Blob URLs, and online state alone
   cannot restore export before a successful authoritative reload.
+- **Visit recap identity teardown and export visibility.** Changing the selected
+  visit or its full token now removes the prior structured recap, rendered
+  sections, export payload/object URL, print state, and export focus before the
+  new visit renders or loads, so late responses cannot cross visit identities.
+  Copy, download, and print controls are omitted unless a current accepted
+  in-progress/completed recap is exportable; planned, cancelled, unavailable,
+  stale, authorization-cleared, and other non-exportable states expose none.
 - **Structured alert-resolution authority and teardown.** The Patient alert
   dialog now gates open/source/conflict/convergence/mutation responses on one
   pre-selection owner, patient epoch, alert identity/token, and monotonic

@@ -384,7 +384,12 @@ working record; on a phone it opens as a full-height sheet.
    remain **Caregiver-entered · attributed to clinician · unverified**.
    Administrative action/alert outcomes remain explicitly non-clinical.
 9. After reviewing the current recap, use **Copy**, **Download text**, or
-   **Print**. All three use the exact accepted recap currently displayed.
+   **Print**. Each click performs one authenticated, no-cache recheck using the
+   current full visit token and exports only if the returned recap token,
+   revisions, visit authority, and exportable lifecycle exactly match the recap
+   you reviewed. If anything changed, the app shows the replacement for review
+   but performs no clipboard, download, or print action; click export again only
+   after reviewing it.
    Download creates a UTF-8 plain-text file named generically, such as
    `visit-recap-2026-08-10.txt`; the app does not create PDF/Word files, upload,
    email, or share the record. Planned visits cannot be recapped until started.
@@ -398,13 +403,16 @@ Drafts remain only in memory.
 
 The recap is a read projection: opening, copying, downloading, or printing it
 does not change either revision, append audit history, or mark any item reviewed.
-If the selected visit, its follow-ups, a related alert, or any workflow/clinical
-authority changes, export controls disable immediately and the recap reloads.
-A connection failure may leave the previous recap visible as **Offline snapshot
-· read-only**, but Copy/Download/Print stay disabled. A conflict requires the
-visit and recap to reload; authorization loss or a hard failure removes the
-recap and its hidden export payload entirely. Returning to a visible browser tab
-refreshes an active recap; there is no recap polling.
+Only one export can own the controls at a time. If the selected visit, its
+follow-ups, a related alert, or any workflow/clinical authority changes, export
+controls disable immediately. A connection ambiguity leaves the previous recap
+visible as **Offline snapshot · read-only**, with no export side effect. The
+browser going offline revokes export authority and any prepared download URL
+synchronously; reconnecting alone does not restore it. A successful authoritative
+recap reload/review is required. A conflict requires the visit and recap to
+reload; authorization loss or a hard failure removes the recap and its hidden
+export payload entirely. Returning to a visible browser tab refreshes an active
+recap; there is no recap polling.
 
 Pin/order/visit bookkeeping changes only `workflow_revision`. Captured answers
 and clinician-attributed decisions also advance `profile_revision`, clear

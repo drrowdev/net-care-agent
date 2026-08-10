@@ -9,6 +9,16 @@ incremented when something user-visible or operationally meaningful changes.
 ## [Unreleased]
 
 ### Fixed
+- **Authoritative recap export preflight and offline revocation.** Every recap
+  Copy, text download, and print now owns one duplicate-locked authenticated
+  no-store preflight and performs its browser side effect only when the selected
+  visit, full token, recap token, both revisions, request/selection/PHI epochs,
+  and exportable lifecycle exactly match the reviewed snapshot. Changed authority
+  becomes a new review state requiring a second click; conflicts, stale or
+  revisionless responses, network ambiguity, authorization/hard failures, and
+  late responses export nothing. The browser offline event now immediately
+  revokes recap tokens, text, controls, and Blob URLs, and online state alone
+  cannot restore export before a successful authoritative reload.
 - **Structured alert-resolution authority and teardown.** The Patient alert
   dialog now gates open/source/conflict/convergence/mutation responses on one
   pre-selection owner, patient epoch, alert identity/token, and monotonic

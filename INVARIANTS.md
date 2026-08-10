@@ -167,10 +167,14 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
 - Hard status/tasks/summary/evidence or authorization failure centrally evicts
   all client-side patient PHI caches and rendered/dialog content. An authoritative
   receipt may survive only a non-auth post-save detail-refresh failure.
-- Recap render and Copy/Download/Print side effects require the accepted recap
-  token, selected visit ID/token, patient/visit/request epochs, and non-regressive
-  workflow/profile revisions. Newer authority clears the export payload before
-  refresh; offline may retain only visible stale read-only content. Auth/hard
+- Recap render and Copy/Download/Print side effects require one authenticated,
+  no-store preflight per explicit action and exact equality with the reviewed
+  recap token, selected visit ID/token, exportable lifecycle, both revisions, and
+  patient/visit/request epochs. One owner excludes concurrent export clicks.
+  Changed authority clears token/text/object URLs and may render only a new review
+  state; it is never exported until a second action passes an unchanged preflight.
+  Browser offline revokes synchronously, and online alone cannot restore export.
+  Network ambiguity may retain only visible stale read-only content. Auth/hard
   eviction also scrubs recap DOM/cache/export text/object URLs/focus references
   and rejects late responses. Recap loading is event-driven and never persists
   text in browser storage, URLs, logs, job metadata, or health output.

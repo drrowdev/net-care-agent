@@ -261,16 +261,21 @@ authoritative list.
 
 The workspace's fourth internal **Recap** tab loads only on tab/visit entry,
 explicit retry, relevant mutation convergence, or visibility restoration while
-active. Every response and Copy/Download/Print action must still match the
-request epoch, patient-data epoch, visit-selection epoch, selected visit
-ID/token, both monotonic revisions, and accepted recap token before changing
-DOM/cache or causing an export side effect. Newer authority immediately clears
-the export payload and disables actions. Offline failure may retain only a
-visibly stale read-only recap; authorization/hard failure scrubs the recap DOM,
-structured cache, export text, object URL, focus references, and late responses.
-Text download uses a generic UTF-8 `text/plain` filename and print CSS excludes
-navigation, controls, dialogs, and stale content. No recap polling or browser
-storage is used.
+active. Copy/Download/Print share one duplicate-click owner. Each explicit export
+performs exactly one authenticated, `no-store` recap preflight with the current
+full visit token, then requires exact equality with the reviewed recap token,
+request/patient/visit epochs, selected visit ID/token, both revisions, and
+exportable lifecycle before the clipboard, Blob/link, or print side effect.
+A changed valid projection replaces the visible review state but is never exported
+by that click; export requires a second explicit action and unchanged preflight.
+Conflict, stale/lower/revisionless authority, network ambiguity, and offline state
+clear token/text/object-URL authority and retain at most a visibly stale read-only
+recap. The browser `offline` event revokes synchronously; coming online cannot
+restore export until authoritative recap reload succeeds. Authorization/hard
+failure scrubs the recap DOM, structured cache, export text, object URL, focus
+references, and late responses. Text download uses a generic UTF-8 `text/plain`
+filename and print CSS excludes navigation, controls, dialogs, and stale content.
+No recap polling or browser storage is used.
 
 Every new Layer 2 mutation carries a bounded `mutation_id`, appends an immutable
 endpoint/operation/target scope plus request-hash/before-token/after-token event,

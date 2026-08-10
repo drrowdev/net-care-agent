@@ -3566,6 +3566,7 @@ def test_appointment_flows_never_call_deferred_or_legacy_routes():
 
 def test_visit_recap_uses_atomic_projection_and_strict_authority_gates():
     loader = _function_source("loadVisitRecap", "requireCurrentVisitRecap")
+    projection = _function_source("applyVisitRecapProjection", "loadVisitRecap")
     authority = _function_source("visitRecapAuthorityIsCurrent", "updateVisitRecapExportControls")
     stale = _function_source("markVisitRecapStale", "visitRecapAuthorityIsCurrent")
     eviction = _function_source("evictClientPhi", "renderLatestResearchUpdate")
@@ -3576,12 +3577,13 @@ def test_visit_recap_uses_atomic_projection_and_strict_authority_gates():
     assert "requestLoadEpoch === visitRecapLoadEpoch" in loader
     assert "currentVisit()?.token === requestVisitToken" in loader
     assert "authorizePatientResponse(request, data, { workflow: 'projection' })" in loader
-    assert loader.index("authorizePatientResponse(") < loader.index(
-        "visitRecapProjection = data.recap"
-    )
+    assert loader.index("authorizePatientResponse(") < loader.index("applyVisitRecapProjection(")
+    assert "visitRecapProjection = data.recap" in projection
     for expression in (
+        "!appIsOffline()",
         "authority.phiEpoch === phiEpoch",
         "authority.visitSelectionEpoch === visitSelectionEpoch",
+        "authority.requestEpoch === visitRecapLoadEpoch",
         "authority.visitId === selectedVisitId",
         "authority.visitToken === visit?.token",
         "authority.profileRevision === normalizedRevision(latestProfileRevision)",
@@ -3669,25 +3671,787 @@ console.log(JSON.stringify({
 
 def test_visit_recap_exports_recheck_authority_before_every_side_effect():
     current = _function_source("visitRecapAuthorityIsCurrent", "updateVisitRecapExportControls")
-    require = _function_source("requireCurrentVisitRecap", "copyVisitRecap")
+    require = _function_source("requireCurrentVisitRecap", "beginVisitRecapExport")
+    owner = _function_source("beginVisitRecapExport", "visitRecapExportSelectionIsCurrent")
+    preflight = _function_source("preflightVisitRecapExport", "handleVisitRecapPreflightError")
+    export = _function_source("performVisitRecapExport", "copyVisitRecap")
     copy = _function_source("copyVisitRecap", "downloadVisitRecap")
-    download = _function_source("downloadVisitRecap", "prepareVisitRecapPrint")
-    printing = _function_source("printVisitRecap", "currentVisit")
+    download = _function_source("downloadVisitRecap", "printVisitRecap")
+    printing = _function_source("printVisitRecap", "prepareVisitRecapPrint")
 
     assert "markVisitRecapStale" in require
-    assert copy.index("requireCurrentVisitRecap()") < copy.index("navigator.clipboard.writeText")
-    assert "if (!visitRecapAuthorityIsCurrent(authority)) return" in copy
-    assert download.count("requireCurrentVisitRecap()") >= 2
-    assert download.index("requireCurrentVisitRecap()") < download.index("new Blob")
-    assert download.index("requireCurrentVisitRecap()", 1) < download.index("link.click()")
-    assert "text/plain;charset=utf-8" in download
-    assert "visit-recap-${date}.txt" in download
-    assert "revokeVisitRecapDownloadUrl()" in download
-    assert printing.count("requireCurrentVisitRecap()") >= 2
-    assert printing.index("requireCurrentVisitRecap()") < printing.index("window.print()")
+    assert "requireCurrentVisitRecap()" in owner
+    assert "credentials: 'same-origin'" in preflight
+    assert "cache: 'no-store'" in preflight
+    assert export.index("await preflightVisitRecapExport(owner)") < export.index(
+        "navigator.clipboard.writeText"
+    )
+    assert export.index("await preflightVisitRecapExport(owner)") < export.index("new Blob")
+    assert export.index("await preflightVisitRecapExport(owner)") < export.index("window.print()")
+    assert export.count("visitRecapExportOwnerIsCurrent(owner)") >= 7
+    assert export.index(
+        "visitRecapExportOwnerIsCurrent(owner)", export.index("new Blob")
+    ) < export.index("link.click()")
+    assert "text/plain;charset=utf-8" in export
+    assert "visit-recap-${date}.txt" in export
+    assert "revokeVisitRecapDownloadUrl()" in export
     assert "visitRecapExportText" in current
-    assert "createObjectURL" not in copy
-    assert "text/html" not in download
+    assert "performVisitRecapExport('copy')" in copy
+    assert "performVisitRecapExport('download')" in download
+    assert "performVisitRecapExport('print')" in printing
+    assert "text/html" not in export
+
+
+def _visit_recap_export_runtime_source() -> str:
+    finish_start = APP_JS.index("function finishVisitRecapPrint")
+    finish_end = APP_JS.index("window.addEventListener('beforeprint'", finish_start)
+    return "\n".join(
+        [
+            _function_source("normalizedRevision", "capturePatientRequest"),
+            _function_source("capturePatientRequest", "patientRequestIsCurrent"),
+            _function_source("patientRequestIsCurrent", "requestClinicalConvergence"),
+            _function_source("appIsOffline", "handleOfflineTransition"),
+            _executable_function_source("handleOfflineTransition", "retryInitialLoad"),
+            _function_source("revokeVisitRecapDownloadUrl", "clearVisitRecap"),
+            _function_source("clearVisitRecap", "markVisitRecapStale"),
+            _function_source("markVisitRecapStale", "visitRecapAuthorityIsCurrent"),
+            _function_source("visitRecapAuthorityIsCurrent", "updateVisitRecapExportControls"),
+            _function_source("updateVisitRecapExportControls", "recapPlainText"),
+            _function_source("visitRecapResponseAuthority", "applyVisitRecapProjection"),
+            _executable_function_source("applyVisitRecapProjection", "loadVisitRecap"),
+            _function_source("requireCurrentVisitRecap", "beginVisitRecapExport"),
+            _function_source("beginVisitRecapExport", "visitRecapExportSelectionIsCurrent"),
+            _function_source(
+                "visitRecapExportSelectionIsCurrent", "visitRecapExportOwnerIsCurrent"
+            ),
+            _function_source("visitRecapExportOwnerIsCurrent", "releaseVisitRecapExport"),
+            _function_source("releaseVisitRecapExport", "visitRecapPreflightMatches"),
+            _function_source("visitRecapPreflightMatches", "rejectVisitRecapPreflight"),
+            _function_source("rejectVisitRecapPreflight", "acceptChangedVisitRecapPreflight"),
+            _executable_function_source(
+                "acceptChangedVisitRecapPreflight", "preflightVisitRecapExport"
+            ),
+            _executable_function_source(
+                "preflightVisitRecapExport", "handleVisitRecapPreflightError"
+            ),
+            _executable_function_source(
+                "handleVisitRecapPreflightError", "performVisitRecapExport"
+            ),
+            _executable_function_source("performVisitRecapExport", "copyVisitRecap"),
+            _executable_function_source("copyVisitRecap", "downloadVisitRecap"),
+            _executable_function_source("downloadVisitRecap", "printVisitRecap"),
+            _executable_function_source("printVisitRecap", "prepareVisitRecapPrint"),
+            _function_source("prepareVisitRecapPrint", "finishVisitRecapPrint"),
+            APP_JS[finish_start:finish_end],
+        ]
+    )
+
+
+def _visit_recap_export_probe_script() -> str:
+    return "\n".join(
+        [
+            """
+class FakeClassList {
+  constructor() { this.values = new Set(); }
+  add(value) { this.values.add(value); }
+  remove(value) { this.values.delete(value); }
+  toggle(value, force) {
+    if (force === true) this.values.add(value);
+    else if (force === false) this.values.delete(value);
+    else if (this.values.has(value)) this.values.delete(value);
+    else this.values.add(value);
+  }
+  contains(value) { return this.values.has(value); }
+}
+
+const elements = new Map();
+const element = id => {
+  if (!elements.has(id)) {
+    elements.set(id, {
+      className: '',
+      disabled: false,
+      innerHTML: '',
+      textContent: '',
+    });
+  }
+  return elements.get(id);
+};
+let linkClicks = 0;
+const document = {
+  body: { classList: new FakeClassList() },
+  createElement(tag) {
+    if (tag !== 'a') throw new Error(`unexpected element ${tag}`);
+    return {
+      href: '',
+      download: '',
+      rel: '',
+      click() { linkClicks += 1; },
+    };
+  },
+  getElementById: element,
+};
+let printCalls = 0;
+const window = {
+  addEventListener() {},
+  print() { printCalls += 1; },
+};
+let offline = false;
+let clipboardWrites = 0;
+const navigator = {
+  get onLine() { return !offline; },
+  clipboard: {
+    async writeText() { clipboardWrites += 1; },
+  },
+};
+let blobCreates = 0;
+class Blob {
+  constructor(parts, options) {
+    this.parts = parts;
+    this.options = options;
+    blobCreates += 1;
+  }
+}
+let urlCreates = 0;
+let urlRevokes = 0;
+const URL = {
+  createObjectURL() {
+    urlCreates += 1;
+    return `blob:recap-${urlCreates}`;
+  },
+  revokeObjectURL() { urlRevokes += 1; },
+};
+globalThis.Blob = Blob;
+globalThis.URL = URL;
+
+let selectedVisitId = 'visit-a';
+let visitSelectionEpoch = 3;
+let phiEpoch = 2;
+let latestProfileRevision = 10;
+let workflowRevision = 20;
+let visitRecapLoadEpoch = 7;
+let visitRecapProjection = null;
+let visitRecapAuthority = null;
+let visitRecapExportText = '';
+let visitRecapStale = false;
+let visitRecapState = 'idle';
+let visitRecapMessage = '';
+let visitRecapDownloadUrl = null;
+let visitRecapExportOwner = null;
+let visitRecapExportEpoch = 0;
+let visitRecapNetworkAmbiguous = false;
+let appointmentDialogOpen = true;
+let activeAppointmentTab = 'recap';
+let visitsById = new Map();
+const failedLoads = new Map();
+let fetchCalls = [];
+let fetchImpl = null;
+
+function currentVisit() {
+  return selectedVisitId ? visitsById.get(selectedVisitId) || null : null;
+}
+function buildVisitRecapText(recap) {
+  if (!recap?.exportable || recap.state !== 'current') {
+    throw new Error('This visit recap is not available for export.');
+  }
+  return `recap:${recap.marker}\\n`;
+}
+function renderVisitRecap() { updateVisitRecapExportControls(); }
+function renderAppState() {}
+function reportLoadSuccess(scope) { failedLoads.delete(scope); }
+function reportLoadError(scope, error) { failedLoads.set(scope, error); }
+function shouldEvictClientPhi(error) {
+  return error?.status === 401 || error?.status === 403 || Number(error?.status) >= 500;
+}
+function evictClientPhi() {
+  clearVisitRecap(true);
+  phiEpoch += 1;
+  selectedVisitId = null;
+  visitSelectionEpoch += 1;
+  visitsById = new Map();
+  appointmentDialogOpen = false;
+}
+function authorizePatientResponse(request, data) {
+  if (!patientRequestIsCurrent(request)) return { accepted: false };
+  const profileRevision = normalizedRevision(data?.profile_revision);
+  const nextWorkflowRevision = normalizedRevision(data?.workflow_revision);
+  if (
+    !Number.isSafeInteger(profileRevision)
+    || !Number.isSafeInteger(nextWorkflowRevision)
+    || profileRevision < latestProfileRevision
+    || nextWorkflowRevision < workflowRevision
+  ) return { accepted: false };
+  if (profileRevision > latestProfileRevision) {
+    latestProfileRevision = profileRevision;
+    phiEpoch += 1;
+  }
+  workflowRevision = nextWorkflowRevision;
+  return { accepted: true };
+}
+async function readJsonResponse(response, canEvictClientPhi = () => true) {
+  if (response.throwError) throw response.throwError;
+  if (!response.ok) {
+    const error = new Error(response.message || `Request failed (${response.status})`);
+    error.status = response.status;
+    if ((response.status === 401 || response.status === 403) && canEvictClientPhi()) {
+      evictClientPhi(error);
+    }
+    throw error;
+  }
+  return response.data;
+}
+async function fetch(url, options) {
+  fetchCalls.push({ url, options });
+  return fetchImpl(url, options);
+}
+""",
+            _visit_recap_export_runtime_source(),
+            """
+function recapData(overrides = {}) {
+  const visitId = overrides.visit_id || 'visit-a';
+  const visitToken = overrides.visit_token || 'visit-token-a';
+  const marker = overrides.marker || 'accepted';
+  return {
+    visit_id: visitId,
+    visit_token: visitToken,
+    recap_token: overrides.recap_token || 'recap-token-a',
+    profile_revision: overrides.profile_revision ?? 10,
+    workflow_revision: overrides.workflow_revision ?? 20,
+    recap: overrides.recap || {
+      state: overrides.state || 'current',
+      exportable: overrides.exportable ?? true,
+      marker,
+      visit: {
+        id: visitId,
+        status: overrides.visit_status || 'completed',
+        date: '2026-08-10',
+      },
+    },
+  };
+}
+function response(data, status = 200) {
+  return { ok: status >= 200 && status < 300, status, data, message: data?.error };
+}
+function resetEffects() {
+  fetchCalls = [];
+  clipboardWrites = 0;
+  blobCreates = 0;
+  linkClicks = 0;
+  printCalls = 0;
+  urlCreates = 0;
+  urlRevokes = 0;
+}
+function seed(data = recapData()) {
+  offline = false;
+  failedLoads.clear();
+  selectedVisitId = 'visit-a';
+  visitSelectionEpoch += 1;
+  phiEpoch += 1;
+  latestProfileRevision = data.profile_revision;
+  workflowRevision = data.workflow_revision;
+  visitRecapLoadEpoch += 1;
+  visitRecapExportEpoch += 1;
+  visitRecapExportOwner = null;
+  visitRecapNetworkAmbiguous = false;
+  appointmentDialogOpen = true;
+  activeAppointmentTab = 'recap';
+  visitsById = new Map([['visit-a', { id: 'visit-a', token: data.visit_token }]]);
+  applyVisitRecapProjection(data, { requestEpoch: visitRecapLoadEpoch });
+  resetEffects();
+}
+async function runExport(kind) {
+  return {
+    copy: copyVisitRecap,
+    download: downloadVisitRecap,
+    print: printVisitRecap,
+  }[kind]();
+}
+function effects() {
+  return {
+    fetches: fetchCalls.length,
+    clipboardWrites,
+    blobCreates,
+    linkClicks,
+    printCalls,
+    urlCreates,
+    urlRevokes,
+    stale: visitRecapStale,
+    authority: Boolean(visitRecapAuthority),
+    text: visitRecapExportText,
+    owner: Boolean(visitRecapExportOwner),
+    disabled: element('visit-recap-copy').disabled,
+  };
+}
+
+(async () => {
+  const unchanged = {};
+  for (const kind of ['copy', 'download', 'print']) {
+    const accepted = recapData();
+    seed(accepted);
+    fetchImpl = async () => response(accepted);
+    await runExport(kind);
+    unchanged[kind] = effects();
+  }
+
+  seed(recapData());
+  failedLoads.set('unrelated-workflow', new TypeError('unrelated transient failure'));
+  fetchImpl = async () => response(recapData());
+  await copyVisitRecap();
+  const unrelatedFailure = effects();
+
+  const changed = {};
+  for (const [name, next] of Object.entries({
+    token: recapData({ recap_token: 'recap-token-b', marker: 'replacement' }),
+    revision: recapData({
+      recap_token: 'recap-token-r',
+      profile_revision: 11,
+      workflow_revision: 21,
+      marker: 'revised',
+    }),
+  })) {
+    seed(recapData());
+    fetchImpl = async () => response(next);
+    const first = await copyVisitRecap();
+    const afterFirst = effects();
+    fetchImpl = async () => response(next);
+    const second = await copyVisitRecap();
+    changed[name] = { first, second, afterFirst, afterSecond: effects() };
+  }
+
+  seed(recapData());
+  const changedVisit = recapData({
+    visit_id: 'visit-b',
+    visit_token: 'visit-token-b',
+    recap_token: 'recap-token-b',
+  });
+  fetchImpl = async () => response(changedVisit);
+  await copyVisitRecap();
+  const visitMismatch = effects();
+
+  const failures = {};
+  const failureFactories = {
+    conflict: async () => response({ error: 'changed' }, 409),
+    typeError: async () => { throw new TypeError('offline'); },
+    abort: async () => {
+      const error = new Error('aborted');
+      error.name = 'AbortError';
+      throw error;
+    },
+    unauthorized: async () => response({ error: 'auth' }, 401),
+    forbidden: async () => response({ error: 'forbidden' }, 403),
+    hard: async () => response({ error: 'hard' }, 500),
+    missing: async () => response({ visit_id: 'visit-a' }),
+    lower: async () => response(recapData({
+      recap_token: 'lower',
+      profile_revision: 9,
+      workflow_revision: 19,
+    })),
+  };
+  for (const [failure, factory] of Object.entries(failureFactories)) {
+    failures[failure] = {};
+    for (const kind of ['copy', 'download', 'print']) {
+      seed(recapData());
+      fetchImpl = factory;
+      await runExport(kind);
+      failures[failure][kind] = effects();
+    }
+  }
+
+  const offlineKinds = {};
+  for (const kind of ['copy', 'download', 'print']) {
+    seed(recapData());
+    offline = true;
+    await runExport(kind);
+    offlineKinds[kind] = effects();
+  }
+
+  seed(recapData());
+  let resolveConcurrent;
+  fetchImpl = () => new Promise(resolve => { resolveConcurrent = resolve; });
+  const concurrentCopy = copyVisitRecap();
+  const concurrentDownload = downloadVisitRecap();
+  const concurrentPrint = printVisitRecap();
+  resolveConcurrent(response(recapData()));
+  await Promise.all([concurrentCopy, concurrentDownload, concurrentPrint]);
+  const concurrent = effects();
+
+  seed(recapData());
+  let resolveSelection;
+  fetchImpl = () => new Promise(resolve => { resolveSelection = resolve; });
+  const lateSelectionPromise = copyVisitRecap();
+  selectedVisitId = 'visit-b';
+  visitSelectionEpoch += 1;
+  visitsById.set('visit-b', { id: 'visit-b', token: 'visit-token-b' });
+  resolveSelection(response(recapData()));
+  await lateSelectionPromise;
+  const lateSelection = effects();
+
+  seed(recapData());
+  let resolveEviction;
+  fetchImpl = () => new Promise(resolve => { resolveEviction = resolve; });
+  const lateEvictionPromise = downloadVisitRecap();
+  evictClientPhi(new Error('evicted'));
+  resolveEviction(response(recapData()));
+  await lateEvictionPromise;
+  const lateEviction = effects();
+
+  seed(recapData());
+  fetchImpl = async () => response(recapData());
+  await downloadVisitRecap();
+  const blobRevocation = effects();
+
+  seed(recapData());
+  visitRecapDownloadUrl = URL.createObjectURL(new Blob(['old']));
+  resetEffects();
+  offline = true;
+  handleOfflineTransition();
+  const offlineEvent = effects();
+  offline = false;
+  const onlineWithoutReload = effects();
+  applyVisitRecapProjection(recapData(), { requestEpoch: visitRecapLoadEpoch });
+  reportLoadSuccess('visit-recap');
+  updateVisitRecapExportControls();
+  const afterReload = effects();
+
+  console.log(JSON.stringify({
+    unchanged,
+    unrelatedFailure,
+    changed,
+    visitMismatch,
+    failures,
+    offlineKinds,
+    concurrent,
+    lateSelection,
+    lateEviction,
+    blobRevocation,
+    offlineEvent,
+    onlineWithoutReload,
+    afterReload,
+  }));
+})().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
+""",
+        ]
+    )
+
+
+def test_visit_recap_actual_exports_preflight_and_revoke_authority():
+    completed = _run_node_script(_visit_recap_export_probe_script())
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+
+    for kind, effect_key in (
+        ("copy", "clipboardWrites"),
+        ("download", "linkClicks"),
+        ("print", "printCalls"),
+    ):
+        effect = result["unchanged"][kind]
+        assert effect["fetches"] == 1
+        assert effect[effect_key] == 1
+    assert result["unchanged"]["download"]["blobCreates"] == 1
+    assert result["unchanged"]["download"]["urlRevokes"] == 1
+    assert result["unrelatedFailure"]["fetches"] == 1
+    assert result["unrelatedFailure"]["clipboardWrites"] == 1
+
+    for changed in result["changed"].values():
+        assert changed["first"] is False
+        assert changed["afterFirst"]["fetches"] == 1
+        assert changed["afterFirst"]["clipboardWrites"] == 0
+        assert changed["afterFirst"]["authority"] is True
+        assert changed["second"] is True
+        assert changed["afterSecond"]["fetches"] == 2
+        assert changed["afterSecond"]["clipboardWrites"] == 1
+
+    assert result["visitMismatch"]["fetches"] == 1
+    assert result["visitMismatch"]["clipboardWrites"] == 0
+    assert result["visitMismatch"]["authority"] is False
+    assert result["visitMismatch"]["stale"] is True
+
+    for failure in result["failures"].values():
+        for effect in failure.values():
+            assert effect["clipboardWrites"] == 0
+            assert effect["blobCreates"] == 0
+            assert effect["linkClicks"] == 0
+            assert effect["printCalls"] == 0
+    for effect in result["offlineKinds"].values():
+        assert effect["fetches"] == 0
+        assert effect["clipboardWrites"] == 0
+        assert effect["blobCreates"] == 0
+        assert effect["printCalls"] == 0
+
+    assert result["concurrent"]["fetches"] == 1
+    assert result["concurrent"]["clipboardWrites"] == 1
+    assert result["concurrent"]["blobCreates"] == 0
+    assert result["concurrent"]["printCalls"] == 0
+    for name in ("lateSelection", "lateEviction"):
+        effect = result[name]
+        assert effect["clipboardWrites"] == 0
+        assert effect["blobCreates"] == 0
+        assert effect["linkClicks"] == 0
+        assert effect["printCalls"] == 0
+    assert result["blobRevocation"]["urlCreates"] == 1
+    assert result["blobRevocation"]["urlRevokes"] == 1
+    assert result["blobRevocation"]["owner"] is False
+
+    assert result["offlineEvent"]["authority"] is False
+    assert result["offlineEvent"]["text"] == ""
+    assert result["offlineEvent"]["stale"] is True
+    assert result["offlineEvent"]["disabled"] is True
+    assert result["onlineWithoutReload"]["disabled"] is True
+    assert result["afterReload"]["disabled"] is False
+
+
+def test_visit_recap_live_browser_preflight_and_offline_revocation():
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    accepted = {
+        "visit_id": "visit-a",
+        "visit_token": "visit-token-a",
+        "recap_token": "recap-token-a",
+        "profile_revision": 10,
+        "workflow_revision": 20,
+        "recap": {
+            "state": "current",
+            "exportable": True,
+            "marker": "accepted",
+            "visit": {
+                "id": "visit-a",
+                "status": "completed",
+                "title": "Oncology review",
+                "date": "2026-08-10",
+            },
+            "sections": {},
+        },
+    }
+    changed = {
+        **accepted,
+        "recap_token": "recap-token-b",
+        "recap": {**accepted["recap"], "marker": "replacement"},
+    }
+    harness = """
+window.__recapTest = {
+  online: true,
+  recapData: null,
+  recapRequests: 0,
+  clipboardWrites: 0,
+  blobCreates: 0,
+  linkClicks: 0,
+  printCalls: 0,
+  urlCreates: 0,
+  urlRevokes: 0,
+};
+const testState = window.__recapTest;
+Object.defineProperty(navigator, 'onLine', {
+  configurable: true,
+  get: () => testState.online,
+});
+Object.defineProperty(navigator, 'clipboard', {
+  configurable: true,
+  value: { writeText: async () => { testState.clipboardWrites += 1; } },
+});
+const NativeBlob = window.Blob;
+window.Blob = class extends NativeBlob {
+  constructor(parts, options) {
+    super(parts, options);
+    testState.blobCreates += 1;
+  }
+};
+const nativeCreateObjectURL = URL.createObjectURL.bind(URL);
+const nativeRevokeObjectURL = URL.revokeObjectURL.bind(URL);
+URL.createObjectURL = blob => {
+  testState.urlCreates += 1;
+  return nativeCreateObjectURL(blob);
+};
+URL.revokeObjectURL = url => {
+  testState.urlRevokes += 1;
+  return nativeRevokeObjectURL(url);
+};
+HTMLAnchorElement.prototype.click = function() {
+  testState.linkClicks += 1;
+};
+window.print = () => { testState.printCalls += 1; };
+window.fetch = async (url, options) => {
+  const path = String(url);
+  if (path.includes('/recap?expected_visit_token=')) {
+    testState.recapRequests += 1;
+    return new Response(JSON.stringify(testState.recapData), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+  let data = { profile_revision: 10, workflow_revision: 20, items: [] };
+  if (path === '/api/jobs') data = [];
+  if (path === '/api/summary') {
+    data = { profile_revision: 10, workflow_revision: 20, summary: null };
+  }
+  if (path === '/api/status') {
+    data = {
+      profile_revision: 10,
+      workflow_revision: 20,
+      patient: {},
+      biomarkers: [],
+      treatments: [],
+      alerts: [],
+      imaging: [],
+      documents: [],
+      papers: [],
+      trials: [],
+    };
+  }
+  if (path === '/api/visits') {
+    data = { profile_revision: 10, workflow_revision: 20, items: [], appointments: [] };
+  }
+  return new Response(JSON.stringify(data), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+};
+"""
+    seed = """
+window.__seedRecap = data => {
+  failedLoads.clear();
+  selectedVisitId = 'visit-a';
+  visitSelectionEpoch += 1;
+  phiEpoch += 1;
+  latestProfileRevision = data.profile_revision;
+  workflowRevision = data.workflow_revision;
+  visitRecapLoadEpoch += 1;
+  visitRecapExportEpoch += 1;
+  visitRecapExportOwner = null;
+  appointmentDialogOpen = true;
+  activeAppointmentTab = 'recap';
+  visitsById = new Map([['visit-a', { id: 'visit-a', token: data.visit_token }]]);
+  const overlay = document.getElementById('appointment-overlay');
+  overlay.inert = false;
+  overlay.classList.add('open');
+  overlay.setAttribute('aria-hidden', 'false');
+  document.getElementById('appointment-dialog').inert = false;
+  const panel = document.getElementById('appointment-panel-recap');
+  panel.hidden = false;
+  panel.classList.add('active');
+  applyVisitRecapProjection(data, { requestEpoch: visitRecapLoadEpoch });
+  updateVisitRecapExportControls();
+};
+window.__resetRecapEffects = () => {
+  Object.assign(window.__recapTest, {
+    recapRequests: 0,
+    clipboardWrites: 0,
+    blobCreates: 0,
+    linkClicks: 0,
+    printCalls: 0,
+    urlCreates: 0,
+    urlRevokes: 0,
+  });
+};
+"""
+
+    with playwright_api.sync_playwright() as playwright:
+        executable = Path(playwright.chromium.executable_path)
+        if not executable.exists():
+            pytest.skip("Installed Playwright browser is unavailable")
+        browser = playwright.chromium.launch()
+        for width in (1280, 360):
+            page = browser.new_page(viewport={"width": width, "height": 800})
+            page.set_content(INDEX_HTML)
+            page.add_style_tag(content=CSS)
+            page.add_script_tag(content=harness)
+            page.add_script_tag(content=APP_JS)
+            page.wait_for_timeout(100)
+            page.add_script_tag(content=seed)
+            page.evaluate(
+                """data => {
+                  window.__recapTest.recapData = data;
+                  window.__seedRecap(data);
+                  window.__resetRecapEffects();
+                }""",
+                accepted,
+            )
+            page.locator("#visit-recap-copy").click()
+            page.wait_for_function("window.__recapTest.clipboardWrites === 1")
+            unchanged = page.evaluate(
+                """() => ({
+                  requests: window.__recapTest.recapRequests,
+                  copies: window.__recapTest.clipboardWrites,
+                  disabled: document.getElementById('visit-recap-copy').disabled,
+                  overflow: document.documentElement.scrollWidth
+                    - document.documentElement.clientWidth,
+                  height: document.getElementById('visit-recap-copy')
+                    .getBoundingClientRect().height,
+                })"""
+            )
+            assert unchanged["requests"] == 1
+            assert unchanged["copies"] == 1
+            assert unchanged["disabled"] is False
+            assert unchanged["overflow"] == 0
+            if width == 360:
+                assert unchanged["height"] >= 44
+
+            if width == 1280:
+                page.evaluate(
+                    """data => {
+                      window.__seedRecap(data);
+                      window.__resetRecapEffects();
+                      window.__recapTest.recapData = {
+                        ...data,
+                        recap_token: 'recap-token-b',
+                        recap: { ...data.recap, marker: 'replacement' },
+                      };
+                    }""",
+                    accepted,
+                )
+                page.locator("#visit-recap-copy").click()
+                page.wait_for_function("window.__recapTest.recapRequests === 1")
+                page.wait_for_function("visitRecapExportOwner === null")
+                first = page.evaluate(
+                    """() => ({
+                      copies: window.__recapTest.clipboardWrites,
+                      authority: visitRecapAuthority?.recapToken,
+                      message: visitRecapMessage,
+                    })"""
+                )
+                assert first["copies"] == 0
+                assert first["authority"] == changed["recap_token"]
+                assert "Review the refreshed recap" in first["message"]
+                page.locator("#visit-recap-copy").click()
+                page.wait_for_function("window.__recapTest.clipboardWrites === 1")
+                assert page.evaluate("window.__recapTest.recapRequests") == 2
+
+                offline_state = page.evaluate(
+                    """data => {
+                      window.__seedRecap(data);
+                      visitRecapDownloadUrl = URL.createObjectURL(new Blob(['old']));
+                      window.__resetRecapEffects();
+                      window.__recapTest.online = false;
+                      window.dispatchEvent(new Event('offline'));
+                      return {
+                        authority: visitRecapAuthority,
+                        text: visitRecapExportText,
+                        stale: visitRecapStale,
+                        disabled: document.getElementById('visit-recap-copy').disabled,
+                        revoked: window.__recapTest.urlRevokes,
+                      };
+                    }""",
+                    changed,
+                )
+                assert offline_state == {
+                    "authority": None,
+                    "text": "",
+                    "stale": True,
+                    "disabled": True,
+                    "revoked": 1,
+                }
+                page.evaluate("window.__recapTest.online = true")
+                assert page.locator("#visit-recap-copy").is_disabled()
+                page.evaluate(
+                    """data => {
+                      window.__recapTest.recapData = data;
+                      return loadVisitRecap();
+                    }""",
+                    changed,
+                )
+                assert page.locator("#visit-recap-copy").is_enabled()
+            page.close()
+        browser.close()
 
 
 def test_visit_recap_markup_sections_are_shared_escaped_and_non_persistent():

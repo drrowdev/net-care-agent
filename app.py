@@ -2084,6 +2084,17 @@ def api_status():
     )
 
 
+@app.route("/api/patient/biomarker-series")
+def api_biomarker_series():
+    """Return the complete bounded longitudinal biomarker read projection."""
+    profile = agent.load_profile()
+    try:
+        projection = agent.project_biomarker_series(profile)
+    except agent.BiomarkerProjectionError as exc:
+        return jsonify({"error": exc.public_message, "code": exc.code}), 422
+    return jsonify(projection)
+
+
 @app.route("/api/feed", methods=["POST"])
 def api_feed():
     data = request.get_json(force=True) or {}

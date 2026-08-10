@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -44,7 +45,7 @@ def test_unversioned_migration_records_log_entry():
     assert "_migration_log" in result
     log = result["_migration_log"]
     assert isinstance(log, list)
-    assert len(log) == 8
+    assert len(log) == 9
     entry = log[0]
     assert entry["id"] == "0001_add_schema_version"
     assert "applied_at" in entry
@@ -57,6 +58,7 @@ def test_unversioned_migration_records_log_entry():
     assert log[5]["id"] == "0006_add_stable_treatment_records"
     assert log[6]["id"] == "0007_harden_legacy_generated_alerts"
     assert log[7]["id"] == "0008_add_follow_through_foundation"
+    assert log[8]["id"] == "0009_add_biomarker_projection_authority"
 
 
 def test_already_current_fast_path_no_change():
@@ -192,7 +194,7 @@ def test_v1_adds_empty_document_import_ledger_without_clinical_inference():
     data = {"schema_version": 1, "patient": {"diagnosis": "NET"}}
     result = apply_migrations(data)
 
-    assert result["schema_version"] == 8
+    assert result["schema_version"] == 9
     assert result["document_imports"] == []
     assert result["patient"]["diagnosis"] == "NET"
     assert result["patient"]["current_treatment_records"] == []
@@ -212,7 +214,7 @@ def test_v2_conservatively_stales_legacy_ai_questions_without_generation_identit
 
     result = apply_migrations(data)
 
-    assert result["schema_version"] == 8
+    assert result["schema_version"] == 9
     assert result["questions_generation_id"] is None
     assert result["appointment_questions"][0]["stale"] is True
     assert (
@@ -237,7 +239,7 @@ def test_v3_deterministically_backfills_stable_alert_ids():
     first = apply_migrations(copy.deepcopy(source))
     second = apply_migrations(copy.deepcopy(source))
 
-    assert first["schema_version"] == 8
+    assert first["schema_version"] == 9
     assert first["alerts"][0]["id"].startswith("alert_legacy_")
     assert first["alerts"][1]["id"].startswith("alert_legacy_")
     assert first["alerts"][0]["id"] != first["alerts"][1]["id"]
@@ -277,7 +279,7 @@ def test_v4_migrates_alert_lifetimes_and_invalidates_legacy_classification():
 
     result = apply_migrations(data)
 
-    assert result["schema_version"] == 8
+    assert result["schema_version"] == 9
     assert result["treatments_classification_revision"] is None
     assert result["treatments_classification_job_id"] is None
     assert [item["dependency_kind"] for item in result["alerts"]] == [
@@ -312,7 +314,7 @@ def test_v5_backfills_stable_composite_treatment_records_and_stales_classificati
     first = apply_migrations(copy.deepcopy(source))
     second = apply_migrations(copy.deepcopy(source))
 
-    assert first["schema_version"] == 8
+    assert first["schema_version"] == 9
     records = first["patient"]["current_treatment_records"]
     assert [item["text"] for item in records] == ["lanreotide", "everolimus"]
     assert len({item["id"] for item in records}) == 2
@@ -408,7 +410,7 @@ def test_v1_null_scaffolding_migrates_deterministically_without_inventing_clinic
     first = apply_migrations(copy.deepcopy(source))
     second = apply_migrations(copy.deepcopy(source))
 
-    assert first["schema_version"] == 8
+    assert first["schema_version"] == 9
     assert first["patient"] == {"current_treatment_records": []}
     assert first["document_imports"] == []
     assert first["alerts"][0]["dependency_kind"] == "profile_snapshot"
@@ -437,7 +439,7 @@ def test_v7_adds_follow_through_defaults_and_deterministic_summary_action_ids():
     second = apply_migrations(copy.deepcopy(source))
 
     assert first == second
-    assert first["schema_version"] == 8
+    assert first["schema_version"] == 9
     assert first["workflow_revision"] == 0
     assert first["caregiver_actions"] == []
     assert first["visits"] == []
@@ -449,6 +451,89 @@ def test_v7_adds_follow_through_defaults_and_deterministic_summary_action_ids():
     assert first["executive_summary"]["stale_reason"] == "legacy_missing_generation_provenance"
     assert first["alerts"][0]["history"] == []
     assert first["alerts"][0]["resolution"]["outcome_kind"] == "legacy_unknown"
+
+
+def test_v8_backfills_biomarker_ids_from_stable_source_authority():
+    from agent.migrations import apply_migrations
+
+    rows = [
+        {
+            "source_document_id": "doc_" + "a" * 32,
+            "evidence_status": "verified",
+            "evidence_start": 10,
+            "evidence_end": 20,
+            "marker": "CgA",
+            "value": 12,
+            "date": "2026-08-01",
+        },
+        {
+            "source_document_id": "doc_" + "b" * 32,
+            "evidence_status": "verified",
+            "evidence_start": 30,
+            "evidence_end": 40,
+            "marker": "CgA",
+            "value": 13,
+            "date": "2026-08",
+        },
+    ]
+    first = apply_migrations(
+        {"schema_version": 8, "patient": {}, "biomarkers": copy.deepcopy(rows)}
+    )
+    reordered = apply_migrations(
+        {"schema_version": 8, "patient": {}, "biomarkers": list(reversed(copy.deepcopy(rows)))}
+    )
+
+    first_ids = {row["source_document_id"]: row["id"] for row in first["biomarkers"]}
+    reordered_ids = {row["source_document_id"]: row["id"] for row in reordered["biomarkers"]}
+    assert first_ids == reordered_ids
+    assert first["biomarkers"][0]["date_precision"] == "day"
+    assert first["biomarkers"][0]["date_kind"] == "clinical_unspecified"
+    assert first["biomarkers"][1]["date_precision"] == "month"
+    assert first["biomarkers"][0]["specimen"] is None
+
+
+def test_v8_preserves_existing_ids_and_distinguishes_identical_occurrences():
+    from agent.migrations import apply_migrations
+
+    identical = {"marker": "NSE", "value": "positive", "date": None}
+    source = {
+        "schema_version": 8,
+        "patient": {},
+        "biomarkers": [
+            {"id": "existing", **identical},
+            copy.deepcopy(identical),
+            copy.deepcopy(identical),
+        ],
+    }
+    first = apply_migrations(copy.deepcopy(source))
+    second = apply_migrations(copy.deepcopy(source))
+
+    ids = [row["id"] for row in first["biomarkers"]]
+    assert ids[0] == "existing"
+    assert len(ids) == len(set(ids)) == 3
+    assert ids == [row["id"] for row in second["biomarkers"]]
+    assert all(row["date_precision"] == "unknown" for row in first["biomarkers"])
+    assert all(row["date_kind"] == "unknown" for row in first["biomarkers"])
+
+
+def test_load_profile_persists_v9_biomarker_backfill_idempotently(agent):
+    legacy = {
+        "schema_version": 8,
+        "patient": {"diagnosis": "NET"},
+        "biomarkers": [{"marker": "CgA", "value": 12, "date": "2026"}],
+    }
+    agent.PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    agent.PROFILE_PATH.write_text(json.dumps(legacy), encoding="utf-8")
+
+    first = agent.load_profile()
+    second = agent.load_profile()
+
+    assert first["schema_version"] == 9
+    assert first["biomarkers"][0]["id"] == second["biomarkers"][0]["id"]
+    assert (
+        json.loads(agent.PROFILE_PATH.read_text(encoding="utf-8"))["biomarkers"][0]["id"]
+        == (first["biomarkers"][0]["id"])
+    )
 
 
 def test_v7_preserves_fully_identified_current_summary():

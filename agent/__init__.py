@@ -7,6 +7,8 @@ internal module layout.
 
 from __future__ import annotations
 
+from .biomarker_series import BiomarkerProjectionError, project_biomarker_series
+
 # Agents
 from .chat import build_chat_system, handle_chat
 from .classify import (
@@ -169,6 +171,8 @@ __all__ = [
     "CorruptProfileError",
     "IOProfileError",
     "ProfileLoadError",
+    "BiomarkerProjectionError",
+    "project_biomarker_series",
     "ACTION_STATUSES",
     "VISIT_STATUSES",
     "DECISION_STATUSES",

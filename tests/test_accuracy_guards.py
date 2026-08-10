@@ -88,14 +88,16 @@ def test_intake_double_failure_raises_loud_alert(agent, empty_profile):
     assert alerts[0]["resolved"] is False
 
 
-def test_intake_dedups_exact_biomarker_triples(agent, empty_profile):
+def test_intake_preserves_exact_biomarker_facts_from_separate_sources(agent, empty_profile):
     payload = '{"document_type": "lab_result", "summary": "s", "biomarkers": [{"marker": "CgA", "value": 120, "unit": "ng/mL"}]}'
     with patch_llm(agent, lambda **_: llm_text(payload)):
         agent.run_intake("doc one", empty_profile)
-        # Re-feed the identical document; the CgA reading must not double-log.
+        # A re-feed receives a distinct immutable source and remains auditable.
         agent.run_intake("doc one", empty_profile)
     cga = [b for b in empty_profile["biomarkers"] if b.get("marker") == "CgA"]
-    assert len(cga) == 1
+    assert len(cga) == 2
+    assert len({item["id"] for item in cga}) == 2
+    assert len({item["source_document_id"] for item in cga}) == 2
 
 
 # ── P11: exec_summary brevity retry ──────────────────────────────────────────

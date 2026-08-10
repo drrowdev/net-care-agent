@@ -130,6 +130,67 @@ def test_correction_preserves_source_and_records_history(agent, empty_profile):
     assert source_path.read_bytes() == original_text
 
 
+def test_biomarker_authority_fields_are_correctable_and_derived(agent, empty_profile):
+    profile, _ = _ingest(agent, empty_profile)
+    receipt = agent.public_receipt(profile, "feed-job")
+    biomarker = next(item for item in receipt["changes"] if item["category"] == "biomarkers")
+
+    assert {"date_kind", "source_document_date", "specimen", "assay", "method"} <= set(
+        biomarker["editable_fields"]
+    )
+    agent.correct_change(
+        profile,
+        "feed-job",
+        biomarker["id"],
+        receipt_revision=receipt["receipt_revision"],
+        target_token=biomarker["target_token"],
+        replacement={
+            "date": "2026-08",
+            "date_kind": "collection",
+            "source_document_date": "2026",
+            "specimen": "Plasma",
+            "assay": "Assay X",
+        },
+    )
+
+    row = profile["biomarkers"][0]
+    assert row["date"] == "2026-08"
+    assert row["date_precision"] == "month"
+    assert row["date_kind"] == "collection"
+    assert row["source_document_date_precision"] == "year"
+    assert row["specimen"] == "Plasma"
+    assert row["assay"] == "Assay X"
+    assert row["provenance_status"] == "caregiver_corrected"
+    assert row["evidence_status"] == "missing"
+    assert row["flag_authority"] == "unknown"
+
+
+def test_unrelated_biomarker_correction_preserves_printed_flag_authority(agent, empty_profile):
+    profile, _ = _ingest(agent, empty_profile)
+    profile["biomarkers"][0]["flag"] = "high"
+    profile["biomarkers"][0]["flag_authority"] = "source_reported"
+    change = next(
+        item
+        for item in profile["document_imports"][0]["changes"]
+        if item["category"] == "biomarkers"
+    )
+    change["effective_value"] = copy.deepcopy(profile["biomarkers"][0])
+    receipt = agent.public_receipt(profile, "feed-job")
+    biomarker = next(item for item in receipt["changes"] if item["category"] == "biomarkers")
+
+    agent.correct_change(
+        profile,
+        "feed-job",
+        biomarker["id"],
+        receipt_revision=receipt["receipt_revision"],
+        target_token=biomarker["target_token"],
+        replacement={"value": 243},
+    )
+
+    assert profile["biomarkers"][0]["flag"] == "high"
+    assert profile["biomarkers"][0]["flag_authority"] == "source_reported"
+
+
 def test_changed_target_rejects_correction_without_mutation(agent, empty_profile):
     profile, _ = _ingest(agent, empty_profile)
     receipt = agent.public_receipt(profile, "feed-job")
@@ -266,7 +327,6 @@ def test_durable_alert_cannot_be_removed_from_receipt(agent, empty_profile):
 @pytest.mark.parametrize(
     "replacement",
     [
-        {"date": None},
         {"date": "not-a-date"},
         {"marker": None},
         {"value": None},

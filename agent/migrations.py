@@ -36,7 +36,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 8
+CURRENT_SCHEMA_VERSION: int = 9
 
 # Append-only ordered registry of migrations.  Never reorder entries.
 _REGISTRY: list[dict[str, Any]] = []
@@ -294,6 +294,128 @@ def _m0008_add_follow_through_foundation(data: dict) -> dict:
                 effective["resolution"] = copy.deepcopy(alert["resolution"])
 
     data["schema_version"] = 8
+    return data
+
+
+@_migration("0009_add_biomarker_projection_authority", to_version=9)
+def _m0009_add_biomarker_projection_authority(data: dict) -> dict:
+    """v8 -> v9: add deterministic biomarker identity and explicit authority fields."""
+    from .schema import derive_date_precision
+
+    biomarkers = data.get("biomarkers") or []
+    used_ids = {
+        row.get("id")
+        for row in biomarkers
+        if isinstance(row, dict) and isinstance(row.get("id"), str) and row.get("id")
+    }
+    occurrences: dict[str, int] = {}
+    migration_fields = {
+        "id",
+        "date_precision",
+        "source_document_date_precision",
+        "flag_authority",
+    }
+    for row in biomarkers:
+        if not isinstance(row, dict):
+            continue
+        if not row.get("id"):
+            semantic = {
+                key: value for key, value in sorted(row.items()) if key not in migration_fields
+            }
+            source_id = row.get("source_document_id")
+            start = row.get("evidence_start")
+            end = row.get("evidence_end")
+            if (
+                isinstance(source_id, str)
+                and source_id
+                and isinstance(start, int)
+                and isinstance(end, int)
+                and end > start
+            ):
+                provenance = {
+                    "kind": "source_span",
+                    "source_document_id": source_id,
+                    "evidence_status": row.get("evidence_status"),
+                    "evidence_start": start,
+                    "evidence_end": end,
+                }
+            elif isinstance(source_id, str) and source_id:
+                provenance = {
+                    "kind": "source",
+                    "source_document_id": source_id,
+                    "evidence_status": row.get("evidence_status"),
+                }
+            else:
+                provenance = {
+                    "kind": "legacy",
+                    "added_at": row.get("added_at"),
+                }
+            base = json.dumps(
+                {"provenance": provenance, "semantic": semantic},
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                default=str,
+            )
+            occurrence = occurrences.get(base, 0)
+            occurrences[base] = occurrence + 1
+            salt = 0
+            while True:
+                digest = hashlib.sha256(f"{base}:{occurrence}:{salt}".encode()).hexdigest()[:32]
+                candidate = f"fact_biomarker_legacy_{digest}"
+                if candidate not in used_ids:
+                    break
+                salt += 1
+            row["id"] = candidate
+            used_ids.add(candidate)
+
+        precision = derive_date_precision(row.get("date"))
+        row.setdefault("date_precision", precision)
+        row.setdefault(
+            "date_kind",
+            "clinical_unspecified" if precision != "unknown" else "unknown",
+        )
+        row.setdefault("source_document_date", None)
+        row.setdefault(
+            "source_document_date_precision",
+            derive_date_precision(row.get("source_document_date")),
+        )
+        row.setdefault("specimen", None)
+        row.setdefault("assay", None)
+        row.setdefault("method", None)
+        row.setdefault("flag_authority", "legacy_unknown" if row.get("flag") else "unknown")
+
+    biomarkers_by_id = {
+        row.get("id"): row
+        for row in biomarkers
+        if isinstance(row, dict) and isinstance(row.get("id"), str) and row.get("id")
+    }
+    for receipt in data.get("document_imports") or []:
+        if not isinstance(receipt, dict):
+            continue
+        for change in receipt.get("changes") or []:
+            if not isinstance(change, dict):
+                continue
+            target = change.get("target") or {}
+            if target.get("collection") != "biomarkers":
+                continue
+            row = biomarkers_by_id.get(target.get("record_id"))
+            effective = change.get("effective_value")
+            if row is None or not isinstance(effective, dict):
+                continue
+            for field in (
+                "date_precision",
+                "date_kind",
+                "source_document_date",
+                "source_document_date_precision",
+                "specimen",
+                "assay",
+                "method",
+                "flag_authority",
+            ):
+                effective[field] = copy.deepcopy(row.get(field))
+
+    data["schema_version"] = 9
     return data
 
 

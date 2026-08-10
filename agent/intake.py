@@ -18,7 +18,7 @@ from .provenance import (
     preserve_source_document,
     remove_source_document,
 )
-from .schema import now_stamp
+from .schema import derive_date_precision, now_stamp
 
 INTAKE_SYSTEM_TEMPLATE = """\
 You are a medical data extraction agent. The record is for [[PATIENT_CONTEXT]].
@@ -28,11 +28,16 @@ You will receive ONE clinical document as free text (possibly noisy OCR/PDF-extr
 SCHEMA (omit keys that have no data; never add keys):
 {
   "document_type": "lab_result|imaging_report|doctor_note|research_paper|appointment_summary|pathology_report|other",
-  "date": "YYYY-MM-DD or null",
+  "date": "clinical YYYY-MM-DD, YYYY-MM, YYYY, or null",
+  "source_document_date": "report-issued/source-document YYYY-MM-DD, YYYY-MM, YYYY, or null",
   "summary": "1-2 sentence summary of the key clinical message",
   "biomarkers": [
-    {"marker": "name", "value": number_or_null, "unit": "string",
+    {"marker": "name", "value": number_or_string_or_null, "unit": "string",
+     "date": "explicit observation YYYY-MM-DD, YYYY-MM, YYYY, or null",
+     "date_kind": "collection|result|unknown",
      "reference_range": "string_or_null", "flag": "high|low|normal",
+     "specimen": "explicit specimen_or_null", "assay": "explicit assay_or_null",
+     "method": "explicit method_or_null",
      "source_quote": "verbatim source span proving this entire row"}
   ],
   "imaging_findings": {
@@ -67,9 +72,10 @@ SCHEMA (omit keys that have no data; never add keys):
 EXTRACTION RULES
 - Ground every field in the document text. Never infer, estimate, or fabricate a value, date, unit, or flag. If OCR damage makes a value unreadable, omit that entry rather than guess.
 - EVIDENCE CONTRACT: every biomarker, imaging_findings object, symptom, and appointment MUST include source_quote copied verbatim from the input. Also include one evidence[] row for every key_finding, treatment_change, and scalar update. Quotes are validated deterministically; unsupported quotes are discarded and the persisted fact is explicitly marked evidence_status="invalid" (or "missing" when absent). Never paraphrase inside source_quote.
-- date: the CLINICAL date — specimen collection date, scan date, or visit date. Not the print, report-issued, or fax date. null if no clinical date is determinable.
-- biomarkers: serum/blood/urine lab values only (e.g. CgA, NSE, 5-HIAA, liver enzymes, kidney function, CBC, hemoglobin, radiation dose metrics). Do NOT include Ki-67 or MIB-1 here — use ki67_update instead. Fix obvious OCR unit artifacts (e.g. "ug/L" for "µg/L") but never convert units.
-- flag: use the document's own flag if printed; otherwise derive from the stated reference range; if neither exists, omit the flag field — do not assume "normal".
+- date: the CLINICAL date — specimen collection date, scan date, or visit date. Not the print, report-issued, or fax date. Preserve YYYY-MM-DD, YYYY-MM, or YYYY precision; null if no clinical date is determinable.
+- source_document_date: the report-issued/source-document date only when explicitly printed. Preserve its exact date precision. Never substitute it for the clinical date.
+- biomarkers: serum/blood/urine lab values only (e.g. CgA, NSE, 5-HIAA, liver enzymes, kidney function, CBC, hemoglobin, radiation dose metrics). Do NOT include Ki-67 or MIB-1 here — use ki67_update instead. Preserve qualifiers such as <, >, positive, negative, and ranges in value. A per-row date/date_kind may claim collection or result only when explicitly stated for that row. Specimen, assay, and method must be copied only when explicit. Never infer missing context, and never convert units.
+- flag: include only the document's own printed high/low/normal flag. Otherwise omit it. Do not derive a flag from the reference range; the deterministic read projection handles that comparison separately.
 - ki67_update: a number. If Ki-67 is stated as a range (e.g. "15-20%"), use the highest stated value and mention the full range in key_findings.
 - sstr_status_update / sstr_score_update: only when explicitly reported (SSTR imaging such as DOTATATE/octreotide scans, or pathology IHC). The score is the Krenning score (0-4) or the stated IHC score — record it exactly as given.
 - treatment_changes: explicit starts, stops, and dose/schedule changes only.
@@ -433,22 +439,34 @@ def _run_intake_impl(
 
     KI67_MARKERS = {"ki-67", "ki67", "mib-1", "mib1", "ki 67", "mib 1"}
 
-    existing_triples = {
-        (b.get("marker", "").lower().strip(), b.get("date", ""), b.get("value"))
-        for b in profile["biomarkers"]
-    }
     for bm in extracted.get("biomarkers", []):
-        marker_name = bm.get("marker", "").lower().strip()
+        if not isinstance(bm, dict):
+            continue
+        marker = bm.get("marker")
+        if not isinstance(marker, str) or not marker.strip():
+            continue
+        marker_name = marker.lower().strip()
         if any(k in marker_name for k in KI67_MARKERS):
             continue
-        bm["date"] = doc_date
-        # Skip exact (marker, date, value) duplicates so re-feeding the same
-        # document does not double-log readings (which would also trip the
-        # same-date trend guard downstream).
-        triple = (marker_name, doc_date, bm.get("value"))
-        if triple in existing_triples:
-            continue
-        existing_triples.add(triple)
+        explicit_row_date = bm.get("date")
+        bm["date"] = explicit_row_date if explicit_row_date is not None else extracted.get("date")
+        bm["date_precision"] = derive_date_precision(bm.get("date"))
+        explicit_kind = bm.get("date_kind")
+        if explicit_row_date is None:
+            bm["date_kind"] = (
+                "clinical_unspecified" if bm["date_precision"] != "unknown" else "unknown"
+            )
+        elif explicit_kind not in {"collection", "result"} or bm["date_precision"] == "unknown":
+            bm["date_kind"] = "unknown"
+        source_document_date = extracted.get("source_document_date")
+        if not isinstance(source_document_date, str):
+            source_document_date = None
+        bm["source_document_date"] = source_document_date
+        bm["source_document_date_precision"] = derive_date_precision(source_document_date)
+        for field in ("specimen", "assay", "method"):
+            value = bm.get(field)
+            bm[field] = value.strip() if isinstance(value, str) and value.strip() else None
+        bm["flag_authority"] = "source_reported" if bm.get("flag") else "unknown"
         bm["id"] = new_record_id("biomarker")
         bm["added_at"] = now_stamp()
         profile["biomarkers"].append(attach_evidence(bm, text, source_document_id))

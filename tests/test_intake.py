@@ -56,4 +56,64 @@ def test_run_intake_persists_extracted_biomarker(agent, empty_profile):
         profile, extracted = agent.run_intake("Routine labs\nCgA: 234 ng/mL", empty_profile)
     assert extracted["document_type"] == "lab_result"
     assert any(b.get("marker") == "CgA" for b in profile.get("biomarkers", []))
+    assert profile["biomarkers"][0]["flag_authority"] == "source_reported"
     assert any(d.get("type") == "lab_result" for d in profile.get("documents", []))
+
+
+def test_intake_preserves_explicit_biomarker_date_and_context(agent, empty_profile):
+    quote = "Plasma CgA by assay X: <5 ng/mL on 2026-04."
+    payload = {
+        "document_type": "lab_result",
+        "date": "2026-04",
+        "source_document_date": "2026-05-01",
+        "biomarkers": [
+            {
+                "marker": "CgA",
+                "value": "<5",
+                "unit": "ng/mL",
+                "date": "2026-04",
+                "date_kind": "collection",
+                "specimen": "Plasma",
+                "assay": "assay X",
+                "method": None,
+                "source_quote": quote,
+            }
+        ],
+    }
+    with patch_llm(agent, lambda **_: llm_text(json.dumps(payload))):
+        profile, _ = agent.run_intake(quote, empty_profile)
+
+    row = profile["biomarkers"][0]
+    assert row["value"] == "<5"
+    assert row["date"] == "2026-04"
+    assert row["date_precision"] == "month"
+    assert row["date_kind"] == "collection"
+    assert row["source_document_date"] == "2026-05-01"
+    assert row["source_document_date_precision"] == "day"
+    assert row["specimen"] == "Plasma"
+    assert row["assay"] == "assay X"
+    assert row["method"] is None
+
+
+def test_intake_preserves_duplicate_facts_from_different_sources(agent, empty_profile):
+    quote = "CgA 42 ng/mL."
+    payload = {
+        "document_type": "lab_result",
+        "date": "2026-04-01",
+        "biomarkers": [
+            {
+                "marker": "CgA",
+                "value": 42,
+                "unit": "ng/mL",
+                "source_quote": quote,
+            }
+        ],
+    }
+    with patch_llm(agent, lambda **_: llm_text(json.dumps(payload))):
+        profile, _ = agent.run_intake(quote, empty_profile)
+        profile, _ = agent.run_intake(quote, profile)
+
+    assert len(profile["biomarkers"]) == 2
+    assert len({row["id"] for row in profile["biomarkers"]}) == 2
+    assert len({row["source_document_id"] for row in profile["biomarkers"]}) == 2
+    assert all(row["date_kind"] == "clinical_unspecified" for row in profile["biomarkers"])

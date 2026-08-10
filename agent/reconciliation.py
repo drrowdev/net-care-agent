@@ -11,7 +11,7 @@ from typing import Any
 
 from .intake import _treatment_similarity
 from .provenance import anchor_source_quote
-from .schema import now_stamp
+from .schema import derive_date_precision, now_stamp
 
 
 class ReconciliationError(ValueError):
@@ -23,7 +23,19 @@ class ImportConflict(ReconciliationError):
 
 
 _EDITABLE_FIELDS = {
-    "biomarkers": ["date", "marker", "value", "unit", "reference_range", "flag"],
+    "biomarkers": [
+        "date",
+        "date_kind",
+        "source_document_date",
+        "marker",
+        "value",
+        "unit",
+        "reference_range",
+        "flag",
+        "specimen",
+        "assay",
+        "method",
+    ],
     "imaging": ["date", "modality", "findings", "impression", "new_lesions"],
     "symptoms": ["date", "symptom", "severity", "note", "related_treatment"],
     "appointments": ["date", "description", "type"],
@@ -247,45 +259,6 @@ def build_import_record(
             source_document_id=source_id,
             evidence=_document_evidence(document, "treatment_changes", index),
             editable_fields=["value"] if operation == "added" else [],
-        )
-
-    # Intake deliberately deduplicates repeated rows. Record those no-ops so the
-    # caregiver sees that a claimed value was considered rather than lost.
-    new_biomarker_ids = {
-        item.get("id")
-        for item in after.get("biomarkers", [])
-        if item.get("source_document_id") == source_id
-    }
-    for candidate in extracted.get("biomarkers") or []:
-        matching = next(
-            (
-                item
-                for item in before.get("biomarkers", [])
-                if (item.get("marker") or "").strip().casefold()
-                == (candidate.get("marker") or "").strip().casefold()
-                and item.get("date") == document.get("date")
-                and item.get("value") == candidate.get("value")
-            ),
-            None,
-        )
-        if matching is None or matching.get("id") in new_biomarker_ids:
-            continue
-        evidence = anchor_source_quote(text, candidate.get("source_quote"))
-        _new_change(
-            changes,
-            category="biomarkers",
-            label=_row_label("biomarkers", candidate),
-            operation="unchanged",
-            target={
-                "kind": "collection" if matching.get("id") else "none",
-                "collection": "biomarkers" if matching.get("id") else None,
-                "record_id": matching.get("id"),
-                "path": [],
-            },
-            before=matching,
-            after=matching,
-            source_document_id=source_id,
-            evidence=evidence,
         )
 
     for collection, extracted_key, matcher in (
@@ -645,9 +618,48 @@ def _date_text(value: Any, label: str = "Date") -> str:
     return cleaned
 
 
+def _partial_date_text(value: Any, label: str) -> str | None:
+    if value is None or value == "":
+        return None
+    cleaned = _required_text(value, label, maximum=10)
+    if derive_date_precision(cleaned) == "unknown":
+        raise ReconciliationError(f"{label} must use YYYY-MM-DD, YYYY-MM, or YYYY")
+    return cleaned
+
+
+def _optional_text(value: Any, label: str, *, maximum: int) -> str | None:
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise ReconciliationError(f"{label} must be text")
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    if len(cleaned) > maximum:
+        raise ReconciliationError(f"{label} is too long")
+    return cleaned
+
+
 def _validate_collection_value(collection: str, updated: dict) -> dict:
     if collection == "biomarkers":
-        updated["date"] = _date_text(updated.get("date"))
+        updated["date"] = _partial_date_text(updated.get("date"), "Observation date")
+        updated["date_precision"] = derive_date_precision(updated["date"])
+        if updated.get("date_kind") not in {
+            "collection",
+            "result",
+            "clinical_unspecified",
+            "source_document",
+            "unknown",
+        }:
+            raise ReconciliationError("Choose a valid biomarker date kind")
+        if updated["date_precision"] == "unknown":
+            updated["date_kind"] = "unknown"
+        updated["source_document_date"] = _partial_date_text(
+            updated.get("source_document_date"), "Source document date"
+        )
+        updated["source_document_date_precision"] = derive_date_precision(
+            updated["source_document_date"]
+        )
         updated["marker"] = _required_text(updated.get("marker"), "Biomarker name", maximum=120)
         value = updated.get("value")
         if value is None or isinstance(value, dict | list | bool):
@@ -658,6 +670,16 @@ def _validate_collection_value(collection: str, updated: dict) -> dict:
             raise ReconciliationError("Biomarker value must be finite")
         if updated.get("flag") not in {None, "high", "low", "normal"}:
             raise ReconciliationError("Biomarker flag must be high, low, normal, or empty")
+        updated["unit"] = _optional_text(updated.get("unit"), "Unit", maximum=80)
+        updated["reference_range"] = _optional_text(
+            updated.get("reference_range"), "Reference range", maximum=200
+        )
+        for field, label in (
+            ("specimen", "Specimen"),
+            ("assay", "Assay"),
+            ("method", "Method"),
+        ):
+            updated[field] = _optional_text(updated.get(field), label, maximum=200)
     elif collection == "imaging":
         updated["date"] = _date_text(updated.get("date"))
         if updated.get("modality") not in {"CT", "MRI", "PET-CT", "ultrasound", "other"}:
@@ -907,6 +929,16 @@ def correct_change(
         updated = _clone(current)
         updated.update(_clone(replacement))
         updated = _validate_collection_value(target["collection"], updated)
+        if target.get("collection") == "biomarkers":
+            if "flag" in replacement:
+                updated["flag_authority"] = (
+                    "caregiver_corrected" if updated.get("flag") is not None else "unknown"
+                )
+            else:
+                updated["flag_authority"] = current.get(
+                    "flag_authority",
+                    "legacy_unknown" if current.get("flag") else "unknown",
+                )
         if _semantic_value(updated) == _semantic_value(current):
             raise ReconciliationError("The corrected value is identical to the current value")
         updated["caregiver_corrected_at"] = now_stamp()

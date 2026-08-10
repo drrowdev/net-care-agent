@@ -23,6 +23,16 @@ incremented when something user-visible or operationally meaningful changes.
   and path-free evidence/source links. Same-source exact duplicates collapse
   only for presentation while retaining all row/evidence authority; malformed,
   oversized, or inconsistent verified data fails closed with bounded `422`.
+- **Table-first Patient biomarker explorer.** The shared desktop/phone Patient
+  view now selects server-provided analytes and renders every raw observation,
+  alias, duplicate/source identity, provenance state, evidence link, and neutral
+  non-comparability reason from the complete projection. Secondary SVG charts
+  show isolated points only for exact server-declared comparable groups—no
+  client aliasing, unit conversion, interpolation, aggregation, connecting line,
+  trend label, or clinical judgment. Dedicated request/selection epochs,
+  AbortController and exact token ownership reject late responses; offline
+  ambiguity keeps a visibly stale read-only snapshot, while authorization and
+  hard invalidation scrub biomarker state, DOM, focus, and pending responses.
 
 ### Fixed
 - **Authoritative recap export preflight and offline revocation.** Every recap

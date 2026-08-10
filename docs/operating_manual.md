@@ -18,8 +18,8 @@ available at every screen size:
 
 - **Today** — assessment freshness, key concern, next actions, and the latest
   net-new trials and research papers.
-- **Patient** — profile snapshot, treatments, biomarkers, alerts, symptoms,
-  imaging history, and immutable document/source history.
+- **Patient** — profile snapshot, treatments, complete biomarker history,
+  alerts, symptoms, imaging history, and immutable document/source history.
 - **Questions** — appointment questions, visit working mode, and clinical notes
   from the treating team.
 - **Activity** — digest/deep-sweep controls, processing status, and reports.
@@ -34,6 +34,38 @@ old PHI is not left looking current in the browser.
 Authorization failure additionally clears open reports/receipts, chat turns and
 revision, summary feedback, tracked-item dialogs, and clinical text still in the
 feed dialog. A missing selected activity is treated the same way.
+
+## Review biomarker history
+
+Open **Patient** → **Biomarkers**. This explorer reads the complete bounded
+longitudinal projection directly from
+`GET /api/patient/biomarker-series`; it does not use the truncated biomarker
+summary in `/api/status`.
+
+1. Choose the server-provided biomarker name from **Choose a biomarker**.
+   Recorded aliases appear exactly as stored; the browser does not rename or
+   merge tests.
+2. Read the table first. It is the authoritative presentation and keeps every
+   observation, including partial or unknown dates, qualified/ranged/text
+   values, missing context, non-comparable facts, and presentation-collapsed
+   same-source duplicates. Expand **Source details** for observation/source-row,
+   source-document, and evidence identities and authenticated exact-span/source
+   links.
+3. Treat **Comparable point charts** as a secondary view only. Each card is one
+   exact series the server declared comparable. Points are not connected and the
+   browser performs no conversion, interpolation, smoothing, aggregation,
+   direction label, response judgment, or recommendation. If no group contains
+   at least two comparable points, the explorer says so and leaves all facts in
+   the table.
+
+The status above the table distinguishes loading, current, current-but-empty,
+offline stale, corrupt/inconsistent (`422`), and other failures. If connectivity
+becomes ambiguous, the last accepted table and charts remain visibly **Stale
+snapshot** and read-only until an authoritative reload succeeds. Reconnecting
+triggers that reload. Authorization loss or a hard invalidating response removes
+biomarker values, chart/table markup, selection and response tokens, focus, and
+late responses from the browser. Biomarker data is never stored in browser
+storage, and this surface has no copy, download, or print action.
 
 The header reports processing only: **Processing N**, **Idle**, or
 **Unavailable**. It never claims the clinical assessment is current. Assessment

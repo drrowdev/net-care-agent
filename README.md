@@ -333,13 +333,15 @@ caregiver must re-submit. Graceful shutdown is bounded, not a durability
 guarantee.
 
 `GET /api/patient/biomarker-series` is the authenticated, no-store, complete
-longitudinal biomarker contract for future caregiver surfaces. It returns both
-revisions plus opaque authority tokens, retains every bounded observation and
-same-source duplicate authority, groups only a tiny exact alias allowlist, and
-marks values comparable only with explicit compatible date/unit/specimen/
-assay-or-method/reference-range context. `/api/status` remains the existing
-recent-summary compatibility payload and must not be used for longitudinal
-analysis.
+longitudinal contract behind the **Patient → Biomarkers** explorer. The
+authoritative table retains every bounded observation, raw display value,
+observed alias, same-source duplicate, provenance identity, and neutral
+non-comparability reason. Secondary point charts are partitioned by the exact
+server-declared comparable series and never connect points, convert units, or
+infer a trend. The response carries both revisions plus opaque authority tokens;
+offline ambiguity keeps the last accepted snapshot visibly stale and read-only,
+while authorization or hard invalidation scrubs it. `/api/status` remains the
+recent-summary compatibility payload and is not used by the explorer.
 
 The orchestrator's behaviour is shaped by **clinical_judgments** captured from
 oncologist consultations. These act as hard constraints: anything the oncologist
@@ -357,6 +359,7 @@ The most common loops:
 | See newly discovered research | **Today** → **Latest research additions** | Shows the exact net-new trials and papers from the latest digest or document analysis; opening either list highlights those records |
 | Add a clinical document | Header → **Add document** → paste text or upload file | Queued on the independent feed executor; PDF parsing is child-only, then intake → orchestrator → exec summary |
 | Reconcile or correct an import | **Activity** → select that feed job | Shows only that document's additions, old → new changes, conflicts, and evidence; correct/remove a value or safely undo the document's direct structured changes |
+| Review complete biomarker history | **Patient** → **Biomarkers** | Select an analyte, review every raw observation and source/evidence identity in the authoritative table, and use isolated point charts only where the server declares an exact comparable group |
 | Review imaging and source history | **Patient** → **Imaging history** / **Documents and sources** | Opens exact authenticated evidence spans, immutable source text, and retained import receipts without exposing storage paths |
 | Run a research-only sweep | **Activity** → **Run digest** | Orchestrator runs without new input; new trials/papers added |
 | Record an oncologist's judgment | **Questions** → **Clinical notes** | Becomes a hard constraint for future runs |

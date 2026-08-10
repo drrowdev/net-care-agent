@@ -26,6 +26,7 @@ the Azure Files mount at `/home/data/patient_profile.json`. There is one user
                 │     ├─ /api/patient/evidence   │
                 │     ├─ /api/patient/          │
                 │     │  biomarker-series       │
+                │     │  imaging-series         │
                 │     ├─ /api/feedback           │
                 │     ├─ /api/follow-ups         │
                 │     ├─ /api/visits + recap     │
@@ -151,6 +152,41 @@ with a bounded path-free `422`. Bounded incomplete facts remain visible as
 explicitly unclassified/non-comparable rows rather than being silently omitted.
 The projection never saves, audits, advances revisions, persists state, or calls
 a network/model service, and it is not injected into any LLM context.
+
+`GET /api/patient/imaging-series` is a separate authenticated/no-store,
+backend-only foundation over every bounded `imaging[]` row. Schema v10 preserves
+all existing IDs, rows, duplicates, order, wording, evidence, and unknown fields;
+it derives only missing IDs from the strongest source/span/full-row authority and
+marks pre-v10 dates `legacy_unknown` without rewriting them. New imaging-report
+intake no longer substitutes ingestion day when the study date is absent; dates
+on other document types are not promoted to study dates, explicit
+source-document dates remain separate, and modality wording is copied exactly
+only when present verbatim in source text, without category normalization.
+
+The projection returns each persisted row independently—there is no persistent or
+presentation collapse—and carries both revisions plus opaque row/projection
+tokens. A private authority envelope binds the complete row (including omitted
+legacy/extra fields), validated extracted-text source, exact evidence span,
+document exclusion, every matching import/receipt/change lifecycle, and both
+revisions. Each referenced extracted-text artifact is validated once through a
+source cache. Valid partial/unknown/manual/unverified facts remain visible;
+missing/duplicate IDs, malformed/non-finite nested authority, source tampering,
+receipt inconsistency, and bounded overflow fail the complete response with a
+path-free `422`.
+
+The public allowlist contains exact stored date/modality/findings/impression,
+explicit date authority, provenance labels, and opaque derived-record URLs only. It
+returns no source ID, path, offset, quote, receipt internals, `new_lesions`, or
+unknown nested extras. Source/evidence routes map a stable URL-safe reference
+back to the preserved row ID, resolve current source/span authority server-side,
+and return validated plain text with no client-provided
+path or offsets. The projector never saves, audits, advances revisions,
+quarantines, calls a model/network service, or enters LLM context. It performs no
+lesion matching, measurement parsing/conversion, comparison, change/response
+label, trend, treatment-suitability, or clinical interpretation. The current SPA
+remains unchanged; the responsive timeline and explicit two-record comparison
+workflow are deferred to a dedicated frontend PR with PHI/race/accessibility
+review and browser tests.
 
 Receipt correction/removal and whole-document undo are serialized profile
 mutations. Each request carries the receipt revision plus a canonical target
@@ -401,6 +437,7 @@ only with exact `APP_ORIGIN` or canonical HTTPS `WEBSITE_HOSTNAME`.
 | Separate imported appointments and workflow visits | Receipt-correctable source facts remain immutable evidence; caregiver working state can evolve without pretending generated questions or captured statements are source-verified. |
 | Clinical + workflow revisions | Administrative follow-through does not invalidate expensive clinical artifacts, while new model-context facts still stale every dependent artifact safely. |
 | Server biomarker projection, not browser inference | Complete row/source/import authority is available only at the profile boundary. The Patient explorer renders that projection as a complete table and charts only exact server-declared comparable groups as unconnected points. Dedicated request/selection epochs, AbortController ownership, monotonic revisions, and opaque response-token owners reject late or cross-analyte responses without duplicating clinical rules in JavaScript or reading truncated `/api/status` biomarkers. |
+| Server imaging authority before comparison UI | Stable identity, explicit date uncertainty, source/receipt lifecycle, and complete failure semantics must exist before the browser can offer record selection. The first slice exposes exact stored rows only and defers every clinical comparison or visualization decision. |
 
 ## Failure modes & mitigations
 
@@ -422,6 +459,9 @@ only with exact `APP_ORIGIN` or canonical HTTPS `WEBSITE_HOSTNAME`.
 | Biomarker series implies unsupported chronology or conversion | Comparable membership requires exact collection/result day plus explicit compatible unit/specimen/assay-or-method/range semantics; unknown context is isolated and units are never converted. |
 | Biomarker projection silently drops corrupt/oversized facts | Complete bounded projection or path-free `422`; valid incomplete scalar facts remain visible and explicitly non-comparable. |
 | Biomarker provenance changes behind unchanged display text | Projection token binds every row, source/evidence artifact authority, document/import/receipt state, and both revisions, including presentation-collapsed duplicates. |
+| Imaging timeline silently rewrites or infers history | Schema v10 preserves every row/duplicate/value and marks legacy date authority uncertain; new undated rows stay undated, and the all-row projection never collapses or derives clinical change. |
+| Imaging source or receipt authority changes behind unchanged wording | Row/projection tokens bind the full hidden row, validated extracted source, exact evidence, document exclusion, receipt lifecycle, and both revisions; inconsistency fails the complete endpoint with bounded `422`. |
+| Client constructs an imaging evidence span | Imaging source/evidence routes accept only an opaque stable derived record reference and resolve the preserved row plus current source/span server-side; no projection URL contains a raw legacy ID, source ID, path, quote, or offset. |
 | Biomarker browser response races or lost authority | The explorer accepts only the current request/selection/PHI epochs, both monotonic revisions, and exact projection/analyte/series tokens. Network ambiguity retains a labelled read-only snapshot; online recovery reloads authority; auth/hard failure centrally scrubs state, DOM, focus, controllers, and late responses. |
 | Stale import correction or undo | Target-level compare-and-swap fingerprints and later-claim checks return atomic `409`; no whole-profile snapshot is restored |
 | Incorrect import removed from active care context | Direct facts are reversed, the document is marked excluded from clinical prompts, and immutable source/audit history remains visible |

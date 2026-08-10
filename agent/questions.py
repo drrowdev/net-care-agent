@@ -13,6 +13,7 @@ from .profile import (
     build_patient_context,
     get_output_language,
     get_patient_summary,
+    imaging_context_rows,
 )
 
 
@@ -155,7 +156,7 @@ def generate_questions_for_profile(
                         f"Generate appointment questions for a {appointment_type} visit.\n\n"
                         f"Patient profile:\n{get_patient_summary(profile)}\n\n"
                         f"Active alerts: {json.dumps(active_alerts(profile), default=str)}\n\n"
-                        f"Most recent imaging: {json.dumps(profile.get('imaging', [])[-2:], default=str)}\n\n"
+                        f"Most recent imaging: {json.dumps(imaging_context_rows(profile)[-2:], default=str)}\n\n"
                         f"Recent biomarkers: {json.dumps(profile.get('biomarkers', [])[-6:], default=str)}\n\n"
                         f"IMPORTANT — Clinical judgments from previous consultations (do not generate questions about things already addressed):\n"
                         f"{get_clinical_judgments_context(profile)}\n\n"

@@ -9,6 +9,7 @@ import re
 
 from . import config
 from . import profile as profile_mod
+from .imaging_series import derive_imaging_record_id
 from .llm import client, first_text, render_prompt, strip_code_fences
 from .profile import build_patient_context
 from .provenance import (
@@ -41,7 +42,7 @@ SCHEMA (omit keys that have no data; never add keys):
      "source_quote": "verbatim source span proving this entire row"}
   ],
   "imaging_findings": {
-    "modality": "CT|MRI|PET-CT|ultrasound|other",
+    "modality": "exact modality wording from the source or null",
     "findings": "detailed findings",
     "impression": "radiologist conclusion",
     "new_lesions": true|false|null,
@@ -74,6 +75,7 @@ EXTRACTION RULES
 - EVIDENCE CONTRACT: every biomarker, imaging_findings object, symptom, and appointment MUST include source_quote copied verbatim from the input. Also include one evidence[] row for every key_finding, treatment_change, and scalar update. Quotes are validated deterministically; unsupported quotes are discarded and the persisted fact is explicitly marked evidence_status="invalid" (or "missing" when absent). Never paraphrase inside source_quote.
 - date: the CLINICAL date — specimen collection date, scan date, or visit date. Not the print, report-issued, or fax date. Preserve YYYY-MM-DD, YYYY-MM, or YYYY precision; null if no clinical date is determinable.
 - source_document_date: the report-issued/source-document date only when explicitly printed. Preserve its exact date precision. Never substitute it for the clinical date.
+- imaging_findings.modality: copy only exact modality wording explicitly present in the source. Never normalize it to a category or infer modality, tracer, or body region.
 - biomarkers: serum/blood/urine lab values only (e.g. CgA, NSE, 5-HIAA, liver enzymes, kidney function, CBC, hemoglobin, radiation dose metrics). Do NOT include Ki-67 or MIB-1 here — use ki67_update instead. Preserve qualifiers such as <, >, positive, negative, and ranges in value. A per-row date/date_kind may claim collection or result only when explicitly stated for that row. Specimen, assay, and method must be copied only when explicit. Never infer missing context, and never convert units.
 - flag: include only the document's own printed high/low/normal flag. Otherwise omit it. Do not derive a flag from the reference range; the deterministic read projection handles that comparison separately.
 - ki67_update: a number. If Ki-67 is stated as a range (e.g. "15-20%"), use the highest stated value and mention the full range in key_findings.
@@ -472,13 +474,45 @@ def _run_intake_impl(
         profile["biomarkers"].append(attach_evidence(bm, text, source_document_id))
 
     if extracted.get("imaging_findings"):
+        imaging_date = (
+            extracted.get("date") if extracted.get("document_type") == "imaging_report" else None
+        )
+        imaging_findings = copy.deepcopy(extracted["imaging_findings"])
+        modality = imaging_findings.get("modality")
+        if (
+            not isinstance(modality, str)
+            or modality != modality.strip()
+            or not modality
+            or modality not in text
+        ):
+            imaging_findings["modality"] = None
         img = {
-            **extracted["imaging_findings"],
-            "id": new_record_id("imaging"),
-            "date": doc_date,
+            **imaging_findings,
+            "date": imaging_date,
+            "date_precision": derive_date_precision(imaging_date),
+            "date_kind": (
+                "study" if derive_date_precision(imaging_date) != "unknown" else "unknown"
+            ),
+            "source_document_date": (
+                extracted.get("source_document_date")
+                if isinstance(extracted.get("source_document_date"), str)
+                else None
+            ),
+            "source_document_date_precision": derive_date_precision(
+                extracted.get("source_document_date")
+            ),
             "added_at": now_stamp(),
         }
-        profile["imaging"].append(attach_evidence(img, text, source_document_id))
+        img = attach_evidence(img, text, source_document_id)
+        img["id"] = derive_imaging_record_id(
+            img,
+            used_ids={
+                row.get("id")
+                for row in profile.get("imaging", [])
+                if isinstance(row, dict) and isinstance(row.get("id"), str)
+            },
+        )
+        profile["imaging"].append(img)
 
     if extracted.get("ki67_update") is not None:
         profile["patient"]["ki67_percent"] = extracted["ki67_update"]

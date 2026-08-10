@@ -104,8 +104,12 @@ A single lab result row (CgA, NSE, 5-HIAA, creatinine, etc.).
 | `evidence_start` | `int \| None` |  |
 | `evidence_end` | `int \| None` |  |
 | `id` | `str \| None` | Stable identity for imported rows |
-| `date` | `str \| None` | YYYY-MM-DD |
-| `modality` | `'CT' \| 'MRI' \| 'PET-CT' \| 'ultrasound' \| 'other' \| null` |  |
+| `date` | `str \| None` | Exact stored study date text |
+| `date_precision` | `'day' \| 'month' \| 'year' \| 'unknown'` |  |
+| `date_kind` | `'study' \| 'legacy_unknown' \| 'unknown'` |  |
+| `source_document_date` | `str \| None` | Source document date when explicitly stated |
+| `source_document_date_precision` | `'day' \| 'month' \| 'year' \| 'unknown'` |  |
+| `modality` | `str \| None` | Exact stored modality wording |
 | `findings` | `str \| None` |  |
 | `impression` | `str \| None` |  |
 | `new_lesions` | `bool \| None` |  |

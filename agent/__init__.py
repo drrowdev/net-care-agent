@@ -75,6 +75,11 @@ from .follow_through import (
     validate_text,
     visit_transition_allowed,
 )
+from .imaging_series import (
+    ImagingProjectionError,
+    imaging_record_text,
+    project_imaging_series,
+)
 from .intake import _treatment_similarity, run_intake
 from .judgments import clinical_judgments_fingerprint, get_clinical_judgments_context
 
@@ -173,6 +178,9 @@ __all__ = [
     "ProfileLoadError",
     "BiomarkerProjectionError",
     "project_biomarker_series",
+    "ImagingProjectionError",
+    "project_imaging_series",
+    "imaging_record_text",
     "ACTION_STATUSES",
     "VISIT_STATUSES",
     "DECISION_STATUSES",

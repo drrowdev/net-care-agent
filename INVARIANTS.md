@@ -134,7 +134,31 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
   corruption, missing/duplicate IDs, unsafe nested/non-finite values, overflow,
   or inconsistent verified source authority. A bounded scalar fact with missing
   marker/date/unit/context remains visible as explicitly unclassified or
-  non-comparable; it is never silently omitted.
+  non-comparable.
+- Imaging series is a deterministic authenticated/no-store read projection,
+  never an LLM context or clinical mutation.
+  `GET /api/patient/imaging-series` returns every bounded persisted imaging row
+  independently, both revisions, and opaque tokens bound to the complete hidden
+  row plus validated extracted source, exact evidence, document exclusion, and
+  import/receipt/change authority. It exposes no source ID, path, offset, quote,
+  receipt internals, arbitrary extra fields, or lossy `new_lesions` boolean.
+- Imaging persistence and projection never collapse duplicates. Existing IDs,
+  wording, dates, evidence, order, and unknown fields are preserved; only missing
+  IDs receive deterministic source/span/full-row identities. Legacy dates remain
+  exact but explicitly `legacy_unknown`; new missing dates remain null/unknown
+  and never fall back to ingestion day. A note/visit date is never promoted to
+  an imaging study date; modality is retained only when present verbatim in
+  source text and is never normalized.
+- Imaging projection never matches lesions, parses or converts measurements,
+  computes interval change, or labels progression, stability, response,
+  new/resolved lesions, trends, treatment suitability, or clinical meaning.
+  Partial/unknown/manual/unverified rows remain visible. Structural corruption,
+  missing/duplicate IDs, unsafe/non-finite authority, tampering, inconsistency,
+  or overflow fails the complete projection with bounded path-free `422`.
+- Imaging source/evidence links use only a URL-safe stable reference derived from
+  the preserved imaging row ID. Server-side resolution accepts no raw legacy ID,
+  client path, source ID, quote, or offset and serves only integrity-validated
+  extracted text or its exact stored span.
 - Every Layer 2 mutation is stable-ID/target-token CAS under
   `serialized_mutation`, appends one request-hash audit event, increments each
   applicable revision once, and saves once. Exact `mutation_id` retries are

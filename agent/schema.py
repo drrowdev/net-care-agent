@@ -135,7 +135,7 @@ BiomarkerDateKind = Literal[
     "source_document",
     "unknown",
 ]
-ImagingModality = Literal["CT", "MRI", "PET-CT", "ultrasound", "other"]
+ImagingDateKind = Literal["study", "legacy_unknown", "unknown"]
 DocumentType = Literal[
     "lab_result",
     "imaging_report",
@@ -250,8 +250,14 @@ class Biomarker(_EvidenceFields):
 
 class Imaging(_EvidenceFields):
     id: str | None = Field(None, description="Stable identity for imported rows")
-    date: str | None = Field(None, description="YYYY-MM-DD")
-    modality: ImagingModality | None = None
+    date: str | None = Field(None, description="Exact stored study date text")
+    date_precision: BiomarkerDatePrecision = "unknown"
+    date_kind: ImagingDateKind = "unknown"
+    source_document_date: str | None = Field(
+        None, description="Source document date when explicitly stated"
+    )
+    source_document_date_precision: BiomarkerDatePrecision = "unknown"
+    modality: str | None = Field(None, description="Exact stored modality wording")
     findings: str | None = None
     impression: str | None = None
     new_lesions: bool | None = None

@@ -106,6 +106,22 @@ _RESEARCH_COLLECTIONS = {
     "paper": ("literature_watched", "pmid", _PMID_RE),
 }
 
+_IMAGING_CONTEXT_AUTHORITY_FIELDS = {
+    "date_precision",
+    "date_kind",
+    "source_document_date",
+    "source_document_date_precision",
+}
+
+
+def imaging_context_rows(profile: dict) -> list[dict]:
+    """Keep projection-only authority metadata out of existing LLM contexts."""
+    return [
+        {key: value for key, value in row.items() if key not in _IMAGING_CONTEXT_AUTHORITY_FIELDS}
+        for row in profile.get("imaging", [])
+        if isinstance(row, dict)
+    ]
+
 
 def _coerce_none_fields(data: dict) -> dict:
     """Coerce ``None`` patient/collections to their empty-structure defaults.

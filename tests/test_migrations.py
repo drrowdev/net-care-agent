@@ -45,7 +45,7 @@ def test_unversioned_migration_records_log_entry():
     assert "_migration_log" in result
     log = result["_migration_log"]
     assert isinstance(log, list)
-    assert len(log) == 9
+    assert len(log) == 10
     entry = log[0]
     assert entry["id"] == "0001_add_schema_version"
     assert "applied_at" in entry
@@ -59,6 +59,7 @@ def test_unversioned_migration_records_log_entry():
     assert log[6]["id"] == "0007_harden_legacy_generated_alerts"
     assert log[7]["id"] == "0008_add_follow_through_foundation"
     assert log[8]["id"] == "0009_add_biomarker_projection_authority"
+    assert log[9]["id"] == "0010_add_imaging_projection_authority"
 
 
 def test_already_current_fast_path_no_change():
@@ -194,7 +195,7 @@ def test_v1_adds_empty_document_import_ledger_without_clinical_inference():
     data = {"schema_version": 1, "patient": {"diagnosis": "NET"}}
     result = apply_migrations(data)
 
-    assert result["schema_version"] == 9
+    assert result["schema_version"] == 10
     assert result["document_imports"] == []
     assert result["patient"]["diagnosis"] == "NET"
     assert result["patient"]["current_treatment_records"] == []
@@ -214,7 +215,7 @@ def test_v2_conservatively_stales_legacy_ai_questions_without_generation_identit
 
     result = apply_migrations(data)
 
-    assert result["schema_version"] == 9
+    assert result["schema_version"] == 10
     assert result["questions_generation_id"] is None
     assert result["appointment_questions"][0]["stale"] is True
     assert (
@@ -239,7 +240,7 @@ def test_v3_deterministically_backfills_stable_alert_ids():
     first = apply_migrations(copy.deepcopy(source))
     second = apply_migrations(copy.deepcopy(source))
 
-    assert first["schema_version"] == 9
+    assert first["schema_version"] == 10
     assert first["alerts"][0]["id"].startswith("alert_legacy_")
     assert first["alerts"][1]["id"].startswith("alert_legacy_")
     assert first["alerts"][0]["id"] != first["alerts"][1]["id"]
@@ -279,7 +280,7 @@ def test_v4_migrates_alert_lifetimes_and_invalidates_legacy_classification():
 
     result = apply_migrations(data)
 
-    assert result["schema_version"] == 9
+    assert result["schema_version"] == 10
     assert result["treatments_classification_revision"] is None
     assert result["treatments_classification_job_id"] is None
     assert [item["dependency_kind"] for item in result["alerts"]] == [
@@ -314,7 +315,7 @@ def test_v5_backfills_stable_composite_treatment_records_and_stales_classificati
     first = apply_migrations(copy.deepcopy(source))
     second = apply_migrations(copy.deepcopy(source))
 
-    assert first["schema_version"] == 9
+    assert first["schema_version"] == 10
     records = first["patient"]["current_treatment_records"]
     assert [item["text"] for item in records] == ["lanreotide", "everolimus"]
     assert len({item["id"] for item in records}) == 2
@@ -410,7 +411,7 @@ def test_v1_null_scaffolding_migrates_deterministically_without_inventing_clinic
     first = apply_migrations(copy.deepcopy(source))
     second = apply_migrations(copy.deepcopy(source))
 
-    assert first["schema_version"] == 9
+    assert first["schema_version"] == 10
     assert first["patient"] == {"current_treatment_records": []}
     assert first["document_imports"] == []
     assert first["alerts"][0]["dependency_kind"] == "profile_snapshot"
@@ -439,7 +440,7 @@ def test_v7_adds_follow_through_defaults_and_deterministic_summary_action_ids():
     second = apply_migrations(copy.deepcopy(source))
 
     assert first == second
-    assert first["schema_version"] == 9
+    assert first["schema_version"] == 10
     assert first["workflow_revision"] == 0
     assert first["caregiver_actions"] == []
     assert first["visits"] == []
@@ -528,7 +529,7 @@ def test_load_profile_persists_v9_biomarker_backfill_idempotently(agent):
     first = agent.load_profile()
     second = agent.load_profile()
 
-    assert first["schema_version"] == 9
+    assert first["schema_version"] == 10
     assert first["biomarkers"][0]["id"] == second["biomarkers"][0]["id"]
     assert (
         json.loads(agent.PROFILE_PATH.read_text(encoding="utf-8"))["biomarkers"][0]["id"]
@@ -557,3 +558,187 @@ def test_v7_preserves_fully_identified_current_summary():
     assert result["summary_stale"] is False
     assert result["executive_summary"]["stale"] is False
     assert result["executive_summary"]["generation_id"] == "summary-job-current"
+
+
+def test_v9_backfills_imaging_authority_without_rewriting_legacy_facts():
+    from agent.migrations import apply_migrations
+
+    existing = {
+        "id": "existing-imaging-id",
+        "date": "2026-03-18",
+        "modality": "MRI liver",
+        "findings": "multiple hepatic metastases are unchanged",
+        "impression": "No new lesion.",
+        "new_lesions": False,
+        "source_document_id": "doc_" + "a" * 32,
+        "source_quote": "multiple hepatic metastases are unchanged",
+        "evidence_status": "verified",
+        "evidence_start": 10,
+        "evidence_end": 50,
+        "legacy_extra": {"keep": ["exact", 2]},
+    }
+    missing_id = {
+        "date": "2026-05",
+        "modality": "CT",
+        "findings": "Stored wording",
+        "source_document_id": "doc_" + "b" * 32,
+        "evidence_status": "missing",
+    }
+    source = {
+        "schema_version": 9,
+        "patient": {"diagnosis": "NET"},
+        "imaging": [copy.deepcopy(existing), copy.deepcopy(missing_id)],
+    }
+
+    result = apply_migrations(copy.deepcopy(source))
+
+    assert result["schema_version"] == 10
+    assert result["imaging"][0]["id"] == "existing-imaging-id"
+    for key, value in existing.items():
+        assert result["imaging"][0][key] == value
+    assert result["imaging"][0]["date_precision"] == "day"
+    assert result["imaging"][0]["date_kind"] == "legacy_unknown"
+    assert result["imaging"][0]["source_document_date"] is None
+    assert result["imaging"][1]["date_precision"] == "month"
+    assert result["imaging"][1]["date_kind"] == "legacy_unknown"
+    assert result["imaging"][1]["id"].startswith("fact_imaging_")
+
+
+def test_v9_imaging_ids_are_reorder_stable_and_duplicates_remain_a_multiset():
+    from agent.migrations import apply_migrations
+
+    distinct = [
+        {
+            "source_document_id": "doc_" + char * 32,
+            "evidence_status": "verified",
+            "evidence_start": index * 10,
+            "evidence_end": index * 10 + 5,
+            "date": f"2026-0{index + 1}",
+            "findings": f"finding {index}",
+        }
+        for index, char in enumerate(("a", "b"))
+    ]
+    identical = {"date": None, "modality": "other", "findings": "same"}
+
+    forward = apply_migrations(
+        {
+            "schema_version": 9,
+            "patient": {},
+            "imaging": copy.deepcopy(distinct)
+            + [copy.deepcopy(identical), copy.deepcopy(identical)],
+        }
+    )
+    reversed_rows = apply_migrations(
+        {
+            "schema_version": 9,
+            "patient": {},
+            "imaging": list(reversed(copy.deepcopy(distinct)))
+            + [copy.deepcopy(identical), copy.deepcopy(identical)],
+        }
+    )
+
+    forward_distinct = {
+        row["source_document_id"]: row["id"]
+        for row in forward["imaging"]
+        if row.get("source_document_id")
+    }
+    reversed_distinct = {
+        row["source_document_id"]: row["id"]
+        for row in reversed_rows["imaging"]
+        if row.get("source_document_id")
+    }
+    assert forward_distinct == reversed_distinct
+    duplicate_ids = [row["id"] for row in forward["imaging"] if not row.get("source_document_id")]
+    assert len(duplicate_ids) == len(set(duplicate_ids)) == 2
+    reversed_duplicate_ids = [
+        row["id"] for row in reversed_rows["imaging"] if not row.get("source_document_id")
+    ]
+    assert set(duplicate_ids) == set(reversed_duplicate_ids)
+
+
+def test_v9_imaging_migration_keeps_active_receipt_semantics_consistent():
+    from agent.migrations import apply_migrations
+
+    row = {
+        "id": "imaging-row",
+        "date": "2026",
+        "modality": "CT",
+        "findings": "Exact stored finding",
+        "source_document_id": "doc_" + "a" * 32,
+        "evidence_status": "missing",
+    }
+    profile = {
+        "schema_version": 9,
+        "patient": {},
+        "imaging": [copy.deepcopy(row)],
+        "document_imports": [
+            {
+                "id": "import",
+                "job_id": "feed",
+                "source_document_id": row["source_document_id"],
+                "status": "active",
+                "receipt_revision": 1,
+                "changes": [
+                    {
+                        "id": "change",
+                        "state": "active",
+                        "target": {
+                            "kind": "collection",
+                            "collection": "imaging",
+                            "record_id": row["id"],
+                            "path": [],
+                        },
+                        "effective_value": copy.deepcopy(row),
+                    }
+                ],
+            }
+        ],
+    }
+
+    result = apply_migrations(profile)
+    migrated = result["imaging"][0]
+    effective = result["document_imports"][0]["changes"][0]["effective_value"]
+
+    for field in (
+        "date_precision",
+        "date_kind",
+        "source_document_date",
+        "source_document_date_precision",
+    ):
+        assert effective[field] == migrated[field]
+
+
+def test_v9_duplicate_existing_imaging_ids_do_not_rebind_receipt_authority():
+    from agent.migrations import apply_migrations
+
+    row = {
+        "id": "duplicate-id",
+        "date": "2026",
+        "findings": "First row",
+    }
+    effective = copy.deepcopy(row)
+    expected_effective = copy.deepcopy(effective)
+    profile = {
+        "schema_version": 9,
+        "patient": {},
+        "imaging": [copy.deepcopy(row), {**copy.deepcopy(row), "findings": "Second row"}],
+        "document_imports": [
+            {
+                "source_document_id": "source",
+                "changes": [
+                    {
+                        "target": {
+                            "collection": "imaging",
+                            "record_id": "duplicate-id",
+                        },
+                        "effective_value": effective,
+                    }
+                ],
+            }
+        ],
+    }
+
+    result = apply_migrations(profile)
+
+    assert result["imaging"][0]["id"] == result["imaging"][1]["id"] == "duplicate-id"
+    assert result["document_imports"][0]["changes"][0]["effective_value"] == expected_effective

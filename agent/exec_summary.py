@@ -14,6 +14,7 @@ from .profile import (
     build_patient_context,
     get_caregiver_relationship,
     get_patient_summary,
+    imaging_context_rows,
 )
 
 EXECUTIVE_SUMMARY_SYSTEM_TEMPLATE = """\
@@ -222,7 +223,7 @@ def generate_executive_summary(profile: dict) -> dict:
             f"Full biomarker history ({len(profile.get('biomarkers', []))} entries):\n"
             f"{json.dumps(profile.get('biomarkers', []), default=str)}\n\n"
             f"Full imaging history ({len(profile.get('imaging', []))} entries):\n"
-            f"{json.dumps(profile.get('imaging', []), default=str)}\n\n"
+            f"{json.dumps(imaging_context_rows(profile), default=str)}\n\n"
             f"Tracked trials and inclusion manifest: "
             f"{json.dumps(_tracked_trials_context(profile), default=str)}\n\n"
             f"Upcoming appointments (already recorded — reflect these in the timeline): "

@@ -117,3 +117,159 @@ def test_intake_preserves_duplicate_facts_from_different_sources(agent, empty_pr
     assert len({row["id"] for row in profile["biomarkers"]}) == 2
     assert len({row["source_document_id"] for row in profile["biomarkers"]}) == 2
     assert all(row["date_kind"] == "clinical_unspecified" for row in profile["biomarkers"])
+
+
+def test_intake_preserves_explicit_imaging_date_authority(agent, empty_profile):
+    quote = "MRI liver 2026-03 showed unchanged hepatic lesions."
+    payload = {
+        "document_type": "imaging_report",
+        "date": "2026-03",
+        "source_document_date": "2026-04-01",
+        "imaging_findings": {
+            "modality": "MRI",
+            "findings": "unchanged hepatic lesions",
+            "impression": "Stored report conclusion",
+            "new_lesions": False,
+            "source_quote": quote,
+        },
+    }
+
+    with patch_llm(agent, lambda **_: llm_text(json.dumps(payload))):
+        profile, _ = agent.run_intake(quote, empty_profile)
+
+    row = profile["imaging"][0]
+    assert row["date"] == "2026-03"
+    assert row["date_precision"] == "month"
+    assert row["date_kind"] == "study"
+    assert row["source_document_date"] == "2026-04-01"
+    assert row["source_document_date_precision"] == "day"
+    assert row["modality"] == "MRI"
+    assert row["findings"] == "unchanged hepatic lesions"
+    assert row["evidence_status"] == "verified"
+    assert row["id"].startswith("fact_imaging_")
+
+
+def test_intake_keeps_exact_modality_wording(agent, empty_profile):
+    from agent.intake import INTAKE_SYSTEM_TEMPLATE
+
+    quote = "Contrast-enhanced CT abdomen showed the stored finding."
+    payload = {
+        "document_type": "imaging_report",
+        "date": "2026-03-15",
+        "imaging_findings": {
+            "modality": "Contrast-enhanced CT abdomen",
+            "findings": "the stored finding",
+            "source_quote": quote,
+        },
+    }
+
+    with patch_llm(agent, lambda **_: llm_text(json.dumps(payload))):
+        profile, _ = agent.run_intake(quote, empty_profile)
+
+    assert profile["imaging"][0]["modality"] == "Contrast-enhanced CT abdomen"
+    assert "exact modality wording" in INTAKE_SYSTEM_TEMPLATE
+
+
+def test_intake_drops_normalized_modality_not_present_verbatim(agent, empty_profile):
+    quote = "68Ga-DOTATATE PET/CT showed the stored finding."
+    payload = {
+        "document_type": "imaging_report",
+        "date": "2026-03-15",
+        "imaging_findings": {
+            "modality": "PET-CT",
+            "findings": "the stored finding",
+            "source_quote": quote,
+        },
+    }
+
+    with patch_llm(agent, lambda **_: llm_text(json.dumps(payload))):
+        profile, _ = agent.run_intake(quote, empty_profile)
+
+    assert profile["imaging"][0]["modality"] is None
+
+
+def test_non_imaging_document_date_is_not_promoted_to_study_date(agent, empty_profile):
+    quote = "At the visit, prior CT was described as unchanged."
+    payload = {
+        "document_type": "doctor_note",
+        "date": "2026-03-15",
+        "imaging_findings": {
+            "modality": "CT",
+            "findings": "prior CT was described as unchanged",
+            "source_quote": quote,
+        },
+    }
+
+    with patch_llm(agent, lambda **_: llm_text(json.dumps(payload))):
+        profile, _ = agent.run_intake(quote, empty_profile)
+
+    row = profile["imaging"][0]
+    assert row["date"] is None
+    assert row["date_precision"] == "unknown"
+    assert row["date_kind"] == "unknown"
+
+
+def test_intake_never_substitutes_ingestion_day_for_missing_imaging_date(agent, empty_profile):
+    quote = "CT report: indeterminate liver finding."
+    payload = {
+        "document_type": "imaging_report",
+        "date": None,
+        "source_document_date": "2026",
+        "imaging_findings": {
+            "modality": "CT",
+            "findings": "indeterminate liver finding",
+            "source_quote": quote,
+        },
+    }
+
+    with patch_llm(agent, lambda **_: llm_text(json.dumps(payload))):
+        profile, _ = agent.run_intake(quote, empty_profile)
+
+    row = profile["imaging"][0]
+    assert row["date"] is None
+    assert row["date_precision"] == "unknown"
+    assert row["date_kind"] == "unknown"
+    assert row["source_document_date"] == "2026"
+    assert row["source_document_date_precision"] == "year"
+
+
+def test_intake_preserves_unsupported_imaging_date_as_explicitly_unknown(agent, empty_profile):
+    quote = "CT report dated Spring 2026: indeterminate liver finding."
+    payload = {
+        "document_type": "imaging_report",
+        "date": "Spring 2026",
+        "imaging_findings": {
+            "modality": "CT",
+            "findings": "indeterminate liver finding",
+            "source_quote": quote,
+        },
+    }
+
+    with patch_llm(agent, lambda **_: llm_text(json.dumps(payload))):
+        profile, _ = agent.run_intake(quote, empty_profile)
+
+    row = profile["imaging"][0]
+    assert row["date"] == "Spring 2026"
+    assert row["date_precision"] == "unknown"
+    assert row["date_kind"] == "unknown"
+
+
+def test_intake_keeps_duplicate_imaging_imports_distinct(agent, empty_profile):
+    quote = "CT 2026-05-01: exact stored finding."
+    payload = {
+        "document_type": "imaging_report",
+        "date": "2026-05-01",
+        "imaging_findings": {
+            "modality": "CT",
+            "findings": "exact stored finding",
+            "source_quote": quote,
+        },
+    }
+
+    with patch_llm(agent, lambda **_: llm_text(json.dumps(payload))):
+        profile, _ = agent.run_intake(quote, empty_profile)
+        profile, _ = agent.run_intake(quote, profile)
+
+    assert len(profile["imaging"]) == 2
+    assert len({row["id"] for row in profile["imaging"]}) == 2
+    assert len({row["source_document_id"] for row in profile["imaging"]}) == 2

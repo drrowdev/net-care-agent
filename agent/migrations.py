@@ -36,7 +36,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 9
+CURRENT_SCHEMA_VERSION: int = 10
 
 # Append-only ordered registry of migrations.  Never reorder entries.
 _REGISTRY: list[dict[str, Any]] = []
@@ -416,6 +416,79 @@ def _m0009_add_biomarker_projection_authority(data: dict) -> dict:
                 effective[field] = copy.deepcopy(row.get(field))
 
     data["schema_version"] = 9
+    return data
+
+
+@_migration("0010_add_imaging_projection_authority", to_version=10)
+def _m0010_add_imaging_projection_authority(data: dict) -> dict:
+    """v9 -> v10: add deterministic imaging identity and explicit date authority."""
+    from .imaging_series import derive_imaging_record_id, imaging_identity_base
+    from .schema import derive_date_precision
+
+    imaging = data.get("imaging") or []
+    used_ids = {
+        row.get("id")
+        for row in imaging
+        if isinstance(row, dict) and isinstance(row.get("id"), str) and row.get("id")
+    }
+    occurrences: dict[str, int] = {}
+    for row in imaging:
+        if not isinstance(row, dict):
+            continue
+        if not row.get("id"):
+            base = imaging_identity_base(row)
+            occurrence = occurrences.get(base, 0)
+            occurrences[base] = occurrence + 1
+            candidate = derive_imaging_record_id(
+                row,
+                occurrence=occurrence,
+                used_ids=used_ids,
+            )
+            row["id"] = candidate
+            used_ids.add(candidate)
+
+        precision = derive_date_precision(row.get("date"))
+        row.setdefault("date_precision", precision)
+        row.setdefault("date_kind", "legacy_unknown" if precision != "unknown" else "unknown")
+        row.setdefault("source_document_date", None)
+        row.setdefault(
+            "source_document_date_precision",
+            derive_date_precision(row.get("source_document_date")),
+        )
+
+    id_counts: dict[str, int] = {}
+    for row in imaging:
+        if isinstance(row, dict) and isinstance(row.get("id"), str) and row.get("id"):
+            id_counts[row["id"]] = id_counts.get(row["id"], 0) + 1
+    imaging_by_id = {
+        row["id"]: row
+        for row in imaging
+        if isinstance(row, dict)
+        and isinstance(row.get("id"), str)
+        and id_counts.get(row["id"]) == 1
+    }
+    for receipt in data.get("document_imports") or []:
+        if not isinstance(receipt, dict):
+            continue
+        for change in receipt.get("changes") or []:
+            if not isinstance(change, dict):
+                continue
+            target = change.get("target") or {}
+            if target.get("collection") != "imaging":
+                continue
+            row = imaging_by_id.get(target.get("record_id"))
+            effective = change.get("effective_value")
+            if row is None or not isinstance(effective, dict):
+                continue
+            for field in (
+                "date_precision",
+                "date_kind",
+                "source_document_date",
+                "source_document_date_precision",
+            ):
+                effective[field] = copy.deepcopy(row.get(field))
+
+    data["schema_version"] = 10
     return data
 
 

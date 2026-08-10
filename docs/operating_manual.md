@@ -72,6 +72,43 @@ The header reports processing only: **Processing N**, **Idle**, or
 freshness appears separately on **Today**, where profile and assessment
 revisions are compared.
 
+## Review and compare imaging reports
+
+Open **Patient** → **Imaging**. This text-report explorer reads the complete
+bounded projection directly from `GET /api/patient/imaging-series`. It never
+uses `/api/status` or the compatibility imaging list in
+`/api/patient/evidence`, and it does not retrieve or display medical images.
+
+1. Read the table first. It keeps every returned record independently and in
+   the server-supplied order, including exact duplicates, partial or unknown
+   dates, legacy date uncertainty, manual/caregiver-corrected facts, missing
+   fields, and unverified or unavailable sources.
+2. Treat the displayed date context literally. A study date, month/year
+   precision, legacy-unconfirmed date, and unknown date are labelled
+   separately. The expandable source-document date is explicitly not used for
+   study chronology.
+3. Expand **Technical and source details** for the subordinate record identity,
+   exact server provenance wording, and authenticated opaque source/evidence
+   links. Storage paths, source coordinates, raw import IDs, and evidence
+   offsets are not exposed.
+4. Check exactly two current records, then press **Compare selected records**.
+   The two panels repeat only their exact date context, modality/type, findings,
+   impression, and provenance. Any comparison, change, progression, or response
+   wording is attributed to the stored report; NET/Care does not calculate,
+   highlight, or infer a conclusion.
+
+The status distinguishes loading, current, current-but-empty, stale/read-only,
+corrupt/inconsistent, and other hard failures. A known patient or workflow
+revision change makes the displayed projection stale immediately and reloads
+it without blocking other workflow refreshes. Only transport ambiguity from
+the imaging endpoint may retain the last accepted projection as a stale,
+read-only snapshot; an unrelated request failure or browser online/offline
+signal alone does not demote it. Authorization loss clears all browser PHI.
+Malformed, `422`, and other hard imaging responses clear the imaging table,
+hidden details, selections, comparison, tokens, and focus without clearing
+unrelated Patient cards. No imaging data is stored in browser storage, and the
+surface has no chart, copy, download, print, or export action.
+
 ## 1. Feed a clinical document
 
 When you receive new lab results, an imaging report, or a doctor's note:

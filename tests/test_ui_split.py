@@ -70,12 +70,16 @@ def test_generic_review_flow_is_replaced_by_latest_research_additions():
     assert "Mark reviewed" not in HTML
 
 
-def test_patient_has_progressive_imaging_and_source_history():
-    assert 'id="imaging-history"' in HTML
+def test_patient_has_authoritative_imaging_and_source_history():
+    assert HTML.count('id="imaging-explorer"') == 1
+    assert HTML.count('id="imaging-table-region"') == 1
+    assert 'id="imaging-comparison"' in HTML
+    assert "Compare selected records" in HTML
     assert 'id="source-history"' in HTML
-    assert "Loading imaging history" in HTML
+    assert "Complete authoritative imaging records" in HTML
     assert "Loading source history" in HTML
-    assert "evidence-history-row" in CSS
+    assert "imaging-table-region" in CSS
+    assert "imaging-comparison-grid" in CSS
     assert "source-history-row" in CSS
 
 

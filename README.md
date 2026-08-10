@@ -284,12 +284,13 @@ state and withholds the prior clinical content.
 │   └── tools/            # PubMed, ClinicalTrials.gov, biomarker trends + dispatcher
 ├── static/                 # Responsive caregiver workspace
 │   ├── index.html          # Shared four-view shell + document/chat/appointment dialogs
-│   ├── app.js              # API state, jobs, feed, chat, and appointment working mode
-│   └── styles.css          # Green/amber responsive design, appointment sheet, phone nav
+│   ├── app.js              # API authority, imaging/biomarker explorers, jobs, feed, chat
+│   └── styles.css          # Responsive explorers, appointment sheet, and phone navigation
 ├── startup.sh            # gunicorn launcher (Azure App Service)
 ├── pyproject.toml        # Python deps + tooling config
 ├── .env.example          # Template for local secrets
 ├── tests/                # pytest suite (no network or API key needed)
+│   └── test_imaging_timeline_ui.py # actual-function Node + live responsive browser coverage
 └── docs/                 # Architecture & schema docs
     ├── architecture.md
     ├── operating_manual.md
@@ -353,8 +354,8 @@ offline ambiguity keeps the last accepted snapshot visibly stale and read-only,
 while authorization or hard invalidation scrubs it. `/api/status` remains the
 recent-summary compatibility payload and is not used by the explorer.
 
-`GET /api/patient/imaging-series` is the separate backend foundation for a future
-caregiver imaging timeline/comparison workflow. It returns every bounded imaging
+`GET /api/patient/imaging-series` is the sole longitudinal authority behind the
+shared **Patient → Imaging** timeline and explicit comparison workflow. It returns every bounded imaging
 row as a distinct record with both revisions and opaque row/projection tokens;
 exact duplicates are never collapsed. Tokens bind the full stored row, source
 integrity, exact evidence, document exclusion, receipt lifecycle, and revisions
@@ -366,8 +367,11 @@ oversized, duplicate-ID, or inconsistent authority fails the complete projection
 with bounded `422`. Opaque row-ID source/evidence routes resolve the source and
 span server-side. The contract neither exposes the lossy legacy `new_lesions`
 boolean nor computes progression, response, lesion identity, size change,
-comparability, trends, or clinical meaning. The current Patient imaging UI remains
-on its compatibility endpoint until a separately reviewed frontend PR.
+comparability, trends, or clinical meaning. The browser validates and accepts the
+complete response atomically, preserves server order and exact report wording,
+and requires the caregiver to select exactly two current records and confirm the
+pair before showing raw facts side by side. It never uses `/api/status` or the
+legacy `/api/patient/evidence` imaging array as fallback authority.
 
 The orchestrator's behaviour is shaped by **clinical_judgments** captured from
 oncologist consultations. These act as hard constraints: anything the oncologist
@@ -386,7 +390,8 @@ The most common loops:
 | Add a clinical document | Header → **Add document** → paste text or upload file | Queued on the independent feed executor; PDF parsing is child-only, then intake → orchestrator → exec summary |
 | Reconcile or correct an import | **Activity** → select that feed job | Shows only that document's additions, old → new changes, conflicts, and evidence; correct/remove a value or safely undo the document's direct structured changes |
 | Review complete biomarker history | **Patient** → **Biomarkers** | Select an analyte, review every raw observation and source/evidence identity in the authoritative table, and use isolated point charts only where the server declares an exact comparable group |
-| Review imaging and source history | **Patient** → **Imaging history** / **Documents and sources** | Opens exact authenticated evidence spans, immutable source text, and retained import receipts without exposing storage paths |
+| Review or compare imaging reports | **Patient** → **Imaging** | Review every authoritative record in server order, including duplicates and uncertain dates; select exactly two current records and confirm the pair to see attributed raw report facts side by side without an app-authored clinical conclusion |
+| Review document/source history | **Patient** → **Documents and sources** | Opens immutable source text and retained import receipts without exposing storage paths |
 | Run a research-only sweep | **Activity** → **Run digest** | Orchestrator runs without new input; new trials/papers added |
 | Record an oncologist's judgment | **Questions** → **Clinical notes** | Becomes a hard constraint for future runs |
 | Resolve an alert with its outcome | **Patient** → **Active alerts** → **Resolve alert** | Review the current alert, optionally record an administrative, caregiver-reported, or clinician-attributed unverified outcome, and either create/link a caregiver follow-up or link a current visit and eligible decision; stable ID/token/revision checks, one intent owner, exact ambiguous retry, conflict reload, and stale read-only offline projections prevent the wrong alert or link from being saved |

@@ -26,8 +26,18 @@ incremented when something user-visible or operationally meaningful changes.
   visible, while corrupt, duplicate-ID, inconsistent, tampered, or oversized
   authority fails closed with bounded `422`. The contract performs no duplicate
   collapse, lesion matching, measurement comparison, progression/response label,
-  trend, treatment judgment, or other clinical inference; the caregiver UI is
-  deferred to a separate PR.
+  trend, treatment judgment, or other clinical inference.
+- **Table-first Patient imaging timeline and explicit comparison.** The shared
+  desktop/phone Patient view now validates and atomically accepts the complete
+  imaging projection, preserves every server-ordered record and duplicate with
+  exact date uncertainty/report wording/provenance, and requires exactly two
+  current selections plus caregiver confirmation before showing attributed raw
+  facts side by side. Opaque authority stays in JavaScript state; strict
+  same-origin opaque source/evidence links, revision/request/selection epochs,
+  endpoint-specific stale retention, hard imaging-only clearing, full auth PHI
+  eviction, focus safety, contained table overflow, and live 1280/360 browser
+  tests enforce the non-inference boundary. No image viewer, chart, diff,
+  clinical conclusion, copy, download, print, or export was added.
 - **Provenance-safe biomarker longitudinal backend contract.** Schema v9
   deterministically backfills missing biomarker IDs without using mutable list
   position when source/span authority exists, preserves cross-source and

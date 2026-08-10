@@ -1487,6 +1487,170 @@ def test_alert_resolution_links_inline_follow_up_atomically_and_replays(
     assert saved["profile_revision"] == 4
 
 
+def test_alert_resolution_rejects_multiple_link_modes_before_mutation(
+    app_client, agent, empty_profile
+):
+    _, client = app_client
+    empty_profile["profile_revision"] = 3
+    empty_profile["alerts"] = [
+        {
+            "id": "alert-exclusive-links",
+            "priority": "high",
+            "message": "Monitoring needs review",
+            "resolved": False,
+            "dependency_kind": "durable",
+            "source_dependency_active": True,
+            "history": [],
+        }
+    ]
+    agent.save_profile(empty_profile, clinical_change=False)
+    action = client.post(
+        "/api/follow-ups",
+        json={
+            "mutation_id": "exclusive-follow-up-create",
+            "origin_kind": "manual",
+            "text": "Ask the treating team about monitoring",
+        },
+    ).get_json()["item"]
+    visit = _create_visit(client, mutation_id="exclusive-visit-create")
+    status = client.get("/api/status").get_json()
+    alert = status["alerts"][0]
+    before = agent.load_profile()
+
+    response = client.post(
+        "/api/alerts/alert-exclusive-links/resolve",
+        json={
+            "mutation_id": "exclusive-alert-resolve",
+            "expected_token": alert["resolve_token"],
+            "expected_profile_revision": status["profile_revision"],
+            "follow_up_id": action["id"],
+            "visit_id": visit["id"],
+        },
+    )
+    saved = agent.load_profile()
+
+    assert response.status_code == 400
+    assert response.get_json()["code"] == "invalid_workflow_request"
+    assert "only one alert link mode" in response.get_json()["error"]
+    assert saved["profile_revision"] == before["profile_revision"]
+    assert saved["workflow_revision"] == before["workflow_revision"]
+    assert saved["alerts"][0]["resolved"] is False
+    assert saved["alerts"][0]["history"] == []
+
+
+@pytest.mark.parametrize(
+    ("target_kind", "terminal_status"),
+    [
+        ("follow_up", "completed"),
+        ("visit", "completed"),
+        ("decision", "retracted"),
+        ("decision", "superseded"),
+    ],
+)
+def test_alert_resolution_rejects_terminal_link_targets(
+    app_client, agent, empty_profile, target_kind, terminal_status
+):
+    _, client = app_client
+    empty_profile["profile_revision"] = 4
+    empty_profile["alerts"] = [
+        {
+            "id": f"alert-terminal-{target_kind}-{terminal_status}",
+            "priority": "medium",
+            "message": "Review a current follow-through link",
+            "resolved": False,
+            "dependency_kind": "durable",
+            "source_dependency_active": True,
+            "history": [],
+        }
+    ]
+    agent.save_profile(empty_profile, clinical_change=False)
+    request_links = {}
+    if target_kind == "follow_up":
+        action = client.post(
+            "/api/follow-ups",
+            json={
+                "mutation_id": f"terminal-{target_kind}-create",
+                "origin_kind": "manual",
+                "text": "Contact the treating team about monitoring",
+            },
+        ).get_json()["item"]
+        action = client.patch(
+            f"/api/follow-ups/{action['id']}",
+            json={
+                "mutation_id": f"terminal-{target_kind}-complete",
+                "expected_token": action["token"],
+                "status": terminal_status,
+                "outcome": {"kind": "administrative", "text": "Task closed"},
+            },
+        ).get_json()["item"]
+        request_links = {"follow_up_id": action["id"]}
+    else:
+        visit = client.post(
+            "/api/visits",
+            json={
+                "mutation_id": f"terminal-{target_kind}-{terminal_status}-visit",
+                "title": "Oncology follow-up",
+                "status": terminal_status if target_kind == "visit" else "planned",
+            },
+        ).get_json()["item"]
+        request_links = {"visit_id": visit["id"]}
+        if target_kind == "decision":
+            decision_response = client.post(
+                f"/api/visits/{visit['id']}/decisions",
+                json={
+                    "mutation_id": f"terminal-{terminal_status}-decision-create",
+                    "expected_visit_token": visit["token"],
+                    "text": "Review the monitoring interval",
+                },
+            )
+            visit = decision_response.get_json()["visit"]
+            decision = visit["decisions"][0]
+            if terminal_status == "superseded":
+                successor = client.post(
+                    f"/api/visits/{visit['id']}/decisions",
+                    json={
+                        "mutation_id": "terminal-superseded-successor",
+                        "expected_visit_token": visit["token"],
+                        "text": "Confirm the updated monitoring interval",
+                        "supersedes_id": decision["id"],
+                    },
+                )
+                visit = successor.get_json()["visit"]
+            else:
+                edited = client.patch(
+                    f"/api/visits/{visit['id']}/decisions/{decision['id']}",
+                    json={
+                        "mutation_id": "terminal-retracted-decision-edit",
+                        "expected_token": decision["token"],
+                        "status": "retracted",
+                    },
+                )
+                visit = edited.get_json()["visit"]
+            request_links = {"visit_id": visit["id"], "decision_id": decision["id"]}
+
+    status = client.get("/api/status").get_json()
+    alert = status["alerts"][0]
+    before = agent.load_profile()
+    response = client.post(
+        f"/api/alerts/{alert['id']}/resolve",
+        json={
+            "mutation_id": f"terminal-{target_kind}-{terminal_status}-resolve",
+            "expected_token": alert["resolve_token"],
+            "expected_profile_revision": status["profile_revision"],
+            **request_links,
+        },
+    )
+    saved = agent.load_profile()
+
+    assert response.status_code == 409
+    assert response.get_json()["code"] == "workflow_conflict"
+    assert saved["profile_revision"] == before["profile_revision"]
+    assert saved["workflow_revision"] == before["workflow_revision"]
+    target = next(item for item in saved["alerts"] if item["id"] == alert["id"])
+    assert target["resolved"] is False
+    assert target["history"] == []
+
+
 def test_model_context_labels_captured_statements_as_unverified(agent, empty_profile):
     empty_profile["visits"] = [
         {

@@ -11,6 +11,8 @@ import pytest
 
 APP_JS = Path("static/app.js").read_text(encoding="utf-8")
 CSS = Path("static/styles.css").read_text(encoding="utf-8")
+INDEX_HTML = Path("static/index.html").read_text(encoding="utf-8")
+_NODE_STDIN_BOOTSTRAP = "eval(require('fs').readFileSync(0,'utf8'))"
 
 
 def _function_source(name: str, next_name: str) -> str:
@@ -35,6 +37,16 @@ def _response_authority_source() -> str:
             _function_source("patientRequestIsCurrent", "requestClinicalConvergence"),
             _function_source("authorizePatientResponse", "setAppointmentMessage"),
         ]
+    )
+
+
+def _run_node_script(script: str, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["node", "-e", _NODE_STDIN_BOOTSTRAP, *args],
+        input=script,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
     )
 
 
@@ -126,6 +138,18 @@ let pendingWorkflowIntent = { patient: true };
 let activeWorkflowIntent = null;
 let workflowMutationPending = true;
 let appointmentDrafts = new Map([['visit-phi', { patient: true }]]);
+let alertsById = new Map([['alert-phi', { patient: true }]]);
+let alertProjectionStale = true;
+let alertLinkSourcesStale = true;
+let selectedAlertId = 'alert-phi';
+let alertSelectionEpoch = 2;
+let alertResolutionDialogOpen = true;
+let alertResolutionIntentOwner = { patient: true };
+let alertResolutionMutationPending = true;
+let pendingAlertResolutionIntent = { body: { patient: true } };
+let activeAlertResolutionIntent = { body: { patient: true } };
+let alertResolutionDrafts = new Map([['resolve:alert-phi', { patient: true }]]);
+let alertResolutionResult = { patient: true };
 let renderSummaryCalls = 0;
 const loadErrors = [];
 
@@ -134,6 +158,7 @@ function clearReportCopyState() {}
 function updateCharCount() {}
 function setAppointmentMutationBusy() {}
 function setFollowUpMutationBusy() {}
+function setAlertResolutionBusy() {}
 function updateAppointmentFormValidity() {}
 function loadFailureMarkup() { return 'transient failure'; }
 function reportLoadSuccess() {}
@@ -209,11 +234,7 @@ function response(status, data) {
 """,
         ]
     )
-    completed = subprocess.run(
-        ["node", "-e", script, str(status)],
-        capture_output=True,
-        text=True,
-    )
+    completed = _run_node_script(script, str(status))
     assert completed.returncode == 0, completed.stderr
     return json.loads(completed.stdout)
 
@@ -622,14 +643,529 @@ def test_chat_history_is_bound_to_profile_revision_and_visibly_cleared():
 
 
 def test_alert_resolution_uses_stable_id_token_and_revision():
-    sidebar = _function_source("renderSidebar", "resolveAlert")
-    assert "data-alert-id" in sidebar
-    assert "data-resolve-token" in sidebar
-    resolver = _function_source("resolveAlert", "loadPatientEvidence")
-    assert "/api/alerts/${encodeURIComponent(alertId)}/resolve" in resolver
-    assert "expected_token: expectedToken" in resolver
-    assert "expected_profile_revision: latestProfileRevision" in resolver
-    assert "authorizePatientResponse(request, result)" in resolver
+    sidebar = _function_source("renderSidebar", "renderAlerts")
+    renderer = _function_source("renderAlerts", "alertResolutionProvenanceLabel")
+    body = _function_source("createAlertResolutionBody", "alertResolutionIntentOwnsMutation")
+    resolver = _function_source("performAlertResolutionIntent", "submitAlertResolution")
+    assert "alertsById = new Map" in sidebar
+    assert "data-alert-id" in renderer
+    assert "data-resolve-token" in renderer
+    assert "/api/alerts/${encodeURIComponent(intent.alertId)}/resolve" in resolver
+    assert "expected_token: alert.resolve_token" in body
+    assert "expected_profile_revision: latestProfileRevision" in body
+    assert "mutation_id: newMutationId()" in body
+    assert "authorizePatientResponse(intent, data" in resolver
+    assert "alertResolution: true" in resolver
+
+
+def _run_alert_resolution_body_probe() -> dict:
+    script = "\n".join(
+        [
+            """
+let latestProfileRevision = 42;
+let mutationIds = 0;
+let mode = 'none';
+const elements = new Map([
+  ['alert-resolution-outcome-kind', { value: 'clinician_attributed' }],
+  ['alert-resolution-outcome-text', { value: 'Treating team confirmed monitoring' }],
+  ['alert-resolution-follow-up-select', { value: 'action-stable-id' }],
+  ['alert-resolution-follow-up-text', { value: 'Ask the treating team to confirm timing' }],
+  ['alert-resolution-follow-up-owner', { value: 'Caregiver' }],
+  ['alert-resolution-follow-up-due', { value: '2026-09-01' }],
+  ['alert-resolution-visit-select', { value: 'visit-stable-id' }],
+  ['alert-resolution-decision-select', { value: 'decision-stable-id' }],
+]);
+const document = {
+  getElementById(id) { return elements.get(id); },
+  querySelector() { return { value: mode }; },
+};
+function newMutationId() { mutationIds += 1; return `mutation-${mutationIds}`; }
+""",
+            _function_source("selectedAlertResolutionMode", "alertResolutionDraftKey"),
+            _function_source("createAlertResolutionBody", "alertResolutionIntentOwnsMutation"),
+            """
+const alert = { id: 'alert-stable-id', resolve_token: 'full-semantic-token' };
+const bodies = {};
+for (const value of ['none', 'follow_up', 'inline', 'visit']) {
+  mode = value;
+  bodies[value] = createAlertResolutionBody(alert);
+}
+elements.get('alert-resolution-outcome-text').value = '';
+mode = 'none';
+bodies.noOutcome = createAlertResolutionBody(alert);
+console.log(JSON.stringify({ bodies, mutationIds }));
+""",
+        ]
+    )
+    completed = _run_node_script(script)
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
+def test_alert_resolution_bodies_use_only_server_contract_ids_and_optional_outcome():
+    result = _run_alert_resolution_body_probe()
+    bodies = result["bodies"]
+    common = {
+        "expected_token": "full-semantic-token",
+        "expected_profile_revision": 42,
+        "outcome": {
+            "kind": "clinician_attributed",
+            "text": "Treating team confirmed monitoring",
+        },
+    }
+    assert result["mutationIds"] == 5
+    assert bodies["none"] == {"mutation_id": "mutation-1", **common}
+    assert bodies["follow_up"] == {
+        "mutation_id": "mutation-2",
+        **common,
+        "follow_up_id": "action-stable-id",
+    }
+    assert bodies["inline"] == {
+        "mutation_id": "mutation-3",
+        **common,
+        "follow_up": {
+            "text": "Ask the treating team to confirm timing",
+            "owner": "Caregiver",
+            "due_date": "2026-09-01",
+        },
+    }
+    assert bodies["visit"] == {
+        "mutation_id": "mutation-4",
+        **common,
+        "visit_id": "visit-stable-id",
+        "decision_id": "decision-stable-id",
+    }
+    assert bodies["noOutcome"] == {
+        "mutation_id": "mutation-5",
+        "expected_token": "full-semantic-token",
+        "expected_profile_revision": 42,
+    }
+    serialized = json.dumps(bodies)
+    assert "display text" not in serialized
+    assert "/api/alerts/resolve/" not in APP_JS
+
+
+def test_alert_resolution_owns_intent_before_epoch_id_fetch_and_revalidates_awaits():
+    opener = _function_source("openAlertResolutionDialog", "closeAlertResolutionDialog")
+    submitter = _function_source("submitAlertResolution", "retryAlertResolution")
+    performer = _function_source("performAlertResolutionIntent", "submitAlertResolution")
+    conflict = _function_source("handleAlertResolutionConflict", "performAlertResolutionIntent")
+    assert opener.index("const owner = beginAlertResolutionOwner()") < opener.index(
+        "alertSelectionEpoch += 1"
+    )
+    assert opener.index("const owner = beginAlertResolutionOwner()") < opener.index(
+        "await refreshAlertResolutionSources(owner)"
+    )
+    assert submitter.index("alertResolutionMutationPending = true") < submitter.index(
+        "createAlertResolutionBody(alert)"
+    )
+    assert "mutation_id: newMutationId()" in _function_source(
+        "createAlertResolutionBody", "alertResolutionIntentOwnsMutation"
+    )
+    assert performer.count("alertResolutionIntentOwnsMutation") >= 9
+    assert "readJsonResponse(" in performer
+    assert "refreshClinicalWorkflowState(" in performer
+    assert "authorizePatientResponse(intent, data" in performer
+    assert "Promise.allSettled([" in conflict
+    assert "loadStatus()" in conflict
+    assert "loadFollowUps()" in conflict
+    assert "loadVisits()" in conflict
+    assert "performAlertResolutionIntent" not in conflict
+
+
+def test_alert_resolution_filters_link_sources_and_labels_provenance_precisely():
+    source_options = _function_source(
+        "eligibleAlertFollowUps", "renderAlertResolutionDecisionOptions"
+    )
+    decision_options = _function_source(
+        "renderAlertResolutionDecisionOptions", "renderAlertResolutionLinkMode"
+    )
+    provenance = _function_source(
+        "alertResolutionProvenanceLabel", "updateAlertResolutionProvenance"
+    )
+    result = _function_source("renderAlertResolutionResult", "handleAlertResolutionConflict")
+    assert "['open', 'in_progress'].includes(item.status)" in source_options
+    assert "['planned', 'in_progress'].includes(item.status)" in source_options
+    assert "['active', 'needs_confirmation'].includes(item.status)" in decision_options
+    assert "escHtml(item.id)" in source_options
+    assert "escHtml(visit.id)" in source_options
+    assert "escHtml(label)" in source_options
+    assert "escHtml(item.id)" in decision_options
+    assert "escHtml(item.text)" in decision_options
+    assert "Caregiver-entered · attributed to clinician · unverified" in provenance
+    assert "Caregiver-entered · caregiver reported · unverified" in provenance
+    assert "Caregiver-entered administrative outcome · not clinical evidence" in provenance
+    assert "source-verified" not in provenance
+    assert "resolution.provenance" in result
+    assert "resolution.follow_up_id" in result
+    assert "resolution.visit_id" in result
+    assert "resolution.decision_id" in result
+    assert "escHtml(link)" in result
+
+
+def test_alert_resolution_conflict_offline_and_eviction_fail_closed():
+    conflict = _function_source("handleAlertResolutionConflict", "performAlertResolutionIntent")
+    performer = _function_source("performAlertResolutionIntent", "submitAlertResolution")
+    eviction = _function_source("evictClientPhi", "renderLatestResearchUpdate")
+    polling = _function_source("startPolling", "currentVisit")
+    assert "captureAlertResolutionDraft()" in conflict
+    assert "clearAlertResolutionRetry()" in conflict
+    assert "redactAlertResolutionContext(" in conflict
+    assert "alertProjectionStale = true" in conflict
+    assert "alertLinkSourcesStale = true" in conflict
+    assert "pendingAlertResolutionIntent = intent" in performer
+    assert "Retrying the unchanged request" in performer
+    assert "alertResolutionDrafts = new Map()" in eviction
+    assert "pendingAlertResolutionIntent.body = {}" in eviction
+    assert "activeAlertResolutionIntent.body = {}" in eviction
+    assert "selectedAlertToken = null" in eviction
+    assert "alertSelectionEpoch += 1" in eviction
+    assert "clear('alert-resolution-message')" in eviction
+    assert "alertResolutionOverlay.inert = true" in eviction
+    assert "loadFollowUps()" not in polling
+    assert "loadVisits()" not in polling
+
+
+def test_alert_resolution_markup_is_shared_semantic_and_keyboard_managed():
+    assert INDEX_HTML.count('id="alert-resolution-dialog"') == 1
+    assert (
+        'role="dialog"'
+        in INDEX_HTML[
+            INDEX_HTML.index('id="alert-resolution-dialog"') - 120 : INDEX_HTML.index(
+                'id="alert-resolution-dialog"'
+            )
+            + 250
+        ]
+    )
+    assert 'aria-modal="true"' in INDEX_HTML
+    assert 'aria-labelledby="alert-resolution-title"' in INDEX_HTML
+    assert 'role="status" aria-live="polite"' in INDEX_HTML
+    assert 'role="alert" aria-live="polite"' in INDEX_HTML
+    assert 'maxlength="2000"' in INDEX_HTML
+    assert 'maxlength="1000"' in INDEX_HTML
+    assert 'maxlength="100"' in INDEX_HTML
+    assert 'name="alert-resolution-link-mode"' in INDEX_HTML
+    assert "contact, ask, discuss, or confirm" in INDEX_HTML.lower()
+    escape_handler = APP_JS[
+        APP_JS.index("document.addEventListener('keydown'") : APP_JS.index("function switchTab")
+    ]
+    assert escape_handler.index("alertResolutionDialogOpen") < escape_handler.index(
+        "followUpDialogOpen"
+    )
+    closer = _function_source("closeAlertResolutionDialog", "closeAlertResolutionFromBackdrop")
+    assert "alertResolutionMutationPending && !force" in closer
+    assert "deactivateDialog(dialog)" in closer
+    opener = _function_source("openAlertResolutionDialog", "closeAlertResolutionDialog")
+    assert "activateDialog(dialog, trigger)" in opener
+
+
+def test_alert_resolution_dialog_is_responsive_focusable_and_overflow_safe():
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    with playwright_api.sync_playwright() as playwright:
+        executable = Path(playwright.chromium.executable_path)
+        if not executable.exists():
+            pytest.skip("Installed Playwright browser is unavailable")
+        browser = playwright.chromium.launch()
+        for width, height in ((1280, 900), (360, 800)):
+            page = browser.new_page(viewport={"width": width, "height": height})
+            page.set_content(INDEX_HTML)
+            page.add_style_tag(content=CSS)
+            page.evaluate(
+                """() => {
+                  const overlay = document.getElementById('alert-resolution-overlay');
+                  const dialog = document.getElementById('alert-resolution-dialog');
+                  overlay.inert = false;
+                  dialog.inert = false;
+                  overlay.classList.add('open');
+                  overlay.setAttribute('aria-hidden', 'false');
+                }"""
+            )
+            controls = page.locator(
+                "#alert-resolution-dialog button, "
+                "#alert-resolution-dialog input, "
+                "#alert-resolution-dialog textarea, "
+                "#alert-resolution-dialog select"
+            )
+            if width == 360:
+                heights = controls.evaluate_all(
+                    "(items) => items.filter(item => item.offsetParent !== null)"
+                    ".map(item => item.getBoundingClientRect().height)"
+                )
+                assert heights
+                assert all(item >= 44 for item in heights)
+            overflow = page.evaluate(
+                """() => ({
+                  document: document.documentElement.scrollWidth
+                    - document.documentElement.clientWidth,
+                  dialog: document.getElementById('alert-resolution-dialog').scrollWidth
+                    - document.getElementById('alert-resolution-dialog').clientWidth,
+                })"""
+            )
+            assert overflow == {"document": 0, "dialog": 0}
+            page.locator("#alert-resolution-close").focus()
+            focus = page.evaluate(
+                """() => {
+                  const style = getComputedStyle(document.activeElement);
+                  return {
+                    id: document.activeElement.id,
+                    outline: style.outlineStyle,
+                    width: parseFloat(style.outlineWidth),
+                  };
+                }"""
+            )
+            assert focus["id"] == "alert-resolution-close"
+            assert focus["outline"] != "none"
+            assert focus["width"] >= 3
+            page.close()
+        browser.close()
+
+
+def _run_alert_resolution_race_probe() -> dict:
+    script = "\n".join(
+        [
+            """
+let phiEpoch = 0;
+let latestProfileRevision = 5;
+let workflowRevision = 1;
+let selectedAlertId = 'alert-a';
+let selectedAlertToken = 'token-a';
+let selectedAlertProfileRevision = 5;
+let alertSelectionEpoch = 1;
+let alertResolutionDialogOpen = true;
+let alertResolutionMutationPending = true;
+let alertResolutionIntentOwner = { name: 'owner-a' };
+let activeAlertResolutionIntent = null;
+let pendingAlertResolutionIntent = null;
+let alertProjectionStale = false;
+let alertLinkSourcesStale = false;
+let alertResolutionDrafts = new Map([['resolve:alert-a', { text: 'draft-a' }]]);
+let alertsById = new Map([
+  ['alert-a', { id: 'alert-a', resolve_token: 'token-a' }],
+  ['alert-b', { id: 'alert-b', resolve_token: 'token-b' }],
+  ['alert-c', { id: 'alert-c', resolve_token: 'token-c' }],
+  ['alert-auth', { id: 'alert-auth', resolve_token: 'token-auth' }],
+]);
+const elements = new Map();
+const element = id => {
+  if (!elements.has(id)) elements.set(id, {
+    disabled: false,
+    hidden: true,
+    textContent: '',
+    className: '',
+    dataset: {},
+  });
+  return elements.get(id);
+};
+const document = {
+  getElementById: element,
+  querySelectorAll() { return []; },
+};
+const navigator = { onLine: true };
+const attempts = [];
+const statuses = [];
+let resultRenders = 0;
+let successReports = 0;
+let evictions = 0;
+let draftCaptures = 0;
+
+function alertResolutionOwnerIsCurrent(owner, expectedPhiEpoch = phiEpoch) {
+  return alertResolutionIntentOwner === owner
+    && alertResolutionDialogOpen
+    && expectedPhiEpoch === phiEpoch;
+}
+function setAlertResolutionBusy() {}
+function renderAlerts() {}
+function updateAlertResolutionFormValidity() {}
+function setAlertResolutionStatus(message, tone) { statuses.push([message, tone]); }
+function clearAlertResolutionRetry() {
+  if (pendingAlertResolutionIntent?.body) pendingAlertResolutionIntent.body = {};
+  pendingAlertResolutionIntent = null;
+  element('alert-resolution-retry').hidden = true;
+}
+function captureAlertResolutionDraft() { draftCaptures += 1; }
+function reportLoadError() {}
+function reportLoadSuccess() { successReports += 1; }
+function setFormError() {}
+function shouldEvictClientPhi(error) {
+  return error?.status === 401 || error?.status === 403 || Number(error?.status) >= 500;
+}
+function evictClientPhi() {
+  evictions += 1;
+  phiEpoch += 1;
+  if (pendingAlertResolutionIntent?.body) pendingAlertResolutionIntent.body = {};
+  if (activeAlertResolutionIntent?.body) activeAlertResolutionIntent.body = {};
+  pendingAlertResolutionIntent = null;
+  activeAlertResolutionIntent = null;
+  alertResolutionIntentOwner = null;
+  alertResolutionMutationPending = false;
+  alertResolutionDrafts = new Map();
+  alertsById = new Map();
+  selectedAlertId = null;
+}
+function authorizePatientResponse() { return { accepted: true, profileAdvanced: false }; }
+async function refreshClinicalWorkflowState() { return { verified: true }; }
+function renderAlertResolutionResult() { resultRenders += 1; }
+""",
+            _function_source("alertResolutionIntentOwnsMutation", "releaseAlertResolutionMutation"),
+            _function_source("releaseAlertResolutionMutation", "renderAlertResolutionResult"),
+            _executable_function_source("readJsonResponse", "readJobSubmission"),
+            _executable_function_source("performAlertResolutionIntent", "submitAlertResolution"),
+            _executable_function_source("retryAlertResolution", "loadPatientEvidence"),
+            """
+function response(status, data) {
+  return {
+    status,
+    ok: status >= 200 && status < 300,
+    headers: { get() { return null; } },
+    async json() { return data; },
+  };
+}
+function intent(id, token, owner, epoch, mutation) {
+  return {
+    owner,
+    alertId: id,
+    expectedToken: token,
+    expectedProfileRevision: 5,
+    requestPhiEpoch: phiEpoch,
+    requestAlertEpoch: epoch,
+    body: {
+      mutation_id: mutation,
+      expected_token: token,
+      expected_profile_revision: 5,
+      outcome: { kind: 'caregiver_reported', text: `outcome-${id}` },
+    },
+    draftKey: `resolve:${id}`,
+  };
+}
+
+(async () => {
+  let resolveLate;
+  globalThis.fetch = (url, options) => {
+    attempts.push(JSON.parse(options.body));
+    return new Promise(resolve => { resolveLate = resolve; });
+  };
+  const ownerA = alertResolutionIntentOwner;
+  const intentA = intent('alert-a', 'token-a', ownerA, 1, 'mutation-a');
+  const lateA = performAlertResolutionIntent(intentA);
+  await Promise.resolve();
+
+  const ownerB = { name: 'owner-b' };
+  selectedAlertId = 'alert-b';
+  selectedAlertToken = 'token-b';
+  alertSelectionEpoch = 2;
+  alertResolutionIntentOwner = ownerB;
+  alertResolutionMutationPending = true;
+  resolveLate(response(200, {
+    alert: { id: 'alert-a', resolution: {} },
+    profile_revision: 6,
+    workflow_revision: 2,
+  }));
+  const lateResult = await lateA;
+  const bStillOwns = alertResolutionIntentOwner === ownerB
+    && alertResolutionMutationPending
+    && selectedAlertId === 'alert-b';
+
+  selectedAlertId = 'alert-c';
+  selectedAlertToken = 'token-c';
+  selectedAlertProfileRevision = 5;
+  alertSelectionEpoch = 3;
+  const ownerC = { name: 'owner-c' };
+  alertResolutionIntentOwner = ownerC;
+  alertResolutionMutationPending = true;
+  const intentC = intent('alert-c', 'token-c', ownerC, 3, 'mutation-c');
+  globalThis.fetch = async (url, options) => {
+    attempts.push(JSON.parse(options.body));
+    throw new TypeError('offline');
+  };
+  const offlineResult = await performAlertResolutionIntent(intentC);
+  const pendingAfterOffline = pendingAlertResolutionIntent === intentC;
+  const exactBody = JSON.stringify(intentC.body);
+  globalThis.fetch = async (url, options) => {
+    attempts.push(JSON.parse(options.body));
+    return response(200, {
+      alert: {
+        id: 'alert-c',
+        resolution: {
+          outcome_kind: 'caregiver_reported',
+          outcome_text: 'outcome-alert-c',
+          provenance: {
+            capture_method: 'caregiver_entered',
+            attributed_to: 'patient_or_caregiver',
+            source_verification: 'unverified',
+          },
+        },
+      },
+      profile_revision: 5,
+      workflow_revision: 1,
+    });
+  };
+  await retryAlertResolution();
+  const retryExact = exactBody === JSON.stringify(attempts[2]);
+
+  selectedAlertId = 'alert-auth';
+  selectedAlertToken = 'token-auth';
+  selectedAlertProfileRevision = 5;
+  alertSelectionEpoch = 4;
+  const ownerAuth = { name: 'owner-auth' };
+  alertResolutionIntentOwner = ownerAuth;
+  alertResolutionMutationPending = true;
+  alertResolutionDrafts = new Map([['resolve:alert-auth', { text: 'secret draft' }]]);
+  const intentAuth = intent(
+    'alert-auth', 'token-auth', ownerAuth, 4, 'mutation-auth'
+  );
+  globalThis.fetch = async (url, options) => {
+    attempts.push(JSON.parse(options.body));
+    return response(401, { error: 'denied' });
+  };
+  const authResult = await performAlertResolutionIntent(intentAuth);
+
+  console.log(JSON.stringify({
+    lateResult,
+    bStillOwns,
+    offlineResult,
+    pendingAfterOffline,
+    retryExact,
+    retryMutation: attempts[2].mutation_id,
+    resultRenders,
+    successReports,
+    authResult,
+    evictions,
+    authStateScrubbed: alertsById.size === 0
+      && alertResolutionDrafts.size === 0
+      && alertResolutionIntentOwner === null
+      && alertResolutionMutationPending === false
+      && selectedAlertId === null
+      && Object.keys(intentAuth.body).length === 0,
+    draftCaptures,
+  }));
+})().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
+""",
+        ]
+    )
+    completed = _run_node_script(script)
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
+def test_alert_resolution_late_selection_offline_retry_and_auth_eviction_are_authoritative():
+    result = _run_alert_resolution_race_probe()
+    assert result == {
+        "lateResult": None,
+        "bStillOwns": True,
+        "offlineResult": None,
+        "pendingAfterOffline": True,
+        "retryExact": True,
+        "retryMutation": "mutation-c",
+        "resultRenders": 1,
+        "successReports": 1,
+        "authResult": None,
+        "evictions": 1,
+        "authStateScrubbed": True,
+        "draftCaptures": 1,
+    }
 
 
 def test_patient_history_joins_documents_and_keeps_orphaned_legacy_records():
@@ -690,14 +1226,14 @@ def test_latest_research_update_labels_only_exact_batch_records():
 
 
 def test_stale_treatment_classification_visibly_falls_back_to_raw_entries():
-    sidebar = _function_source("renderSidebar", "resolveAlert")
+    sidebar = _function_source("renderSidebar", "renderAlerts")
     assert "d.treatments_fallback?.length" in sidebar
     assert "d.treatments_classification_current === false" in sidebar
     assert "Classification outdated — showing raw treatment entries." in sidebar
 
 
 def test_treatment_actions_use_stable_id_token_and_profile_revision():
-    sidebar = _function_source("renderSidebar", "resolveAlert")
+    sidebar = _function_source("renderSidebar", "renderAlerts")
     assert "data-treatment-id" in sidebar
     assert "data-edit-token" in sidebar
     assert "editTreatment(this,'complete')" in sidebar
@@ -755,7 +1291,7 @@ def test_malicious_stored_display_fields_are_escaped():
         "escHtml(b.value + ' ' + (b.unit||''))",
         "escHtml(b.reference_range || '—')",
         "escHtml(p.sex || '—')",
-        "escHtml(a.priority || '—')",
+        "escHtml(alert.priority || '—')",
         "escHtml(j.date||'')",
         "escHtml(s.date || '')",
         "escHtml(task.stage || 'processing')",
@@ -1201,6 +1737,20 @@ const activeWorkflowIntentRef = { body: { text: 'SECRET active workflow body' } 
 let activeWorkflowIntent = activeWorkflowIntentRef;
 let workflowMutationPending = true;
 let appointmentDrafts = new Map([['visit-phi', { patient: true }]]);
+let alertsById = new Map([['alert-phi', { patient: true }]]);
+let alertProjectionStale = true;
+let alertLinkSourcesStale = true;
+let selectedAlertId = 'alert-phi';
+let alertSelectionEpoch = 2;
+let alertResolutionDialogOpen = true;
+let alertResolutionIntentOwner = { patient: true };
+let alertResolutionMutationPending = true;
+const pendingAlertResolutionIntentRef = { body: { text: 'SECRET alert pending body' } };
+let pendingAlertResolutionIntent = pendingAlertResolutionIntentRef;
+const activeAlertResolutionIntentRef = { body: { text: 'SECRET alert active body' } };
+let activeAlertResolutionIntent = activeAlertResolutionIntentRef;
+let alertResolutionDrafts = new Map([['resolve:alert-phi', { patient: true }]]);
+let alertResolutionResult = { patient: true };
 let chatHistory = [{ patient: true }];
 let chatHistoryRevision = 41;
 let chatOpen = true;
@@ -1218,6 +1768,7 @@ function clearReportCopyState() {}
 function updateCharCount() {}
 function setAppointmentMutationBusy() {}
 function setFollowUpMutationBusy() {}
+function setAlertResolutionBusy() {}
 function updateAppointmentFormValidity() {}
 """,
             _executable_function_source("workflowIntentCanRender", "refreshClinicalWorkflowState"),
@@ -1333,11 +1884,7 @@ function updateAppointmentFormValidity() {}
 """,
         ]
     )
-    completed = subprocess.run(
-        ["node", "-e", script, str(status)],
-        capture_output=True,
-        text=True,
-    )
+    completed = _run_node_script(script, str(status))
     assert completed.returncode == 0, completed.stderr
     return json.loads(completed.stdout)
 
@@ -1461,7 +2008,7 @@ async function submitWorkflowMutation(url, body, visitId, method) {
 """,
         ]
     )
-    completed = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    completed = _run_node_script(script)
     assert completed.returncode == 0, completed.stderr
     return json.loads(completed.stdout)
 
@@ -1561,7 +2108,7 @@ console.log(JSON.stringify({
 """,
         ]
     )
-    completed = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    completed = _run_node_script(script)
     assert completed.returncode == 0, completed.stderr
     return json.loads(completed.stdout)
 
@@ -1990,7 +2537,7 @@ function snapshot() {
 """,
         ]
     )
-    completed = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    completed = _run_node_script(script)
     assert completed.returncode == 0, completed.stderr
     return json.loads(completed.stdout)
 
@@ -2307,7 +2854,7 @@ function fetch(url) {
 """,
         ]
     )
-    completed = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    completed = _run_node_script(script)
     assert completed.returncode == 0, completed.stderr
     assert json.loads(completed.stdout) == {
         "distinctOwners": True,
@@ -2512,7 +3059,7 @@ async function submitFollowUpMutation(url, body, options = {}) {
 """,
         ]
     )
-    completed = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    completed = _run_node_script(script)
     assert completed.returncode == 0, completed.stderr
     return json.loads(completed.stdout)
 
@@ -3128,7 +3675,7 @@ async function performFollowUpIntent(intent, explicitRetry = false) {
 """,
         ]
     )
-    completed = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    completed = _run_node_script(script)
     assert completed.returncode == 0, completed.stderr
     return json.loads(completed.stdout)
 
@@ -3259,7 +3806,7 @@ console.log(JSON.stringify({
 """,
         ]
     )
-    completed = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    completed = _run_node_script(script)
     assert completed.returncode == 0, completed.stderr
     return json.loads(completed.stdout)
 
@@ -3327,7 +3874,7 @@ function reportLoadError() {}
 """,
         ]
     )
-    completed = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    completed = _run_node_script(script)
     assert completed.returncode == 0, completed.stderr
     assert json.loads(completed.stdout) == {"touchedDom": False, "fetched": False}
 
@@ -3399,7 +3946,7 @@ function updateFollowUpFormValidity() {}
 """,
         ]
     )
-    completed = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    completed = _run_node_script(script)
     assert completed.returncode == 0, completed.stderr
     assert json.loads(completed.stdout) == {
         "during": {
@@ -3493,7 +4040,7 @@ function updateFollowUpFormValidity() {}
 """,
         ]
     )
-    completed = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    completed = _run_node_script(script)
     assert completed.returncode == 0, completed.stderr
     assert json.loads(completed.stdout) == {
         "afterStale": {
@@ -3564,7 +4111,7 @@ function updateFollowUpFormValidity() {}
 """,
         ]
     )
-    completed = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    completed = _run_node_script(script)
     assert completed.returncode == 0, completed.stderr
     assert json.loads(completed.stdout) == {
         "during": {
@@ -3801,7 +4348,7 @@ async function runAttempt(failure, profileChanged = false) {
 """,
         ]
     )
-    completed = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    completed = _run_node_script(script)
     assert completed.returncode == 0, completed.stderr
     return json.loads(completed.stdout)
 
@@ -3964,7 +4511,7 @@ function loadFailureMarkup() { return 'failed'; }
 """,
         ]
     )
-    completed = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    completed = _run_node_script(script)
     assert completed.returncode == 0, completed.stderr
     return json.loads(completed.stdout)
 
@@ -4065,7 +4612,7 @@ function loadFailureMarkup() { return 'failed'; }
 """,
         ]
     )
-    completed = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    completed = _run_node_script(script)
     assert completed.returncode == 0, completed.stderr
     assert json.loads(completed.stdout) == {
         "result": None,
@@ -4121,7 +4668,7 @@ async function loadFollowUps() {
 """,
         ]
     )
-    completed = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    completed = _run_node_script(script)
     assert completed.returncode == 0, completed.stderr
     assert json.loads(completed.stdout) == {
         "staleProfile": {"verified": False},
@@ -4213,7 +4760,7 @@ function renderStatusFailure() { failures += 1; rendered = 'failure'; }
 """,
         ]
     )
-    completed = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    completed = _run_node_script(script)
     assert completed.returncode == 0, completed.stderr
     return json.loads(completed.stdout)
 
@@ -4299,7 +4846,7 @@ async function loadFollowUps() {
 """,
         ]
     )
-    completed = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    completed = _run_node_script(script)
     assert completed.returncode == 0, completed.stderr
     assert json.loads(completed.stdout) == {
         "mixed": {"verified": False},
@@ -4354,7 +4901,7 @@ console.log(JSON.stringify({
 """,
         ]
     )
-    completed = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    completed = _run_node_script(script)
     assert completed.returncode == 0, completed.stderr
     return json.loads(completed.stdout)
 
@@ -4578,7 +5125,7 @@ const flush = async () => {
 """,
         ]
     )
-    completed = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    completed = _run_node_script(script)
     assert completed.returncode == 0, completed.stderr
     return json.loads(completed.stdout)
 

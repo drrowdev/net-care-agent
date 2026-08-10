@@ -3350,6 +3350,15 @@ def api_resolve_alert(alert_id):
                 {"text", "owner", "due_date"},
                 "Unsupported inline follow-up field",
             )
+        has_follow_up_id = data.get("follow_up_id") not in (None, "")
+        has_inline_follow_up = "follow_up" in data
+        has_visit_link = data.get("visit_id") not in (None, "")
+        if sum((has_follow_up_id, has_inline_follow_up, has_visit_link)) > 1:
+            raise agent.FollowThroughError(
+                "Use only one alert link mode: an existing follow-up, an inline follow-up, or a visit"
+            )
+        if data.get("decision_id") not in (None, "") and not has_visit_link:
+            raise agent.FollowThroughError("decision_id requires visit_id")
         expected_token = str(data.get("expected_token") or "")
         expected_revision = data.get("expected_profile_revision")
         if not expected_token or expected_revision is None:
@@ -3413,10 +3422,18 @@ def api_resolve_alert(alert_id):
         )
         if visit_id:
             visit = agent.find_record(profile.get("visits", []), visit_id, "Visit")
+            if visit.get("status") not in {"planned", "in_progress"}:
+                raise agent.FollowThroughConflict(
+                    "The visit is no longer available for alert resolution. Reload visits."
+                )
             if decision_id:
-                agent.find_record(visit.get("decisions", []), decision_id, "Decision")
-        elif decision_id:
-            raise agent.FollowThroughError("decision_id requires visit_id")
+                decision = agent.find_record(
+                    visit.get("decisions", []), decision_id, "Decision"
+                )
+                if decision.get("status") not in {"active", "needs_confirmation"}:
+                    raise agent.FollowThroughConflict(
+                        "The decision is no longer available for alert resolution. Reload visits."
+                    )
         follow_up_id = agent.validate_optional_text(
             data.get("follow_up_id"), "follow_up_id", limit=100, single_line=True
         )
@@ -3425,6 +3442,10 @@ def api_resolve_alert(alert_id):
             follow_up = agent.find_record(
                 profile.get("caregiver_actions", []), follow_up_id, "Follow-up"
             )
+            if follow_up.get("status") not in {"open", "in_progress"}:
+                raise agent.FollowThroughConflict(
+                    "The follow-up is no longer available for alert resolution. Reload follow-ups."
+                )
         if "follow_up" in data:
             if follow_up_id:
                 raise agent.FollowThroughError(

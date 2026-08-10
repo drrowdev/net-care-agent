@@ -243,6 +243,7 @@
     transition: all .15s;
   }
   .resolve-btn:hover { color: var(--text1); border-color: var(--accent-dim); }
+  .resolve-btn:disabled { cursor: not-allowed; opacity: .55; }
 
   /* ── Main (feed) ── */
   main {
@@ -2793,6 +2794,68 @@ body.dialog-open { overflow: hidden; }
   overflow-wrap: anywhere;
 }
 .follow-up-dialog-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.alert-resolution-context,
+.alert-resolution-fieldset,
+.alert-resolution-link-panel,
+.alert-resolution-result {
+  min-width: 0;
+  padding: 13px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg2);
+}
+.alert-resolution-context-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.alert-resolution-context h3,
+.alert-resolution-result h3 {
+  margin: 0;
+  font-size: 14px;
+}
+.alert-resolution-fieldset {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+}
+.alert-resolution-fieldset legend {
+  padding: 0 5px;
+  color: var(--text0);
+  font-size: 12px;
+  font-weight: 700;
+}
+.alert-resolution-link-modes label,
+.alert-resolution-confirm {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 9px;
+  color: var(--text0);
+  font-size: 12px;
+}
+.alert-resolution-link-modes input,
+.alert-resolution-confirm input {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+.alert-resolution-link-panel {
+  display: grid;
+  gap: 10px;
+}
+.alert-resolution-link-panel[hidden],
+.alert-resolution-result[hidden] { display: none; }
+.alert-resolution-result {
+  gap: 10px;
+}
+.alert-resolution-result p {
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.alert-resolution-result .button { justify-self: start; }
 .action-controls { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
 .action-accept-btn { min-height: 36px; white-space: nowrap; }
 .action-item.unavailable { grid-template-columns: 1fr; }
@@ -3254,7 +3317,10 @@ body.dialog-open { overflow: hidden; }
   .follow-up-dialog-body { padding: 14px; }
   .follow-up-form-grid { grid-template-columns: 1fr; }
   .follow-up-dialog-actions { align-items: stretch; flex-direction: column; }
-  .follow-up-dialog-actions .button { min-height: 44px; }
+  .follow-up-dialog-actions .button,
+  .alert-resolution-link-modes label,
+  .alert-resolution-confirm,
+  .alert-resolution-result .button { min-height: 44px; }
   .follow-up-retry { align-items: stretch; flex-direction: column; padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
   .visit-form-grid,
   .visit-form-grid.compact { grid-template-columns: 1fr; }

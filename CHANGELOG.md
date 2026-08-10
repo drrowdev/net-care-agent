@@ -9,6 +9,23 @@ incremented when something user-visible or operationally meaningful changes.
 ## [Unreleased]
 
 ### Fixed
+- **Authoritative recap export preflight and offline revocation.** Every recap
+  Copy, text download, and print now owns one duplicate-locked authenticated
+  no-store preflight and performs its browser side effect only when the selected
+  visit, full token, recap token, both revisions, request/selection/PHI epochs,
+  and exportable lifecycle exactly match the reviewed snapshot. Changed authority
+  becomes a new review state requiring a second click; conflicts, stale or
+  revisionless responses, network ambiguity, authorization/hard failures, and
+  late responses export nothing. The browser offline event now immediately
+  revokes recap tokens, text, controls, and Blob URLs, and online state alone
+  cannot restore export before a successful authoritative reload.
+- **Visit recap identity teardown and export visibility.** Changing the selected
+  visit or its full token now removes the prior structured recap, rendered
+  sections, export payload/object URL, print state, and export focus before the
+  new visit renders or loads, so late responses cannot cross visit identities.
+  Copy, download, and print controls are omitted unless a current accepted
+  in-progress/completed recap is exportable; planned, cancelled, unavailable,
+  stale, authorization-cleared, and other non-exportable states expose none.
 - **Structured alert-resolution authority and teardown.** The Patient alert
   dialog now gates open/source/conflict/convergence/mutation responses on one
   pre-selection owner, patient epoch, alert identity/token, and monotonic
@@ -83,6 +100,18 @@ incremented when something user-visible or operationally meaningful changes.
   not block snapshot/backup recovery or permit duplicate initialization.
 
 ### Added
+- **Deterministic visit recap and safe export.** The appointment workspace now
+  has a fourth shared Recap tab for in-progress and completed visits. One
+  authenticated/no-store visit-token CAS projection assembles exact
+  provenance-labelled questions/answers, current decisions, visit-linked
+  follow-ups, related resolved-alert outcomes, and unresolved items with both
+  revisions plus a semantic recap token. Copy, generic UTF-8 text download, and
+  print use only that accepted snapshot; newer authority disables export before
+  refresh, offline content remains visibly stale/read-only, and auth/hard
+  failure scrubs visible and hidden recap data. Planned visits are unavailable
+  until started, while cancelled visits show a non-exportable administrative
+  state. Viewing or exporting never mutates the profile, invokes a model, or
+  creates a recap artifact.
 - **Accessible structured Resolve alert dialog.** Active alerts now open one
   responsive desktop/phone dialog with optional provenance-labelled outcome and
   mutually exclusive no-link, existing-follow-up, safe inline-follow-up, or

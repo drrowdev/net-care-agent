@@ -2612,6 +2612,45 @@ def api_visits():
     )
 
 
+@app.route("/api/visits/<visit_id>/recap")
+def api_visit_recap(visit_id):
+    try:
+        expected_token = request.args.get("expected_visit_token", "")
+        if not expected_token:
+            raise agent.FollowThroughError("expected_visit_token is required")
+        profile = agent.load_profile()
+        visit = agent.find_record(profile.get("visits", []), visit_id, "Visit")
+        if agent.semantic_token(visit) != expected_token:
+            raise agent.FollowThroughConflict(
+                "The visit changed. Reload it before viewing the recap."
+            )
+        recap, authority_manifest = agent.project_visit_recap_with_authority(profile, visit)
+        profile_revision = profile.get("profile_revision", 0)
+        workflow_revision = profile.get("workflow_revision", 0)
+        recap_token = agent.semantic_token(
+            {
+                "visit_id": visit_id,
+                "visit_token": expected_token,
+                "profile_revision": profile_revision,
+                "workflow_revision": workflow_revision,
+                "recap": recap,
+                "authority_manifest": authority_manifest,
+            }
+        )
+        return jsonify(
+            {
+                "visit_id": visit_id,
+                "visit_token": expected_token,
+                "profile_revision": profile_revision,
+                "workflow_revision": workflow_revision,
+                "recap_token": recap_token,
+                "recap": recap,
+            }
+        )
+    except (agent.FollowThroughError, KeyError) as exc:
+        return _workflow_error(exc)
+
+
 @app.route("/api/visits", methods=["POST"])
 @serialized_profile_mutation
 def api_visits_add():

@@ -26,7 +26,7 @@ the Azure Files mount at `/home/data/patient_profile.json`. There is one user
                 │     ├─ /api/patient/evidence   │
                 │     ├─ /api/feedback           │
                 │     ├─ /api/follow-ups         │
-                │     ├─ /api/visits             │
+                │     ├─ /api/visits + recap     │
                 │     ├─ /api/chat (general q.)  │
                 │     ├─ /api/health             │
                 │     └─ /api/{trials,papers,…}  │
@@ -228,6 +228,26 @@ append immutable caregiver-entered, clinician-attributed statements and change
 only explicit lifecycle state. Resulting follow-ups are durable action records
 linked by ID. Generated questions never become clinician facts.
 
+`GET /api/visits/<visit_id>/recap` is an authenticated, no-store read
+projection, not a generated or persisted artifact. It requires the selected
+visit's full semantic token and returns that token, both workflow/profile
+revisions, and a recap semantic token over the exact bounded response. One
+profile load deterministically joins the visit with its durable follow-ups and
+only structured resolved-alert links relevant to that visit. The projection
+allowlists visible fields and excludes mutation history, replay snapshots,
+source paths/text/quotes, evidence offsets, receipt internals, and model/job
+internals. A changed visit token returns `409`; viewing or exporting never saves,
+advances a revision, appends history, or marks anything reviewed.
+
+Full recap content is available only for in-progress and completed visits.
+Planned visits remain unavailable until started; cancelled visits return a
+bounded administrative, non-exportable state. Answer and decision wording is
+never summarized: generated question snapshots retain generated provenance,
+answers and current decisions retain the caregiver-entered/
+clinician-attributed/unverified label, and superseded/retracted decisions are
+excluded from current statements. Visit-linked action and alert outcomes retain
+their typed provenance, with administrative outcomes explicitly non-clinical.
+
 The Questions view now exposes those contracts through one responsive appointment
 working mode rather than another top-level SPA view. `GET /api/visits` includes a
 bounded picker projection only for imported appointments whose source/import is
@@ -238,6 +258,24 @@ the server verifies the visit token, exact current question ID/token membership,
 normalizes all ranks, appends one audit event, advances only
 `workflow_revision`, and saves once. A conflict cannot leave a partially reordered
 authoritative list.
+
+The workspace's fourth internal **Recap** tab loads only on tab/visit entry,
+explicit retry, relevant mutation convergence, or visibility restoration while
+active. Copy/Download/Print share one duplicate-click owner. Each explicit export
+performs exactly one authenticated, `no-store` recap preflight with the current
+full visit token, then requires exact equality with the reviewed recap token,
+request/patient/visit epochs, selected visit ID/token, both revisions, and
+exportable lifecycle before the clipboard, Blob/link, or print side effect.
+A changed valid projection replaces the visible review state but is never exported
+by that click; export requires a second explicit action and unchanged preflight.
+Conflict, stale/lower/revisionless authority, network ambiguity, and offline state
+clear token/text/object-URL authority and retain at most a visibly stale read-only
+recap. The browser `offline` event revokes synchronously; coming online cannot
+restore export until authoritative recap reload succeeds. Authorization/hard
+failure scrubs the recap DOM, structured cache, export text, object URL, focus
+references, and late responses. Text download uses a generic UTF-8 `text/plain`
+filename and print CSS excludes navigation, controls, dialogs, and stale content.
+No recap polling or browser storage is used.
 
 Every new Layer 2 mutation carries a bounded `mutation_id`, appends an immutable
 endpoint/operation/target scope plus request-hash/before-token/after-token event,

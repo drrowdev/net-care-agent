@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import importlib
 import json
 import threading
@@ -255,6 +256,595 @@ def test_visits_appointment_projection_is_bounded(app_client, agent, empty_profi
     assert len(appointments) == 100
     assert appointments[0]["id"] == "appointment-bounded-000"
     assert appointments[-1]["id"] == "appointment-bounded-099"
+
+
+def _seed_recap_profile(agent, profile, *, status="completed"):
+    visit = {
+        "id": "visit-recap",
+        "title": "Oncology follow-up",
+        "date": "2026-08-10",
+        "time": "09:30",
+        "clinician": "Dr Example",
+        "location": "Clinic",
+        "status": status,
+        "source_appointment_id": "appointment-private",
+        "question_snapshots": [
+            {
+                "id": "question-unanswered",
+                "text": "Should we confirm the scan date?",
+                "source_kind": "manual",
+                "pinned": False,
+                "order": 2,
+                "answer": None,
+                "created_at": "2026-08-10T08:02:00+00:00",
+            },
+            {
+                "id": "question-answered",
+                "text": "What did the scan show?",
+                "source_kind": "generated",
+                "source_generation_id": "private-generation",
+                "source_profile_revision": 4,
+                "pinned": True,
+                "order": 1,
+                "answer": {
+                    "status": "answered",
+                    "text": "The exact clinician-attributed answer.",
+                    "recorded_at": "2026-08-10T09:45:00+00:00",
+                    "provenance": agent.capture_provenance(),
+                },
+                "created_at": "2026-08-10T08:01:00+00:00",
+            },
+            {
+                "id": "question-unknown",
+                "text": "Is the timing confirmed?",
+                "source_kind": "manual",
+                "pinned": False,
+                "order": 1,
+                "answer": {
+                    "status": "unknown",
+                    "text": None,
+                    "recorded_at": "2026-08-10T09:46:00+00:00",
+                    "provenance": agent.capture_provenance(),
+                },
+                "created_at": "2026-08-10T08:03:00+00:00",
+            },
+        ],
+        "decisions": [
+            {
+                "id": "decision-retracted",
+                "text": "Retracted wording must not appear.",
+                "status": "retracted",
+                "provenance": agent.capture_provenance(),
+                "created_at": "2026-08-10T09:40:00+00:00",
+                "updated_at": "2026-08-10T09:50:00+00:00",
+            },
+            {
+                "id": "decision-active",
+                "text": "Keep the exact active decision wording.",
+                "status": "active",
+                "provenance": agent.capture_provenance(),
+                "created_at": "2026-08-10T09:42:00+00:00",
+                "updated_at": "2026-08-10T09:42:00+00:00",
+            },
+            {
+                "id": "decision-confirm",
+                "text": "Confirm this exact decision wording.",
+                "status": "needs_confirmation",
+                "provenance": agent.capture_provenance(),
+                "created_at": "2026-08-10T09:43:00+00:00",
+                "updated_at": "2026-08-10T09:43:00+00:00",
+            },
+            {
+                "id": "decision-superseded",
+                "text": "Superseded wording must not appear.",
+                "status": "superseded",
+                "provenance": agent.capture_provenance(),
+                "created_at": "2026-08-10T09:41:00+00:00",
+                "updated_at": "2026-08-10T09:44:00+00:00",
+            },
+        ],
+        "follow_up_ids": ["action-visit"],
+        "created_at": "2026-08-10T08:00:00+00:00",
+        "updated_at": "2026-08-10T10:00:00+00:00",
+        "completed_at": "2026-08-10T10:00:00+00:00" if status == "completed" else None,
+        "cancelled_at": "2026-08-10T10:00:00+00:00" if status == "cancelled" else None,
+        "history": [{"path": "private\\visit", "result_snapshot": {"secret": "hidden"}}],
+    }
+    profile["profile_revision"] = 12
+    profile["workflow_revision"] = 8
+    profile["visits"] = [visit]
+    profile["caregiver_actions"] = [
+        {
+            "id": "action-visit",
+            "origin_snapshot": {
+                "kind": "visit_decision",
+                "text": "Private snapshot",
+                "snapshot": {"path": "private\\source"},
+            },
+            "text": "Contact the clinic to confirm the scan date.",
+            "owner": "Caregiver",
+            "due_date": "2026-08-12",
+            "status": "completed",
+            "outcome": {
+                "kind": "administrative",
+                "text": "Clinic contacted.",
+                "recorded_at": "2026-08-11T09:00:00+00:00",
+                "provenance": {"path": "private\\provenance"},
+            },
+            "visit_id": visit["id"],
+            "decision_id": "decision-active",
+            "alert_id": None,
+            "created_at": "2026-08-10T10:01:00+00:00",
+            "updated_at": "2026-08-11T09:00:00+00:00",
+            "completed_at": "2026-08-11T09:00:00+00:00",
+            "cancelled_at": None,
+            "history": [{"path": "private\\action"}],
+        }
+    ]
+    profile["alerts"] = [
+        {
+            "id": "alert-related",
+            "message": "Private generated alert wording.",
+            "resolved": True,
+            "resolution": {
+                "status": "resolved",
+                "resolved_at": "2026-08-11T10:00:00+00:00",
+                "follow_up_id": "action-visit",
+                "visit_id": None,
+                "decision_id": None,
+                "outcome_kind": "clinician_attributed",
+                "outcome_text": "The exact alert outcome.",
+                "provenance": {"path": "private\\alert"},
+            },
+            "history": [{"result_snapshot": {"secret": "hidden"}}],
+        },
+        {
+            "id": "alert-unrelated",
+            "message": "Unrelated alert.",
+            "resolved": True,
+            "resolution": {
+                "status": "resolved",
+                "resolved_at": "2026-08-11T11:00:00+00:00",
+                "visit_id": "visit-other",
+            },
+        },
+    ]
+    agent.save_profile(profile, clinical_change=False)
+    return visit
+
+
+def test_visit_recap_is_deterministic_bounded_and_read_only(
+    app_client, agent, empty_profile, monkeypatch
+):
+    app_module, client = app_client
+    visit = _seed_recap_profile(agent, empty_profile)
+    expected_token = agent.semantic_token(visit)
+    before = agent.load_profile()
+    save_calls = 0
+
+    def forbidden_save(*args, **kwargs):
+        nonlocal save_calls
+        save_calls += 1
+        raise AssertionError("recap must not save")
+
+    monkeypatch.setattr(app_module.agent, "save_profile", forbidden_save)
+    first = client.get(
+        f"/api/visits/{visit['id']}/recap",
+        query_string={"expected_visit_token": expected_token},
+    )
+    second = client.get(
+        f"/api/visits/{visit['id']}/recap",
+        query_string={"expected_visit_token": expected_token},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.get_json() == second.get_json()
+    body = first.get_json()
+    assert body["visit_token"] == expected_token
+    assert body["profile_revision"] == 12
+    assert body["workflow_revision"] == 8
+    assert len(body["recap_token"]) == 64
+    assert body["recap"]["state"] == "current"
+    assert body["recap"]["exportable"] is True
+    sections = body["recap"]["sections"]
+    assert [item["id"] for item in sections["what_was_asked"]] == [
+        "question-answered",
+        "question-unknown",
+    ]
+    assert sections["what_we_heard"] == [
+        {
+            "question_id": "question-answered",
+            "question": "What did the scan show?",
+            "text": "The exact clinician-attributed answer.",
+            "provenance_label": "Caregiver-entered · attributed to clinician · unverified",
+        }
+    ]
+    assert [item["id"] for item in sections["decisions"]] == [
+        "decision-active",
+        "decision-confirm",
+    ]
+    assert sections["follow_ups"][0]["outcome"]["provenance_label"] == (
+        "Caregiver-entered administrative outcome · not clinical evidence"
+    )
+    assert sections["related_resolved_alerts"][0]["outcome"] == {
+        "kind": "clinician_attributed",
+        "text": "The exact alert outcome.",
+        "provenance_label": "Caregiver-entered · attributed to clinician · unverified",
+        "recorded_at": "2026-08-11T10:00:00+00:00",
+    }
+    assert [item["kind"] for item in sections["unresolved"]] == ["unknown", "not_recorded"]
+    serialized = json.dumps(body)
+    for private_value in (
+        "private\\",
+        "Private snapshot",
+        "Private generated alert wording.",
+        "Retracted wording must not appear.",
+        "Superseded wording must not appear.",
+        "result_snapshot",
+        "source_appointment_id",
+        "source_generation_id",
+        "history",
+    ):
+        assert private_value not in serialized
+    assert save_calls == 0
+    assert agent.load_profile() == before
+
+
+def test_visit_recap_private_authority_manifest_is_stable_and_ordered(agent, empty_profile):
+    visit = _seed_recap_profile(agent, empty_profile)
+    profile = agent.load_profile()
+    second_action = copy.deepcopy(profile["caregiver_actions"][0])
+    second_action["id"] = "action-alpha"
+    second_action["created_at"] = "2026-08-10T10:00:00+00:00"
+    profile["caregiver_actions"].append(second_action)
+    second_alert = copy.deepcopy(profile["alerts"][0])
+    second_alert["id"] = "alert-alpha"
+    second_alert["resolution"]["follow_up_id"] = second_action["id"]
+    profile["alerts"].append(second_alert)
+
+    recap, authority = agent.project_visit_recap_with_authority(profile, visit)
+    profile["caregiver_actions"].reverse()
+    profile["alerts"].reverse()
+    reordered_recap, reordered_authority = agent.project_visit_recap_with_authority(profile, visit)
+
+    assert recap == reordered_recap
+    assert authority == reordered_authority
+    assert [item["id"] for item in authority["questions"]] == [
+        "question-answered",
+        "question-unknown",
+        "question-unanswered",
+    ]
+    assert [item["id"] for item in authority["decisions"]] == [
+        "decision-active",
+        "decision-confirm",
+    ]
+    assert [item["id"] for item in authority["follow_ups"]] == [
+        "action-alpha",
+        "action-visit",
+    ]
+    assert [item["id"] for item in authority["resolved_alerts"]] == [
+        "alert-alpha",
+        "alert-related",
+    ]
+    assert all(len(item["authority_token"]) == 64 for item in authority["questions"])
+    assert "authority_token" not in json.dumps(recap)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "action_source",
+        "action_provenance",
+        "action_link",
+        "action_lifecycle",
+        "alert_source",
+        "alert_provenance",
+        "alert_link",
+        "alert_lifecycle",
+        "question_identity",
+        "question_token",
+        "decision_identity",
+        "decision_token",
+    ],
+)
+def test_visit_recap_token_binds_every_included_authority_change(
+    app_client, agent, empty_profile, change
+):
+    _, client = app_client
+    visit = _seed_recap_profile(agent, empty_profile)
+    expected_visit_token = agent.semantic_token(visit)
+    first = client.get(
+        f"/api/visits/{visit['id']}/recap",
+        query_string={"expected_visit_token": expected_visit_token},
+    ).get_json()
+    profile = agent.load_profile()
+    action = profile["caregiver_actions"][0]
+    alert = profile["alerts"][0]
+    question = profile["visits"][0]["question_snapshots"][1]
+    decision = profile["visits"][0]["decisions"][1]
+
+    if change == "action_source":
+        action["origin_snapshot"]["snapshot"]["path"] = "changed-source"
+    elif change == "action_provenance":
+        action["outcome"]["provenance"]["path"] = "changed-provenance"
+    elif change == "action_link":
+        action["alert_id"] = "alert-related"
+    elif change == "action_lifecycle":
+        action["status"] = "cancelled"
+    elif change == "alert_source":
+        alert["source_job_id"] = "changed-source-job"
+    elif change == "alert_provenance":
+        alert["resolution"]["provenance"]["path"] = "changed-provenance"
+    elif change == "alert_link":
+        alert["resolution"]["follow_up_id"] = None
+        alert["resolution"]["visit_id"] = visit["id"]
+    elif change == "alert_lifecycle":
+        alert["resolution"]["resolved_at"] = "2026-08-12T10:00:00+00:00"
+    elif change == "question_identity":
+        question["id"] = "question-answered-changed"
+    elif change == "question_token":
+        question["source_generation_id"] = "changed-generation"
+    elif change == "decision_identity":
+        decision["id"] = "decision-active-changed"
+        action["decision_id"] = decision["id"]
+    elif change == "decision_token":
+        decision["provenance"]["source_verification"] = "changed"
+
+    agent.save_profile(profile, clinical_change=False)
+    changed_visit = agent.load_profile()["visits"][0]
+    second = client.get(
+        f"/api/visits/{visit['id']}/recap",
+        query_string={"expected_visit_token": agent.semantic_token(changed_visit)},
+    )
+
+    assert second.status_code == 200
+    second_body = second.get_json()
+    assert second_body["recap_token"] != first["recap_token"]
+    assert "authority_manifest" not in second_body
+    if change in {
+        "action_source",
+        "action_provenance",
+        "alert_source",
+        "alert_provenance",
+        "question_token",
+        "decision_token",
+    }:
+        assert second_body["recap"] == first["recap"]
+
+
+@pytest.mark.parametrize(
+    "malformation",
+    [
+        "question_answer_status",
+        "question_answer_provenance",
+        "question_answer_bounds",
+        "question_source_control",
+        "decision_status",
+        "decision_provenance",
+        "action_status",
+        "action_outcome_lifecycle",
+        "action_nonterminal_outcome",
+        "action_outcome_kind",
+        "action_outcome_provenance",
+        "action_source_shape",
+        "action_link_shape",
+        "alert_outcome_kind",
+        "alert_outcome_provenance",
+        "alert_link_shape",
+        "alert_lifecycle",
+        "alert_control",
+    ],
+)
+def test_visit_recap_malformed_relevant_authority_fails_closed_without_side_effects(
+    app_client, agent, empty_profile, malformation
+):
+    _, client = app_client
+    visit = _seed_recap_profile(agent, empty_profile)
+    profile = agent.load_profile()
+    question = profile["visits"][0]["question_snapshots"][1]
+    decision = profile["visits"][0]["decisions"][1]
+    action = profile["caregiver_actions"][0]
+    alert_resolution = profile["alerts"][0]["resolution"]
+
+    if malformation == "question_answer_status":
+        question["answer"]["status"] = "partly_answered"
+    elif malformation == "question_answer_provenance":
+        question["answer"]["provenance"] = []
+    elif malformation == "question_answer_bounds":
+        question["answer"]["text"] = "x" * 4001
+    elif malformation == "question_source_control":
+        question["source_generation_id"] = "unsafe\u0000source"
+    elif malformation == "decision_status":
+        decision["status"] = "archived"
+    elif malformation == "decision_provenance":
+        decision["provenance"] = {"capture_method": "unsafe\u007fvalue"}
+    elif malformation == "action_status":
+        action["status"] = "archived"
+    elif malformation == "action_outcome_lifecycle":
+        action["outcome"] = None
+    elif malformation == "action_nonterminal_outcome":
+        action["status"] = "open"
+    elif malformation == "action_outcome_kind":
+        action["outcome"]["kind"] = "other"
+    elif malformation == "action_outcome_provenance":
+        action["outcome"]["provenance"] = {"path": "x" * 501}
+    elif malformation == "action_source_shape":
+        action["origin_snapshot"]["source_profile_revision"] = "twelve"
+    elif malformation == "action_link_shape":
+        action["visit_id"] = "visit-other"
+    elif malformation == "alert_outcome_kind":
+        alert_resolution["outcome_kind"] = "other"
+    elif malformation == "alert_outcome_provenance":
+        alert_resolution["provenance"] = []
+    elif malformation == "alert_link_shape":
+        alert_resolution["visit_id"] = visit["id"]
+    elif malformation == "alert_lifecycle":
+        alert_resolution["status"] = "closed"
+    elif malformation == "alert_control":
+        alert_resolution["resolved_at"] = "unsafe\u0000timestamp"
+
+    agent.save_profile(profile, clinical_change=False)
+    before = agent.load_profile()
+    malformed_visit = before["visits"][0]
+    with pytest.raises(agent.RecapIntegrityError):
+        agent.project_visit_recap_with_authority(before, malformed_visit)
+
+    response = client.get(
+        f"/api/visits/{visit['id']}/recap",
+        query_string={"expected_visit_token": agent.semantic_token(malformed_visit)},
+    )
+
+    assert response.status_code == 409
+    assert response.get_json()["code"] == "workflow_conflict"
+    assert "recap" not in response.get_json()
+    assert agent.load_profile() == before
+
+
+def test_visit_recap_requires_current_visit_token_and_changes_with_authority(
+    app_client, agent, empty_profile
+):
+    _, client = app_client
+    visit = _seed_recap_profile(agent, empty_profile, status="in_progress")
+    token = agent.semantic_token(visit)
+    missing = client.get(f"/api/visits/{visit['id']}/recap")
+    stale = client.get(
+        f"/api/visits/{visit['id']}/recap",
+        query_string={"expected_visit_token": "stale"},
+    )
+    first = client.get(
+        f"/api/visits/{visit['id']}/recap",
+        query_string={"expected_visit_token": token},
+    ).get_json()
+    profile = agent.load_profile()
+    profile["caregiver_actions"][0]["owner"] = "Updated owner"
+    profile["workflow_revision"] += 1
+    agent.save_profile(profile, clinical_change=False)
+    second = client.get(
+        f"/api/visits/{visit['id']}/recap",
+        query_string={"expected_visit_token": token},
+    ).get_json()
+
+    assert missing.status_code == 400
+    assert stale.status_code == 409
+    assert stale.get_json() == {
+        "code": "workflow_conflict",
+        "error": "The visit changed. Reload it before viewing the recap.",
+    }
+    assert first["recap_token"] != second["recap_token"]
+    assert second["workflow_revision"] == first["workflow_revision"] + 1
+    assert second["recap"]["sections"]["follow_ups"][0]["owner"] == "Updated owner"
+
+
+@pytest.mark.parametrize(
+    ("status", "state"),
+    [("planned", "unavailable"), ("cancelled", "administrative")],
+)
+def test_visit_recap_non_started_lifecycles_are_non_exportable(
+    app_client, agent, empty_profile, status, state
+):
+    _, client = app_client
+    visit = _seed_recap_profile(agent, empty_profile, status=status)
+    body = client.get(
+        f"/api/visits/{visit['id']}/recap",
+        query_string={"expected_visit_token": agent.semantic_token(visit)},
+    ).get_json()["recap"]
+
+    assert body == {
+        "state": state,
+        "exportable": False,
+        "visit": {
+            "id": "visit-recap",
+            "title": "Oncology follow-up",
+            "date": "2026-08-10",
+            "time": "09:30",
+            "clinician": "Dr Example",
+            "location": "Clinic",
+            "status": status,
+        },
+        "sections": {},
+    }
+
+
+def test_visit_recap_rejects_unsafe_legacy_content_and_oversized_collections(
+    app_client, agent, empty_profile
+):
+    _, client = app_client
+    visit = _seed_recap_profile(agent, empty_profile)
+    profile = agent.load_profile()
+    profile["visits"][0]["question_snapshots"][0]["text"] = "Unsafe\u0000text"
+    agent.save_profile(profile, clinical_change=False)
+    unsafe_visit = agent.load_profile()["visits"][0]
+    unsafe = client.get(
+        f"/api/visits/{visit['id']}/recap",
+        query_string={"expected_visit_token": agent.semantic_token(unsafe_visit)},
+    )
+
+    profile = agent.load_profile()
+    profile["visits"][0]["question_snapshots"] = [
+        {
+            "id": f"question-{index}",
+            "text": "Question?",
+            "source_kind": "manual",
+            "pinned": False,
+            "order": index,
+            "answer": None,
+            "created_at": str(index),
+        }
+        for index in range(201)
+    ]
+    agent.save_profile(profile, clinical_change=False)
+    oversized_visit = agent.load_profile()["visits"][0]
+    oversized = client.get(
+        f"/api/visits/{visit['id']}/recap",
+        query_string={"expected_visit_token": agent.semantic_token(oversized_visit)},
+    )
+
+    assert unsafe.status_code == 409
+    assert "unsupported control characters" in unsafe.get_json()["error"]
+    assert oversized.status_code == 409
+    assert "safe recap limit" in oversized.get_json()["error"]
+
+
+def test_visit_recap_bounds_relevant_subset_not_lifetime_collections(
+    app_client, agent, empty_profile
+):
+    _, client = app_client
+    visit = _seed_recap_profile(agent, empty_profile)
+    profile = agent.load_profile()
+    profile["caregiver_actions"].extend(
+        {
+            "id": f"unrelated-action-{index}",
+            "text": "Unrelated action",
+            "status": "completed",
+            "visit_id": "visit-other",
+            "created_at": str(index),
+        }
+        for index in range(205)
+    )
+    profile["alerts"].extend(
+        {
+            "id": f"unrelated-alert-{index}",
+            "resolved": True,
+            "resolution": {
+                "status": "resolved",
+                "resolved_at": str(index),
+                "visit_id": "visit-other",
+            },
+        }
+        for index in range(205)
+    )
+    agent.save_profile(profile, clinical_change=False)
+
+    response = client.get(
+        f"/api/visits/{visit['id']}/recap",
+        query_string={"expected_visit_token": agent.semantic_token(visit)},
+    )
+
+    assert response.status_code == 200
+    sections = response.get_json()["recap"]["sections"]
+    assert [item["id"] for item in sections["follow_ups"]] == ["action-visit"]
+    assert [item["id"] for item in sections["related_resolved_alerts"]] == ["alert-related"]
 
 
 def test_visit_source_must_be_in_linkable_projection(app_client, agent, empty_profile):

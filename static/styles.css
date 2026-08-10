@@ -3175,6 +3175,103 @@ body.dialog-open { overflow: hidden; }
   font-size: 11px;
 }
 .appointment-retry[hidden] { display: none; }
+.visit-recap-panel {
+  max-width: 900px;
+  margin: 0 auto;
+}
+.visit-recap-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+.visit-recap-toolbar h3 { margin-top: 2px; font-size: 18px; }
+.visit-recap-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.visit-recap-actions[hidden] { display: none; }
+.visit-recap-status {
+  min-height: 38px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg2);
+  color: var(--text1);
+  font-size: 12px;
+}
+.visit-recap-status:empty { display: none; }
+.visit-recap-status.current,
+.visit-recap-status.success { border-color: #a9ccb8; background: var(--accent-dim); color: var(--accent); }
+.visit-recap-status.loading,
+.visit-recap-status.offline,
+.visit-recap-status.stale { border-color: #d7bf75; background: #fff8de; color: #684800; }
+.visit-recap-status.conflict,
+.visit-recap-status.error { border-color: #d49b9b; background: #fff1f1; color: #7b2020; }
+.visit-recap-content { min-width: 0; }
+.visit-recap-document {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+.visit-recap-document.stale { opacity: .68; }
+.visit-recap-section {
+  min-width: 0;
+  padding: 15px 16px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg1);
+}
+.visit-recap-section h4 {
+  margin-bottom: 10px;
+  color: var(--text0);
+  font-size: 14px;
+}
+.visit-recap-details dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 18px;
+}
+.visit-recap-details dl > div { min-width: 0; }
+.visit-recap-details dt {
+  color: var(--text2);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.visit-recap-details dd,
+.visit-recap-list strong,
+.visit-recap-list p,
+.visit-recap-question {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.visit-recap-details dd { margin-top: 2px; }
+.visit-recap-list { display: grid; gap: 9px; }
+.visit-recap-list article {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 11px 12px;
+  border-left: 3px solid var(--border2);
+  background: var(--bg2);
+}
+.visit-recap-list article p { margin: 0; line-height: 1.5; }
+.visit-recap-list .visit-status-badge { justify-self: start; }
+.visit-recap-meta,
+.visit-recap-question { color: var(--text1); font-size: 11px; }
+.visit-recap-notice {
+  padding: 15px 16px;
+  border: 1px solid #d7bf75;
+  border-radius: 9px;
+  background: #fff8de;
+  color: #684800;
+}
 
 @media (max-width: 980px) {
   .app-shell { grid-template-columns: 150px minmax(0, 1fr); }
@@ -3354,6 +3451,10 @@ body.dialog-open { overflow: hidden; }
   .appointment-tab { flex: 1; padding-inline: 8px; }
   .appointment-dialog-body { flex: none; overflow: visible; }
   .appointment-tab-panel { padding: 12px; }
+  .visit-recap-toolbar { align-items: stretch; flex-direction: column; }
+  .visit-recap-actions { justify-content: stretch; }
+  .visit-recap-actions .button { flex: 1 1 120px; min-height: 44px; }
+  .visit-recap-details dl { grid-template-columns: 1fr; }
   .visit-answer { grid-template-columns: 1fr; align-items: stretch; }
   .visit-answer .button { justify-self: stretch; }
   .visit-question-order .button {
@@ -3416,5 +3517,69 @@ body.dialog-open { overflow: hidden; }
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+@media print {
+  @page { margin: 16mm; }
+  body {
+    display: block !important;
+    height: auto !important;
+    overflow: visible !important;
+    padding: 0 !important;
+    background: #fff !important;
+    color: #111 !important;
+  }
+  body:not(.visit-recap-printing) > * { display: none !important; }
+  body:not(.visit-recap-printing)::before {
+    display: block;
+    content: "Visit recap unavailable for printing. Reload the current recap first.";
+    font: 14pt/1.5 sans-serif;
+  }
+  body.visit-recap-printing > *:not(.appointment-overlay) { display: none !important; }
+  body.visit-recap-printing .appointment-overlay {
+    display: block !important;
+    position: static !important;
+    padding: 0 !important;
+    background: none !important;
+    backdrop-filter: none !important;
+  }
+  body.visit-recap-printing .appointment-dialog {
+    display: block !important;
+    width: auto !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+    border: 0 !important;
+    box-shadow: none !important;
+  }
+  body.visit-recap-printing .appointment-dialog-header,
+  body.visit-recap-printing .appointment-status-message,
+  body.visit-recap-printing .appointment-metadata,
+  body.visit-recap-printing .appointment-tabs,
+  body.visit-recap-printing .appointment-retry,
+  body.visit-recap-printing .visit-recap-actions { display: none !important; }
+  body.visit-recap-printing .appointment-dialog-body {
+    display: block !important;
+    overflow: visible !important;
+  }
+  body.visit-recap-printing .appointment-tab-panel { display: none !important; }
+  body.visit-recap-printing #appointment-panel-recap {
+    display: block !important;
+    max-width: none !important;
+    padding: 0 !important;
+  }
+  body.visit-recap-printing .visit-recap-toolbar { margin-bottom: 10mm; }
+  body.visit-recap-printing .visit-recap-toolbar h3 { font-size: 20pt; }
+  body.visit-recap-printing .visit-recap-status { display: none !important; }
+  body.visit-recap-printing .visit-recap-document.stale { display: none !important; }
+  body.visit-recap-printing .visit-recap-section {
+    break-inside: avoid;
+    border-color: #aaa;
+    background: #fff !important;
+  }
+  body.visit-recap-printing .visit-recap-list article {
+    break-inside: avoid;
+    background: #fff !important;
   }
 }

@@ -375,12 +375,49 @@ working record; on a phone it opens as a full-height sheet.
    a decision, using contact/ask/discuss/confirm wording. Visit-linked follow-ups
    are displayed read-only here; general task editing remains outside this
    appointment slice.
+8. Open **Recap** during an in-progress visit or after completion. The recap
+   deterministically shows **Visit details**, **What was asked**, **What we
+   heard**, **Decisions / needs confirmation**, **Follow-ups**, **Related
+   resolved alerts**, and **Unresolved / unknown items**, omitting empty
+   sections. It preserves the stored wording exactly. Generated question
+   snapshots remain labelled generated; captured answers and current decisions
+   remain **Caregiver-entered · attributed to clinician · unverified**.
+   Administrative action/alert outcomes remain explicitly non-clinical.
+9. After reviewing the current recap, use **Copy**, **Download text**, or
+   **Print**. Each click performs one authenticated, no-cache recheck using the
+   current full visit token and exports only if the returned recap token,
+   revisions, visit authority, and exportable lifecycle exactly match the recap
+   you reviewed. If anything changed, the app shows the replacement for review
+   but performs no clipboard, download, or print action; click export again only
+   after reviewing it.
+   Export controls appear only when the displayed recap is the accepted current
+   in-progress or completed visit.
+   Download creates a UTF-8 plain-text file named generically, such as
+   `visit-recap-2026-08-10.txt`; the app does not create PDF/Word files, upload,
+   email, or share the record. Planned visits cannot be recapped until started.
+   Planned visits and cancelled administrative records show no export controls.
 
 Each request has one mutation ID and target token. An explicit retry after an
 ambiguous connection failure reuses only that exact unchanged request. A `409`
 never retries automatically: the workspace keeps eligible caregiver draft text,
 reloads authoritative tokens, and explains that the visit or assessment changed.
 Drafts remain only in memory.
+
+The recap is a read projection: opening, copying, downloading, or printing it
+does not change either revision, append audit history, or mark any item reviewed.
+Only one export can own the controls at a time. If the selected visit, its
+If the selected visit or its complete visit token changes, the previous recap
+and export payload are removed before the new visit header renders or reload
+starts. If its follow-ups, a related alert, or any workflow/clinical authority
+changes, export controls disappear immediately and the recap reloads.
+A connection failure may leave the previous recap visible as **Offline snapshot
+· read-only** only for the same visit identity, but Copy/Download/Print remain
+absent and causes no export side effect. The browser going offline revokes export
+authority and any prepared download URL synchronously; reconnecting alone does
+not restore it. A successful authoritative recap reload/review is required. A
+conflict requires the visit and recap to reload; authorization loss or a hard
+failure removes the recap and its hidden export payload entirely. Returning to a
+visible browser tab refreshes an active recap; there is no recap polling.
 
 Pin/order/visit bookkeeping changes only `workflow_revision`. Captured answers
 and clinician-attributed decisions also advance `profile_revision`, clear

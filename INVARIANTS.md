@@ -92,6 +92,16 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
   Generated questions remain ordered snapshots. Answers and decisions are
   caregiver-entered, clinician-attributed, and unverified; they are never model-
   written, source-verified, silently rewritten, or promoted to hard constraints.
+- Visit recap is a deterministic authenticated/no-store read projection, never
+  a schema artifact or clinical mutation. It requires stable visit ID + full
+  visit-token CAS and returns both revisions plus a recap semantic token.
+  In-progress/completed recap wording is copied exactly from bounded allowlisted
+  visit/action/resolved-alert fields; generated questions retain generated
+  provenance, clinician-attributed captures remain explicitly unverified,
+  administrative outcomes remain non-clinical, and retracted/superseded
+  decisions are never current statements. Planned and cancelled visits are
+  non-exportable. Viewing/copying/downloading/printing never saves, appends
+  history, advances revisions, or marks review state.
 - Every Layer 2 mutation is stable-ID/target-token CAS under
   `serialized_mutation`, appends one request-hash audit event, increments each
   applicable revision once, and saves once. Exact `mutation_id` retries are
@@ -157,6 +167,17 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
 - Hard status/tasks/summary/evidence or authorization failure centrally evicts
   all client-side patient PHI caches and rendered/dialog content. An authoritative
   receipt may survive only a non-auth post-save detail-refresh failure.
+- Recap render and Copy/Download/Print side effects require one authenticated,
+  no-store preflight per explicit action and exact equality with the reviewed
+  recap token, selected visit ID/token, exportable lifecycle, both revisions, and
+  patient/visit/request epochs. One owner excludes concurrent export clicks.
+  Changed authority clears token/text/object URLs and may render only a new review
+  state; it is never exported until a second action passes an unchanged preflight.
+  Browser offline revokes synchronously, and online alone cannot restore export.
+  Network ambiguity may retain only visible stale read-only content. Auth/hard
+  eviction also scrubs recap DOM/cache/export text/object URLs/focus references
+  and rejects late responses. Recap loading is event-driven and never persists
+  text in browser storage, URLs, logs, job metadata, or health output.
 - **`save_profile` guards structural validity.** Calling `save_profile` with a
   non-dict, string patient, or non-list collection raises `ValueError`
   immediately.  Field-level type issues (out-of-range values, bad enum literals)

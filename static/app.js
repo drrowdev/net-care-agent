@@ -48,6 +48,17 @@
   let visitSelectionEpoch = 0;
   let appointmentDialogOpen = false;
   let activeAppointmentTab = 'questions';
+  let visitRecapLoadEpoch = 0;
+  let visitRecapProjection = null;
+  let visitRecapAuthority = null;
+  let visitRecapExportText = '';
+  let visitRecapStale = false;
+  let visitRecapState = 'idle';
+  let visitRecapMessage = '';
+  let visitRecapDownloadUrl = null;
+  let visitRecapExportOwner = null;
+  let visitRecapExportEpoch = 0;
+  let visitRecapNetworkAmbiguous = false;
   let pendingWorkflowIntent = null;
   let activeWorkflowIntent = null;
   let workflowMutationPending = false;
@@ -236,6 +247,13 @@
       !Number.isSafeInteger(revision)
       || (Number.isSafeInteger(current) && revision <= current)
     ) return false;
+    if (typeof markVisitRecapStale === 'function') {
+      markVisitRecapStale(
+        'The patient record changed. Reload the recap before exporting.',
+        'stale',
+        options.preserveVisitRecapExportOwner === true,
+      );
+    }
     phiEpoch += 1;
     taskSelectionEpoch += 1;
     if (
@@ -319,6 +337,7 @@
       advancePatientAuthority(responseProfileRevision, {
         preserveAlertIntent: options.alertResolution === true,
         deferConvergence: options.alertResolution === true,
+        preserveVisitRecapExportOwner: options.preserveVisitRecapExportOwner === true,
       });
     }
     if (staleWorkflowProjection || staleTargetedWorkflow) {
@@ -331,6 +350,13 @@
         || responseWorkflowRevision > currentWorkflowRevision
       );
     if (workflowAdvanced) {
+      if (typeof markVisitRecapStale === 'function') {
+        markVisitRecapStale(
+          'The visit workflow changed. Reload the recap before exporting.',
+          'stale',
+          options.preserveVisitRecapExportOwner === true,
+        );
+      }
       workflowRevision = responseWorkflowRevision;
       if (
         !options.alertResolution
@@ -515,10 +541,18 @@
     const responseVisitId = selectedVisitId;
     if (appointmentDialogOpen) captureAppointmentDraft();
     if (data.visit?.id) {
+      if (data.visit.id === selectedVisitId) {
+        scrubVisitRecapBeforeSelectionChange(data.visit.id, data.visit.token);
+      }
       visitsById.set(data.visit.id, data.visit);
       revalidateDecisionSuccessorState(data.visit);
     }
-    if (data.item?.question_snapshots && data.item.id) visitsById.set(data.item.id, data.item);
+    if (data.item?.question_snapshots && data.item.id) {
+      if (data.item.id === selectedVisitId) {
+        scrubVisitRecapBeforeSelectionChange(data.item.id, data.item.token);
+      }
+      visitsById.set(data.item.id, data.item);
+    }
     if (data.item?.visit_id && data.item.id) {
       followUpsById.set(data.item.id, data.item);
     }
@@ -894,10 +928,25 @@
     banner.hidden = false;
   }
 
+  function appIsOffline() {
+    return navigator.onLine === false || visitRecapNetworkAmbiguous;
+  }
+
+  function handleOfflineTransition() {
+    if (typeof markVisitRecapStale === 'function') {
+      visitRecapNetworkAmbiguous = true;
+      markVisitRecapStale(
+        'Offline snapshot · read-only. Export is disabled until the recap reloads.',
+        'offline',
+      );
+    }
+    renderAppState();
+  }
+
   async function retryInitialLoad() {
     failedLoads.clear();
     renderAppState();
-    await Promise.allSettled([
+    const refreshes = [
       loadStatus(),
       loadTasks(),
       loadSummary(),
@@ -907,7 +956,11 @@
       loadPatientEvidence(),
       loadVisits(),
       loadFollowUps(),
-    ]);
+    ];
+    if (appointmentDialogOpen && activeAppointmentTab === 'recap') {
+      refreshes.push(loadVisitRecap());
+    }
+    await Promise.allSettled(refreshes);
   }
 
   function switchView(name, trigger) {
@@ -949,7 +1002,7 @@
   }
 
   window.addEventListener('online', retryInitialLoad);
-  window.addEventListener('offline', renderAppState);
+  window.addEventListener('offline', handleOfflineTransition);
 
   function refreshAfterVisibilityRestore() {
     if (document.hidden) return;
@@ -957,6 +1010,9 @@
     if (activeView === 'today') refreshes.push(loadSummary(), loadFollowUps());
     if (activeView === 'questions' || appointmentDialogOpen) {
       refreshes.push(loadVisits(), loadFollowUps(), loadQuestions());
+    }
+    if (appointmentDialogOpen && activeAppointmentTab === 'recap') {
+      refreshes.push(loadVisitRecap());
     }
     Promise.allSettled(refreshes);
   }
@@ -1125,6 +1181,7 @@
     visitSelectionEpoch += 1;
     appointmentDialogOpen = false;
     activeAppointmentTab = 'questions';
+    if (typeof clearVisitRecap === 'function') clearVisitRecap(true);
     if (pendingWorkflowIntent?.body) pendingWorkflowIntent.body = {};
     if (activeWorkflowIntent?.body) activeWorkflowIntent.body = {};
     pendingWorkflowIntent = null;
@@ -1173,6 +1230,8 @@
     clear('visit-question-list');
     clear('visit-decision-list');
     clear('visit-followup-list');
+    clear('visit-recap-status');
+    clear('visit-recap-content');
     clear('follow-up-list');
     clear('follow-up-status');
     clear('follow-up-edit-copy');
@@ -1268,7 +1327,7 @@
     const visitCreatePanel = document.getElementById('visit-create-panel');
     if (visitCreatePanel) visitCreatePanel.hidden = true;
     document.getElementById('visit-create-toggle')?.setAttribute('aria-expanded', 'false');
-    for (const name of ['questions', 'decisions', 'followups']) {
+    for (const name of ['questions', 'decisions', 'followups', 'recap']) {
       const active = name === 'questions';
       const tab = document.getElementById(`appointment-tab-${name}`);
       const panel = document.getElementById(`appointment-panel-${name}`);
@@ -4488,6 +4547,722 @@
     pollingInterval = setTimeout(poll, 3000);
   }
 
+  function revokeVisitRecapDownloadUrl() {
+    if (!visitRecapDownloadUrl) return;
+    try {
+      URL.revokeObjectURL(visitRecapDownloadUrl);
+    } finally {
+      visitRecapDownloadUrl = null;
+    }
+  }
+
+  function clearVisitRecap(scrubDom = false) {
+    visitRecapLoadEpoch += 1;
+    visitRecapExportEpoch += 1;
+    visitRecapExportOwner = null;
+    visitRecapNetworkAmbiguous = false;
+    visitRecapProjection = null;
+    visitRecapAuthority = null;
+    visitRecapExportText = '';
+    visitRecapStale = false;
+    visitRecapState = 'idle';
+    visitRecapMessage = '';
+    revokeVisitRecapDownloadUrl();
+    document.body?.classList.remove('visit-recap-printing');
+    if (scrubDom) {
+      const status = document.getElementById('visit-recap-status');
+      const content = document.getElementById('visit-recap-content');
+      if (status) {
+        status.className = 'visit-recap-status idle';
+        status.textContent = '';
+      }
+      if (content) content.textContent = '';
+    }
+    updateVisitRecapExportControls();
+  }
+
+  function scrubVisitRecapBeforeSelectionChange(nextVisitId, nextVisitToken = null) {
+    const selectedVisit = currentVisit();
+    const visitIdChanged = nextVisitId !== selectedVisitId;
+    const visitTokenChanged = Boolean(
+      !visitIdChanged
+      && nextVisitId
+      && selectedVisit?.token !== nextVisitToken
+    );
+    if (!visitIdChanged && !visitTokenChanged) return false;
+    clearVisitRecap(true);
+    return true;
+  }
+
+  function markVisitRecapStale(message, state = 'stale', preserveExportOwner = false) {
+    visitRecapLoadEpoch += 1;
+    if (!preserveExportOwner) {
+      visitRecapExportEpoch += 1;
+      visitRecapExportOwner = null;
+    }
+    visitRecapAuthority = null;
+    visitRecapExportText = '';
+    visitRecapStale = true;
+    visitRecapState = state;
+    visitRecapMessage = message || 'Reload the current recap before exporting.';
+    revokeVisitRecapDownloadUrl();
+    if (appointmentDialogOpen && activeAppointmentTab === 'recap') renderVisitRecap();
+    else updateVisitRecapExportControls();
+  }
+
+  function visitRecapAuthorityIsCurrent(authority = visitRecapAuthority) {
+    const visit = currentVisit();
+    return Boolean(
+      authority
+      && visitRecapProjection?.exportable === true
+      && visitRecapProjection?.state === 'current'
+      && ['in_progress', 'completed'].includes(visitRecapProjection?.visit?.status)
+      && visitRecapProjection?.visit?.status === visit?.status
+      && !visitRecapStale
+      && !appIsOffline()
+      && appointmentDialogOpen
+      && activeAppointmentTab === 'recap'
+      && authority.phiEpoch === phiEpoch
+      && authority.visitSelectionEpoch === visitSelectionEpoch
+      && authority.requestEpoch === visitRecapLoadEpoch
+      && authority.visitId === selectedVisitId
+      && authority.visitToken === visit?.token
+      && authority.profileRevision === normalizedRevision(latestProfileRevision)
+      && authority.workflowRevision === normalizedRevision(workflowRevision)
+      && authority.recapState === 'current'
+      && authority.exportable === true
+      && authority.visitStatus === visitRecapProjection?.visit?.status
+      && authority.recapToken
+      && authority.recapToken === visitRecapAuthority?.recapToken
+      && visitRecapExportText
+    );
+  }
+
+  function updateVisitRecapExportControls() {
+    const actions = document.getElementById('visit-recap-actions');
+    const visible = visitRecapAuthorityIsCurrent();
+    const enabled = visible && !visitRecapExportOwner;
+    if (!visible && actions?.contains?.(document.activeElement)) {
+      const fallback = appointmentDialogOpen
+        ? document.getElementById('appointment-tab-recap')
+        : null;
+      if (fallback && !fallback.hidden) fallback.focus({ preventScroll: true });
+      else document.activeElement?.blur();
+    }
+    if (actions) actions.hidden = !visible;
+    for (const id of ['visit-recap-copy', 'visit-recap-download', 'visit-recap-print']) {
+      const control = document.getElementById(id);
+      if (control) control.disabled = !enabled;
+    }
+  }
+
+  function recapPlainText(value) {
+    const normalized = String(value == null ? '' : value).replace(/\r\n?/g, '\n');
+    if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(normalized)) {
+      throw new Error('The recap contains unsupported control characters and cannot be exported.');
+    }
+    return normalized;
+  }
+
+  function buildVisitRecapText(recap) {
+    if (!recap?.exportable || recap.state !== 'current') {
+      throw new Error('This visit recap is not available for export.');
+    }
+    const lines = ['NET/Care visit recap', '', 'Visit details'];
+    const visit = recap.visit || {};
+    const detailRows = [
+      ['Title', visit.title],
+      ['Date', visit.date],
+      ['Time', visit.time],
+      ['Clinician', visit.clinician],
+      ['Location', visit.location],
+      ['Lifecycle', visitStatusLabel(visit.status)],
+    ];
+    detailRows.forEach(([label, value]) => {
+      if (value) lines.push(`${label}: ${recapPlainText(value)}`);
+    });
+    const sections = recap.sections || {};
+    const addSection = (title, items, render) => {
+      if (!Array.isArray(items) || !items.length) return;
+      lines.push('', title);
+      items.forEach((item, index) => {
+        lines.push(...render(item, index));
+      });
+    };
+    addSection('What was asked', sections.what_was_asked, (item, index) => [
+      `${index + 1}. ${recapPlainText(item.text)}`,
+      `Status: ${item.status === 'unknown' ? 'Unknown' : 'Answered'}`,
+      `Provenance: ${recapPlainText(item.provenance_label)}`,
+    ]);
+    addSection('What we heard', sections.what_we_heard, (item, index) => [
+      `${index + 1}. Question: ${recapPlainText(item.question)}`,
+      `Answer: ${recapPlainText(item.text)}`,
+      `Provenance: ${recapPlainText(item.provenance_label)}`,
+    ]);
+    addSection('Decisions / needs confirmation', sections.decisions, (item, index) => [
+      `${index + 1}. ${recapPlainText(item.text)}`,
+      `Lifecycle: ${item.status === 'needs_confirmation' ? 'Needs confirmation' : 'Active'}`,
+      `Provenance: ${recapPlainText(item.provenance_label)}`,
+    ]);
+    addSection('Follow-ups', sections.follow_ups, (item, index) => {
+      const result = [
+        `${index + 1}. ${recapPlainText(item.text)}`,
+        `Lifecycle: ${recapPlainText(String(item.status).replaceAll('_', ' '))}`,
+      ];
+      if (item.owner) result.push(`Owner: ${recapPlainText(item.owner)}`);
+      if (item.due_date) result.push(`Due date: ${recapPlainText(item.due_date)}`);
+      if (item.outcome) {
+        result.push(`Outcome: ${recapPlainText(item.outcome.text)}`);
+        result.push(`Outcome provenance: ${recapPlainText(item.outcome.provenance_label)}`);
+      }
+      return result;
+    });
+    addSection(
+      'Related resolved alerts',
+      sections.related_resolved_alerts,
+      (item, index) => {
+        const result = [`${index + 1}. Resolved alert`];
+        if (item.resolved_at) result.push(`Resolved: ${recapPlainText(item.resolved_at)}`);
+        if (item.visit_id) result.push('Link: this visit');
+        if (item.decision_id) result.push(`Linked decision: ${recapPlainText(item.decision_id)}`);
+        if (item.follow_up_id) result.push(`Linked follow-up: ${recapPlainText(item.follow_up_id)}`);
+        if (item.outcome) {
+          result.push(`Outcome: ${recapPlainText(item.outcome.text)}`);
+          result.push(`Outcome provenance: ${recapPlainText(item.outcome.provenance_label)}`);
+        } else {
+          result.push('Outcome: Administrative resolution recorded; no outcome text.');
+        }
+        return result;
+      },
+    );
+    addSection('Unresolved / unknown items', sections.unresolved, (item, index) => [
+      `${index + 1}. ${recapPlainText(item.text)}`,
+      `Status: ${item.kind === 'unknown' ? 'Explicitly unknown' : 'No answer recorded'}`,
+      `Provenance: ${recapPlainText(item.provenance_label)}`,
+    ]);
+    return `${lines.join('\n')}\n`;
+  }
+
+  function recapSectionMarkup(title, items, renderItem) {
+    if (!Array.isArray(items) || !items.length) return '';
+    return `<section class="visit-recap-section">
+      <h4>${escHtml(title)}</h4>
+      <div class="visit-recap-list">${items.map(renderItem).join('')}</div>
+    </section>`;
+  }
+
+  function renderVisitRecap() {
+    const status = document.getElementById('visit-recap-status');
+    const content = document.getElementById('visit-recap-content');
+    if (!status || !content) return;
+    status.className = `visit-recap-status ${safeClassToken(visitRecapState, 'idle')}`;
+    status.textContent = visitRecapMessage;
+    updateVisitRecapExportControls();
+    if (!visitRecapProjection) {
+      content.innerHTML = visitRecapState === 'loading'
+        ? '<div class="loading-state">Loading the current visit recap…</div>'
+        : '<div class="empty-state">Open Recap to load the current visit record.</div>';
+      return;
+    }
+    const recap = visitRecapProjection;
+    const visit = recap.visit || {};
+    const details = [
+      ['Title', visit.title],
+      ['Date', visit.date ? fmtDate(visit.date) : null],
+      ['Time', visit.time],
+      ['Clinician', visit.clinician],
+      ['Location', visit.location],
+      ['Lifecycle', visitStatusLabel(visit.status)],
+    ].filter(([, value]) => value);
+    const staleClass = visitRecapStale ? ' stale' : '';
+    let html = `<div class="visit-recap-document${staleClass}">
+      <section class="visit-recap-section visit-recap-details">
+        <h4>Visit details</h4>
+        <dl>${details.map(([label, value]) => `<div><dt>${escHtml(label)}</dt><dd>${escHtml(value)}</dd></div>`).join('')}</dl>
+      </section>`;
+    if (recap.state === 'unavailable') {
+      html += '<div class="visit-recap-notice">A recap becomes available after the visit starts.</div></div>';
+      content.innerHTML = html;
+      return;
+    }
+    if (recap.state === 'administrative') {
+      html += '<div class="visit-recap-notice">Cancelled visit · administrative record only. Copy, download, and print are unavailable.</div></div>';
+      content.innerHTML = html;
+      return;
+    }
+    const sections = recap.sections || {};
+    html += recapSectionMarkup('What was asked', sections.what_was_asked, item =>
+      `<article><strong>${escHtml(item.text)}</strong><span class="visit-recap-meta">${item.status === 'unknown' ? 'Unknown' : 'Answered'}</span><p class="capture-provenance">${escHtml(item.provenance_label)}</p></article>`
+    );
+    html += recapSectionMarkup('What we heard', sections.what_we_heard, item =>
+      `<article><span class="visit-recap-question">${escHtml(item.question)}</span><p>${escHtml(item.text)}</p><p class="capture-provenance">${escHtml(item.provenance_label)}</p></article>`
+    );
+    html += recapSectionMarkup('Decisions / needs confirmation', sections.decisions, item =>
+      `<article><strong>${escHtml(item.text)}</strong><span class="visit-status-badge ${safeClassToken(item.status, 'active')}">${item.status === 'needs_confirmation' ? 'Needs confirmation' : 'Active'}</span><p class="capture-provenance">${escHtml(item.provenance_label)}</p></article>`
+    );
+    html += recapSectionMarkup('Follow-ups', sections.follow_ups, item => {
+      const metadata = [
+        String(item.status || '').replaceAll('_', ' '),
+        item.owner && `Owner: ${item.owner}`,
+        item.due_date && `Due ${fmtDate(item.due_date)}`,
+      ].filter(Boolean).join(' · ');
+      return `<article><strong>${escHtml(item.text)}</strong><span class="visit-recap-meta">${escHtml(metadata)}</span>${item.outcome ? `<p><b>Outcome:</b> ${escHtml(item.outcome.text)}</p><p class="capture-provenance">${escHtml(item.outcome.provenance_label)}</p>` : ''}</article>`;
+    });
+    html += recapSectionMarkup(
+      'Related resolved alerts',
+      sections.related_resolved_alerts,
+      item => {
+        const links = [
+          item.visit_id && 'This visit',
+          item.decision_id && `Decision ${item.decision_id}`,
+          item.follow_up_id && `Follow-up ${item.follow_up_id}`,
+        ].filter(Boolean).join(' · ');
+        return `<article><strong>Resolved alert</strong>${item.resolved_at ? `<span class="visit-recap-meta">${escHtml(formatActionTimestamp(item.resolved_at))}</span>` : ''}${links ? `<p>${escHtml(links)}</p>` : ''}${item.outcome ? `<p><b>Outcome:</b> ${escHtml(item.outcome.text)}</p><p class="capture-provenance">${escHtml(item.outcome.provenance_label)}</p>` : '<p class="capture-provenance">Administrative resolution recorded · no outcome text</p>'}</article>`;
+      },
+    );
+    html += recapSectionMarkup('Unresolved / unknown items', sections.unresolved, item =>
+      `<article><strong>${escHtml(item.text)}</strong><span class="visit-recap-meta">${item.kind === 'unknown' ? 'Explicitly unknown' : 'No answer recorded'}</span><p class="capture-provenance">${escHtml(item.provenance_label)}</p></article>`
+    );
+    content.innerHTML = `${html}</div>`;
+  }
+
+  function visitRecapResponseAuthority(data) {
+    const profileRevision = normalizedRevision(data?.profile_revision);
+    const workflowRevision = normalizedRevision(data?.workflow_revision);
+    const recap = data?.recap;
+    if (
+      !data
+      || typeof data.visit_id !== 'string'
+      || !data.visit_id
+      || typeof data.visit_token !== 'string'
+      || !data.visit_token
+      || typeof data.recap_token !== 'string'
+      || !data.recap_token
+      || !Number.isSafeInteger(profileRevision)
+      || !Number.isSafeInteger(workflowRevision)
+      || !recap
+      || typeof recap !== 'object'
+      || recap.visit?.id !== data.visit_id
+      || typeof recap.state !== 'string'
+      || typeof recap.exportable !== 'boolean'
+      || typeof recap.visit?.status !== 'string'
+    ) return null;
+    return {
+      visitId: data.visit_id,
+      visitToken: data.visit_token,
+      profileRevision,
+      workflowRevision,
+      recapToken: data.recap_token,
+      recapState: recap.state,
+      exportable: recap.exportable,
+      visitStatus: recap.visit.status,
+    };
+  }
+
+  function applyVisitRecapProjection(data, options = {}) {
+    const responseAuthority = visitRecapResponseAuthority(data);
+    if (!responseAuthority) return false;
+    visitRecapNetworkAmbiguous = false;
+    visitRecapProjection = data.recap;
+    visitRecapStale = false;
+    visitRecapState = options.state || data.recap.state || 'error';
+    visitRecapMessage = options.message || (
+      data.recap.state === 'current'
+        ? 'Current authoritative recap.'
+        : data.recap.state === 'administrative'
+          ? 'Cancelled visit · non-exportable administrative state.'
+          : 'Recap is unavailable until this visit starts.'
+    );
+    visitRecapAuthority = {
+      ...responseAuthority,
+      phiEpoch,
+      visitSelectionEpoch,
+      requestEpoch: options.requestEpoch ?? visitRecapLoadEpoch,
+    };
+    try {
+      visitRecapExportText = buildVisitRecapText(data.recap);
+    } catch (error) {
+      visitRecapExportText = '';
+      if (data.recap.exportable) {
+        visitRecapAuthority = null;
+        visitRecapState = 'error';
+        visitRecapMessage = error.message || 'The recap cannot be exported safely.';
+      }
+    }
+    renderVisitRecap();
+    return true;
+  }
+
+  async function loadVisitRecap() {
+    if (!appointmentDialogOpen || activeAppointmentTab !== 'recap') return null;
+    const visit = currentVisit();
+    if (!visit?.id || !visit.token) {
+      markVisitRecapStale('The selected visit is unavailable. Reload visits.', 'conflict');
+      return null;
+    }
+    const request = capturePatientRequest({ visitSelection: true });
+    const requestLoadEpoch = ++visitRecapLoadEpoch;
+    visitRecapExportEpoch += 1;
+    visitRecapExportOwner = null;
+    const requestVisitToken = visit.token;
+    const requestIsCurrent = () => (
+      patientRequestIsCurrent(request)
+      && requestLoadEpoch === visitRecapLoadEpoch
+      && appointmentDialogOpen
+      && activeAppointmentTab === 'recap'
+      && currentVisit()?.token === requestVisitToken
+    );
+    visitRecapState = 'loading';
+    visitRecapMessage = visitRecapProjection
+      ? 'Refreshing the current recap. Export is disabled until accepted.'
+      : 'Loading the current recap…';
+    visitRecapAuthority = null;
+    visitRecapExportText = '';
+    visitRecapStale = Boolean(visitRecapProjection);
+    revokeVisitRecapDownloadUrl();
+    renderVisitRecap();
+    try {
+      const response = await fetch(
+        `/api/visits/${encodeURIComponent(visit.id)}/recap?expected_visit_token=${encodeURIComponent(requestVisitToken)}`
+      );
+      if (!requestIsCurrent()) return null;
+      const data = await readJsonResponse(response, requestIsCurrent);
+      if (!requestIsCurrent()) return null;
+      const authority = authorizePatientResponse(request, data, { workflow: 'projection' });
+      if (!authority.accepted) return null;
+      const responseAuthority = visitRecapResponseAuthority(data);
+      if (
+        !responseAuthority
+        || responseAuthority.visitId !== selectedVisitId
+        || responseAuthority.visitToken !== currentVisit()?.token
+      ) return null;
+      if (!applyVisitRecapProjection(data, { requestEpoch: requestLoadEpoch })) return null;
+      reportLoadSuccess('visit-recap');
+      updateVisitRecapExportControls();
+      return data;
+    } catch (error) {
+      if (!requestIsCurrent()) return null;
+      if (shouldEvictClientPhi(error)) {
+        reportLoadError('visit-recap', error);
+        if (requestIsCurrent()) evictClientPhi(error);
+        return null;
+      }
+      const state = error?.status === 409
+        ? 'conflict'
+        : (
+          navigator.onLine === false
+          || error instanceof TypeError
+          || error?.name === 'AbortError'
+            ? 'offline'
+            : 'error'
+        );
+      if (state === 'offline') visitRecapNetworkAmbiguous = true;
+      markVisitRecapStale(
+        error?.status === 409
+          ? 'The visit changed. Reload the visit and recap before exporting.'
+          : state === 'offline'
+            ? 'Offline snapshot · read-only. Export is disabled until the recap reloads.'
+            : (error.message || 'The recap could not be loaded.'),
+        state,
+      );
+      if (!visitRecapProjection) renderVisitRecap();
+      reportLoadError('visit-recap', error);
+      return null;
+    }
+  }
+
+  function requireCurrentVisitRecap() {
+    if (visitRecapAuthorityIsCurrent()) return visitRecapAuthority;
+    markVisitRecapStale('The recap is no longer current. Reload it before exporting.');
+    throw new Error('The recap is no longer current. Reload it before exporting.');
+  }
+
+  function beginVisitRecapExport(kind) {
+    if (visitRecapExportOwner) return null;
+    const authority = requireCurrentVisitRecap();
+    const request = capturePatientRequest({ visitSelection: true });
+    if (
+      request.requestPhiEpoch !== authority.phiEpoch
+      || request.requestVisitEpoch !== authority.visitSelectionEpoch
+      || request.requestVisitId !== authority.visitId
+      || authority.requestEpoch !== visitRecapLoadEpoch
+    ) {
+      markVisitRecapStale('The recap is no longer current. Reload it before exporting.');
+      return null;
+    }
+    const owner = {
+      kind,
+      exportEpoch: ++visitRecapExportEpoch,
+      request,
+      requestEpoch: visitRecapLoadEpoch,
+      authority: { ...authority },
+      exportText: visitRecapExportText,
+      projection: visitRecapProjection,
+    };
+    visitRecapExportOwner = owner;
+    updateVisitRecapExportControls();
+    return owner;
+  }
+
+  function visitRecapExportSelectionIsCurrent(owner) {
+    return Boolean(
+      owner
+      && visitRecapExportOwner === owner
+      && owner.exportEpoch === visitRecapExportEpoch
+      && appointmentDialogOpen
+      && activeAppointmentTab === 'recap'
+      && owner.request.requestVisitEpoch === visitSelectionEpoch
+      && owner.request.requestVisitId === selectedVisitId
+      && currentVisit()?.token === owner.authority.visitToken
+    );
+  }
+
+  function visitRecapExportOwnerIsCurrent(owner) {
+    return Boolean(
+      visitRecapExportSelectionIsCurrent(owner)
+      && patientRequestIsCurrent(owner.request)
+      && owner.requestEpoch === visitRecapLoadEpoch
+      && visitRecapAuthorityIsCurrent(owner.authority)
+      && owner.exportText === visitRecapExportText
+      && owner.projection === visitRecapProjection
+    );
+  }
+
+  function releaseVisitRecapExport(owner) {
+    if (visitRecapExportOwner !== owner) return;
+    const canRender = (
+      appointmentDialogOpen
+      && activeAppointmentTab === 'recap'
+      && owner.request.requestVisitEpoch === visitSelectionEpoch
+      && owner.request.requestVisitId === selectedVisitId
+    );
+    visitRecapExportOwner = null;
+    if (canRender) updateVisitRecapExportControls();
+  }
+
+  function visitRecapPreflightMatches(owner, data) {
+    const responseAuthority = visitRecapResponseAuthority(data);
+    const authority = owner.authority;
+    return Boolean(
+      responseAuthority
+      && owner.request.requestPhiEpoch === authority.phiEpoch
+      && owner.request.requestVisitEpoch === authority.visitSelectionEpoch
+      && owner.request.requestVisitId === authority.visitId
+      && owner.requestEpoch === authority.requestEpoch
+      && responseAuthority.visitId === authority.visitId
+      && responseAuthority.visitToken === authority.visitToken
+      && responseAuthority.profileRevision === authority.profileRevision
+      && responseAuthority.workflowRevision === authority.workflowRevision
+      && responseAuthority.recapToken === authority.recapToken
+      && responseAuthority.recapState === authority.recapState
+      && responseAuthority.exportable === authority.exportable
+      && responseAuthority.visitStatus === authority.visitStatus
+      && responseAuthority.recapState === 'current'
+      && responseAuthority.exportable === true
+    );
+  }
+
+  function rejectVisitRecapPreflight(owner, message, state = 'stale') {
+    if (!visitRecapExportSelectionIsCurrent(owner)) return;
+    markVisitRecapStale(message, state, true);
+  }
+
+  function acceptChangedVisitRecapPreflight(owner, data) {
+    if (!visitRecapExportOwnerIsCurrent(owner)) return false;
+    const responseAuthority = visitRecapResponseAuthority(data);
+    rejectVisitRecapPreflight(
+      owner,
+      'The recap changed. Review the refreshed recap before exporting.',
+      'changed',
+    );
+    const visitChanged = Boolean(
+      responseAuthority
+      && (
+        responseAuthority.visitId !== owner.authority.visitId
+        || responseAuthority.visitToken !== currentVisit()?.token
+      )
+    );
+    if (
+      !responseAuthority
+      || visitChanged
+      || responseAuthority.profileRevision < owner.authority.profileRevision
+      || responseAuthority.workflowRevision < owner.authority.workflowRevision
+    ) {
+      visitRecapState = 'conflict';
+      visitRecapMessage = visitChanged
+        ? 'The selected visit changed. Reload the visit and recap before exporting.'
+        : 'The recap preflight returned stale or incomplete authority. Reload before exporting.';
+      renderVisitRecap();
+      return false;
+    }
+    const accepted = authorizePatientResponse(owner.request, data, {
+      workflow: 'projection',
+      preserveVisitRecapExportOwner: true,
+    });
+    if (!accepted.accepted || !visitRecapExportSelectionIsCurrent(owner)) {
+      return false;
+    }
+    const applied = applyVisitRecapProjection(data, {
+      requestEpoch: visitRecapLoadEpoch,
+      state: responseAuthority.exportable && responseAuthority.recapState === 'current'
+        ? 'changed'
+        : responseAuthority.recapState,
+      message: responseAuthority.exportable && responseAuthority.recapState === 'current'
+        ? 'Recap changed. Review the refreshed recap, then export again.'
+        : undefined,
+    });
+    if (applied) {
+      reportLoadSuccess('visit-recap');
+      updateVisitRecapExportControls();
+    }
+    return false;
+  }
+
+  async function preflightVisitRecapExport(owner) {
+    const response = await fetch(
+      `/api/visits/${encodeURIComponent(owner.authority.visitId)}/recap?expected_visit_token=${encodeURIComponent(owner.authority.visitToken)}`,
+      {
+        method: 'GET',
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: { Accept: 'application/json' },
+      },
+    );
+    if (!visitRecapExportOwnerIsCurrent(owner)) return null;
+    const data = await readJsonResponse(response, () => visitRecapExportOwnerIsCurrent(owner));
+    if (!visitRecapExportOwnerIsCurrent(owner)) return null;
+    if (!visitRecapPreflightMatches(owner, data)) {
+      acceptChangedVisitRecapPreflight(owner, data);
+      return null;
+    }
+    const accepted = authorizePatientResponse(owner.request, data, { workflow: 'projection' });
+    if (!accepted.accepted || !visitRecapExportOwnerIsCurrent(owner)) return null;
+    reportLoadSuccess('visit-recap');
+    return {
+      authority: owner.authority,
+      exportText: owner.exportText,
+      projection: owner.projection,
+    };
+  }
+
+  function handleVisitRecapPreflightError(owner, error) {
+    if (!visitRecapExportSelectionIsCurrent(owner)) return;
+    if (shouldEvictClientPhi(error)) {
+      reportLoadError('visit-recap', error);
+      if (visitRecapExportSelectionIsCurrent(owner)) evictClientPhi(error);
+      return;
+    }
+    const ambiguous = (
+      error instanceof TypeError
+      || error?.name === 'AbortError'
+      || navigator.onLine === false
+    );
+    const state = error?.status === 409 ? 'conflict' : (ambiguous ? 'offline' : 'error');
+    const message = error?.status === 409
+      ? 'The visit changed. Reload the visit and recap before exporting.'
+      : ambiguous
+        ? 'The recap could not be rechecked. The visible snapshot is read-only until it reloads.'
+        : (error?.message || 'The recap could not be rechecked before export.');
+    if (ambiguous) visitRecapNetworkAmbiguous = true;
+    rejectVisitRecapPreflight(owner, message, state);
+    reportLoadError('visit-recap', error);
+  }
+
+  async function performVisitRecapExport(kind) {
+    let owner;
+    let preflightAccepted = false;
+    try {
+      owner = beginVisitRecapExport(kind);
+      if (!owner) return false;
+      const snapshot = await preflightVisitRecapExport(owner);
+      if (!snapshot || !visitRecapExportOwnerIsCurrent(owner)) return false;
+      preflightAccepted = true;
+      if (kind === 'copy') {
+        if (!navigator.clipboard?.writeText) {
+          throw new Error('Clipboard access is unavailable in this browser.');
+        }
+        if (!visitRecapExportOwnerIsCurrent(owner)) return false;
+        await navigator.clipboard.writeText(snapshot.exportText);
+        if (!visitRecapExportOwnerIsCurrent(owner)) return false;
+        visitRecapMessage = 'Recap copied.';
+      } else if (kind === 'download') {
+        if (!globalThis.Blob || !globalThis.URL?.createObjectURL) {
+          throw new Error('Text download is unavailable in this browser.');
+        }
+        if (!visitRecapExportOwnerIsCurrent(owner)) return false;
+        const blob = new Blob([snapshot.exportText], { type: 'text/plain;charset=utf-8' });
+        revokeVisitRecapDownloadUrl();
+        visitRecapDownloadUrl = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        const date = /^\d{4}-\d{2}-\d{2}$/.test(snapshot.projection?.visit?.date || '')
+          ? snapshot.projection.visit.date
+          : null;
+        link.href = visitRecapDownloadUrl;
+        link.download = date ? `visit-recap-${date}.txt` : 'visit-recap.txt';
+        link.rel = 'noopener';
+        if (!visitRecapExportOwnerIsCurrent(owner)) return false;
+        link.click();
+        visitRecapMessage = 'Recap text downloaded.';
+      } else if (kind === 'print') {
+        if (typeof window.print !== 'function') {
+          throw new Error('Printing is unavailable in this browser.');
+        }
+        if (!visitRecapExportOwnerIsCurrent(owner)) return false;
+        prepareVisitRecapPrint();
+        if (!visitRecapExportOwnerIsCurrent(owner)) return false;
+        window.print();
+        visitRecapMessage = 'Print dialog opened.';
+      } else {
+        throw new Error('Unsupported recap export.');
+      }
+      if (!visitRecapExportOwnerIsCurrent(owner)) return false;
+      visitRecapState = 'success';
+      renderVisitRecap();
+      return true;
+    } catch (error) {
+      if (!owner || !visitRecapExportSelectionIsCurrent(owner)) return false;
+      if (!preflightAccepted) {
+        handleVisitRecapPreflightError(owner, error);
+        return false;
+      }
+      visitRecapMessage = error.message || `The recap could not be ${kind === 'copy' ? 'copied' : kind === 'download' ? 'downloaded' : 'printed'}.`;
+      visitRecapState = 'error';
+      renderVisitRecap();
+      return false;
+    } finally {
+      if (visitRecapExportOwner === owner && kind === 'download') {
+        revokeVisitRecapDownloadUrl();
+      }
+      if (visitRecapExportOwner === owner && kind === 'print') {
+        finishVisitRecapPrint();
+      }
+      if (owner) releaseVisitRecapExport(owner);
+    }
+  }
+
+  async function copyVisitRecap() {
+    return performVisitRecapExport('copy');
+  }
+
+  async function downloadVisitRecap() {
+    return performVisitRecapExport('download');
+  }
+
+  async function printVisitRecap() {
+    return performVisitRecapExport('print');
+  }
+
+  function prepareVisitRecapPrint() {
+    document.body.classList.toggle('visit-recap-printing', visitRecapAuthorityIsCurrent());
+  }
+
+  function finishVisitRecapPrint() {
+    document.body.classList.remove('visit-recap-printing');
+  }
+
+  window.addEventListener('beforeprint', prepareVisitRecapPrint);
+  window.addEventListener('afterprint', finishVisitRecapPrint);
+
   // ── Appointment working mode ────────────────────────────────────────────
   function currentVisit() {
     return selectedVisitId ? visitsById.get(selectedVisitId) || null : null;
@@ -4534,7 +5309,14 @@
       });
       if (!authority.accepted) return null;
       if (appointmentDialogOpen) captureAppointmentDraft();
-      visitsById = new Map((data.items || []).map(item => [item.id, item]));
+      const nextVisitsById = new Map((data.items || []).map(item => [item.id, item]));
+      const nextSelectedToken = selectedVisitId
+        ? nextVisitsById.get(selectedVisitId)?.token || null
+        : null;
+      if (selectedVisitId) {
+        scrubVisitRecapBeforeSelectionChange(selectedVisitId, nextSelectedToken);
+      }
+      visitsById = nextVisitsById;
       decisionSuccessorConflicts = new Set();
       appointmentOptions = Array.isArray(data.appointments) ? data.appointments : [];
       if (selectedVisitId && !visitsById.has(selectedVisitId)) {
@@ -5968,6 +6750,7 @@
       return;
     }
     if (selectedVisitId && selectedVisitId !== visitId) captureAppointmentDraft();
+    scrubVisitRecapBeforeSelectionChange(visitId, visit.token);
     selectedVisitId = visitId;
     visitSelectionEpoch += 1;
     appointmentDialogOpen = true;
@@ -5987,6 +6770,7 @@
     captureAppointmentDraft();
     appointmentDialogOpen = false;
     visitSelectionEpoch += 1;
+    clearVisitRecap(true);
     clearWorkflowRetry();
     const overlay = document.getElementById('appointment-overlay');
     overlay?.classList.remove('open');
@@ -6004,6 +6788,8 @@
   function selectVisitInWorkspace(visitId) {
     if (!visitsById.has(visitId) || visitId === selectedVisitId) return;
     captureAppointmentDraft();
+    const visit = visitsById.get(visitId);
+    scrubVisitRecapBeforeSelectionChange(visitId, visit?.token);
     selectedVisitId = visitId;
     visitSelectionEpoch += 1;
     clearWorkflowRetry();
@@ -6012,23 +6798,24 @@
   }
 
   function switchAppointmentTab(name) {
-    if (!['questions', 'decisions', 'followups'].includes(name)) return;
+    if (!['questions', 'decisions', 'followups', 'recap'].includes(name)) return;
     captureAppointmentDraft();
     activeAppointmentTab = name;
-    for (const tabName of ['questions', 'decisions', 'followups']) {
+    for (const tabName of ['questions', 'decisions', 'followups', 'recap']) {
       const active = tabName === name;
       const tab = document.getElementById(`appointment-tab-${tabName}`);
       const panel = document.getElementById(`appointment-panel-${tabName}`);
-      tab.classList.toggle('active', active);
-      tab.setAttribute('aria-selected', String(active));
-      tab.tabIndex = active ? 0 : -1;
-      panel.classList.toggle('active', active);
-      panel.hidden = !active;
+      tab?.classList.toggle('active', active);
+      tab?.setAttribute('aria-selected', String(active));
+      if (tab) tab.tabIndex = active ? 0 : -1;
+      panel?.classList.toggle('active', active);
+      if (panel) panel.hidden = !active;
     }
+    if (name === 'recap' && typeof loadVisitRecap === 'function') loadVisitRecap();
   }
 
   function handleAppointmentTabKeydown(event) {
-    const names = ['questions', 'decisions', 'followups'];
+    const names = ['questions', 'decisions', 'followups', 'recap'];
     const tabs = names.map(name => document.getElementById(`appointment-tab-${name}`));
     const current = tabs.indexOf(document.activeElement);
     if (current < 0) return;

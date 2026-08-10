@@ -138,8 +138,8 @@ def test_questions_view_contains_one_shared_appointment_workspace():
     assert HTML.count('id="appointment-dialog"') == 1
     assert "mob-appointment" not in HTML
     assert "Caregiver-entered · attributed to clinician · unverified" in HTML
-    assert "visit recap" not in HTML.lower()
-    assert "export" not in HTML.lower()
+    assert HTML.count('id="appointment-tab-recap"') == 1
+    assert HTML.count('id="appointment-panel-recap"') == 1
 
 
 def test_appointment_controls_are_keyboard_and_phone_accessible():

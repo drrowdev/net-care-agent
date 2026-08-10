@@ -56,7 +56,17 @@ def test_intake_schema_keys_present(agent):
     from agent import intake
 
     tpl = intake.INTAKE_SYSTEM_TEMPLATE
-    for key in ('"document_type"', '"biomarkers"', '"suggested_workflows"', '"ki67_update"'):
+    for key in (
+        '"document_type"',
+        '"biomarkers"',
+        '"source_document_date"',
+        '"date_kind"',
+        '"specimen"',
+        '"assay"',
+        '"method"',
+        '"suggested_workflows"',
+        '"ki67_update"',
+    ):
         assert key in tpl
 
 

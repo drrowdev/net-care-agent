@@ -78,12 +78,20 @@ A single lab result row (CgA, NSE, 5-HIAA, creatinine, etc.).
 | `evidence_start` | `int \| None` |  |
 | `evidence_end` | `int \| None` |  |
 | `id` | `str \| None` | Stable identity for imported rows |
-| `date` | `str \| None` | YYYY-MM-DD |
+| `date` | `str \| None` | Exact source-derived YYYY-MM-DD, YYYY-MM, or YYYY |
+| `date_precision` | `'day' \| 'month' \| 'year' \| 'unknown'` |  |
+| `date_kind` | `'collection' \| 'result' \| 'clinical_unspecified' \| 'source_document' \| 'unknown'` |  |
+| `source_document_date` | `str \| None` | Source document date when explicitly stated |
+| `source_document_date_precision` | `'day' \| 'month' \| 'year' \| 'unknown'` |  |
 | `marker` | `str \| None` |  |
 | `value` | `Any` | number or string |
 | `unit` | `str \| None` |  |
 | `reference_range` | `str \| None` |  |
 | `flag` | `'high' \| 'low' \| 'normal' \| null` |  |
+| `flag_authority` | `'source_reported' \| 'caregiver_corrected' \| 'legacy_unknown' \| 'unknown'` |  |
+| `specimen` | `str \| None` |  |
+| `assay` | `str \| None` |  |
+| `method` | `str \| None` |  |
 | `added_at` | `str \| None` | Timestamp when the item first entered the patient profile. |
 
 ## `imaging[]`

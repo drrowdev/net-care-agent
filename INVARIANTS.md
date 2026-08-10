@@ -24,11 +24,17 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
    ruff/gitleaks/sensitive-pattern CI. No exceptions.
 
 ## 2. Machine-parsed output contracts (do NOT rename keys or change enums)
-- **intake** JSON object keys: `document_type, date, summary, biomarkers[],
+- **intake** JSON object keys: `document_type, date, source_document_date,
+  summary, biomarkers[],
   imaging_findings, treatment_changes[], ki67_update, sstr_status_update,
   sstr_score_update, symptoms_reported[], appointments[], key_findings[],
   evidence[], suggested_workflows[], workflow_rationale`. Biomarker items:
-  `marker, value, unit, reference_range, flag, source_quote`. Imaging, symptom,
+  `marker, value, unit, date, date_kind, reference_range, flag, specimen, assay,
+  method, source_quote`. Observation date/kind and context may be emitted only
+  when explicit in the source; source-document date is separate and never
+  substitutes for clinical chronology. Qualifiers remain in exact `value`,
+  units are never converted, and `flag` is only a printed source flag, never an
+  inferred range interpretation. Imaging, symptom,
   and appointment objects also require `source_quote`; `evidence[]` anchors
   scalar updates, treatment changes, and key findings. Appointment items:
   `date, description, type, source_quote`
@@ -102,6 +108,33 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
   decisions are never current statements. Planned and cancelled visits are
   non-exportable. Viewing/copying/downloading/printing never saves, appends
   history, advances revisions, or marks review state.
+- Biomarker series is a deterministic authenticated/no-store read projection,
+  never a schema artifact, LLM context, or clinical mutation.
+  `GET /api/patient/biomarker-series` returns all bounded observations, both
+  revisions, and opaque tokens bound to every full persisted row plus evidence/
+  source artifact, document exclusion, import/receipt/change authority. It
+  exposes no paths, raw source text/quotes, raw offsets, history, or job
+  internals; viewing never saves, audits, advances revisions, or calls a network/
+  model service. `/api/status` remains recent-summary compatibility only.
+- Biomarker persistence never collapses duplicates. Projection may collapse only
+  exact semantic duplicates from the same source and must retain every row ID,
+  evidence link, duplicate count, and independent token authority. Different
+  sources never collapse.
+- Biomarker grouping uses only boundary-exact reviewed aliases and never implies
+  comparability. Numeric comparison requires explicit identical unit, exact
+  collection/result day, specimen, assay or method, and parsed reference-range
+  semantics. Unknown context, partial/invalid dates, qualified/ranged/nonnumeric
+  values, and unit differences are non-comparable; no conversion or clinical
+  trend label is permitted.
+- Biomarker report-range comparison uses only finite unqualified numeric values
+  and that observation's narrow parsed range. Stored flags retain explicit
+  authority (`source_reported|caregiver_corrected|legacy_unknown|unknown`) and
+  are never overwritten or validated by the computed comparison.
+- Biomarker projection fails as one bounded path-free `422` on structural
+  corruption, missing/duplicate IDs, unsafe nested/non-finite values, overflow,
+  or inconsistent verified source authority. A bounded scalar fact with missing
+  marker/date/unit/context remains visible as explicitly unclassified or
+  non-comparable; it is never silently omitted.
 - Every Layer 2 mutation is stable-ID/target-token CAS under
   `serialized_mutation`, appends one request-hash audit event, increments each
   applicable revision once, and saves once. Exact `mutation_id` retries are

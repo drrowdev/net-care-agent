@@ -95,12 +95,46 @@ def now_stamp() -> str:
     return datetime.datetime.now().isoformat(timespec="seconds")
 
 
+def derive_date_precision(value: object) -> BiomarkerDatePrecision:
+    """Classify strict ISO date text without inventing missing components."""
+    if not isinstance(value, str):
+        return "unknown"
+    if len(value) == 10:
+        try:
+            datetime.date.fromisoformat(value)
+        except ValueError:
+            return "unknown"
+        return "day"
+    if len(value) == 7 and value[4] == "-":
+        year, month = value.split("-", 1)
+        if year.isdigit() and len(year) == 4 and month.isdigit() and 1 <= int(month) <= 12:
+            return "month"
+        return "unknown"
+    if len(value) == 4 and value.isdigit() and 1 <= int(value) <= 9999:
+        return "year"
+    return "unknown"
+
+
 # ── enum-like literals ────────────────────────────────────────────────────────
 # These are *documented* sets; we don't enforce them strictly because real-world
 # data drifts and we'd rather accept a bad value than reject a valid profile.
 Sex = Literal["female", "male", "other"]
 SstrStatus = Literal["positive", "negative", "unknown"]
 BiomarkerFlag = Literal["high", "low", "normal"]
+BiomarkerFlagAuthority = Literal[
+    "source_reported",
+    "caregiver_corrected",
+    "legacy_unknown",
+    "unknown",
+]
+BiomarkerDatePrecision = Literal["day", "month", "year", "unknown"]
+BiomarkerDateKind = Literal[
+    "collection",
+    "result",
+    "clinical_unspecified",
+    "source_document",
+    "unknown",
+]
 ImagingModality = Literal["CT", "MRI", "PET-CT", "ultrasound", "other"]
 DocumentType = Literal[
     "lab_result",
@@ -193,12 +227,22 @@ class Biomarker(_EvidenceFields):
     """A single lab result row (CgA, NSE, 5-HIAA, creatinine, etc.)."""
 
     id: str | None = Field(None, description="Stable identity for imported rows")
-    date: str | None = Field(None, description="YYYY-MM-DD")
+    date: str | None = Field(None, description="Exact source-derived YYYY-MM-DD, YYYY-MM, or YYYY")
+    date_precision: BiomarkerDatePrecision = "unknown"
+    date_kind: BiomarkerDateKind = "unknown"
+    source_document_date: str | None = Field(
+        None, description="Source document date when explicitly stated"
+    )
+    source_document_date_precision: BiomarkerDatePrecision = "unknown"
     marker: str | None = None
     value: Any = Field(None, description="number or string")
     unit: str | None = None
     reference_range: str | None = None
     flag: BiomarkerFlag | None = None
+    flag_authority: BiomarkerFlagAuthority = "unknown"
+    specimen: str | None = None
+    assay: str | None = None
+    method: str | None = None
     added_at: str | None = Field(
         None, description="Timestamp when the item first entered the patient profile."
     )
@@ -599,7 +643,7 @@ class PatientProfile(_Lenient):
     """The complete patient profile. Lives at ${DATA_DIR}/patient_profile.json."""
 
     schema_version: int = Field(
-        default=8,
+        default=9,
         description="Profile schema version. Incremented when a structural migration runs.",
     )
     profile_revision: int = 0
@@ -808,6 +852,7 @@ __all__ = [
     "TrialTracked",
     "TreatmentClassified",
     "_COLLECTION_KEYS",
+    "derive_date_precision",
     "normalize_profile",
     "render_schema_markdown",
     "structural_check",

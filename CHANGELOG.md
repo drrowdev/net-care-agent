@@ -8,6 +8,22 @@ incremented when something user-visible or operationally meaningful changes.
 
 ## [Unreleased]
 
+### Added
+- **Provenance-safe biomarker longitudinal backend contract.** Schema v9
+  deterministically backfills missing biomarker IDs without using mutable list
+  position when source/span authority exists, preserves cross-source and
+  same-source duplicate facts, and records explicit observation/source-document
+  date precision, specimen, assay, method, and stored-flag authority. Intake
+  preserves qualifiers and only explicit context; receipt correction/undo keeps
+  stable IDs and manual-unverified provenance.
+- **Bounded biomarker series projection API.** Authenticated no-store
+  `GET /api/patient/biomarker-series` returns every bounded observation, both
+  revisions, opaque authority tokens, conservative analyte groups, strict
+  comparable-series boundaries, observation-specific report-range comparisons,
+  and path-free evidence/source links. Same-source exact duplicates collapse
+  only for presentation while retaining all row/evidence authority; malformed,
+  oversized, or inconsistent verified data fails closed with bounded `422`.
+
 ### Fixed
 - **Authoritative recap export preflight and offline revocation.** Every recap
   Copy, text download, and print now owns one duplicate-locked authenticated

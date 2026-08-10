@@ -131,14 +131,14 @@ All patient state lives in a single JSON file at `${DATA_DIR}/patient_profile.js
 
 ```
 {
-  "schema_version": 8,
+  "schema_version": 9,
   "profile_revision": 42,
   "workflow_revision": 17,
   "profile_updated_at": "2026-07-10T16:51:49",
   "profile_saved_at": "2026-07-10T16:52:03",
   "summary_stale": false,
   "patient": { ... },
-  "biomarkers":  [ {date, marker, value, source_document_id, source_quote, evidence_status}, ... ],
+  "biomarkers":  [ {id, date, date_precision, date_kind, marker, value, unit, reference_range, flag, flag_authority, specimen, assay, method, source_document_id, evidence_status}, ... ],
   "imaging":     [ {date, modality, findings, impression, source_document_id, source_quote}, ... ],
   "treatments":  [ {name, status, start_date, end_date, ...}, ... ],
   "documents":   [ {date, type, summary, key_findings, source_document_id, raw_text}, ... ],
@@ -197,6 +197,11 @@ Schema v8 adds durable caregiver actions and visit working records, deterministi
 generated-action snapshot IDs, structured alert outcomes, target-level semantic
 CAS, endpoint/operation/target-scoped idempotent mutation audit with immutable
 response snapshots, and the independent workflow revision.
+Schema v9 deterministically backfills missing biomarker IDs from the strongest
+available source/span and canonical row authority, preserves duplicate
+occurrences, and adds explicit observation/source-document date precision plus
+optional specimen, assay, method, and stored-flag authority. Legacy dates remain
+`clinical_unspecified`; migration never invents collection/result context.
 
 A daily backup is written to `${DATA_DIR}/backups/profile_YYYYMMDD.json`
 (retention: 30 days).
@@ -253,6 +258,7 @@ state and withholds the prior clinical content.
 │   ├── pdf_extract_helper.py # child-only pdfplumber entry point
 │   ├── judgments.py      # clinical-judgment context formatter
 │   ├── intake.py         # extract structured medical data from text
+│   ├── biomarker_series.py # bounded provenance-safe longitudinal read projection
 │   ├── evidence.py       # validated claim-level source-span catalog/resolution
 │   ├── reconciliation.py # per-document receipts + compare-and-swap correction/undo
 │   ├── follow_through.py # durable actions/visits, validation, CAS + audit helpers
@@ -325,6 +331,15 @@ active digest/deep-sweep/summary runs return `409`. A process restart cannot
 resume in-process work: queued/running records become `interrupted` and the
 caregiver must re-submit. Graceful shutdown is bounded, not a durability
 guarantee.
+
+`GET /api/patient/biomarker-series` is the authenticated, no-store, complete
+longitudinal biomarker contract for future caregiver surfaces. It returns both
+revisions plus opaque authority tokens, retains every bounded observation and
+same-source duplicate authority, groups only a tiny exact alias allowlist, and
+marks values comparable only with explicit compatible date/unit/specimen/
+assay-or-method/reference-range context. `/api/status` remains the existing
+recent-summary compatibility payload and must not be used for longitudinal
+analysis.
 
 The orchestrator's behaviour is shaped by **clinical_judgments** captured from
 oncologist consultations. These act as hard constraints: anything the oncologist

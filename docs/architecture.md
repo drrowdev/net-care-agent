@@ -24,6 +24,8 @@ the Azure Files mount at `/home/data/patient_profile.json`. There is one user
                 │     ├─ /api/status + research  │
                 │     ├─ /api/sources + evidence │
                 │     ├─ /api/patient/evidence   │
+                │     ├─ /api/patient/          │
+                │     │  biomarker-series       │
                 │     ├─ /api/feedback           │
                 │     ├─ /api/follow-ups         │
                 │     ├─ /api/visits + recap     │
@@ -122,6 +124,33 @@ that feed-job-only receipt while the job remains retained; it shows additions,
 old-to-new scalar updates, conflicts/no-ops, and exact evidence state without
 putting PHI in the job list. If orchestration or summary generation later fails,
 the already-committed receipt remains available with the intake data.
+
+`GET /api/patient/biomarker-series` is a separate authenticated/no-store,
+read-only projection over all bounded `biomarkers[]`; `/api/status` remains a
+50-row recent-summary compatibility response. The projection returns both
+revisions and opaque row/observation/series/analyte/projection tokens. Its
+private authority envelope binds every persisted row independently, verified
+evidence/source-artifact integrity, document exclusion, import/receipt/change
+state, and both revisions without returning paths, raw quotes/text, offsets,
+history, or job internals.
+
+Analyte grouping and comparability are deliberately separate. Only a tiny
+boundary-exact alias allowlist groups CgA/Chromogranin A,
+NSE/neuron-specific enolase, and 5-HIAA/5-hydroxyindoleacetic acid. Comparison
+requires an explicit identical unit, exact collection/result day, specimen,
+assay or method, and parsed reference-range semantics; missing context never
+becomes comparable and no unit conversion occurs. Qualified, ranged, and
+nonnumeric values remain exact table-ready observations but never receive
+numeric comparison. Same-source exact semantic duplicates may collapse only in
+the read projection while retaining every row ID, evidence link, duplicate
+count, and token authority; rows from different sources never collapse.
+
+Malformed structure, duplicate/missing IDs, unsafe nested/non-finite values,
+overflow, or inconsistent verified source authority fail the complete endpoint
+with a bounded path-free `422`. Bounded incomplete facts remain visible as
+explicitly unclassified/non-comparable rows rather than being silently omitted.
+The projection never saves, audits, advances revisions, persists state, or calls
+a network/model service, and it is not injected into any LLM context.
 
 Receipt correction/removal and whole-document undo are serialized profile
 mutations. Each request carries the receipt revision plus a canonical target
@@ -371,6 +400,7 @@ only with exact `APP_ORIGIN` or canonical HTTPS `WEBSITE_HOSTNAME`.
 | Per-agent model env vars | Lets us downgrade exec_summary or chat to Haiku independently for cost without touching code. |
 | Separate imported appointments and workflow visits | Receipt-correctable source facts remain immutable evidence; caregiver working state can evolve without pretending generated questions or captured statements are source-verified. |
 | Clinical + workflow revisions | Administrative follow-through does not invalidate expensive clinical artifacts, while new model-context facts still stale every dependent artifact safely. |
+| Server biomarker projection, not browser inference | Complete row/source/import authority is available only at the profile boundary. Conservative grouping, strict comparability, bounded failure, and opaque tokens are reusable by a later UI without truncating `/api/status` or duplicating clinical rules in JavaScript. |
 
 ## Failure modes & mitigations
 
@@ -388,6 +418,10 @@ only with exact `APP_ORIGIN` or canonical HTTPS `WEBSITE_HOSTNAME`.
 | Treatment duplicates | `agent.intake._treatment_similarity` synonym dedup (Somatuline = lanreotide) |
 | Oncologist disagreement with AI | `clinical_judgments` injected verbatim into orchestrator + exec summary system prompts as hard constraints |
 | Unsupported extraction evidence | Intake validates normalized model quotes against immutable source text, then stores the exact source span or explicit `missing`/`invalid` status |
+| Biomarker aliases merge distinct tests | Boundary-exact allowlist only; grouping never grants comparability, and 5-HIAA specimen contexts remain separate. |
+| Biomarker series implies unsupported chronology or conversion | Comparable membership requires exact collection/result day plus explicit compatible unit/specimen/assay-or-method/range semantics; unknown context is isolated and units are never converted. |
+| Biomarker projection silently drops corrupt/oversized facts | Complete bounded projection or path-free `422`; valid incomplete scalar facts remain visible and explicitly non-comparable. |
+| Biomarker provenance changes behind unchanged display text | Projection token binds every row, source/evidence artifact authority, document/import/receipt state, and both revisions, including presentation-collapsed duplicates. |
 | Stale import correction or undo | Target-level compare-and-swap fingerprints and later-claim checks return atomic `409`; no whole-profile snapshot is restored |
 | Incorrect import removed from active care context | Direct facts are reversed, the document is marked excluded from clinical prompts, and immutable source/audit history remains visible |
 | Invented summary evidence link | Only server-built evidence catalog IDs resolve; unknown IDs are visibly `invalid` and absent IDs are `missing` |

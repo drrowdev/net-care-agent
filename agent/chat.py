@@ -131,7 +131,7 @@ def build_chat_system(profile: dict) -> str:
     symptoms = profile.get("symptoms", [])
     if symptoms:
         lines.append(f"── SYMPTOMS ({len(symptoms)} entries, most recent first) ──")
-        for s in sorted(symptoms, key=lambda x: x.get("date", ""), reverse=True):
+        for s in sorted(symptoms, key=lambda x: x.get("date") or "", reverse=True):
             sev = s.get("severity")
             sev_str = f" [sev {sev}/5]" if sev else ""
             src = s.get("source")

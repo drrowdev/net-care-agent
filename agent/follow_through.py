@@ -326,7 +326,7 @@ def request_hash(payload: dict) -> str:
 
 
 def iter_audit_events(profile: dict):
-    for collection in ("caregiver_actions", "visits", "alerts"):
+    for collection in ("caregiver_actions", "visits", "alerts", "symptom_episodes"):
         for record in profile.get(collection, []) or []:
             if not isinstance(record, dict):
                 continue
@@ -513,6 +513,108 @@ def _safe_result_snapshot(
                     and valid_item(follow_up, CaregiverAction, follow_up_id)
                 )
             )
+        )
+    if endpoint in {
+        "POST /api/symptom-episodes",
+        "PATCH /api/symptom-episodes/<episode_id>",
+        "POST /api/symptom-episodes/<episode_id>/resolve",
+        "PATCH /api/symptom-episodes/<episode_id>/follow-up",
+    }:
+        episode = snapshot.get("episode")
+        follow_up = snapshot.get("follow_up")
+        if endpoint == "POST /api/symptom-episodes":
+            expected_id = record.get("id")
+        else:
+            expected_id = target.removeprefix("symptom_episode:").removesuffix(":follow_up")
+        episode_keys = {
+            "id",
+            "token",
+            "status",
+            "symptom_text",
+            "severity",
+            "reported_subject",
+            "timing_text",
+            "frequency_text",
+            "triggers_text",
+            "notes",
+            "onset",
+            "resolution",
+            "provenance",
+            "follow_up",
+            "created_at",
+            "updated_at",
+        }
+        severity = episode.get("severity") if isinstance(episode, dict) else None
+        onset = episode.get("onset") if isinstance(episode, dict) else None
+        resolution = episode.get("resolution") if isinstance(episode, dict) else None
+
+        def valid_date(value: object) -> bool:
+            return (
+                isinstance(value, dict)
+                and set(value) == {"value", "precision", "kind"}
+                and value.get("precision") in {"day", "month", "year", "unknown"}
+                and value.get("kind") in {"caregiver_entered", "unknown"}
+                and (value.get("value") is None or isinstance(value.get("value"), str))
+            )
+
+        valid_episode = (
+            collection == "symptom_episodes"
+            and record.get("id") == expected_id
+            and isinstance(episode, dict)
+            and set(episode) == episode_keys
+            and episode.get("id") == expected_id
+            and isinstance(episode.get("token"), str)
+            and bool(episode["token"])
+            and episode.get("status") in {"current", "resolved"}
+            and isinstance(episode.get("symptom_text"), str)
+            and bool(episode["symptom_text"])
+            and episode.get("reported_subject") in {"patient", "caregiver", "unspecified"}
+            and isinstance(severity, dict)
+            and set(severity) == {"level", "detail", "authority"}
+            and severity.get("level") in {None, "mild", "moderate", "severe"}
+            and (severity.get("detail") is None or isinstance(severity.get("detail"), str))
+            and severity.get("authority") == "caregiver_entered_unverified"
+            and valid_date(onset)
+            and (
+                resolution is None
+                or (
+                    isinstance(resolution, dict)
+                    and set(resolution) == {"value", "precision", "kind", "recorded_at"}
+                    and valid_date(
+                        {
+                            "value": resolution.get("value"),
+                            "precision": resolution.get("precision"),
+                            "kind": resolution.get("kind"),
+                        }
+                    )
+                    and isinstance(resolution.get("recorded_at"), str)
+                )
+            )
+            and episode.get("provenance")
+            == {
+                "status": "caregiver_entered_unverified",
+                "label": "Caregiver-entered · unverified",
+            }
+            and episode.get("follow_up") == follow_up
+        )
+        if not valid_episode or set(snapshot) != {
+            "episode",
+            "follow_up",
+            "workflow_revision",
+            "profile_revision",
+        }:
+            return False
+        linked_id = record.get("caregiver_action_id")
+        if linked_id is None:
+            return follow_up is None
+        return (
+            isinstance(follow_up, dict)
+            and follow_up.get("id") == linked_id
+            and isinstance(follow_up.get("token"), str)
+            and bool(follow_up["token"])
+            and isinstance(follow_up.get("text"), str)
+            and follow_up.get("status") in ACTION_STATUSES
+            and set(follow_up) == {"id", "token", "text", "status", "owner", "due_date"}
         )
     return False
 

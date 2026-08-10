@@ -1910,7 +1910,7 @@ def test_generated_questions_are_dynamically_stale_after_profile_revision_change
 
 
 @pytest.mark.parametrize(
-    ("collection", "first_payload", "second_payload", "text"),
+    ("collection", "first_payload", "second_payload", "text", "expected_operation"),
     [
         (
             "symptoms",
@@ -1939,6 +1939,7 @@ def test_generated_questions_are_dynamically_stale_after_profile_revision_change
                 ],
             },
             "nausea grade 2",
+            "added",
         ),
         (
             "appointments",
@@ -1969,16 +1970,18 @@ def test_generated_questions_are_dynamically_stale_after_profile_revision_change
                 ],
             },
             "Oncology review 2026-09-01",
+            "unchanged",
         ),
     ],
 )
-def test_later_deduplicated_claim_blocks_older_undo(
+def test_later_duplicate_claim_preserves_symptoms_but_blocks_deduplicated_collections(
     agent,
     empty_profile,
     collection,
     first_payload,
     second_payload,
     text,
+    expected_operation,
 ):
     before_first = copy.deepcopy(empty_profile)
     with patch_llm(agent, lambda **_: llm_text(json.dumps(first_payload))):
@@ -1995,11 +1998,16 @@ def test_later_deduplicated_claim_blocks_older_undo(
     first_receipt = agent.public_receipt(profile, "first")
     original = next(item for item in first_receipt["changes"] if item["category"] == collection)
 
-    assert repeated["operation"] == "unchanged"
-    assert repeated["target"]["record_id"] == original["target"]["record_id"]
-    assert original["conflicted"] is True
-    assert "later document" in original["conflict_reason"]
-    assert first_receipt["can_undo"] is False
+    assert repeated["operation"] == expected_operation
+    if collection == "symptoms":
+        assert repeated["target"]["record_id"] != original["target"]["record_id"]
+        assert original["conflicted"] is False
+        assert first_receipt["can_undo"] is True
+    else:
+        assert repeated["target"]["record_id"] == original["target"]["record_id"]
+        assert original["conflicted"] is True
+        assert "later document" in original["conflict_reason"]
+        assert first_receipt["can_undo"] is False
 
 
 def test_synonym_deduplicated_treatment_blocks_older_undo(agent, empty_profile):

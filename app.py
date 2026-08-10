@@ -10,6 +10,7 @@ import base64
 import copy
 import datetime
 import hashlib
+import hmac
 import io
 import json
 import os
@@ -19,6 +20,7 @@ import threading
 import time
 from functools import wraps
 from pathlib import Path
+from typing import Any
 
 # Load .env for local development. On Azure App Service, env vars come from
 # Application Settings and this is a no-op.
@@ -57,7 +59,7 @@ from agent.job_runtime import (  # noqa: E402
 )
 from agent.logging_config import configure_logging  # noqa: E402
 from agent.provenance import resolve_source_artifact, validate_source_artifact  # noqa: E402
-from agent.schema import now_stamp  # noqa: E402
+from agent.schema import derive_date_precision, now_stamp  # noqa: E402
 
 configure_logging()
 log = __import__("logging").getLogger("netcare.app")
@@ -473,24 +475,25 @@ def _job_response(
         if job.get("type") == "questions":
             generation_id = job.get("generation_id")
             revision_was_stale = result_revision_stale
-            superseded = (
-                generation_id is not None
-                and generation_id != profile.get("questions_generation_id")
+            superseded = generation_id is not None and generation_id != profile.get(
+                "questions_generation_id"
             )
-            questions_invalid = generation_id is None or superseded or any(
-                item.get("stale")
-                for item in profile.get("appointment_questions", [])
-                if isinstance(item, dict)
-                and item.get("source") == "ai"
-                and item.get("generation_job_id") == generation_id
+            questions_invalid = (
+                generation_id is None
+                or superseded
+                or any(
+                    item.get("stale")
+                    for item in profile.get("appointment_questions", [])
+                    if isinstance(item, dict)
+                    and item.get("source") == "ai"
+                    and item.get("generation_job_id") == generation_id
+                )
             )
             if questions_invalid:
                 result_same_revision_invalidated = not result_revision_stale
                 result_revision_stale = True
                 if superseded and not revision_was_stale:
-                    response["derived_content_stale_reason"] = (
-                        "question_generation_superseded"
-                    )
+                    response["derived_content_stale_reason"] = "question_generation_superseded"
     feed_content_stale = False
     if job.get("type") == "feed" and job.get("source_document_id"):
         profile = profile or agent.load_profile()
@@ -1145,6 +1148,239 @@ def _new_action(
     )
     profile.setdefault("caregiver_actions", []).append(action)
     return action
+
+
+_SYMPTOM_MUTATION_META_FIELDS = {
+    "mutation_id",
+    "expected_profile_revision",
+    "expected_workflow_revision",
+    "expected_projection_token",
+}
+_SYMPTOM_CONTENT_FIELDS = {
+    "symptom_text",
+    "severity_level",
+    "severity_detail",
+    "reported_subject",
+    "onset_date",
+    "timing_text",
+    "frequency_text",
+    "triggers_text",
+    "notes",
+}
+_SYMPTOM_OPTIONAL_TEXT_LIMITS = {
+    "severity_detail": 500,
+    "timing_text": 500,
+    "frequency_text": 500,
+    "triggers_text": 1000,
+    "notes": 2000,
+}
+
+
+class _SymptomConflictError(ValueError):
+    pass
+
+
+class _SymptomNotFoundError(ValueError):
+    pass
+
+
+def _symptom_projection(profile: dict) -> dict:
+    return agent.project_symptom_episodes(profile)
+
+
+def _require_symptom_fields(data: dict, allowed: set[str]) -> None:
+    unsupported = set(data) - allowed
+    if unsupported:
+        raise ValueError("Unsupported symptom episode field.")
+
+
+def _require_symptom_revisions(profile: dict, data: dict) -> None:
+    expected_profile = data.get("expected_profile_revision")
+    expected_workflow = data.get("expected_workflow_revision")
+    if isinstance(expected_profile, bool) or not isinstance(expected_profile, int):
+        raise ValueError("expected_profile_revision must be an integer.")
+    if isinstance(expected_workflow, bool) or not isinstance(expected_workflow, int):
+        raise ValueError("expected_workflow_revision must be an integer.")
+    if expected_profile != int(profile.get("profile_revision") or 0):
+        raise _SymptomConflictError("The patient profile changed. Refresh and try again.")
+    if expected_workflow != int(profile.get("workflow_revision") or 0):
+        raise _SymptomConflictError("The workflow changed. Refresh and try again.")
+
+
+def _require_projection_token(projection: dict, data: dict) -> None:
+    token = data.get("expected_projection_token")
+    if not isinstance(token, str) or not token:
+        raise ValueError("expected_projection_token is required.")
+    if not hmac.compare_digest(token, projection["projection_token"]):
+        raise _SymptomConflictError("The symptom episode list changed. Refresh and try again.")
+
+
+def _required_episode_text(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("symptom_text is required.")
+    text = value.strip()
+    if not text or len(text) > 500:
+        raise ValueError("symptom_text must be between 1 and 500 characters.")
+    return text
+
+
+def _optional_episode_text(value: Any, field: str) -> str | None:
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be text or null.")
+    text = value.strip()
+    if not text:
+        return None
+    if len(text) > _SYMPTOM_OPTIONAL_TEXT_LIMITS[field]:
+        raise ValueError(f"{field} is too long.")
+    return text
+
+
+def _episode_date(value: Any, field: str) -> tuple[str | None, str]:
+    if value in (None, ""):
+        return None, "unknown"
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a YYYY, YYYY-MM, or YYYY-MM-DD date.")
+    precision = derive_date_precision(value)
+    if precision == "unknown":
+        raise ValueError(f"{field} must be a valid YYYY, YYYY-MM, or YYYY-MM-DD date.")
+    return value, precision
+
+
+def _episode_content(
+    data: dict,
+    *,
+    existing: dict | None = None,
+) -> dict:
+    result = dict(existing or {})
+    if existing is None or "symptom_text" in data:
+        result["symptom_text"] = _required_episode_text(data.get("symptom_text"))
+    if existing is None or "severity_level" in data:
+        severity = data.get("severity_level")
+        if severity not in {None, "mild", "moderate", "severe"}:
+            raise ValueError("severity_level must be mild, moderate, severe, or null.")
+        result["severity_level"] = severity
+    for field in _SYMPTOM_OPTIONAL_TEXT_LIMITS:
+        if existing is None or field in data:
+            result[field] = _optional_episode_text(data.get(field), field)
+    if existing is None or "reported_subject" in data:
+        subject = data.get("reported_subject", "unspecified")
+        if subject not in {"patient", "caregiver", "unspecified"}:
+            raise ValueError("reported_subject must be patient, caregiver, or unspecified.")
+        result["reported_subject"] = subject
+    if existing is None or "onset_date" in data:
+        date_value, precision = _episode_date(data.get("onset_date"), "onset_date")
+        result["onset_date"] = date_value
+        result["onset_date_precision"] = precision
+        result["onset_date_kind"] = "caregiver_entered" if date_value else "unknown"
+    return result
+
+
+def _episode_projection_row(projection: dict, episode_id: str, token: Any) -> dict:
+    row = next(
+        (item for item in projection["episodes"] if item.get("id") == episode_id),
+        None,
+    )
+    if row is None:
+        raise _SymptomNotFoundError("Symptom episode not found.")
+    if not isinstance(token, str) or not token:
+        raise ValueError("expected_episode_token is required.")
+    if not hmac.compare_digest(token, row["token"]):
+        raise _SymptomConflictError("The symptom episode changed. Refresh and try again.")
+    return row
+
+
+def _episode_record(profile: dict, episode_id: str) -> dict:
+    episode = next(
+        (
+            item
+            for item in profile.get("symptom_episodes", [])
+            if isinstance(item, dict) and item.get("id") == episode_id
+        ),
+        None,
+    )
+    if episode is None:
+        raise _SymptomNotFoundError("Symptom episode not found.")
+    return episode
+
+
+def _action_record(profile: dict, action_id: str) -> dict:
+    action = next(
+        (
+            item
+            for item in profile.get("caregiver_actions", [])
+            if isinstance(item, dict) and item.get("id") == action_id
+        ),
+        None,
+    )
+    if action is None:
+        raise _SymptomNotFoundError("Caregiver follow-up not found.")
+    return action
+
+
+def _validate_episode_action_link(
+    profile: dict,
+    *,
+    action_id: Any,
+    expected_token: Any,
+    episode_id: str | None,
+) -> dict:
+    if not isinstance(action_id, str) or not action_id:
+        raise ValueError("caregiver_action_id is required.")
+    action = _action_record(profile, action_id)
+    if action.get("status") not in {"open", "in_progress"}:
+        raise _SymptomConflictError("The caregiver follow-up is no longer eligible.")
+    if not isinstance(expected_token, str) or not expected_token:
+        raise ValueError("expected_action_token is required.")
+    if not hmac.compare_digest(expected_token, agent.semantic_token(action)):
+        raise _SymptomConflictError("The caregiver follow-up changed. Refresh and try again.")
+    for episode in profile.get("symptom_episodes", []):
+        if not isinstance(episode, dict) or episode.get("id") == episode_id:
+            continue
+        if episode.get("caregiver_action_id") == action_id:
+            raise _SymptomConflictError(
+                "The caregiver follow-up is already linked to another symptom episode."
+            )
+    return action
+
+
+def _validate_inline_episode_follow_up(value: Any) -> dict:
+    if not isinstance(value, dict):
+        raise ValueError("follow_up must be an object.")
+    if set(value) - {"text", "owner", "due_date"}:
+        raise ValueError("Unsupported follow_up field.")
+    return {
+        "text": agent.validate_follow_up_text(value.get("text")),
+        "owner": agent.validate_owner(value.get("owner")),
+        "due_date": agent.validate_date(value.get("due_date"), "due_date"),
+    }
+
+
+def _symptom_mutation_response(profile: dict, episode_id: str) -> dict:
+    projection = _symptom_projection(profile)
+    episode = next(
+        (item for item in projection["episodes"] if item.get("id") == episode_id),
+        None,
+    )
+    if episode is None:
+        raise RuntimeError("Symptom episode disappeared before response generation.")
+    return {
+        "episode": episode,
+        "follow_up": episode.get("follow_up"),
+        "workflow_revision": projection["workflow_revision"],
+        "profile_revision": projection["profile_revision"],
+    }
+
+
+def _symptom_mutation_error(exc: Exception):
+    if isinstance(exc, agent.SymptomProjectionError):
+        return jsonify({"error": exc.public_message, "code": exc.code}), 422
+    if isinstance(exc, _SymptomNotFoundError):
+        return jsonify({"error": str(exc), "code": "not_found"}), 404
+    if isinstance(exc, _SymptomConflictError | agent.FollowThroughConflict):
+        return jsonify({"error": str(exc), "code": "symptom_conflict"}), 409
+    return jsonify({"error": str(exc), "code": "invalid_symptom_request"}), 400
 
 
 def _refresh_summary(profile: dict, *, generation_id: str) -> str | None:
@@ -2039,10 +2275,7 @@ def api_health():
 @app.route("/api/status")
 def api_status():
     profile = agent.load_profile()
-    alerts = [
-        agent.public_alert(item)
-        for item in agent.active_alerts(profile)
-    ]
+    alerts = [agent.public_alert(item) for item in agent.active_alerts(profile)]
     bms = sorted(profile.get("biomarkers", []), key=lambda x: x.get("date") or "", reverse=True)[
         :50
     ]
@@ -2141,6 +2374,54 @@ def api_imaging_series_source(record_ref):
 def api_imaging_series_evidence(record_ref):
     """Resolve an opaque imaging row ID to its validated exact evidence span."""
     return _imaging_record_text_response(record_ref, evidence_only=True)
+
+
+@app.route("/api/patient/symptom-episodes")
+def api_symptom_episodes():
+    """Return the complete bounded symptom observation and episode projection."""
+    profile = agent.load_profile()
+    try:
+        projection = _symptom_projection(profile)
+    except agent.SymptomProjectionError as exc:
+        return jsonify({"error": exc.public_message, "code": exc.code}), 422
+    return jsonify(projection)
+
+
+def _symptom_observation_text_response(record_ref: str, *, evidence_only: bool):
+    profile = agent.load_profile()
+    try:
+        text = agent.symptom_observation_text(
+            profile,
+            record_ref,
+            evidence_only=evidence_only,
+        )
+    except agent.SymptomProjectionError as exc:
+        status = (
+            404
+            if exc.code
+            in {
+                "symptom_observation_not_found",
+                "symptom_source_unavailable",
+                "symptom_evidence_unavailable",
+            }
+            else 422
+        )
+        return jsonify({"error": exc.public_message, "code": exc.code}), status
+    return app.response_class(text, mimetype="text/plain")
+
+
+@app.route("/api/patient/symptom-episodes/observations/<record_ref>/source")
+@_source_auth_required
+def api_symptom_observation_source(record_ref):
+    """Resolve an opaque symptom observation reference to validated source text."""
+    return _symptom_observation_text_response(record_ref, evidence_only=False)
+
+
+@app.route("/api/patient/symptom-episodes/observations/<record_ref>/evidence")
+@_source_auth_required
+def api_symptom_observation_evidence(record_ref):
+    """Resolve an opaque symptom observation reference to exact evidence text."""
+    return _symptom_observation_text_response(record_ref, evidence_only=True)
 
 
 @app.route("/api/feed", methods=["POST"])
@@ -2856,9 +3137,7 @@ def api_visits_edit(visit_id):
                 )
         if "status" in data:
             target_status = agent.validate_status(data.get("status"), agent.VISIT_STATUSES)
-            if not agent.visit_transition_allowed(
-                visit.get("status") or "planned", target_status
-            ):
+            if not agent.visit_transition_allowed(visit.get("status") or "planned", target_status):
                 raise agent.FollowThroughConflict("The visit lifecycle transition is not allowed")
             visit["status"] = target_status
             if target_status != before.get("status"):
@@ -3686,9 +3965,7 @@ def api_treatment_edit(treatment_id):
     if action not in {"remove", "complete"} or not expected_token or expected_revision is None:
         return (
             jsonify(
-                {
-                    "error": "action, expected_token, and expected_profile_revision are required"
-                }
+                {"error": "action, expected_token, and expected_profile_revision are required"}
             ),
             400,
         )
@@ -3758,9 +4035,7 @@ def api_treatment_edit(treatment_id):
                 record["text"] = f"{record.get('text', '').strip()} [completed]"
         treatment["category"] = "completed"
     agent.rebuild_raw_treatments(profile)
-    profile["treatments_classification_revision"] = (
-        int(profile.get("profile_revision") or 0) + 1
-    )
+    profile["treatments_classification_revision"] = int(profile.get("profile_revision") or 0) + 1
     profile["treatments_classification_job_id"] = "manual-treatment-edit"
     agent.save_profile(profile)
     return jsonify(
@@ -4054,13 +4329,383 @@ def api_judgments_delete(jid):
     return jsonify({"ok": True})
 
 
+# ── symptom episodes ─────────────────────────────────────────────────────────
+@app.route("/api/symptom-episodes", methods=["POST"])
+def api_create_symptom_episode():
+    """Create one caregiver-entered episode, optionally with one atomic follow-up."""
+    try:
+        data = _workflow_request()
+    except agent.FollowThroughError as exc:
+        return _workflow_error(exc)
+    endpoint = "POST /api/symptom-episodes"
+    operation = "created"
+    target = "symptom_episode:create"
+    try:
+        _require_symptom_fields(
+            data,
+            _SYMPTOM_MUTATION_META_FIELDS
+            | _SYMPTOM_CONTENT_FIELDS
+            | {"caregiver_action_id", "expected_action_token", "follow_up"},
+        )
+        mutation_id = agent.validate_mutation_id(data.get("mutation_id"))
+        existing_action_requested = data.get("caregiver_action_id") is not None
+        inline_action_requested = data.get("follow_up") is not None
+        if existing_action_requested and inline_action_requested:
+            raise ValueError("caregiver_action_id and follow_up are mutually exclusive.")
+        if data.get("expected_action_token") is not None and not existing_action_requested:
+            raise ValueError("expected_action_token requires caregiver_action_id.")
+        with agent.serialized_mutation():
+            profile = agent.load_profile()
+            replay = _idempotent_result(
+                profile,
+                mutation_id=mutation_id,
+                data=data,
+                endpoint=endpoint,
+                operation=operation,
+                target=target,
+            )
+            if replay is not None:
+                return jsonify(replay)
+            projection = _symptom_projection(profile)
+            _require_symptom_revisions(profile, data)
+            _require_projection_token(projection, data)
+            content = _episode_content(data)
+            linked_action = None
+            inline_follow_up = None
+            if existing_action_requested:
+                linked_action = _validate_episode_action_link(
+                    profile,
+                    action_id=data.get("caregiver_action_id"),
+                    expected_token=data.get("expected_action_token"),
+                    episode_id=None,
+                )
+            elif inline_action_requested:
+                inline_follow_up = _validate_inline_episode_follow_up(data.get("follow_up"))
+            timestamp = now_stamp()
+            episode_id = agent.new_symptom_episode_id()
+            episode = {
+                "id": episode_id,
+                "status": "current",
+                **content,
+                "resolved_date": None,
+                "resolved_date_precision": "unknown",
+                "resolved_date_kind": "unknown",
+                "provenance": agent.symptom_episode_provenance(),
+                "created_at": timestamp,
+                "updated_at": timestamp,
+                "resolved_at": None,
+                "caregiver_action_id": (
+                    linked_action.get("id") if linked_action is not None else None
+                ),
+                "history": [],
+            }
+            if inline_follow_up is not None:
+                internal_mutation_id = (
+                    "symact:" + hashlib.sha256(mutation_id.encode("ascii")).hexdigest()[:32]
+                )
+                linked_action = _new_action(
+                    profile,
+                    inline_follow_up,
+                    mutation_id=mutation_id,
+                    history_mutation_id=internal_mutation_id,
+                    history_endpoint=endpoint,
+                )
+                episode["caregiver_action_id"] = linked_action["id"]
+            profile.setdefault("symptom_episodes", []).append(episode)
+            event = agent.append_history(
+                episode,
+                endpoint=endpoint,
+                operation=operation,
+                target=target,
+                mutation_id=mutation_id,
+                payload=data,
+                before_token=None,
+                changes={
+                    "status": {"before": None, "after": "current"},
+                    "caregiver_action_id": {
+                        "before": None,
+                        "after": episode.get("caregiver_action_id"),
+                    },
+                },
+            )
+            result = _save_workflow_mutation(
+                profile,
+                event=event,
+                clinical_change=True,
+                reason="A caregiver-entered symptom episode changed.",
+                response_factory=lambda: _symptom_mutation_response(profile, episode_id),
+            )
+        return jsonify(result), 201
+    except (agent.FollowThroughError, ValueError, TypeError) as exc:
+        return _symptom_mutation_error(exc)
+
+
+@app.route("/api/symptom-episodes/<episode_id>", methods=["PATCH"])
+def api_edit_symptom_episode(episode_id):
+    """Correct explicit episode content without changing lifecycle."""
+    try:
+        data = _workflow_request()
+    except agent.FollowThroughError as exc:
+        return _workflow_error(exc)
+    endpoint = "PATCH /api/symptom-episodes/<episode_id>"
+    operation = "edited"
+    target = f"symptom_episode:{episode_id}"
+    allowed = (
+        _SYMPTOM_MUTATION_META_FIELDS
+        | _SYMPTOM_CONTENT_FIELDS
+        | {"expected_episode_token", "resolved_date"}
+    )
+    try:
+        _require_symptom_fields(data, allowed)
+        mutation_id = agent.validate_mutation_id(data.get("mutation_id"))
+        changed_fields = set(data) & (_SYMPTOM_CONTENT_FIELDS | {"resolved_date"})
+        if not changed_fields:
+            raise ValueError("At least one symptom episode field is required.")
+        with agent.serialized_mutation():
+            profile = agent.load_profile()
+            replay = _idempotent_result(
+                profile,
+                mutation_id=mutation_id,
+                data=data,
+                endpoint=endpoint,
+                operation=operation,
+                target=target,
+            )
+            if replay is not None:
+                return jsonify(replay)
+            projection = _symptom_projection(profile)
+            _require_symptom_revisions(profile, data)
+            _require_projection_token(projection, data)
+            _episode_projection_row(projection, episode_id, data.get("expected_episode_token"))
+            episode = _episode_record(profile, episode_id)
+            if "resolved_date" in data and episode.get("status") != "resolved":
+                raise ValueError("resolved_date can only correct a resolved episode.")
+            updated = _episode_content(data, existing=episode)
+            if "resolved_date" in data:
+                resolved_date, resolved_precision = _episode_date(
+                    data.get("resolved_date"), "resolved_date"
+                )
+                updated["resolved_date"] = resolved_date
+                updated["resolved_date_precision"] = resolved_precision
+                updated["resolved_date_kind"] = "caregiver_entered" if resolved_date else "unknown"
+            mutable_fields = _SYMPTOM_CONTENT_FIELDS | {
+                "onset_date_precision",
+                "onset_date_kind",
+                "resolved_date",
+                "resolved_date_precision",
+                "resolved_date_kind",
+            }
+            changes = {
+                field: {"before": episode.get(field), "after": updated.get(field)}
+                for field in mutable_fields
+                if episode.get(field) != updated.get(field)
+            }
+            if not changes:
+                raise ValueError("The symptom episode already has those values.")
+            before_token = agent.semantic_token(episode)
+            for field in changes:
+                episode[field] = copy.deepcopy(updated.get(field))
+            episode["updated_at"] = now_stamp()
+            event = agent.append_history(
+                episode,
+                endpoint=endpoint,
+                operation=operation,
+                target=target,
+                mutation_id=mutation_id,
+                payload=data,
+                before_token=before_token,
+                changes=changes,
+            )
+            result = _save_workflow_mutation(
+                profile,
+                event=event,
+                clinical_change=True,
+                reason="A caregiver-entered symptom episode changed.",
+                response_factory=lambda: _symptom_mutation_response(profile, episode_id),
+            )
+        return jsonify(result)
+    except (agent.FollowThroughError, ValueError, TypeError) as exc:
+        return _symptom_mutation_error(exc)
+
+
+@app.route("/api/symptom-episodes/<episode_id>/resolve", methods=["POST"])
+def api_resolve_symptom_episode(episode_id):
+    """Mechanically resolve one current episode without changing its follow-up."""
+    try:
+        data = _workflow_request()
+    except agent.FollowThroughError as exc:
+        return _workflow_error(exc)
+    endpoint = "POST /api/symptom-episodes/<episode_id>/resolve"
+    operation = "resolved"
+    target = f"symptom_episode:{episode_id}"
+    try:
+        _require_symptom_fields(
+            data,
+            _SYMPTOM_MUTATION_META_FIELDS | {"expected_episode_token", "resolved_date"},
+        )
+        mutation_id = agent.validate_mutation_id(data.get("mutation_id"))
+        with agent.serialized_mutation():
+            profile = agent.load_profile()
+            replay = _idempotent_result(
+                profile,
+                mutation_id=mutation_id,
+                data=data,
+                endpoint=endpoint,
+                operation=operation,
+                target=target,
+            )
+            if replay is not None:
+                return jsonify(replay)
+            projection = _symptom_projection(profile)
+            _require_symptom_revisions(profile, data)
+            _require_projection_token(projection, data)
+            _episode_projection_row(projection, episode_id, data.get("expected_episode_token"))
+            episode = _episode_record(profile, episode_id)
+            if episode.get("status") != "current":
+                raise _SymptomConflictError("Only a current symptom episode can be resolved.")
+            resolved_date, resolved_precision = _episode_date(
+                data.get("resolved_date"), "resolved_date"
+            )
+            before_token = agent.semantic_token(episode)
+            timestamp = now_stamp()
+            episode["status"] = "resolved"
+            episode["resolved_date"] = resolved_date
+            episode["resolved_date_precision"] = resolved_precision
+            episode["resolved_date_kind"] = "caregiver_entered" if resolved_date else "unknown"
+            episode["resolved_at"] = timestamp
+            episode["updated_at"] = timestamp
+            event = agent.append_history(
+                episode,
+                endpoint=endpoint,
+                operation=operation,
+                target=target,
+                mutation_id=mutation_id,
+                payload=data,
+                before_token=before_token,
+                changes={
+                    "status": {"before": "current", "after": "resolved"},
+                    "resolved_date": {"before": None, "after": resolved_date},
+                },
+            )
+            result = _save_workflow_mutation(
+                profile,
+                event=event,
+                clinical_change=True,
+                reason="A caregiver-entered symptom episode changed.",
+                response_factory=lambda: _symptom_mutation_response(profile, episode_id),
+            )
+        return jsonify(result)
+    except (agent.FollowThroughError, ValueError, TypeError) as exc:
+        return _symptom_mutation_error(exc)
+
+
+@app.route("/api/symptom-episodes/<episode_id>/follow-up", methods=["PATCH"])
+def api_link_symptom_episode_follow_up(episode_id):
+    """Atomically link or unlink one exact durable caregiver follow-up."""
+    try:
+        data = _workflow_request()
+    except agent.FollowThroughError as exc:
+        return _workflow_error(exc)
+    endpoint = "PATCH /api/symptom-episodes/<episode_id>/follow-up"
+    target = f"symptom_episode:{episode_id}:follow_up"
+    try:
+        _require_symptom_fields(
+            data,
+            _SYMPTOM_MUTATION_META_FIELDS
+            | {
+                "expected_episode_token",
+                "caregiver_action_id",
+                "expected_action_token",
+            },
+        )
+        if "caregiver_action_id" not in data:
+            raise ValueError("caregiver_action_id is required.")
+        mutation_id = agent.validate_mutation_id(data.get("mutation_id"))
+        operation = (
+            "follow_up_unlinked" if data.get("caregiver_action_id") is None else "follow_up_linked"
+        )
+        with agent.serialized_mutation():
+            profile = agent.load_profile()
+            replay = _idempotent_result(
+                profile,
+                mutation_id=mutation_id,
+                data=data,
+                endpoint=endpoint,
+                operation=operation,
+                target=target,
+            )
+            if replay is not None:
+                return jsonify(replay)
+            projection = _symptom_projection(profile)
+            _require_symptom_revisions(profile, data)
+            _require_projection_token(projection, data)
+            _episode_projection_row(projection, episode_id, data.get("expected_episode_token"))
+            episode = _episode_record(profile, episode_id)
+            current_action_id = episode.get("caregiver_action_id")
+            new_action_id = data.get("caregiver_action_id")
+            if new_action_id is None:
+                if not isinstance(current_action_id, str) or not current_action_id:
+                    raise _SymptomConflictError(
+                        "The symptom episode has no linked caregiver follow-up."
+                    )
+                action = _action_record(profile, current_action_id)
+                expected_action_token = data.get("expected_action_token")
+                if not isinstance(expected_action_token, str) or not expected_action_token:
+                    raise ValueError("expected_action_token is required.")
+                if not hmac.compare_digest(expected_action_token, agent.semantic_token(action)):
+                    raise _SymptomConflictError(
+                        "The caregiver follow-up changed. Refresh and try again."
+                    )
+            else:
+                if current_action_id is not None:
+                    raise _SymptomConflictError(
+                        "Unlink the current caregiver follow-up before linking another."
+                    )
+                _validate_episode_action_link(
+                    profile,
+                    action_id=new_action_id,
+                    expected_token=data.get("expected_action_token"),
+                    episode_id=episode_id,
+                )
+            before_token = agent.semantic_token(episode)
+            episode["caregiver_action_id"] = new_action_id
+            episode["updated_at"] = now_stamp()
+            event = agent.append_history(
+                episode,
+                endpoint=endpoint,
+                operation=operation,
+                target=target,
+                mutation_id=mutation_id,
+                payload=data,
+                before_token=before_token,
+                changes={
+                    "caregiver_action_id": {
+                        "before": current_action_id,
+                        "after": new_action_id,
+                    }
+                },
+            )
+            result = _save_workflow_mutation(
+                profile,
+                event=event,
+                clinical_change=False,
+                reason="A symptom episode follow-up link changed.",
+                response_factory=lambda: _symptom_mutation_response(profile, episode_id),
+            )
+        return jsonify(result)
+    except (agent.FollowThroughError, ValueError, TypeError) as exc:
+        return _symptom_mutation_error(exc)
+
+
 # ── symptoms ─────────────────────────────────────────────────────────────────
 @app.route("/api/symptoms")
 def api_symptoms():
     profile = agent.load_profile()
+    if len(profile.get("symptoms", [])) > 2_000:
+        return jsonify({"error": "Symptom data exceeds the supported limits."}), 422
     symptoms = sorted(
         profile.get("symptoms", []),
-        key=lambda x: x.get("date", ""),
+        key=lambda x: x.get("date") or "",
         reverse=True,
     )
     return jsonify(symptoms)
@@ -4082,9 +4727,16 @@ def api_symptoms_add():
         return jsonify({"error": "Severity must be 1-5"}), 400
     profile = agent.load_profile()
     today = datetime.date.today().isoformat()
+    clinical_date = data.get("date") or today
+    if derive_date_precision(clinical_date) == "unknown":
+        return jsonify({"error": "Date must be YYYY, YYYY-MM, or YYYY-MM-DD"}), 400
     symptom = {
-        "id": f"sym_manual_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}",
-        "date": (data.get("date") or today),
+        "id": agent.new_workflow_id("sym"),
+        "date": clinical_date,
+        "date_precision": derive_date_precision(clinical_date),
+        "date_kind": "clinical",
+        "source_document_date": None,
+        "source_document_date_precision": "unknown",
         "symptom": name,
         "severity": severity,
         "note": (data.get("note") or "").strip() or None,
@@ -4123,7 +4775,11 @@ def api_symptoms_edit(sid):
             if "related_treatment" in data:
                 s["related_treatment"] = (data.get("related_treatment") or "").strip() or None
             if "date" in data and data["date"]:
+                if derive_date_precision(data["date"]) == "unknown":
+                    return jsonify({"error": "Date must be YYYY, YYYY-MM, or YYYY-MM-DD"}), 400
                 s["date"] = data["date"]
+                s["date_precision"] = derive_date_precision(data["date"])
+                s["date_kind"] = "clinical"
             agent.save_profile(profile)
             return jsonify(s)
     return jsonify({"error": "Not found"}), 404

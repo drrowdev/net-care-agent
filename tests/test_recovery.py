@@ -360,7 +360,7 @@ def test_load_profile_recovery_migrates_generationless_summary_as_stale(tmp_path
 
     loaded = load_profile()
 
-    assert loaded["schema_version"] == 10
+    assert loaded["schema_version"] == 11
     assert loaded["summary_stale"] is True
     assert loaded["executive_summary"]["stale"] is True
     assert loaded["executive_summary"]["next_actions"][0]["id"].startswith("sumact_")

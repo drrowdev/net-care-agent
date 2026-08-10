@@ -516,11 +516,11 @@ text. If a background run updates the assessment while the feedback editor is
 open, submission is disabled and the server rejects any stale request with
 `409`; close the editor, review the updated action, and reopen it.
 
-## 5a. Log a symptom
+## 5a. Legacy symptom log and episode foundation
 
 Open **Patient** and use the **Symptoms** card.
-Use it to record any patient-reported symptom or side effect — nausea
-after lanreotide, persistent fatigue, mild diarrhea, etc.
+This card remains the legacy observation log in the current release; the shared
+Patient/Today current/resolved episode interface is not yet exposed.
 
 1. Type the symptom name (e.g. *nausea*).
 2. Pick a severity 1–5 (1 = mild, 5 = severe).
@@ -530,13 +530,34 @@ after lanreotide, persistent fatigue, mild diarrhea, etc.
 When the intake agent processes a doctor's note that mentions a
 patient-reported symptom (e.g. *"patient reports grade-2 diarrhea since
 starting lanreotide"*) it logs the symptom automatically with
-`source="ai"`. AI-captured entries get a small `AI` tag in the list.
-Same-day same-name entries are deduped so re-feeding a document does
-not double-log.
+`source="ai"`. AI-captured entries get a small `AI` tag in the list. Each source
+mention is now retained independently, including duplicates. Because intake
+does not extract a per-symptom event date, the clinical symptom date remains
+unknown; a document date is retained only as separate source-document
+authority. No note, visit, import, or ingestion date is promoted to symptom
+onset.
 
 All downstream agents read the recent-symptoms block in the patient
 summary, so a fresh digest will surface side-effect-management
-literature if the orchestrator decides the symptoms warrant it.
+literature if the orchestrator decides the legacy observations warrant it.
+Caregiver-maintained current/resolved episodes are deliberately excluded from
+model prompts.
+
+The backend now stores caregiver episodes separately with explicit wording,
+neutral mild/moderate/severe caregiver-entered severity plus optional exact
+detail, timing/frequency/triggers, explicit partial dates, current/resolved
+lifecycle, unverified provenance, and an optional durable caregiver follow-up.
+Creation can atomically link one eligible existing follow-up or create and link
+one bounded manual follow-up; retries cannot create a second action. Episode and
+follow-up lifecycles never change each other. The fixed safety statement for the
+future shared UI is:
+
+> NET/Care records what you enter but does not assess urgency or monitor
+> symptoms. Contact the treating team about symptoms or concerns. If you think
+> this may be a medical emergency, contact local emergency services.
+
+This is static information, not a symptom assessment, triage decision,
+treatment recommendation, or monitoring promise.
 
 ## 5c. See newly discovered research
 

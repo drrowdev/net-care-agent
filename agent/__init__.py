@@ -125,6 +125,19 @@ from .reconciliation import (
 )
 from .recovery import get_recovery_state
 from .serialize import mutating_lock, serialized_mutation
+from .symptom_episodes import (
+    SYMPTOM_EPISODE_STATUSES,
+    SYMPTOM_REPORTED_SUBJECTS,
+    SYMPTOM_SAFETY_GUIDANCE,
+    SYMPTOM_SEVERITY_LEVELS,
+    SymptomProjectionError,
+    derive_symptom_observation_id,
+    new_symptom_episode_id,
+    project_symptom_episodes,
+    symptom_episode_provenance,
+    symptom_observation_identity_base,
+    symptom_observation_text,
+)
 
 # Tools (registry + dispatcher + relevance + individual tool fns)
 from .tools import (
@@ -181,6 +194,17 @@ __all__ = [
     "ImagingProjectionError",
     "project_imaging_series",
     "imaging_record_text",
+    "SYMPTOM_EPISODE_STATUSES",
+    "SYMPTOM_REPORTED_SUBJECTS",
+    "SYMPTOM_SAFETY_GUIDANCE",
+    "SYMPTOM_SEVERITY_LEVELS",
+    "SymptomProjectionError",
+    "derive_symptom_observation_id",
+    "new_symptom_episode_id",
+    "project_symptom_episodes",
+    "symptom_episode_provenance",
+    "symptom_observation_identity_base",
+    "symptom_observation_text",
     "ACTION_STATUSES",
     "VISIT_STATUSES",
     "DECISION_STATUSES",

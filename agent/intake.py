@@ -130,28 +130,25 @@ def _treatment_similarity(a: str, b: str) -> float:
 def _persist_symptoms(
     profile: dict,
     reported: list,
-    doc_date: str,
+    source_document_date: str | None,
     text: str = "",
     source_document_id: str | None = None,
 ) -> None:
-    """Append AI-extracted symptoms to profile["symptoms"], deduping against
-    same-day same-name entries so re-feeding a document doesn't double-log."""
+    """Append each explicit source observation without inventing event chronology."""
     profile.setdefault("symptoms", [])
-    existing = profile["symptoms"]
     for s in reported:
+        if not isinstance(s, dict):
+            continue
         name = (s.get("symptom") or "").strip()
         if not name:
             continue
-        name_lower = name.lower()
-        dup = any(
-            (e.get("symptom") or "").lower() == name_lower and (e.get("date") or "") == doc_date
-            for e in existing
-        )
-        if dup:
-            continue
         item = {
             "id": new_record_id("symptom"),
-            "date": doc_date,
+            "date": None,
+            "date_precision": "unknown",
+            "date_kind": "unknown",
+            "source_document_date": source_document_date,
+            "source_document_date_precision": derive_date_precision(source_document_date),
             "added_at": now_stamp(),
             "symptom": name,
             "severity": s.get("severity"),
@@ -164,7 +161,7 @@ def _persist_symptoms(
             item = attach_evidence(item, text, source_document_id)
         else:
             item.pop("source_quote", None)
-        existing.append(item)
+        profile["symptoms"].append(item)
 
 
 def _persist_appointments(
@@ -526,7 +523,13 @@ def _run_intake_impl(
     _persist_symptoms(
         profile,
         extracted.get("symptoms_reported") or [],
-        doc_date,
+        (
+            extracted.get("source_document_date")
+            if isinstance(extracted.get("source_document_date"), str)
+            else extracted.get("date")
+            if isinstance(extracted.get("date"), str)
+            else None
+        ),
         text,
         source_document_id,
     )

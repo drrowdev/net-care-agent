@@ -45,7 +45,15 @@ _EDITABLE_FIELDS = {
         "impression",
         "new_lesions",
     ],
-    "symptoms": ["date", "symptom", "severity", "note", "related_treatment"],
+    "symptoms": [
+        "date",
+        "date_kind",
+        "source_document_date",
+        "symptom",
+        "severity",
+        "note",
+        "related_treatment",
+    ],
     "appointments": ["date", "description", "type"],
     "documents": ["date", "type", "summary", "key_findings"],
 }
@@ -718,13 +726,28 @@ def _validate_collection_value(collection: str, updated: dict) -> dict:
         if updated.get("new_lesions") not in {None, True, False}:
             raise ReconciliationError("New lesions must be yes, no, or empty")
     elif collection == "symptoms":
-        updated["date"] = _date_text(updated.get("date"))
+        updated["date"] = _partial_date_text(updated.get("date"), "Symptom event date")
+        updated["date_precision"] = derive_date_precision(updated["date"])
+        if updated.get("date_kind") not in {"clinical", "legacy_unknown", "unknown"}:
+            raise ReconciliationError("Choose a valid symptom date kind")
+        if updated["date_precision"] == "unknown":
+            updated["date_kind"] = "unknown"
+        updated["source_document_date"] = _partial_date_text(
+            updated.get("source_document_date"), "Source document date"
+        )
+        updated["source_document_date_precision"] = derive_date_precision(
+            updated["source_document_date"]
+        )
         updated["symptom"] = _required_text(updated.get("symptom"), "Symptom", maximum=120)
         severity = updated.get("severity")
         if severity is not None and (
             not isinstance(severity, int) or isinstance(severity, bool) or not 1 <= severity <= 5
         ):
             raise ReconciliationError("Symptom severity must be an integer from 1 to 5")
+        updated["note"] = _optional_text(updated.get("note"), "Symptom note", maximum=4000)
+        updated["related_treatment"] = _optional_text(
+            updated.get("related_treatment"), "Related treatment", maximum=500
+        )
     elif collection == "appointments":
         updated["date"] = _date_text(updated.get("date"))
         updated["description"] = _required_text(
@@ -960,6 +983,12 @@ def correct_change(
             and "date_kind" not in replacement
         ):
             updated["date_kind"] = "unknown"
+        if (
+            target.get("collection") == "symptoms"
+            and "date" in replacement
+            and "date_kind" not in replacement
+        ):
+            updated["date_kind"] = "clinical" if replacement.get("date") else "unknown"
         updated = _validate_collection_value(target["collection"], updated)
         if target.get("collection") == "biomarkers":
             if "flag" in replacement:

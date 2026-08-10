@@ -9,6 +9,25 @@ incremented when something user-visible or operationally meaningful changes.
 ## [Unreleased]
 
 ### Added
+- **Provenance-safe imaging longitudinal backend contract.** Schema v10
+  deterministically backfills missing imaging IDs from source/span and full-row
+  authority without rewriting existing IDs, wording, dates, unknown fields, list
+  order, or duplicate occurrences. Legacy dates are explicitly uncertain; new
+  undated imaging remains undated instead of receiving ingestion day, dates on
+  non-imaging documents are not promoted to study dates, modality is retained
+  only when present verbatim in source text, and receipt correction/undo keeps
+  target CAS and audit behavior.
+- **Bounded imaging series projection API.** Authenticated no-store
+  `GET /api/patient/imaging-series` returns every imaging row independently with
+  both revisions and opaque tokens bound to complete row/source/evidence/
+  document/import authority. Opaque row-ID source/evidence routes resolve
+  server-side through URL-safe derived references, with no raw reserved-character
+  legacy ID, client path, or offsets. Incomplete/unverified rows remain
+  visible, while corrupt, duplicate-ID, inconsistent, tampered, or oversized
+  authority fails closed with bounded `422`. The contract performs no duplicate
+  collapse, lesion matching, measurement comparison, progression/response label,
+  trend, treatment judgment, or other clinical inference; the caregiver UI is
+  deferred to a separate PR.
 - **Provenance-safe biomarker longitudinal backend contract.** Schema v9
   deterministically backfills missing biomarker IDs without using mutable list
   position when source/span authority exists, preserves cross-source and

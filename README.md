@@ -131,7 +131,7 @@ All patient state lives in a single JSON file at `${DATA_DIR}/patient_profile.js
 
 ```
 {
-  "schema_version": 9,
+  "schema_version": 10,
   "profile_revision": 42,
   "workflow_revision": 17,
   "profile_updated_at": "2026-07-10T16:51:49",
@@ -139,7 +139,7 @@ All patient state lives in a single JSON file at `${DATA_DIR}/patient_profile.js
   "summary_stale": false,
   "patient": { ... },
   "biomarkers":  [ {id, date, date_precision, date_kind, marker, value, unit, reference_range, flag, flag_authority, specimen, assay, method, source_document_id, evidence_status}, ... ],
-  "imaging":     [ {date, modality, findings, impression, source_document_id, source_quote}, ... ],
+  "imaging":     [ {id, date, date_precision, date_kind, source_document_date, modality, findings, impression, source_document_id, evidence_status}, ... ],
   "treatments":  [ {name, status, start_date, end_date, ...}, ... ],
   "documents":   [ {date, type, summary, key_findings, source_document_id, raw_text}, ... ],
   "source_documents": [ {id, ingested_at, source: {path, sha256, length}, text: {...}}, ... ],
@@ -202,6 +202,15 @@ available source/span and canonical row authority, preserves duplicate
 occurrences, and adds explicit observation/source-document date precision plus
 optional specimen, assay, method, and stored-flag authority. Legacy dates remain
 `clinical_unspecified`; migration never invents collection/result context.
+Schema v10 provides the equivalent preservation-first authority for imaging:
+missing IDs are derived from source/span and full-row authority without collapsing
+duplicates, existing IDs and unknown fields remain untouched, and legacy dates are
+explicitly `legacy_unknown` because older intake could substitute ingestion day.
+New imaging reports use only an explicitly extracted study date; dates on notes
+or other document types are not promoted to imaging dates. Missing dates remain
+visible `unknown`, explicit source-document dates stay separate, and modality
+wording is retained only when it occurs verbatim in source text—never by category
+normalization.
 
 A daily backup is written to `${DATA_DIR}/backups/profile_YYYYMMDD.json`
 (retention: 30 days).
@@ -259,6 +268,7 @@ state and withholds the prior clinical content.
 │   ├── judgments.py      # clinical-judgment context formatter
 │   ├── intake.py         # extract structured medical data from text
 │   ├── biomarker_series.py # bounded provenance-safe longitudinal read projection
+│   ├── imaging_series.py # complete non-inferential imaging authority projection
 │   ├── evidence.py       # validated claim-level source-span catalog/resolution
 │   ├── reconciliation.py # per-document receipts + compare-and-swap correction/undo
 │   ├── follow_through.py # durable actions/visits, validation, CAS + audit helpers
@@ -342,6 +352,22 @@ infer a trend. The response carries both revisions plus opaque authority tokens;
 offline ambiguity keeps the last accepted snapshot visibly stale and read-only,
 while authorization or hard invalidation scrubs it. `/api/status` remains the
 recent-summary compatibility payload and is not used by the explorer.
+
+`GET /api/patient/imaging-series` is the separate backend foundation for a future
+caregiver imaging timeline/comparison workflow. It returns every bounded imaging
+row as a distinct record with both revisions and opaque row/projection tokens;
+exact duplicates are never collapsed. Tokens bind the full stored row, source
+integrity, exact evidence, document exclusion, receipt lifecycle, and revisions
+without returning source IDs, paths, offsets, quotes, or receipt internals.
+partial, unknown, legacy, manual, and unverified facts remain visible. Stable
+derived route references keep even reserved-character legacy IDs out of URL
+segments. Malformed,
+oversized, duplicate-ID, or inconsistent authority fails the complete projection
+with bounded `422`. Opaque row-ID source/evidence routes resolve the source and
+span server-side. The contract neither exposes the lossy legacy `new_lesions`
+boolean nor computes progression, response, lesion identity, size change,
+comparability, trends, or clinical meaning. The current Patient imaging UI remains
+on its compatibility endpoint until a separately reviewed frontend PR.
 
 The orchestrator's behaviour is shaped by **clinical_judgments** captured from
 oncologist consultations. These act as hard constraints: anything the oncologist

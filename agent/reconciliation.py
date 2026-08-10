@@ -36,7 +36,15 @@ _EDITABLE_FIELDS = {
         "assay",
         "method",
     ],
-    "imaging": ["date", "modality", "findings", "impression", "new_lesions"],
+    "imaging": [
+        "date",
+        "date_kind",
+        "source_document_date",
+        "modality",
+        "findings",
+        "impression",
+        "new_lesions",
+    ],
     "symptoms": ["date", "symptom", "severity", "note", "related_treatment"],
     "appointments": ["date", "description", "type"],
     "documents": ["date", "type", "summary", "key_findings"],
@@ -681,9 +689,27 @@ def _validate_collection_value(collection: str, updated: dict) -> dict:
         ):
             updated[field] = _optional_text(updated.get(field), label, maximum=200)
     elif collection == "imaging":
-        updated["date"] = _date_text(updated.get("date"))
-        if updated.get("modality") not in {"CT", "MRI", "PET-CT", "ultrasound", "other"}:
-            raise ReconciliationError("Choose a valid imaging modality")
+        updated["date"] = _partial_date_text(updated.get("date"), "Study date")
+        updated["date_precision"] = derive_date_precision(updated["date"])
+        if updated.get("date_kind") not in {"study", "legacy_unknown", "unknown"}:
+            raise ReconciliationError("Choose a valid imaging date kind")
+        if updated["date_precision"] == "unknown":
+            updated["date_kind"] = "unknown"
+        updated["source_document_date"] = _partial_date_text(
+            updated.get("source_document_date"), "Source document date"
+        )
+        updated["source_document_date_precision"] = derive_date_precision(
+            updated["source_document_date"]
+        )
+        updated["modality"] = _optional_text(
+            updated.get("modality"), "Imaging modality", maximum=200
+        )
+        updated["findings"] = _optional_text(
+            updated.get("findings"), "Imaging findings", maximum=50_000
+        )
+        updated["impression"] = _optional_text(
+            updated.get("impression"), "Imaging impression", maximum=50_000
+        )
         if (
             not str(updated.get("findings") or "").strip()
             and not str(updated.get("impression") or "").strip()
@@ -928,6 +954,12 @@ def correct_change(
             raise ReconciliationError("No corrected values were provided")
         updated = _clone(current)
         updated.update(_clone(replacement))
+        if (
+            target.get("collection") == "imaging"
+            and "date" in replacement
+            and "date_kind" not in replacement
+        ):
+            updated["date_kind"] = "unknown"
         updated = _validate_collection_value(target["collection"], updated)
         if target.get("collection") == "biomarkers":
             if "flag" in replacement:

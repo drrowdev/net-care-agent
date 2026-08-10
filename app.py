@@ -2095,6 +2095,54 @@ def api_biomarker_series():
     return jsonify(projection)
 
 
+@app.route("/api/patient/imaging-series")
+def api_imaging_series():
+    """Return the complete bounded longitudinal imaging read projection."""
+    profile = agent.load_profile()
+    try:
+        projection = agent.project_imaging_series(profile)
+    except agent.ImagingProjectionError as exc:
+        return jsonify({"error": exc.public_message, "code": exc.code}), 422
+    return jsonify(projection)
+
+
+def _imaging_record_text_response(record_ref: str, *, evidence_only: bool):
+    profile = agent.load_profile()
+    try:
+        text = agent.imaging_record_text(
+            profile,
+            record_ref,
+            evidence_only=evidence_only,
+        )
+    except agent.ImagingProjectionError as exc:
+        status = (
+            404
+            if exc.code
+            in {
+                "imaging_record_not_found",
+                "imaging_source_unavailable",
+                "imaging_evidence_unavailable",
+            }
+            else 422
+        )
+        return jsonify({"error": exc.public_message, "code": exc.code}), status
+    return app.response_class(text, mimetype="text/plain")
+
+
+@app.route("/api/patient/imaging-series/<record_ref>/source")
+@_source_auth_required
+def api_imaging_series_source(record_ref):
+    """Resolve an opaque imaging row ID to validated extracted source text."""
+    return _imaging_record_text_response(record_ref, evidence_only=False)
+
+
+@app.route("/api/patient/imaging-series/<record_ref>/evidence")
+@_source_auth_required
+def api_imaging_series_evidence(record_ref):
+    """Resolve an opaque imaging row ID to its validated exact evidence span."""
+    return _imaging_record_text_response(record_ref, evidence_only=True)
+
+
 @app.route("/api/feed", methods=["POST"])
 def api_feed():
     data = request.get_json(force=True) or {}

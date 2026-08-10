@@ -3599,6 +3599,191 @@ def test_visit_recap_uses_atomic_projection_and_strict_authority_gates():
     assert "console." not in loader
 
 
+def test_visit_recap_actual_functions_scrub_identity_and_hide_non_exportable_controls():
+    script = "\n".join(
+        [
+            """
+class FakeClassList {
+  constructor() { this.values = new Set(); }
+  add(value) { this.values.add(value); }
+  remove(value) { this.values.delete(value); }
+  contains(value) { return this.values.has(value); }
+}
+
+const elements = new Map();
+const document = {
+  activeElement: null,
+  body: null,
+  getElementById(id) {
+    if (!elements.has(id)) {
+      const node = {
+        id,
+        hidden: false,
+        disabled: false,
+        className: '',
+        innerHTML: '',
+        textContent: '',
+        classList: new FakeClassList(),
+        contains(other) {
+          return this.id === 'visit-recap-actions'
+            && ['visit-recap-copy', 'visit-recap-download', 'visit-recap-print']
+              .includes(other?.id);
+        },
+        focus() { document.activeElement = this; },
+        blur() { if (document.activeElement === this) document.activeElement = null; },
+      };
+      elements.set(id, node);
+    }
+    return elements.get(id);
+  },
+};
+document.body = document.getElementById('body');
+const actions = document.getElementById('visit-recap-actions');
+const copy = document.getElementById('visit-recap-copy');
+document.getElementById('visit-recap-download');
+document.getElementById('visit-recap-print');
+const recapTab = document.getElementById('appointment-tab-recap');
+const content = document.getElementById('visit-recap-content');
+document.getElementById('visit-recap-status');
+
+let selectedVisitId = 'visit-a';
+let visitsById = new Map([['visit-a', {
+  id: 'visit-a', token: 'token-a', status: 'in_progress',
+}]]);
+let visitRecapLoadEpoch = 0;
+let visitRecapProjection = null;
+let visitRecapAuthority = null;
+let visitRecapExportText = '';
+let visitRecapStale = false;
+let visitRecapState = 'idle';
+let visitRecapMessage = '';
+let visitRecapDownloadUrl = null;
+let appointmentDialogOpen = true;
+let activeAppointmentTab = 'recap';
+let phiEpoch = 4;
+let visitSelectionEpoch = 8;
+let latestProfileRevision = 12;
+let workflowRevision = 9;
+const revoked = [];
+const URL = { revokeObjectURL(value) { revoked.push(value); } };
+function normalizedRevision(value) { return value; }
+""",
+            _function_source("revokeVisitRecapDownloadUrl", "clearVisitRecap"),
+            _function_source("clearVisitRecap", "scrubVisitRecapBeforeSelectionChange"),
+            _function_source("scrubVisitRecapBeforeSelectionChange", "markVisitRecapStale"),
+            _function_source("visitRecapAuthorityIsCurrent", "updateVisitRecapExportControls"),
+            _function_source("updateVisitRecapExportControls", "recapPlainText"),
+            _function_source("currentVisit", "visitStatusLabel"),
+            """
+function accept(status = 'in_progress', state = 'current', exportable = true) {
+  visitsById.set(selectedVisitId, {
+    id: selectedVisitId,
+    token: `token-${selectedVisitId}`,
+    status,
+  });
+  visitRecapProjection = {
+    state,
+    exportable,
+    visit: { id: selectedVisitId, status },
+  };
+  visitRecapAuthority = {
+    phiEpoch,
+    visitSelectionEpoch,
+    visitId: selectedVisitId,
+    visitToken: `token-${selectedVisitId}`,
+    profileRevision: latestProfileRevision,
+    workflowRevision,
+    recapToken: `recap-${selectedVisitId}`,
+  };
+  visitRecapExportText = exportable ? `Exact answer ${selectedVisitId}` : '';
+  visitRecapStale = false;
+  updateVisitRecapExportControls();
+}
+
+accept();
+content.textContent = 'Exact answer A';
+visitRecapDownloadUrl = 'blob:visit-a';
+document.body.classList.add('visit-recap-printing');
+copy.focus();
+const identityChanged = scrubVisitRecapBeforeSelectionChange('visit-b', 'token-visit-b');
+const identityScrub = {
+  identityChanged,
+  projection: visitRecapProjection,
+  authority: visitRecapAuthority,
+  exportText: visitRecapExportText,
+  content: content.textContent,
+  revoked: [...revoked],
+  printing: document.body.classList.contains('visit-recap-printing'),
+  actionsHidden: actions.hidden,
+  controlsDisabled: ['visit-recap-copy', 'visit-recap-download', 'visit-recap-print']
+    .every(id => document.getElementById(id).disabled),
+  focus: document.activeElement?.id || null,
+};
+
+accept();
+const unchanged = scrubVisitRecapBeforeSelectionChange('visit-a', 'token-visit-a');
+const sameIdentityRetained = !unchanged && visitRecapProjection !== null;
+const tokenChanged = scrubVisitRecapBeforeSelectionChange('visit-a', 'token-a-2');
+const tokenScrubbed = tokenChanged && visitRecapProjection === null && actions.hidden;
+
+const visibility = {};
+for (const [name, status, state, exportable, stale] of [
+  ['in_progress', 'in_progress', 'current', true, false],
+  ['completed', 'completed', 'current', true, false],
+  ['planned', 'planned', 'unavailable', false, false],
+  ['cancelled', 'cancelled', 'administrative', false, false],
+  ['unavailable', 'in_progress', 'unavailable', false, false],
+  ['stale', 'in_progress', 'current', true, true],
+]) {
+  accept(status, state, exportable);
+  visitRecapStale = stale;
+  updateVisitRecapExportControls();
+  visibility[name] = {
+    hidden: actions.hidden,
+    disabled: copy.disabled,
+  };
+}
+accept();
+clearVisitRecap(true);
+visibility.authCleared = { hidden: actions.hidden, disabled: copy.disabled };
+
+console.log(JSON.stringify({
+  identityScrub,
+  sameIdentityRetained,
+  tokenScrubbed,
+  visibility,
+}));
+""",
+        ]
+    )
+    completed = _run_node_script(script)
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result["identityScrub"] == {
+        "identityChanged": True,
+        "projection": None,
+        "authority": None,
+        "exportText": "",
+        "content": "",
+        "revoked": ["blob:visit-a"],
+        "printing": False,
+        "actionsHidden": True,
+        "controlsDisabled": True,
+        "focus": "appointment-tab-recap",
+    }
+    assert result["sameIdentityRetained"] is True
+    assert result["tokenScrubbed"] is True
+    assert result["visibility"] == {
+        "in_progress": {"hidden": False, "disabled": False},
+        "completed": {"hidden": False, "disabled": False},
+        "planned": {"hidden": True, "disabled": True},
+        "cancelled": {"hidden": True, "disabled": True},
+        "unavailable": {"hidden": True, "disabled": True},
+        "stale": {"hidden": True, "disabled": True},
+        "authCleared": {"hidden": True, "disabled": True},
+    }
+
+
 def test_visit_recap_plain_text_is_deterministic_exact_and_control_safe():
     script = "\n".join(
         [
@@ -3819,6 +4004,333 @@ def test_visit_recap_desktop_phone_and_print_layout_is_accessible():
             "getComputedStyle(document.querySelector('.appointment-overlay')).display"
         )
         assert unavailable == "none"
+        browser.close()
+
+
+def test_visit_recap_live_browser_enforces_visit_identity_and_control_visibility():
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    html = re.sub(r"<script[^>]+src=[^>]+></script>", "", INDEX_HTML)
+    html = html.replace("<head>", '<head><base href="http://app.test/">', 1)
+
+    def visit(visit_id: str, status: str, token: str) -> dict:
+        return {
+            "id": visit_id,
+            "title": f"Visit {visit_id[-1].upper()}",
+            "status": status,
+            "token": token,
+            "question_snapshots": [],
+            "decisions": [],
+        }
+
+    visits_payload = {
+        "profile_revision": 5,
+        "workflow_revision": 1,
+        "appointments": [],
+        "items": [
+            visit("visit-a", "in_progress", "token-a"),
+            visit("visit-b", "in_progress", "token-b"),
+            visit("visit-c", "cancelled", "token-c"),
+            visit("visit-d", "completed", "token-d"),
+            visit("visit-p", "planned", "token-p"),
+        ],
+    }
+    generic_payloads = {
+        "/api/status": {
+            "profile_revision": 5,
+            "workflow_revision": 1,
+            "patient": {},
+            "stats": {},
+            "alerts": [],
+            "treatments_classified": [],
+            "recent_biomarkers": [],
+        },
+        "/api/jobs": [],
+        "/api/summary": {"status": "not_generated", "profile_revision": 5},
+        "/api/questions": [],
+        "/api/judgments": [],
+        "/api/symptoms": [],
+        "/api/patient/evidence": {},
+        "/api/follow-ups": {
+            "profile_revision": 5,
+            "workflow_revision": 1,
+            "items": [],
+        },
+    }
+    recap_modes: dict[str, str] = {}
+    pending_routes: dict[str, list] = {}
+
+    def recap_response(
+        visit_id: str,
+        answer: str | None = None,
+        *,
+        token: str | None = None,
+        workflow_revision: int | None = None,
+    ) -> dict:
+        item = next(row for row in visits_payload["items"] if row["id"] == visit_id)
+        status = item["status"]
+        state = (
+            "administrative"
+            if status == "cancelled"
+            else "unavailable"
+            if status == "planned"
+            else "current"
+        )
+        exportable = state == "current"
+        sections = {
+            "what_was_asked": [],
+            "what_we_heard": [],
+            "decisions": [],
+            "follow_ups": [],
+            "related_resolved_alerts": [],
+            "unresolved": [],
+        }
+        if answer:
+            sections["what_we_heard"] = [
+                {
+                    "question": f"Question {visit_id[-1].upper()}",
+                    "text": answer,
+                    "provenance_label": (
+                        "Caregiver-entered · attributed to clinician · unverified"
+                    ),
+                }
+            ]
+        return {
+            "profile_revision": 5,
+            "workflow_revision": (
+                workflow_revision
+                if workflow_revision is not None
+                else visits_payload["workflow_revision"]
+            ),
+            "visit_id": visit_id,
+            "visit_token": token or item["token"],
+            "recap_token": f"recap-{token or item['token']}",
+            "recap": {
+                "state": state,
+                "exportable": exportable,
+                "visit": {
+                    "id": visit_id,
+                    "title": item["title"],
+                    "status": status,
+                },
+                "sections": sections,
+            },
+        }
+
+    with playwright_api.sync_playwright() as playwright:
+        executable = Path(playwright.chromium.executable_path)
+        if not executable.exists():
+            pytest.skip("Installed Playwright browser is unavailable")
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": 1280, "height": 900})
+        page_errors = []
+        page.on("pageerror", lambda error: page_errors.append(str(error)))
+
+        def fulfill(route):
+            path = "/" + route.request.url.split("/", 3)[-1].split("?", 1)[0]
+            if path == "/api/visits":
+                payload = visits_payload
+            elif path.startswith("/api/visits/") and path.endswith("/recap"):
+                visit_id = path.split("/")[3]
+                mode = recap_modes.get(visit_id, "current")
+                if mode == "pending":
+                    pending_routes.setdefault(visit_id, []).append(route)
+                    return
+                if mode == "offline":
+                    recap_modes[visit_id] = "current"
+                    route.abort()
+                    return
+                payload = recap_response(visit_id, f"Exact answer {visit_id[-1].upper()}")
+            else:
+                payload = generic_payloads.get(path, {})
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(payload),
+            )
+
+        page.route("**/api/**", fulfill)
+        page.set_content(html)
+        page.add_style_tag(content=CSS)
+        page.add_script_tag(content=APP_JS)
+        page.wait_for_function("() => visitsById.size === 5 && !clinicalConvergenceRunning")
+        page.evaluate(
+            """() => {
+              clearTimeout(pollingInterval);
+              pollingInterval = null;
+              openAppointmentWorkspace(null, 'visit-a');
+              switchAppointmentTab('recap');
+            }"""
+        )
+        page.get_by_text("Exact answer A", exact=True).wait_for()
+        assert page.locator("#visit-recap-actions").is_visible()
+        assert page.locator("#visit-recap-copy").is_enabled()
+
+        recap_modes["visit-b"] = "pending"
+        page.evaluate(
+            """() => {
+              document.getElementById('visit-recap-copy').focus();
+              selectVisitInWorkspace('visit-b');
+            }"""
+        )
+        page.wait_for_timeout(20)
+        assert pending_routes["visit-b"]
+        immediate_b = page.evaluate(
+            """() => ({
+              title: document.getElementById('appointment-dialog-title').textContent,
+              content: document.getElementById('visit-recap-content').textContent,
+              actionsHidden: document.getElementById('visit-recap-actions').hidden,
+              focus: document.activeElement.id,
+            })"""
+        )
+        assert immediate_b == {
+            "title": "Visit B",
+            "content": "Loading the current visit recap…",
+            "actionsHidden": True,
+            "focus": "appointment-tab-recap",
+        }
+
+        recap_modes["visit-a"] = "pending"
+        page.evaluate("selectVisitInWorkspace('visit-a')")
+        page.wait_for_timeout(20)
+        assert pending_routes["visit-a"]
+        pending_routes["visit-b"].pop(0).fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(recap_response("visit-b", "Late exact answer B")),
+        )
+        page.wait_for_timeout(50)
+        rapid_state = page.evaluate(
+            """() => ({
+              title: document.getElementById('appointment-dialog-title').textContent,
+              content: document.getElementById('visit-recap-content').textContent,
+            })"""
+        )
+        assert rapid_state["title"] == "Visit A"
+        assert "Late exact answer B" not in rapid_state["content"]
+        pending_routes["visit-a"].pop(0).fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(recap_response("visit-a", "Exact answer A fresh")),
+        )
+        page.get_by_text("Exact answer A fresh", exact=True).wait_for()
+
+        recap_modes["visit-a"] = "offline"
+        page.evaluate("loadVisitRecap()")
+        stale = page.evaluate(
+            """() => ({
+              content: document.getElementById('visit-recap-content').textContent,
+              stale: document.querySelector('.visit-recap-document')?.classList.contains('stale'),
+              actionsHidden: document.getElementById('visit-recap-actions').hidden,
+              status: document.getElementById('visit-recap-status').textContent,
+            })"""
+        )
+        assert "Exact answer A fresh" in stale["content"]
+        assert stale["stale"] is True
+        assert stale["actionsHidden"] is True
+        assert "Offline snapshot" in stale["status"]
+
+        page.emulate_media(media="print")
+        page.evaluate("prepareVisitRecapPrint()")
+        assert page.evaluate("document.body.classList.contains('visit-recap-printing')") is False
+        assert page.locator(".visit-recap-document").is_visible() is False
+        assert (
+            page.evaluate("getComputedStyle(document.body, '::before').content")
+            == '"Visit recap unavailable for printing. Reload the current recap first."'
+        )
+        page.emulate_media(media="screen")
+
+        recap_modes["visit-a"] = "current"
+        page.evaluate("loadVisitRecap()")
+        page.get_by_text("Exact answer A", exact=True).wait_for()
+        recap_modes["visit-a"] = "pending"
+        visits_payload["items"][0] = visit("visit-a", "in_progress", "token-a-2")
+        page.locator("#visit-recap-copy").focus()
+        page.evaluate("loadVisits()")
+        page.wait_for_timeout(20)
+        assert pending_routes["visit-a"]
+        token_change = page.evaluate(
+            """() => ({
+              title: document.getElementById('appointment-dialog-title').textContent,
+              content: document.getElementById('visit-recap-content').textContent,
+              actionsHidden: document.getElementById('visit-recap-actions').hidden,
+              focus: document.activeElement.id,
+            })"""
+        )
+        assert token_change == {
+            "title": "Visit A",
+            "content": "Loading the current visit recap…",
+            "actionsHidden": True,
+            "focus": "appointment-tab-recap",
+        }
+        pending_routes["visit-a"].pop(0).fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                recap_response(
+                    "visit-a",
+                    "Exact answer A token 2",
+                    token="token-a-2",
+                )
+            ),
+        )
+        page.get_by_text("Exact answer A token 2", exact=True).wait_for()
+        assert page.locator("#visit-recap-actions").is_visible()
+
+        recap_modes["visit-d"] = "current"
+        page.evaluate("selectVisitInWorkspace('visit-d')")
+        page.get_by_text("Exact answer D", exact=True).wait_for()
+        assert page.locator("#visit-recap-actions").is_visible()
+
+        for visit_id, notice in (
+            ("visit-p", "A recap becomes available after the visit starts."),
+            (
+                "visit-c",
+                "Cancelled visit · administrative record only. "
+                "Copy, download, and print are unavailable.",
+            ),
+        ):
+            recap_modes[visit_id] = "current"
+            page.evaluate("(id) => selectVisitInWorkspace(id)", visit_id)
+            page.get_by_text(notice, exact=True).wait_for()
+            assert page.evaluate("document.getElementById('visit-recap-actions').hidden") is True
+            assert page.locator("#visit-recap-actions").is_visible() is False
+
+        page.evaluate("selectVisitInWorkspace('visit-d')")
+        page.get_by_text("Exact answer D", exact=True).wait_for()
+        page.set_viewport_size({"width": 360, "height": 800})
+        heights = page.locator("#visit-recap-actions .button").evaluate_all(
+            "(items) => items.map(item => item.getBoundingClientRect().height)"
+        )
+        overflow = page.evaluate(
+            """() => ({
+              document: document.documentElement.scrollWidth
+                - document.documentElement.clientWidth,
+              dialog: document.getElementById('appointment-dialog').scrollWidth
+                - document.getElementById('appointment-dialog').clientWidth,
+              recap: document.getElementById('appointment-panel-recap').scrollWidth
+                - document.getElementById('appointment-panel-recap').clientWidth,
+            })"""
+        )
+        assert heights and all(height >= 44 for height in heights)
+        assert overflow == {"document": 0, "dialog": 0, "recap": 0}
+
+        page.locator("#visit-recap-copy").focus()
+        page.evaluate("evictClientPhi({ status: 401 })")
+        auth_cleared = page.evaluate(
+            """() => ({
+              content: document.getElementById('visit-recap-content').textContent,
+              actionsHidden: document.getElementById('visit-recap-actions').hidden,
+              focus: document.activeElement.id,
+            })"""
+        )
+        assert auth_cleared["content"] == ""
+        assert auth_cleared["actionsHidden"] is True
+        assert auth_cleared["focus"] not in {
+            "visit-recap-copy",
+            "visit-recap-download",
+            "visit-recap-print",
+        }
+        assert page_errors == []
         browser.close()
 
 

@@ -3193,6 +3193,7 @@ body.dialog-open { overflow: hidden; }
   justify-content: flex-end;
   gap: 8px;
 }
+.visit-recap-actions[hidden] { display: none; }
 .visit-recap-status {
   min-height: 38px;
   margin-bottom: 12px;

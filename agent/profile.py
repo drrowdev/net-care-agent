@@ -88,6 +88,7 @@ DEFAULT_PROFILE: dict = {
     "literature_watched": [],
     "alerts": [],
     "symptoms": [],
+    "symptom_episodes": [],
     "clinical_judgments": [],
     "appointment_questions": [],
     "questions_generation_id": None,
@@ -799,7 +800,7 @@ def get_patient_summary(profile: dict) -> str:
     else:
         lines.append("  None recorded")
 
-    symptoms = sorted(profile.get("symptoms", []), key=lambda x: x.get("date", ""), reverse=True)[
+    symptoms = sorted(profile.get("symptoms", []), key=lambda x: x.get("date") or "", reverse=True)[
         :5
     ]
     lines += ["", "─── Recent symptoms ───"]

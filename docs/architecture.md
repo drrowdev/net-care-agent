@@ -27,6 +27,7 @@ the Azure Files mount at `/home/data/patient_profile.json`. There is one user
                 │     ├─ /api/patient/          │
                 │     │  biomarker-series       │
                 │     │  imaging-series         │
+                │     │  symptom-episodes       │
                 │     ├─ /api/feedback           │
                 │     ├─ /api/follow-ups         │
                 │     ├─ /api/visits + recap     │
@@ -200,6 +201,54 @@ ambiguous imaging transport may retain the last accepted snapshot; auth evicts
 all client PHI, while malformed or hard imaging responses scrub only imaging
 state, hidden DOM, focus, and pending ownership. The table owns any horizontal
 overflow and the comparison stacks at phone width.
+
+`GET /api/patient/symptom-episodes` is a separate authenticated/no-store
+projection over legacy source observations in `symptoms[]` and
+caregiver-maintained lifecycle records in `symptom_episodes[]`. Schema v11
+preserves every legacy row, ID, duplicate, exact wording, position, provenance,
+and unknown extra field. Missing IDs are deterministic from strongest
+source/span/provenance/full-row authority; indistinguishable duplicates receive
+a deterministic occurrence multiset without an individual-identity claim.
+Migration never promotes an observation into an episode. Pre-v11 observation
+dates are `legacy_unknown`; future imported observations remain clinically
+undated unless row-level event-date authority is added in a later extraction
+contract. The document date is stored separately as source-document authority.
+
+Episodes are explicit caregiver-entered, unverified records with stable server
+IDs, current/resolved status, exact symptom wording, an optional neutral
+mild/moderate/severe selection plus exact detail, explicit reported subject,
+timing/frequency/triggers/notes, and precision-preserving onset/resolution dates.
+Create is always current; resolve is the only current-to-resolved transition.
+There is no delete, reopen, elapsed-time resolution, or lifecycle cascade to a
+linked action; recurrence creates another episode. System audit timestamps are
+never clinical dates. Fixed copy always says NET/Care records entries but does
+not assess urgency or monitor symptoms, directs concerns to the treating team,
+and directs a perceived medical emergency to local emergency services.
+
+The projection returns every bounded observation and episode plus both
+revisions, opaque row/episode/projection tokens, and a minimal list of eligible
+open/in-progress caregiver actions. Private tokens bind complete persisted rows,
+episode history/lifecycle/link state, full relevant source/document/import/
+receipt authority, action authority, and both revisions. Each unique claimed
+artifact is integrity-validated once. Public rows contain no source/import IDs,
+paths, quotes, offsets, receipt/history data, or unknown extras; source/evidence
+routes use derived URL-safe references. Missing/manual/unverified facts remain
+visible, while duplicate identity, inconsistent lifecycle/link/source/receipt
+authority, malformed or non-finite nested data, and overflow fail the whole read
+with bounded `422` and no save, quarantine, audit, model, or network call.
+
+Episode create/edit/resolve mutations require a mutation ID, exact projection
+and target authority, and both expected revisions under
+`serialized_mutation`. They append episode audit, advance both revisions, and
+save once. Pure existing-action link/unlink advances only workflow revision.
+Create supports mutually exclusive atomic variants: link one exact eligible
+existing action, or create one bounded manual action and link it. Validation
+precedes either mutation; conflict or save failure leaves neither record, and an
+exact retry returns the immutable original episode/action response. Existing
+visit/decision/alert action provenance is untouched and duplicate episode
+linkage is rejected. The legacy `/api/symptoms`, `/api/status`, SPA, and model
+contexts remain compatibility surfaces; only `symptoms[]` enters prompts.
+Static Patient/Today episode UI work is deferred.
 
 Receipt correction/removal and whole-document undo are serialized profile
 mutations. Each request carries the receipt revision plus a canonical target

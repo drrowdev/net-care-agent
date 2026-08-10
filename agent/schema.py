@@ -34,6 +34,7 @@ _COLLECTION_KEYS: tuple[str, ...] = (
     "treatments_classified",
     "clinical_judgments",
     "symptoms",
+    "symptom_episodes",
     "questions",
     "appointment_questions",
     "feedback",
@@ -136,6 +137,11 @@ BiomarkerDateKind = Literal[
     "unknown",
 ]
 ImagingDateKind = Literal["study", "legacy_unknown", "unknown"]
+SymptomObservationDateKind = Literal["clinical", "legacy_unknown", "unknown"]
+SymptomEpisodeDateKind = Literal["caregiver_entered", "unknown"]
+SymptomEpisodeStatus = Literal["current", "resolved"]
+SymptomSeverityLevel = Literal["mild", "moderate", "severe"]
+SymptomReportedSubject = Literal["patient", "caregiver", "unspecified"]
 DocumentType = Literal[
     "lab_result",
     "imaging_report",
@@ -376,7 +382,13 @@ class Symptom(_EvidenceFields):
     """
 
     id: str | None = None
-    date: str | None = Field(None, description="YYYY-MM-DD")
+    date: str | None = Field(None, description="Exact stored symptom-event date text")
+    date_precision: BiomarkerDatePrecision = "unknown"
+    date_kind: SymptomObservationDateKind = "unknown"
+    source_document_date: str | None = Field(
+        None, description="Document-level date, never symptom-event chronology"
+    )
+    source_document_date_precision: BiomarkerDatePrecision = "unknown"
     symptom: str | None = None
     severity: int | None = Field(None, ge=1, le=5, description="1=mild .. 5=severe")
     note: str | None = None
@@ -516,6 +528,40 @@ class WorkflowAuditEvent(_Lenient):
     result_snapshot: dict[str, Any] | None = None
 
 
+class SymptomEpisodeProvenance(_Lenient):
+    """Immutable trust boundary for a caregiver-maintained episode."""
+
+    capture_method: Literal["caregiver_entered"] = "caregiver_entered"
+    source_verification: Literal["unverified"] = "unverified"
+
+
+class SymptomEpisode(_Lenient):
+    """Explicit caregiver-maintained symptom lifecycle, separate from observations."""
+
+    id: str
+    status: SymptomEpisodeStatus = "current"
+    symptom_text: str
+    severity_level: SymptomSeverityLevel | None = None
+    severity_detail: str | None = None
+    reported_subject: SymptomReportedSubject = "unspecified"
+    timing_text: str | None = None
+    frequency_text: str | None = None
+    triggers_text: str | None = None
+    notes: str | None = None
+    onset_date: str | None = None
+    onset_date_precision: BiomarkerDatePrecision = "unknown"
+    onset_date_kind: SymptomEpisodeDateKind = "unknown"
+    resolved_date: str | None = None
+    resolved_date_precision: BiomarkerDatePrecision = "unknown"
+    resolved_date_kind: SymptomEpisodeDateKind = "unknown"
+    provenance: SymptomEpisodeProvenance = Field(default_factory=SymptomEpisodeProvenance)
+    caregiver_action_id: str | None = None
+    created_at: str
+    updated_at: str
+    resolved_at: str | None = None
+    history: list[WorkflowAuditEvent] = Field(default_factory=list)
+
+
 class ActionOriginSnapshot(_Lenient):
     """Immutable source snapshot captured when a caregiver accepts an action."""
 
@@ -649,7 +695,7 @@ class PatientProfile(_Lenient):
     """The complete patient profile. Lives at ${DATA_DIR}/patient_profile.json."""
 
     schema_version: int = Field(
-        default=9,
+        default=11,
         description="Profile schema version. Incremented when a structural migration runs.",
     )
     profile_revision: int = 0
@@ -672,6 +718,7 @@ class PatientProfile(_Lenient):
     treatments_classification_job_id: str | None = None
     clinical_judgments: list[ClinicalJudgment] = Field(default_factory=list)
     symptoms: list[Symptom] = Field(default_factory=list)
+    symptom_episodes: list[SymptomEpisode] = Field(default_factory=list)
     questions: list[Question] = Field(default_factory=list)
     appointment_questions: list[Question] = Field(default_factory=list)
     questions_generation_id: str | None = None
@@ -745,6 +792,8 @@ def render_schema_markdown() -> str:
         ("treatments_classified[]", TreatmentClassified),
         ("clinical_judgments[]", ClinicalJudgment),
         ("symptoms[]", Symptom),
+        ("symptom_episodes[]", SymptomEpisode),
+        ("symptom_episodes[].provenance", SymptomEpisodeProvenance),
         ("questions[]", Question),
         ("appointments[]", Appointment),
         ("source_documents[]", SourceDocument),
@@ -855,6 +904,8 @@ __all__ = [
     "Question",
     "ResearchUpdate",
     "Symptom",
+    "SymptomEpisode",
+    "SymptomEpisodeProvenance",
     "TrialTracked",
     "TreatmentClassified",
     "_COLLECTION_KEYS",

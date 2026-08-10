@@ -159,6 +159,46 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
   the preserved imaging row ID. Server-side resolution accepts no raw legacy ID,
   client path, source ID, quote, or offset and serves only integrity-validated
   extracted text or its exact stored span.
+- Legacy `symptoms[]` observations and caregiver-maintained
+  `symptom_episodes[]` are distinct authorities. Migration and reconciliation
+  never promote, merge, deduplicate, reorder, resolve, link, or delete an
+  episode because of an observation. Existing observation IDs/extras survive;
+  missing IDs use deterministic source/span/provenance/full-row authority, with
+  occurrence IDs only for an indistinguishable duplicate multiset.
+- Imported symptom observations have unknown clinical event dates unless a
+  future per-row extraction contract provides explicit event authority.
+  Document/note/visit/import/ingestion dates never become onset or resolution;
+  source-document date is separate, and pre-v11 dates remain
+  `legacy_unknown`.
+- Symptom episodes are explicit caregiver-entered and unverified. Severity is
+  only `mild|moderate|severe|null` plus optional exact detail—never mapped,
+  compared, scored, inferred, or used for triage/action/alert automation.
+  Entry actor and explicit reported subject remain separate. Create is current;
+  only current-to-resolved is allowed; no delete, reopen, auto-resolution, or
+  lifecycle cascade exists, and recurrence is a new ID.
+- `GET /api/patient/symptom-episodes` is a deterministic authenticated/no-store
+  complete projection of bounded observations, episodes, and eligible action
+  links. Both revisions and opaque tokens bind full row, private source/
+  evidence/document/import/receipt/history/lifecycle/action authority. Public
+  output contains no paths, offsets, quotes, raw source/import IDs, receipt
+  internals, history, or unsafe route IDs. Corruption/inconsistency/overflow is
+  a whole-read bounded `422`; reads never save, quarantine, audit, mutate,
+  advance revisions, or call models/networks.
+- Episode create/edit/resolve and atomic create-link require exact projection,
+  episode/action authority, both revisions, canonical request, target, and
+  scoped mutation ID under `serialized_mutation`; they advance both revisions,
+  append audit, and save once. Exact replay returns the immutable response.
+  Existing-action link/unlink is workflow-only. Inline create-link validates
+  before creating either object and conflict/save failure commits neither.
+  Actions retain visit/decision/alert provenance, may link to at most one
+  episode, and never cascade lifecycle in either direction.
+- Fixed episode safety copy is non-personalized: NET/Care records entries but
+  does not assess urgency or monitor symptoms; contact the treating team about
+  symptoms/concerns, and contact local emergency services if the caregiver
+  thinks it may be a medical emergency. No model/rules triage or treatment
+  recommendation is permitted. Episodes never enter chat, orchestrator,
+  questions, or executive-summary prompts; legacy `symptoms[]` behavior stays
+  compatible.
 - Every Layer 2 mutation is stable-ID/target-token CAS under
   `serialized_mutation`, appends one request-hash audit event, increments each
   applicable revision once, and saves once. Exact `mutation_id` retries are

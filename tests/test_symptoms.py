@@ -4,8 +4,8 @@ Backend invariants:
 - Schema accepts Symptom entries with severity 1..5 and tolerates extras.
 - DEFAULT_PROFILE ships an empty symptoms list.
 - intake.run_intake appends AI-extracted symptoms with source=ai.
-- _persist_symptoms dedupes same-day same-name entries so re-feeding
-  a document does not double-log a symptom.
+- _persist_symptoms preserves every extracted observation without assigning
+  document dates as clinical symptom dates.
 - get_patient_summary surfaces recent symptoms so the orchestrator and
   chat agents can act on them.
 """
@@ -77,12 +77,16 @@ def test_run_intake_appends_ai_symptoms(agent, empty_profile):
     assert syms[0]["symptom"] == "diarrhea"
     assert syms[0]["severity"] == 2
     assert syms[0]["source"] == "ai"
-    assert syms[0]["date"] == "2026-05-10"
+    assert syms[0]["date"] is None
+    assert syms[0]["date_precision"] == "unknown"
+    assert syms[0]["date_kind"] == "unknown"
+    assert syms[0]["source_document_date"] == "2026-05-10"
+    assert syms[0]["source_document_date_precision"] == "day"
     assert syms[0]["related_treatment"] == "lanreotide"
 
 
-def test_persist_symptoms_dedupes_same_day_same_name(agent, empty_profile):
-    """Feeding the same note twice must not double-log the same symptom."""
+def test_persist_symptoms_preserves_duplicate_observations(agent, empty_profile):
+    """Repeated extracted mentions remain distinct source observations."""
     from agent.intake import _persist_symptoms
 
     reported = [{"symptom": "Nausea", "severity": 3}]
@@ -90,7 +94,15 @@ def test_persist_symptoms_dedupes_same_day_same_name(agent, empty_profile):
     _persist_symptoms(empty_profile, reported, "2026-05-13")
     # Case-insensitive name match too:
     _persist_symptoms(empty_profile, [{"symptom": "nausea", "severity": 4}], "2026-05-13")
-    assert len(empty_profile["symptoms"]) == 1
+    assert len(empty_profile["symptoms"]) == 3
+    assert len({row["id"] for row in empty_profile["symptoms"]}) == 3
+    assert [row["symptom"] for row in empty_profile["symptoms"]] == [
+        "Nausea",
+        "Nausea",
+        "nausea",
+    ]
+    assert all(row["date"] is None for row in empty_profile["symptoms"])
+    assert all(row["source_document_date"] == "2026-05-13" for row in empty_profile["symptoms"])
 
 
 def test_persist_symptoms_different_day_creates_new_entry(agent, empty_profile):

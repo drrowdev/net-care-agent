@@ -9,6 +9,21 @@ incremented when something user-visible or operationally meaningful changes.
 ## [Unreleased]
 
 ### Added
+- **Durable symptom episode backend foundation.** Schema v11 keeps every legacy
+  `symptoms[]` observation separate while adding explicit caregiver-maintained
+  current/resolved `symptom_episodes[]`. Migration preserves IDs, duplicates,
+  wording, order, provenance, and unknown fields; missing IDs are deterministic,
+  legacy dates remain uncertain, and future imported observations no longer
+  inherit a document or ingestion date as clinical symptom chronology.
+- **Replay/CAS-safe symptom episode APIs.** Authenticated no-store projection,
+  opaque source/evidence routes, and serialized create/edit/resolve/link
+  mutations bind both revisions plus complete episode/action/source/import
+  authority. Episode creation can atomically link one eligible existing action
+  or create and link one bounded manual follow-up; replay returns the original
+  response, while conflict/save failure leaves neither partial record. Fixed
+  non-diagnostic safety copy is returned without model/rules triage. Episodes
+  remain excluded from all model prompts, and the shared Patient/Today episode
+  UI is deferred.
 - **Provenance-safe imaging longitudinal backend contract.** Schema v10
   deterministically backfills missing imaging IDs from source/span and full-row
   authority without rewriting existing IDs, wording, dates, unknown fields, list

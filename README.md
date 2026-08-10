@@ -131,7 +131,7 @@ All patient state lives in a single JSON file at `${DATA_DIR}/patient_profile.js
 
 ```
 {
-  "schema_version": 10,
+  "schema_version": 11,
   "profile_revision": 42,
   "workflow_revision": 17,
   "profile_updated_at": "2026-07-10T16:51:49",
@@ -140,6 +140,8 @@ All patient state lives in a single JSON file at `${DATA_DIR}/patient_profile.js
   "patient": { ... },
   "biomarkers":  [ {id, date, date_precision, date_kind, marker, value, unit, reference_range, flag, flag_authority, specimen, assay, method, source_document_id, evidence_status}, ... ],
   "imaging":     [ {id, date, date_precision, date_kind, source_document_date, modality, findings, impression, source_document_id, evidence_status}, ... ],
+  "symptoms":    [ {id, date, date_precision, date_kind, source_document_date, symptom, severity, source_document_id, evidence_status}, ... ],
+  "symptom_episodes": [ {id, status, symptom_text, severity_level, severity_detail, reported_subject, onset_date, resolved_date, provenance, caregiver_action_id, history}, ... ],
   "treatments":  [ {name, status, start_date, end_date, ...}, ... ],
   "documents":   [ {date, type, summary, key_findings, source_document_id, raw_text}, ... ],
   "source_documents": [ {id, ingested_at, source: {path, sha256, length}, text: {...}}, ... ],
@@ -177,7 +179,9 @@ remain bound to that clinical/effective revision. Schema v8 adds
 Owner, due-date, ordering, pinning, and administrative status changes advance
 only the workflow revision. Caregiver-captured clinician answers, decisions,
 clinical outcomes, and alert resolution advance both revisions and stale
-dependent generated context.
+dependent generated context. Caregiver-entered symptom episode create/edit/
+resolve mutations also advance both revisions; pure existing-action link/unlink
+is workflow-only.
 Schema v3 also carries generation identity for AI questions. Legacy generated
 questions without that identity migrate to explicit stale history rather than
 appearing current.
@@ -269,6 +273,7 @@ state and withholds the prior clinical content.
 │   ├── intake.py         # extract structured medical data from text
 │   ├── biomarker_series.py # bounded provenance-safe longitudinal read projection
 │   ├── imaging_series.py # complete non-inferential imaging authority projection
+│   ├── symptom_episodes.py # bounded observation + caregiver episode authority
 │   ├── evidence.py       # validated claim-level source-span catalog/resolution
 │   ├── reconciliation.py # per-document receipts + compare-and-swap correction/undo
 │   ├── follow_through.py # durable actions/visits, validation, CAS + audit helpers
@@ -290,7 +295,8 @@ state and withholds the prior clinical content.
 ├── pyproject.toml        # Python deps + tooling config
 ├── .env.example          # Template for local secrets
 ├── tests/                # pytest suite (no network or API key needed)
-│   └── test_imaging_timeline_ui.py # actual-function Node + live responsive browser coverage
+│   ├── test_imaging_timeline_ui.py # actual-function Node + live responsive browser coverage
+│   └── test_symptom_episodes.py # backend identity/lifecycle/replay/projection contract
 └── docs/                 # Architecture & schema docs
     ├── architecture.md
     ├── operating_manual.md
@@ -372,6 +378,21 @@ complete response atomically, preserves server order and exact report wording,
 and requires the caregiver to select exactly two current records and confirm the
 pair before showing raw facts side by side. It never uses `/api/status` or the
 legacy `/api/patient/evidence` imaging array as fallback authority.
+
+`GET /api/patient/symptom-episodes` is the authenticated, no-store backend
+contract for the next shared Patient/Today symptom workflow. Schema v11 keeps
+legacy `symptoms[]` observations separate and read-only in this contract; it
+never promotes a note/document mention into a current episode or assigns the
+document date as symptom onset. Every duplicate and unknown field remains in
+the stored observation authority. Caregiver-maintained `symptom_episodes[]`
+support explicit current/resolved lifecycle, neutral mild/moderate/severe
+caregiver-entered severity plus exact detail, precision-preserving dates,
+unverified provenance, replay/CAS-safe mutations, and optional durable
+`caregiver_actions[]` linkage. Creation can atomically link one exact eligible
+action or create and link one bounded manual action in the same save. Fixed
+safety copy states that NET/Care neither assesses urgency nor monitors symptoms.
+Episodes are excluded from all model prompts; legacy symptom context remains
+unchanged. The responsive episode UI is deliberately deferred.
 
 The orchestrator's behaviour is shaped by **clinical_judgments** captured from
 oncologist consultations. These act as hard constraints: anything the oncologist

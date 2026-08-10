@@ -31,6 +31,7 @@ All sub-models accept **extra** fields (forward-compat) and treat every document
   'treatments_classification_job_id': str | None,
   'clinical_judgments': list[ClinicalJudgment],
   'symptoms': list[Symptom],
+  'symptom_episodes': list[SymptomEpisode],
   'questions': list[Question],
   'appointment_questions': list[Question],
   'questions_generation_id': str | None,
@@ -230,13 +231,55 @@ Patient-reported symptom or side effect.
 | `evidence_start` | `int \| None` |  |
 | `evidence_end` | `int \| None` |  |
 | `id` | `str \| None` |  |
-| `date` | `str \| None` | YYYY-MM-DD |
+| `date` | `str \| None` | Exact stored symptom-event date text |
+| `date_precision` | `'day' \| 'month' \| 'year' \| 'unknown'` |  |
+| `date_kind` | `'clinical' \| 'legacy_unknown' \| 'unknown'` |  |
+| `source_document_date` | `str \| None` | Document-level date, never symptom-event chronology |
+| `source_document_date_precision` | `'day' \| 'month' \| 'year' \| 'unknown'` |  |
 | `symptom` | `str \| None` |  |
 | `severity` | `int \| None` | 1=mild .. 5=severe |
 | `note` | `str \| None` |  |
 | `related_treatment` | `str \| None` | Optional link to a treatment name in current_treatments |
 | `source` | `'manual' \| 'ai' \| null` |  |
 | `added_at` | `str \| None` | Timestamp when the item first entered the patient profile. |
+
+## `symptom_episodes[]`
+
+Explicit caregiver-maintained symptom lifecycle, separate from observations.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `str` |  |
+| `status` | `'current' \| 'resolved'` |  |
+| `symptom_text` | `str` |  |
+| `severity_level` | `'mild' \| 'moderate' \| 'severe' \| null` |  |
+| `severity_detail` | `str \| None` |  |
+| `reported_subject` | `'patient' \| 'caregiver' \| 'unspecified'` |  |
+| `timing_text` | `str \| None` |  |
+| `frequency_text` | `str \| None` |  |
+| `triggers_text` | `str \| None` |  |
+| `notes` | `str \| None` |  |
+| `onset_date` | `str \| None` |  |
+| `onset_date_precision` | `'day' \| 'month' \| 'year' \| 'unknown'` |  |
+| `onset_date_kind` | `'caregiver_entered' \| 'unknown'` |  |
+| `resolved_date` | `str \| None` |  |
+| `resolved_date_precision` | `'day' \| 'month' \| 'year' \| 'unknown'` |  |
+| `resolved_date_kind` | `'caregiver_entered' \| 'unknown'` |  |
+| `provenance` | `SymptomEpisodeProvenance` |  |
+| `caregiver_action_id` | `str \| None` |  |
+| `created_at` | `str` |  |
+| `updated_at` | `str` |  |
+| `resolved_at` | `str \| None` |  |
+| `history` | `list[WorkflowAuditEvent]` |  |
+
+## `symptom_episodes[].provenance`
+
+Immutable trust boundary for a caregiver-maintained episode.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `capture_method` | `'caregiver_entered'` |  |
+| `source_verification` | `'unverified'` |  |
 
 ## `questions[]`
 

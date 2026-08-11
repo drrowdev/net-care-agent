@@ -1385,12 +1385,24 @@ def _build_projection(
             "treatment_projection_invalid",
             "Treatment follow-up authority is inconsistent.",
         )
+    research_action_ids = {
+        consideration.get("caregiver_action_id")
+        for consideration in profile.get("research_considerations", [])
+        if isinstance(consideration, dict)
+        and isinstance(consideration.get("caregiver_action_id"), str)
+    }
+    if set(linked_discrepancy_actions) & research_action_ids:
+        raise TreatmentProjectionError(
+            "treatment_projection_invalid",
+            "Treatment follow-up authority is inconsistent.",
+        )
+    from .follow_through import action_owner_refs
+
     eligible_actions = [
         _linked_action_public(action)
         for action in actions_list
         if action.get("status") in {"open", "in_progress"}
-        and action.get("id") not in linked_discrepancy_actions
-        and action.get("id") not in symptom_action_ids
+        and not action_owner_refs(profile, action.get("id"))
     ]
     legacy = _legacy_projection(profile, revisions)
     authority_bytes = (

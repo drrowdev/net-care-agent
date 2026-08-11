@@ -133,7 +133,10 @@ def _tracked_trials_context(profile: dict) -> dict:
             9,
         )
     )
-    selected = ordered[:_SUMMARY_TRIAL_LIMIT]
+    selected = [
+        {key: value for key, value in trial.items() if key != "research_record_id"}
+        for trial in ordered[:_SUMMARY_TRIAL_LIMIT]
+    ]
     return {
         "tracked_total": len(tracked),
         "included": len(selected),

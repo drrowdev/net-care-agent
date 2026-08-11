@@ -71,7 +71,12 @@ def test_verification_note_flags_unverified(agent):
 def _trial_profile():
     return {
         "trials_tracked": [
-            {"nct_id": "NCT05477576", "status": "RECRUITING", "url": "http://x"},
+            {
+                "research_record_id": "research_trial_preserved1234",
+                "nct_id": "NCT05477576",
+                "status": "RECRUITING",
+                "url": "http://x",
+            },
             {"nct_id": "NCT05387603", "status": "RECRUITING"},
         ],
         "alerts": [],
@@ -103,6 +108,7 @@ def test_poll_detects_status_change_and_alerts(agent):
     assert len(result["changed"]) == 1
     assert result["changed"][0]["nct_id"] == "NCT05477576"
     assert profile["trials_tracked"][0]["status"] == "ACTIVE_NOT_RECRUITING"
+    assert profile["trials_tracked"][0]["research_record_id"] == "research_trial_preserved1234"
     assert profile["trials_tracked"][0]["status_history"][0]["from"] == "RECRUITING"
     alerts = [a for a in profile["alerts"] if a.get("source") == "trial_status_poll"]
     assert len(alerts) == 1 and alerts[0]["priority"] == "high"

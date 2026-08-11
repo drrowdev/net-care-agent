@@ -1051,14 +1051,38 @@ def _new_action(
     visit_id: str | None = None,
     decision: dict | None = None,
     alert_id: str | None = None,
+    research_consideration: dict | None = None,
     history_mutation_id: str | None = None,
     history_endpoint: str,
     history_target: str | None = None,
 ) -> dict:
-    origin_kind = data.get("origin_kind") or ("visit_decision" if decision else "manual")
-    if origin_kind not in {"manual", "executive_summary_action", "alert", "visit_decision"}:
+    origin_kind = (
+        "research_consideration"
+        if research_consideration is not None
+        else data.get("origin_kind") or ("visit_decision" if decision else "manual")
+    )
+    if origin_kind not in {
+        "manual",
+        "executive_summary_action",
+        "alert",
+        "visit_decision",
+        "research_consideration",
+    }:
         raise agent.FollowThroughError("Invalid origin_kind")
-    if origin_kind == "executive_summary_action":
+    if origin_kind == "research_consideration":
+        if not isinstance(research_consideration, dict):
+            raise agent.FollowThroughError("A valid research consideration is required")
+        text = agent.validate_follow_up_text(data.get("text"))
+        origin = {
+            "kind": origin_kind,
+            "source_id": research_consideration.get("id"),
+            "source_job_id": None,
+            "source_profile_revision": research_consideration.get("source_profile_revision"),
+            "generation_id": None,
+            "text": text,
+            "snapshot": copy.deepcopy(research_consideration.get("snapshot")),
+        }
+    elif origin_kind == "executive_summary_action":
         source_id = str(data.get("source_id") or "")
         source = agent.find_summary_action(profile, source_id, data.get("expected_source_token"))
         text = agent.validate_follow_up_text(source.get("action") or source.get("text"))
@@ -1347,6 +1371,12 @@ def _validate_episode_action_link(
             raise _SymptomConflictError(
                 "The caregiver follow-up is already linked to a treatment discrepancy."
             )
+    allowed_owner = f"symptom_episode:{episode_id}" if episode_id else None
+    other_owners = [
+        ref for ref in agent.action_owner_refs(profile, action_id) if ref != allowed_owner
+    ]
+    if other_owners:
+        raise _SymptomConflictError("The caregiver follow-up is already owned by another workflow.")
     return action
 
 
@@ -1667,6 +1697,14 @@ def _treatment_action_link(
             raise _TreatmentConflictError(
                 "The caregiver follow-up is already linked to another treatment discrepancy."
             )
+    allowed_owner = f"treatment_discrepancy:{discrepancy_id}" if discrepancy_id else None
+    other_owners = [
+        ref for ref in agent.action_owner_refs(profile, action_id) if ref != allowed_owner
+    ]
+    if other_owners:
+        raise _TreatmentConflictError(
+            "The caregiver follow-up is already owned by another workflow."
+        )
     return action
 
 
@@ -4436,6 +4474,391 @@ def api_delete_paper(pmid):
     ]
     agent.save_profile(profile)
     return jsonify({"ok": True})
+
+
+# ── research shortlist and disposition ───────────────────────────────────────
+_RESEARCH_META_FIELDS = {
+    "mutation_id",
+    "expected_profile_revision",
+    "expected_workflow_revision",
+    "expected_projection_token",
+}
+
+
+def _research_error(exc: Exception):
+    if isinstance(exc, agent.ResearchProjectionError):
+        return jsonify({"error": exc.public_message, "code": exc.code}), 422
+    if isinstance(exc, agent.FollowThroughConflict):
+        return jsonify({"error": str(exc), "code": "research_conflict"}), 409
+    if isinstance(exc, KeyError):
+        return jsonify({"error": str(exc.args[0]), "code": "not_found"}), 404
+    return jsonify({"error": str(exc), "code": "invalid_research_request"}), 400
+
+
+def _require_research_fields(data: dict, allowed: set[str]) -> None:
+    if set(data) - allowed:
+        raise ValueError("Unsupported research workflow field.")
+
+
+def _require_research_authority(profile: dict, projection: dict, data: dict) -> None:
+    expected_profile = data.get("expected_profile_revision")
+    expected_workflow = data.get("expected_workflow_revision")
+    if isinstance(expected_profile, bool) or not isinstance(expected_profile, int):
+        raise ValueError("expected_profile_revision must be an integer.")
+    if isinstance(expected_workflow, bool) or not isinstance(expected_workflow, int):
+        raise ValueError("expected_workflow_revision must be an integer.")
+    if expected_profile != profile.get("profile_revision"):
+        raise agent.FollowThroughConflict("The patient profile changed. Refresh and try again.")
+    if expected_workflow != profile.get("workflow_revision"):
+        raise agent.FollowThroughConflict("The workflow changed. Refresh and try again.")
+    expected_projection = data.get("expected_projection_token")
+    if not isinstance(expected_projection, str) or not expected_projection:
+        raise ValueError("expected_projection_token is required.")
+    if not hmac.compare_digest(expected_projection, projection["projection_token"]):
+        raise agent.FollowThroughConflict("The research workspace changed. Refresh and try again.")
+
+
+def _research_row(profile: dict, record_id: str, expected_token: object) -> tuple[str, dict]:
+    matches = [
+        (item_type, row)
+        for item_type, collection in (
+            ("trial", "trials_tracked"),
+            ("paper", "literature_watched"),
+        )
+        for row in profile.get(collection, [])
+        if isinstance(row, dict) and row.get("research_record_id") == record_id
+    ]
+    if len(matches) != 1:
+        raise KeyError("Research occurrence not found.")
+    if not isinstance(expected_token, str) or not expected_token:
+        raise ValueError("expected_item_token is required.")
+    if not hmac.compare_digest(expected_token, agent.semantic_token(matches[0][1])):
+        raise agent.FollowThroughConflict("The research occurrence changed. Refresh and try again.")
+    return matches[0]
+
+
+def _research_consideration(
+    profile: dict,
+    consideration_id: str,
+    expected_token: object,
+) -> dict:
+    matches = [
+        item
+        for item in profile.get("research_considerations", [])
+        if isinstance(item, dict) and item.get("id") == consideration_id
+    ]
+    if len(matches) != 1:
+        raise KeyError("Research consideration not found.")
+    if not isinstance(expected_token, str) or not expected_token:
+        raise ValueError("expected_consideration_token is required.")
+    if not hmac.compare_digest(expected_token, agent.semantic_token(matches[0])):
+        raise agent.FollowThroughConflict(
+            "The research consideration changed. Refresh and try again."
+        )
+    return matches[0]
+
+
+def _research_mutation_response(profile: dict, consideration_id: str) -> dict:
+    projection = agent.project_research_workspace(profile)
+    consideration = next(
+        item for item in projection["considerations"] if item["id"] == consideration_id
+    )
+    return {
+        "consideration": consideration,
+        "workflow_revision": projection["workflow_revision"],
+        "profile_revision": projection["profile_revision"],
+    }
+
+
+def _save_research_mutation(profile: dict, event: dict, consideration_id: str) -> dict:
+    return _save_workflow_mutation(
+        profile,
+        clinical_change=False,
+        reason="",
+        event=event,
+        response_factory=lambda: _research_mutation_response(profile, consideration_id),
+    )
+
+
+@app.route("/api/patient/research-workspace")
+def api_research_workspace():
+    try:
+        return jsonify(agent.project_research_workspace(agent.load_profile()))
+    except agent.ResearchProjectionError as exc:
+        return _research_error(exc)
+
+
+@app.route("/api/research-considerations", methods=["POST"])
+def api_create_research_consideration():
+    try:
+        data = _workflow_request()
+        _require_research_fields(
+            data,
+            _RESEARCH_META_FIELDS | {"research_record_id", "expected_item_token"},
+        )
+        mutation_id = agent.validate_mutation_id(data.get("mutation_id"))
+        record_id = data.get("research_record_id")
+        if not isinstance(record_id, str) or not record_id:
+            raise ValueError("research_record_id is required.")
+        endpoint = "POST /api/research-considerations"
+        operation = "created"
+        target = f"research_occurrence:{record_id}"
+        with agent.serialized_mutation():
+            profile = agent.load_profile()
+            replay = _idempotent_result(
+                profile,
+                mutation_id,
+                data,
+                endpoint=endpoint,
+                operation=operation,
+                target=target,
+            )
+            if replay is not None:
+                return jsonify(replay)
+            projection = agent.project_research_workspace(profile)
+            _require_research_authority(profile, projection, data)
+            item_type, row = _research_row(profile, record_id, data.get("expected_item_token"))
+            if any(
+                item.get("research_record_id") == record_id
+                for item in profile.get("research_considerations", [])
+                if isinstance(item, dict)
+            ):
+                raise agent.FollowThroughConflict(
+                    "This research occurrence already has a consideration."
+                )
+            snapshot = agent.capture_research_snapshot(item_type, row)
+            timestamp = now_stamp()
+            consideration_id = agent.research_consideration_id(record_id)
+            consideration = {
+                "id": consideration_id,
+                "item_type": item_type,
+                "research_record_id": record_id,
+                "source_key": snapshot["source_key"],
+                "status": "open",
+                "snapshot": snapshot,
+                "source_profile_revision": profile["profile_revision"],
+                "caregiver_action_id": None,
+                "events": [],
+                "created_at": timestamp,
+                "updated_at": timestamp,
+                "closed_at": None,
+                "history": [],
+            }
+            profile.setdefault("research_considerations", []).append(consideration)
+            event = agent.append_history(
+                consideration,
+                endpoint=endpoint,
+                operation=operation,
+                target=target,
+                mutation_id=mutation_id,
+                payload=data,
+                before_token=None,
+                changes={"status": {"before": None, "after": "open"}},
+            )
+            result = _save_research_mutation(profile, event, consideration_id)
+        return jsonify(result), 201
+    except (agent.FollowThroughError, ValueError, TypeError, KeyError) as exc:
+        return _research_error(exc)
+
+
+def _research_existing_mutation(
+    consideration_id: str,
+    *,
+    endpoint: str,
+    operation: str,
+    allowed_fields: set[str],
+    mutate,
+):
+    data = _workflow_request()
+    _require_research_fields(
+        data,
+        _RESEARCH_META_FIELDS | {"expected_consideration_token"} | allowed_fields,
+    )
+    mutation_id = agent.validate_mutation_id(data.get("mutation_id"))
+    target = f"research_consideration:{consideration_id}"
+    with agent.serialized_mutation():
+        profile = agent.load_profile()
+        replay = _idempotent_result(
+            profile,
+            mutation_id,
+            data,
+            endpoint=endpoint,
+            operation=operation,
+            target=target,
+        )
+        if replay is not None:
+            return replay
+        projection = agent.project_research_workspace(profile)
+        _require_research_authority(profile, projection, data)
+        consideration = _research_consideration(
+            profile,
+            consideration_id,
+            data.get("expected_consideration_token"),
+        )
+        before_token = agent.semantic_token(consideration)
+        changes = mutate(profile, consideration, data, mutation_id)
+        consideration["updated_at"] = now_stamp()
+        event = agent.append_history(
+            consideration,
+            endpoint=endpoint,
+            operation=operation,
+            target=target,
+            mutation_id=mutation_id,
+            payload=data,
+            before_token=before_token,
+            changes=changes,
+        )
+        return _save_research_mutation(profile, event, consideration_id)
+
+
+@app.route("/api/research-considerations/<consideration_id>/events", methods=["POST"])
+def api_add_research_event(consideration_id):
+    def mutate(_profile, consideration, data, _mutation_id):
+        event = agent.build_research_event(consideration["item_type"], data)
+        consideration.setdefault("events", []).append(event)
+        return {"event_id": event["id"], "event_type": event["event_type"]}
+
+    try:
+        result = _research_existing_mutation(
+            consideration_id,
+            endpoint="POST /api/research-considerations/<id>/events",
+            operation="event_recorded",
+            allowed_fields={"event_type", "note", "who", "context", "occurred_on"},
+            mutate=mutate,
+        )
+        return jsonify(result), 201
+    except (agent.FollowThroughError, ValueError, TypeError, KeyError) as exc:
+        return _research_error(exc)
+
+
+def _set_research_status(consideration_id: str, status: str):
+    operation = "closed" if status == "closed" else "resumed"
+
+    def mutate(_profile, consideration, _data, _mutation_id):
+        current = consideration.get("status")
+        expected = "open" if status == "closed" else "closed"
+        if current != expected:
+            raise agent.FollowThroughConflict(
+                "The research consideration is not eligible for this lifecycle change."
+            )
+        timestamp = now_stamp()
+        consideration["status"] = status
+        consideration["closed_at"] = timestamp if status == "closed" else None
+        return {"status": {"before": current, "after": status}}
+
+    return _research_existing_mutation(
+        consideration_id,
+        endpoint=f"POST /api/research-considerations/<id>/{'close' if status == 'closed' else 'resume'}",
+        operation=operation,
+        allowed_fields=set(),
+        mutate=mutate,
+    )
+
+
+@app.route("/api/research-considerations/<consideration_id>/close", methods=["POST"])
+def api_close_research_consideration(consideration_id):
+    try:
+        return jsonify(_set_research_status(consideration_id, "closed"))
+    except (agent.FollowThroughError, ValueError, TypeError, KeyError) as exc:
+        return _research_error(exc)
+
+
+@app.route("/api/research-considerations/<consideration_id>/resume", methods=["POST"])
+def api_resume_research_consideration(consideration_id):
+    try:
+        return jsonify(_set_research_status(consideration_id, "open"))
+    except (agent.FollowThroughError, ValueError, TypeError, KeyError) as exc:
+        return _research_error(exc)
+
+
+@app.route("/api/research-considerations/<consideration_id>/follow-up", methods=["PATCH"])
+def api_patch_research_follow_up(consideration_id):
+    def mutate(profile, consideration, data, mutation_id):
+        has_action_id = "caregiver_action_id" in data
+        has_inline = "follow_up" in data
+        if has_action_id == has_inline:
+            raise ValueError(
+                "Use exactly one follow-up operation: caregiver_action_id or follow_up."
+            )
+        if has_inline and data.get("expected_action_token") is not None:
+            raise ValueError("expected_action_token cannot be used with follow_up.")
+        current_id = consideration.get("caregiver_action_id")
+        new_id = data.get("caregiver_action_id") if has_action_id else None
+        if has_inline:
+            if current_id is not None:
+                raise agent.FollowThroughConflict(
+                    "Unlink the current caregiver follow-up before creating another."
+                )
+            follow_up = data.get("follow_up")
+            if not isinstance(follow_up, dict) or set(follow_up) - {
+                "text",
+                "owner",
+                "due_date",
+            }:
+                raise ValueError("follow_up must contain only text, owner, and due_date.")
+            validated = {
+                "text": agent.validate_follow_up_text(follow_up.get("text")),
+                "owner": agent.validate_owner(follow_up.get("owner")),
+                "due_date": agent.validate_date(follow_up.get("due_date"), "due_date"),
+            }
+            internal_mutation_id = (
+                "research-action:" + hashlib.sha256(mutation_id.encode("ascii")).hexdigest()[:32]
+            )
+            action = _new_action(
+                profile,
+                validated,
+                mutation_id=mutation_id,
+                research_consideration=consideration,
+                history_mutation_id=internal_mutation_id,
+                history_endpoint="PATCH /api/research-considerations/<id>/follow-up",
+            )
+            new_id = action["id"]
+        elif new_id is None:
+            if current_id is None:
+                raise agent.FollowThroughConflict(
+                    "This research consideration has no caregiver follow-up to unlink."
+                )
+            action = _action_record(profile, current_id)
+            expected = data.get("expected_action_token")
+            if not isinstance(expected, str) or not hmac.compare_digest(
+                expected, agent.semantic_token(action)
+            ):
+                raise agent.FollowThroughConflict(
+                    "The caregiver follow-up changed. Refresh and try again."
+                )
+        else:
+            if current_id is not None:
+                raise agent.FollowThroughConflict(
+                    "Unlink the current caregiver follow-up before linking another."
+                )
+            action = _action_record(profile, new_id)
+            if action.get("status") not in {"open", "in_progress"}:
+                raise agent.FollowThroughConflict("The caregiver follow-up is no longer eligible.")
+            expected = data.get("expected_action_token")
+            if not isinstance(expected, str) or not hmac.compare_digest(
+                expected, agent.semantic_token(action)
+            ):
+                raise agent.FollowThroughConflict(
+                    "The caregiver follow-up changed. Refresh and try again."
+                )
+            if agent.action_owner_refs(profile, new_id):
+                raise agent.FollowThroughConflict(
+                    "The caregiver follow-up is already owned by another workflow."
+                )
+        consideration["caregiver_action_id"] = new_id
+        return {"caregiver_action_id": {"before": current_id, "after": new_id}}
+
+    try:
+        result = _research_existing_mutation(
+            consideration_id,
+            endpoint="PATCH /api/research-considerations/<id>/follow-up",
+            operation="follow_up_changed",
+            allowed_fields={"caregiver_action_id", "expected_action_token", "follow_up"},
+            mutate=mutate,
+        )
+        return jsonify(result)
+    except (agent.FollowThroughError, ValueError, TypeError, KeyError) as exc:
+        return _research_error(exc)
 
 
 @app.route("/api/questions")

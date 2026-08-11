@@ -36,7 +36,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 13
+CURRENT_SCHEMA_VERSION: int = 14
 
 # Append-only ordered registry of migrations.  Never reorder entries.
 _REGISTRY: list[dict[str, Any]] = []
@@ -593,6 +593,18 @@ def _m0013_add_treatment_terminal_authority(data: dict) -> dict:
             ):
                 course["terminal_qualifier"] = "legacy_unspecified"
     data["schema_version"] = 13
+    return data
+
+
+@_migration("0014_add_research_disposition_authority", to_version=14)
+def _m0014_add_research_disposition_authority(data: dict) -> dict:
+    """v13 -> v14: add stable research occurrences without inferring workflow."""
+    from .research_disposition import assign_legacy_research_record_ids
+
+    assign_legacy_research_record_ids(data)
+    if data.get("research_considerations") is None:
+        data["research_considerations"] = []
+    data["schema_version"] = 14
     return data
 
 

@@ -29,6 +29,7 @@ the Azure Files mount at `/home/data/patient_profile.json`. There is one user
                 │     │  imaging-series         │
                 │     │  symptom-episodes       │
                 │     │  treatment-reconciliation│
+                │     │  research-workspace     │
                 │     ├─ /api/feedback           │
                 │     ├─ /api/follow-ups         │
                 │     ├─ /api/visits + recap     │
@@ -600,6 +601,36 @@ restoration, and while relevant work is active, then labels the matching tracked
 trials and papers **New**. The retired
 `/api/changes` routes return an inert zero-count payload temporarily so cached
 pre-release tabs stop showing the removed review control without writing state.
+
+Schema v14 and `agent/research_disposition.py` add a separate caregiver workflow
+authority without changing discovery. Every stored trial/paper occurrence has a
+private stable ID; valid external source authority remains exact NCT/PMID, while
+generated compatibility notes and discovery provenance are separate structures.
+`GET /api/patient/research-workspace` projects every occurrence in profile order,
+exact latest-batch membership, immutable allowlisted shortlist snapshots,
+section-specific current equality, neutral open/closed history, attributed
+caregiver events, eligible follow-ups, both revisions, and opaque full-authority
+tokens. Canonical navigation is generated only from validated IDs. Malformed,
+ambiguous, inconsistent, or oversized authority fails the whole bounded read
+with a short non-PHI `422`.
+
+Research mutation routes create one consideration per exact occurrence, append
+events, explicitly close/resume it, and atomically link/create/unlink one existing
+`caregiver_action`. Both revisions, the complete projection token, exact target
+tokens, canonical request hash, and scoped mutation ID are mandatory. The
+serialized transaction validates before allocation, appends audit, saves once,
+and increments only `workflow_revision`; replay returns the original immutable
+result. Shared action-owner checks cover visits, decisions, alerts, symptom
+episodes, treatment discrepancies, and research considerations. Source refresh,
+removal, same-external-ID replacement, import reconciliation, action lifecycle,
+and latest-batch changes cannot rewrite or close a consideration.
+
+The shortlist/disposition collection, internal occurrence IDs, event text, and
+research-linked actions are excluded from all model inputs. Research-created
+actions retain immutable origin and remain excluded after unlink; a generic
+action is excluded only while linked. This preserves existing discovery queries,
+ranking, summaries, and model-visible source research content. The caregiver SPA
+for this authority is intentionally deferred.
 
 Action dismissal posts the assessment revision and expected action text to
 `POST /api/summary/dismiss-action/<idx>`. Flask returns `409` without mutating

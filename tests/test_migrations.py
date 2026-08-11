@@ -45,7 +45,7 @@ def test_unversioned_migration_records_log_entry():
     assert "_migration_log" in result
     log = result["_migration_log"]
     assert isinstance(log, list)
-    assert len(log) == 13
+    assert len(log) == 14
     entry = log[0]
     assert entry["id"] == "0001_add_schema_version"
     assert "applied_at" in entry
@@ -198,7 +198,7 @@ def test_v1_adds_empty_document_import_ledger_without_clinical_inference():
     data = {"schema_version": 1, "patient": {"diagnosis": "NET"}}
     result = apply_migrations(data)
 
-    assert result["schema_version"] == 13
+    assert result["schema_version"] == 14
     assert result["document_imports"] == []
     assert result["patient"]["diagnosis"] == "NET"
     assert result["patient"]["current_treatment_records"] == []
@@ -218,7 +218,7 @@ def test_v2_conservatively_stales_legacy_ai_questions_without_generation_identit
 
     result = apply_migrations(data)
 
-    assert result["schema_version"] == 13
+    assert result["schema_version"] == 14
     assert result["questions_generation_id"] is None
     assert result["appointment_questions"][0]["stale"] is True
     assert (
@@ -243,7 +243,7 @@ def test_v3_deterministically_backfills_stable_alert_ids():
     first = apply_migrations(copy.deepcopy(source))
     second = apply_migrations(copy.deepcopy(source))
 
-    assert first["schema_version"] == 13
+    assert first["schema_version"] == 14
     assert first["alerts"][0]["id"].startswith("alert_legacy_")
     assert first["alerts"][1]["id"].startswith("alert_legacy_")
     assert first["alerts"][0]["id"] != first["alerts"][1]["id"]
@@ -283,7 +283,7 @@ def test_v4_migrates_alert_lifetimes_and_invalidates_legacy_classification():
 
     result = apply_migrations(data)
 
-    assert result["schema_version"] == 13
+    assert result["schema_version"] == 14
     assert result["treatments_classification_revision"] is None
     assert result["treatments_classification_job_id"] is None
     assert [item["dependency_kind"] for item in result["alerts"]] == [
@@ -318,7 +318,7 @@ def test_v5_backfills_stable_composite_treatment_records_and_stales_classificati
     first = apply_migrations(copy.deepcopy(source))
     second = apply_migrations(copy.deepcopy(source))
 
-    assert first["schema_version"] == 13
+    assert first["schema_version"] == 14
     records = first["patient"]["current_treatment_records"]
     assert [item["text"] for item in records] == ["lanreotide", "everolimus"]
     assert len({item["id"] for item in records}) == 2
@@ -414,7 +414,7 @@ def test_v1_null_scaffolding_migrates_deterministically_without_inventing_clinic
     first = apply_migrations(copy.deepcopy(source))
     second = apply_migrations(copy.deepcopy(source))
 
-    assert first["schema_version"] == 13
+    assert first["schema_version"] == 14
     assert first["patient"] == {"current_treatment_records": []}
     assert first["document_imports"] == []
     assert first["alerts"][0]["dependency_kind"] == "profile_snapshot"
@@ -443,7 +443,7 @@ def test_v7_adds_follow_through_defaults_and_deterministic_summary_action_ids():
     second = apply_migrations(copy.deepcopy(source))
 
     assert first == second
-    assert first["schema_version"] == 13
+    assert first["schema_version"] == 14
     assert first["workflow_revision"] == 0
     assert first["caregiver_actions"] == []
     assert first["visits"] == []
@@ -532,7 +532,7 @@ def test_load_profile_persists_v9_biomarker_backfill_idempotently(agent):
     first = agent.load_profile()
     second = agent.load_profile()
 
-    assert first["schema_version"] == 13
+    assert first["schema_version"] == 14
     assert first["biomarkers"][0]["id"] == second["biomarkers"][0]["id"]
     assert (
         json.loads(agent.PROFILE_PATH.read_text(encoding="utf-8"))["biomarkers"][0]["id"]
@@ -595,7 +595,7 @@ def test_v9_backfills_imaging_authority_without_rewriting_legacy_facts():
 
     result = apply_migrations(copy.deepcopy(source))
 
-    assert result["schema_version"] == 13
+    assert result["schema_version"] == 14
     assert result["imaging"][0]["id"] == "existing-imaging-id"
     for key, value in existing.items():
         assert result["imaging"][0][key] == value
@@ -781,7 +781,7 @@ def test_v10_adds_separate_episode_authority_without_promoting_legacy_symptoms()
     second = apply_migrations(copy.deepcopy(source))
 
     assert first == second
-    assert first["schema_version"] == 13
+    assert first["schema_version"] == 14
     assert first["symptom_episodes"] == []
     assert first["symptoms"][0]["id"] == existing["id"]
     for key, value in existing.items():

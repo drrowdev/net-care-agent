@@ -220,9 +220,15 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
   legacy component IDs may link; no fuzzy, substring, brand/generic, regimen,
   class, dose-conversion, schedule-normalization, adherence, suitability, or
   clinical comparison logic is part of reconciliation.
-- Discrepancies are explicit caregiver-created neutral comparisons against one
-  opaque source fact and optional exact course. They are never model- or
-  client-inferred. Resolution preserves the discrepancy, immutable cited
+- Discrepancies are explicit caregiver-created neutral comparisons with exactly
+  two current cited authorities: opaque source occurrence A plus either distinct
+  opaque source occurrence B or one exact caregiver course B. Public
+  `citation_kind=source_vs_source|source_vs_course` is server-declared; A/B
+  carries no chronology, preference, correctness, or clinical meaning.
+  Generated classification and legacy raw/component rows are non-citable.
+  Client-authored snapshots, missing/mixed/duplicate/dangling/stale citation
+  pairs, and recurrence-side substitution are rejected before ID allocation or
+  mutation. Resolution preserves the discrepancy, both immutable cited
   snapshots, source facts, and all prior outcomes. Confirmation notes retain
   exact wording and fixed
   `Caregiver-entered · attributed to clinician · unverified` provenance.
@@ -230,11 +236,17 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
   authority, safety, error, urgency, interaction, contraindication, duplicate
   therapy, adherence, or causality. Only `caregiver_record_corrected` may carry
   an explicit atomic course patch. Reopen preserves outcomes; recurrence is a
-  new linked discrepancy ID.
+  new linked discrepancy ID with the prior kind/references/snapshots copied only
+  by the server. Existing complete source/course records remain valid without
+  rewriting. Existing one-sided records remain visible as
+  `legacy_incomplete/missing_second_citation`, explicitly ineligible for
+  resolve/reopen/recur, and never receive an invented citation.
 - `GET /api/patient/treatment-reconciliation` is a deterministic authenticated/
   no-store complete bounded projection. Both revisions and opaque tokens bind
   full raw/classified/component/source/document/import/receipt/evidence/course/
-  discrepancy/history/action authority. Public output exposes no paths,
+  discrepancy/history/action authority for both citation sides. Immutable
+  snapshots and current lifecycle state are separate; changing either side
+  rotates current tokens without snapshot rewrite. Public output exposes no paths,
   offsets, quotes, raw source/import/job/receipt/change IDs, or client-
   constructible evidence coordinates. Opaque same-origin routes serve only
   integrity-validated text/span. Invalid, inconsistent, duplicate-ID, tampered,
@@ -254,6 +266,8 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
   discrepancies, confirmations, or action links. New reconciliation state is
   excluded from every model prompt; existing raw/classified treatment prompt
   behavior remains unchanged.
+- Fixed treatment safety copy is exactly `NET/Care records what you enter but does not verify treatment details or advise starting, stopping, or changing treatment. Confirm treatment decisions with the treating team.` It is static,
+  nonconditional, non-PHI, and non-prescriptive.
 - Every Layer 2 mutation is stable-ID/target-token CAS under
   `serialized_mutation`, appends one request-hash audit event, increments each
   applicable revision once, and saves once. Exact `mutation_id` retries are

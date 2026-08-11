@@ -655,13 +655,21 @@ def _safe_result_snapshot(
             }
             else target.removeprefix("treatment_course:")
         )
-        return (
+        if not (
             collection == "treatment_courses"
             and isinstance(course, dict)
             and course.get("id") == expected_id
             and isinstance(course.get("token"), str)
             and bool(course["token"])
             and set(snapshot) == {"course", "workflow_revision", "profile_revision"}
+        ):
+            return False
+        from .treatment_reconciliation import treatment_replay_response_is_safe
+
+        return treatment_replay_response_is_safe(
+            snapshot,
+            expected_id=expected_id,
+            discrepancy=False,
         )
     if endpoint in {
         "POST /api/treatment-reconciliation/discrepancies",
@@ -675,7 +683,7 @@ def _safe_result_snapshot(
             if endpoint == "POST /api/treatment-reconciliation/discrepancies"
             else target.removeprefix("treatment_discrepancy:").removesuffix(":follow_up")
         )
-        return (
+        if not (
             collection == "treatment_discrepancies"
             and isinstance(discrepancy, dict)
             and discrepancy.get("id") == expected_id
@@ -689,6 +697,14 @@ def _safe_result_snapshot(
                 "workflow_revision",
                 "profile_revision",
             }
+        ):
+            return False
+        from .treatment_reconciliation import treatment_replay_response_is_safe
+
+        return treatment_replay_response_is_safe(
+            snapshot,
+            expected_id=expected_id,
+            discrepancy=True,
         )
     return False
 

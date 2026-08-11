@@ -283,6 +283,60 @@ Immutable trust boundary for a caregiver-maintained episode.
 | `capture_method` | `'caregiver_entered'` |  |
 | `source_verification` | `'unverified'` |  |
 
+## `treatment_courses[]`
+
+Explicit caregiver-maintained treatment lifecycle, separate from source,
+legacy component, and generated classification authority.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `str` | Opaque caregiver-course identity |
+| `status` | `'current' \| 'past' \| 'planned'` | Explicit workflow state |
+| `treatment_text` | `str` | Exact caregiver-entered wording |
+| `treatment_type_text`, `dose_text`, `route_text`, `frequency_text`, `cycle_text`, `schedule_text`, `formulation_text`, `indication_text`, `notes` | `str \| None` | Exact optional caregiver-entered text |
+| `legacy_component_ids` | `list[str]` | Explicit links to non-citable compatibility components |
+| `start_date`, `stop_date`, `planned_date` | `str \| None` | Explicit YYYY, YYYY-MM, or YYYY-MM-DD text |
+| `*_date_precision` | `'day' \| 'month' \| 'year' \| 'unknown'` | Entered precision |
+| `*_date_kind` | `'caregiver_entered' \| 'unknown'` | Never inferred from document or clock |
+| `previous_course_id` | `str \| None` | Prior course when an episode is explicitly restarted |
+| `provenance` | `TreatmentCourseProvenance` | Caregiver-entered, unverified trust boundary |
+| `created_at`, `updated_at` | `str` | Audit timestamps |
+| `history` | `list[WorkflowAuditEvent]` | Append-only mutation audit |
+
+## `treatment_discrepancies[]`
+
+Neutral caregiver-created two-authority citations. Source A plus exactly one B
+variant is required for every new record. Existing PR #46 source/course records
+without `citation_kind` remain valid as `source_vs_course`; a one-sided legacy
+record remains unchanged on disk and projects as bounded
+`legacy_incomplete/missing_second_citation`.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `str` | Opaque discrepancy identity |
+| `status` | `'open' \| 'resolved'` | Explicit workflow state |
+| `category` | `'name_or_type' \| 'status' \| 'dose_or_schedule' \| 'date' \| 'source_wording' \| 'other'` | Mechanical caregiver-selected category |
+| `comparison_text` | `str` | Exact neutral caregiver wording |
+| `citation_kind` | `'source_vs_source' \| 'source_vs_course' \| None` | Required on new records; `None` is retained only for backward-compatible stored records |
+| `source_fact_ref` | `str` | Opaque source occurrence A |
+| `source_fact_snapshot` | `dict` | Immutable bounded public snapshot of source A |
+| `comparison_source_fact_ref` | `str \| None` | Distinct opaque source occurrence B for `source_vs_source` |
+| `comparison_source_fact_snapshot` | `dict \| None` | Immutable bounded public snapshot of source B |
+| `course_id` | `str \| None` | Caregiver course B for `source_vs_course` |
+| `course_snapshot` | `dict \| None` | Immutable bounded public snapshot of course B |
+| `recurs_from_id` | `str \| None` | Resolved prior discrepancy; server copies its citation authority |
+| `confirmations` | `list[TreatmentConfirmation]` | Preserved caregiver-entered, clinician-attributed, unverified outcomes |
+| `caregiver_action_id` | `str \| None` | Optional durable follow-up link |
+| `provenance` | `TreatmentCourseProvenance` | Caregiver-entered, unverified trust boundary |
+| `created_at`, `updated_at` | `str` | Audit timestamps |
+| `resolved_at` | `str \| None` | Explicit resolution timestamp |
+| `history` | `list[WorkflowAuditEvent]` | Append-only mutation audit |
+
+The public projection adds explicit `citation_authority`, lifecycle-specific
+`eligibility`, and symmetric `citations.source_a/source_b/course_b` objects.
+Each side separates its immutable `snapshot` from current source/course state.
+Those projection-only fields are not persisted profile schema.
+
 ## `questions[]`
 
 | Field | Type | Description |

@@ -1557,6 +1557,14 @@ def _treatment_source_fact(projection: dict, record_ref: Any, token: Any) -> dic
     return row
 
 
+def _require_complete_discrepancy_citations(row: dict) -> None:
+    authority = row.get("citation_authority")
+    if not isinstance(authority, dict) or authority.get("state") != "complete":
+        raise _TreatmentConflictError(
+            "This legacy discrepancy does not have two cited authorities and is read-only."
+        )
+
+
 def _course_record(profile: dict, course_id: str) -> dict:
     course = next(
         (
@@ -5356,6 +5364,8 @@ def api_create_treatment_discrepancy():
                 "comparison_text",
                 "source_fact_ref",
                 "expected_source_fact_token",
+                "comparison_source_fact_ref",
+                "expected_comparison_source_fact_token",
                 "course_id",
                 "expected_course_token",
                 "recurs_from_id",
@@ -5388,26 +5398,20 @@ def api_create_treatment_discrepancy():
             projection = _treatment_projection(profile)
             _require_treatment_revisions(profile, data)
             _require_treatment_projection_token(projection, data)
-            source_fact = _treatment_source_fact(
-                projection,
-                data.get("source_fact_ref"),
-                data.get("expected_source_fact_token"),
-            )
-            course_id = data.get("course_id")
-            course_snapshot = None
-            if course_id is not None:
-                if not isinstance(course_id, str) or not course_id:
-                    raise ValueError("course_id must be a treatment course ID or null.")
-                course_snapshot = _treatment_row(
-                    projection,
-                    "courses",
-                    course_id,
-                    data.get("expected_course_token"),
-                )
-            elif data.get("expected_course_token") is not None:
-                raise ValueError("expected_course_token requires course_id.")
             recurs_from_id = data.get("recurs_from_id")
             if recurs_from_id is not None:
+                citation_fields = {
+                    "source_fact_ref",
+                    "expected_source_fact_token",
+                    "comparison_source_fact_ref",
+                    "expected_comparison_source_fact_token",
+                    "course_id",
+                    "expected_course_token",
+                }
+                if set(data) & citation_fields:
+                    raise ValueError(
+                        "Recurring discrepancies preserve cited authorities server-side."
+                    )
                 prior = _treatment_row(
                     projection,
                     "discrepancies",
@@ -5418,17 +5422,74 @@ def api_create_treatment_discrepancy():
                     raise _TreatmentConflictError(
                         "A recurring discrepancy must link to a resolved discrepancy."
                     )
+                _require_complete_discrepancy_citations(prior)
+                prior_record = _discrepancy_record(profile, recurs_from_id)
+                citation_kind = prior["citation_kind"]
+                source_fact_ref = prior_record["source_fact_ref"]
+                source_fact_snapshot = copy.deepcopy(prior_record["source_fact_snapshot"])
+                comparison_source_fact_ref = prior_record.get("comparison_source_fact_ref")
+                comparison_source_fact_snapshot = copy.deepcopy(
+                    prior_record.get("comparison_source_fact_snapshot")
+                )
+                course_id = prior_record.get("course_id")
+                course_snapshot = copy.deepcopy(prior_record.get("course_snapshot"))
             elif data.get("expected_recurs_from_token") is not None:
                 raise ValueError("expected_recurs_from_token requires recurs_from_id.")
+            else:
+                source_fact = _treatment_source_fact(
+                    projection,
+                    data.get("source_fact_ref"),
+                    data.get("expected_source_fact_token"),
+                )
+                source_partner_present = (
+                    "comparison_source_fact_ref" in data
+                    or "expected_comparison_source_fact_token" in data
+                )
+                course_partner_present = "course_id" in data or "expected_course_token" in data
+                if source_partner_present == course_partner_present:
+                    raise ValueError(
+                        "Use exactly one second citation: comparison source fact or course."
+                    )
+                source_fact_ref = source_fact["ref"]
+                source_fact_snapshot = copy.deepcopy(source_fact)
+                comparison_source_fact_ref = None
+                comparison_source_fact_snapshot = None
+                course_id = None
+                course_snapshot = None
+                if source_partner_present:
+                    comparison_source_fact = _treatment_source_fact(
+                        projection,
+                        data.get("comparison_source_fact_ref"),
+                        data.get("expected_comparison_source_fact_token"),
+                    )
+                    if comparison_source_fact["ref"] == source_fact_ref:
+                        raise ValueError("Treatment source fact citations must be distinct.")
+                    citation_kind = "source_vs_source"
+                    comparison_source_fact_ref = comparison_source_fact["ref"]
+                    comparison_source_fact_snapshot = copy.deepcopy(comparison_source_fact)
+                else:
+                    course_id = data.get("course_id")
+                    if not isinstance(course_id, str) or not course_id:
+                        raise ValueError("course_id must be a treatment course ID.")
+                    course_snapshot = _treatment_row(
+                        projection,
+                        "courses",
+                        course_id,
+                        data.get("expected_course_token"),
+                    )
+                    citation_kind = "source_vs_course"
             timestamp = now_stamp()
             discrepancy = {
                 "id": agent.new_treatment_discrepancy_id(),
                 "status": "open",
                 "category": category,
                 "comparison_text": comparison_text,
+                "citation_kind": citation_kind,
                 "course_id": course_id,
-                "source_fact_ref": source_fact["ref"],
-                "source_fact_snapshot": copy.deepcopy(source_fact),
+                "source_fact_ref": source_fact_ref,
+                "source_fact_snapshot": source_fact_snapshot,
+                "comparison_source_fact_ref": comparison_source_fact_ref,
+                "comparison_source_fact_snapshot": comparison_source_fact_snapshot,
                 "course_snapshot": copy.deepcopy(course_snapshot),
                 "recurs_from_id": recurs_from_id,
                 "confirmations": [],
@@ -5512,12 +5573,13 @@ def api_resolve_treatment_discrepancy(discrepancy_id):
             projection = _treatment_projection(profile)
             _require_treatment_revisions(profile, data)
             _require_treatment_projection_token(projection, data)
-            _treatment_row(
+            public_discrepancy = _treatment_row(
                 projection,
                 "discrepancies",
                 discrepancy_id,
                 data.get("expected_discrepancy_token"),
             )
+            _require_complete_discrepancy_citations(public_discrepancy)
             discrepancy = _discrepancy_record(profile, discrepancy_id)
             if discrepancy.get("status") != "open":
                 raise _TreatmentConflictError("Only an open discrepancy can be resolved.")
@@ -5534,7 +5596,7 @@ def api_resolve_treatment_discrepancy(discrepancy_id):
                     raise ValueError(
                         "A linked treatment course is required for caregiver_record_corrected."
                     )
-                _treatment_row(
+                public_discrepancy = _treatment_row(
                     projection,
                     "courses",
                     course_id,
@@ -5648,12 +5710,13 @@ def api_reopen_treatment_discrepancy(discrepancy_id):
             projection = _treatment_projection(profile)
             _require_treatment_revisions(profile, data)
             _require_treatment_projection_token(projection, data)
-            _treatment_row(
+            public_discrepancy = _treatment_row(
                 projection,
                 "discrepancies",
                 discrepancy_id,
                 data.get("expected_discrepancy_token"),
             )
+            _require_complete_discrepancy_citations(public_discrepancy)
             discrepancy = _discrepancy_record(profile, discrepancy_id)
             if discrepancy.get("status") != "resolved":
                 raise _TreatmentConflictError("Only a resolved discrepancy can be reopened.")

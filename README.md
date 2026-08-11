@@ -144,7 +144,7 @@ All patient state lives in a single JSON file at `${DATA_DIR}/patient_profile.js
   "symptom_episodes": [ {id, status, symptom_text, severity_level, severity_detail, reported_subject, onset_date, resolved_date, provenance, caregiver_action_id, history}, ... ],
   "treatments_classified": [ {id, text, label, category, date, source_treatment_ids}, ... ],
   "treatment_courses": [ {id, status, treatment_text, dose_text, schedule_text, start_date, stop_date, planned_date, previous_course_id, provenance, history}, ... ],
-  "treatment_discrepancies": [ {id, status, category, comparison_text, source_fact_ref, course_id, confirmations, caregiver_action_id, provenance, history}, ... ],
+  "treatment_discrepancies": [ {id, status, category, comparison_text, citation_kind, source_fact_ref, comparison_source_fact_ref, course_id, source_fact_snapshot, comparison_source_fact_snapshot, course_snapshot, confirmations, caregiver_action_id, provenance, history}, ... ],
   "documents":   [ {date, type, summary, key_findings, source_document_id, raw_text}, ... ],
   "source_documents": [ {id, ingested_at, source: {path, sha256, length}, text: {...}}, ... ],
   "document_imports": [ {job_id, source_document_id, status, receipt_revision, changes: [...]}, ... ],
@@ -225,10 +225,14 @@ initializes empty `treatment_courses[]` and `treatment_discrepancies[]`; it does
 not promote, normalize, merge, deduplicate, reorder, or relabel legacy raw,
 component, classified, receipt, source, evidence, or history facts. Courses use
 explicit caregiver-maintained current/past/planned workflow state and
-precision-preserving dates. Discrepancies are caregiver-created neutral
-comparisons with immutable source snapshots and explicitly unverified
-clinician attribution. The new state is intentionally excluded from model
-prompts pending a later shared Patient/Today UI slice.
+precision-preserving dates. Every new discrepancy is an explicit
+`source_vs_source` or `source_vs_course` neutral comparison with immutable
+snapshots of both cited sides. Existing complete source/course records remain
+valid without rewriting; an older one-sided record remains visible as bounded
+`legacy_incomplete` authority and cannot be resolved, reopened, or recurred.
+Generated classification and legacy raw/component rows remain compatibility
+data, not citable source occurrences. The fixed projection copy is: `NET/Care records what you enter but does not verify treatment details or advise starting, stopping, or changing treatment. Confirm treatment decisions with the treating team.` The new state remains excluded from model prompts, and the
+treatment UI is deferred to a later shared Patient/Today slice.
 
 A daily backup is written to `${DATA_DIR}/backups/profile_YYYYMMDD.json`
 (retention: 30 days).

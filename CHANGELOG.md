@@ -9,6 +9,17 @@ incremented when something user-visible or operationally meaningful changes.
 ## [Unreleased]
 
 ### Added
+- **Two-sided treatment discrepancy authority.** New discrepancies now cite
+  exactly one source occurrence plus either a distinct source occurrence or an
+  exact caregiver course, persist immutable snapshots of both sides, declare a
+  mechanical citation kind, and bind either side's full current/private
+  lifecycle into replay/CAS tokens. Recurrence copies prior citations
+  server-side. Existing complete source/course records remain lossless; older
+  one-sided records stay visible as explicitly ineligible legacy authority and
+  never receive an invented citation. Generated classification and legacy
+  compatibility rows remain non-citable. The backend-only contract uses the
+  exact fixed non-prescriptive treatment safety copy; treatment UI remains
+  deferred.
 - **Treatment reconciliation backend foundation.** Schema v12 adds separate
   caregiver-maintained treatment courses and explicit neutral discrepancies
   without promoting or rewriting legacy raw/component/classified treatment or

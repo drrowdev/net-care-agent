@@ -25,6 +25,7 @@ MAX_TOTAL_SOURCE_TEXT_BYTES = 50_000_000
 
 TREATMENT_COURSE_STATUSES = {"current", "past", "planned"}
 TREATMENT_DISCREPANCY_STATUSES = {"open", "resolved"}
+TREATMENT_DISCREPANCY_CITATION_KINDS = {"source_vs_source", "source_vs_course"}
 TREATMENT_DISCREPANCY_CATEGORIES = {
     "name_or_type",
     "status",
@@ -41,9 +42,9 @@ TREATMENT_CONFIRMATION_OUTCOMES = {
 }
 TREATMENT_CONFIRMATION_LABEL = "Caregiver-entered · attributed to clinician · unverified"
 TREATMENT_SAFETY_GUIDANCE = (
-    "NET/Care records treatment information and reconciliation notes but does not decide "
-    "whether a treatment should start, stop, continue, change, or is suitable. Confirm "
-    "treatment decisions with the treating team."
+    "NET/Care records what you enter but does not verify treatment details or advise "
+    "starting, stopping, or changing treatment. Confirm treatment decisions with the "
+    "treating team."
 )
 
 _COURSE_TEXT_LIMITS = {
@@ -70,6 +71,7 @@ _DISCREPANCY_TEXT_LIMITS = {
     "comparison_text": 10_000,
     "course_id": 200,
     "source_fact_ref": 80,
+    "comparison_source_fact_ref": 80,
     "recurs_from_id": 200,
     "caregiver_action_id": 200,
     "created_at": 64,
@@ -84,6 +86,80 @@ _CONFIRMATION_TEXT_LIMITS = {
     "recorded_at": 64,
 }
 _DATE_PREFIXES = ("start", "stop", "planned")
+_SOURCE_FACT_PUBLIC_FIELDS = {
+    "ref",
+    "token",
+    "observed_text",
+    "record_value",
+    "operation",
+    "review_state",
+    "receipt_state",
+    "provenance",
+}
+_COURSE_PUBLIC_FIELDS = {
+    "id",
+    "status",
+    "treatment_text",
+    "treatment_type_text",
+    "dose_text",
+    "route_text",
+    "frequency_text",
+    "cycle_text",
+    "schedule_text",
+    "formulation_text",
+    "indication_text",
+    "notes",
+    "legacy_component_ids",
+    "start_date",
+    "start_date_precision",
+    "start_date_kind",
+    "stop_date",
+    "stop_date_precision",
+    "stop_date_kind",
+    "planned_date",
+    "planned_date_precision",
+    "planned_date_kind",
+    "previous_course_id",
+    "created_at",
+    "updated_at",
+}
+_FORBIDDEN_PUBLIC_KEYS = {
+    "path",
+    "source_document_id",
+    "job_id",
+    "receipt_id",
+    "change_id",
+    "evidence_start",
+    "evidence_end",
+    "source_quote",
+    "raw_text",
+    "offset",
+    "offsets",
+}
+_LEGACY_DISCREPANCY_PUBLIC_FIELDS = {
+    "id",
+    "token",
+    "status",
+    "category",
+    "comparison_text",
+    "course_id",
+    "source_fact",
+    "course_snapshot",
+    "recurs_from_id",
+    "confirmations",
+    "follow_up",
+    "provenance",
+    "created_at",
+    "updated_at",
+    "resolved_at",
+}
+_DISCREPANCY_PUBLIC_FIELDS = _LEGACY_DISCREPANCY_PUBLIC_FIELDS | {
+    "citation_kind",
+    "citation_authority",
+    "eligibility",
+    "citations",
+    "comparison_source_fact",
+}
 
 
 class TreatmentProjectionError(ValueError):
@@ -205,13 +281,128 @@ def _bounded_text(row: dict, field: str, limits: dict[str, int]) -> str | None:
     return value
 
 
+def _validate_public_value(
+    value: Any,
+    *,
+    allowed_keys: frozenset[str] = frozenset(),
+) -> None:
+    _validate_nested(value)
+    stack = [value]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            if any(key in _FORBIDDEN_PUBLIC_KEYS and key not in allowed_keys for key in current):
+                raise TreatmentProjectionError(
+                    "treatment_projection_invalid",
+                    "Treatment snapshot authority is inconsistent.",
+                )
+            stack.extend(current.values())
+        elif isinstance(current, list):
+            stack.extend(current)
+
+
+def _validate_source_fact_snapshot(snapshot: dict, expected_ref: str) -> None:
+    if set(snapshot) != _SOURCE_FACT_PUBLIC_FIELDS:
+        raise TreatmentProjectionError(
+            "treatment_projection_invalid",
+            "Treatment discrepancy source snapshot is inconsistent.",
+        )
+    provenance = snapshot.get("provenance")
+    source_url = f"/api/patient/treatment-reconciliation/source-facts/{expected_ref}/source"
+    evidence_url = f"/api/patient/treatment-reconciliation/source-facts/{expected_ref}/evidence"
+    if (
+        not isinstance(expected_ref, str)
+        or not expected_ref
+        or snapshot.get("ref") != expected_ref
+        or not isinstance(snapshot.get("token"), str)
+        or not snapshot["token"]
+        or not isinstance(snapshot.get("observed_text"), str)
+        or not isinstance(provenance, dict)
+        or set(provenance) != {"status", "label", "source_url", "evidence_url"}
+        or provenance.get("status") not in {"source_verified", "source_unverified"}
+        or provenance.get("label") not in {"Exact source", "No exact source"}
+        or provenance.get("source_url") != source_url
+        or provenance.get("evidence_url") not in {evidence_url, None}
+    ):
+        raise TreatmentProjectionError(
+            "treatment_projection_invalid",
+            "Treatment discrepancy source snapshot is inconsistent.",
+        )
+    _validate_public_value(snapshot)
+
+
+def _validate_course_snapshot(snapshot: dict, expected_id: str) -> None:
+    for field in _COURSE_TEXT_LIMITS:
+        _bounded_text(snapshot, field, _COURSE_TEXT_LIMITS)
+    if (
+        set(snapshot) != (_COURSE_PUBLIC_FIELDS | {"token", "provenance"})
+        or snapshot.get("id") != expected_id
+        or not snapshot["id"].startswith("txc_")
+        or len(snapshot["id"]) != 36
+        or not isinstance(snapshot.get("token"), str)
+        or not snapshot["token"]
+        or snapshot.get("provenance")
+        != {
+            "status": "caregiver_entered_unverified",
+            "label": "Caregiver-entered · unverified",
+        }
+        or snapshot.get("status") not in TREATMENT_COURSE_STATUSES
+        or not isinstance(snapshot.get("treatment_text"), str)
+        or not snapshot["treatment_text"]
+        or not isinstance(snapshot.get("legacy_component_ids"), list)
+        or any(not isinstance(item, str) for item in snapshot["legacy_component_ids"])
+        or len(set(snapshot["legacy_component_ids"])) != len(snapshot["legacy_component_ids"])
+    ):
+        raise TreatmentProjectionError(
+            "treatment_projection_invalid",
+            "Treatment discrepancy course snapshot is inconsistent.",
+        )
+    for prefix in _DATE_PREFIXES:
+        value = snapshot.get(f"{prefix}_date")
+        precision = derive_date_precision(value)
+        kind = snapshot.get(f"{prefix}_date_kind")
+        if (
+            snapshot.get(f"{prefix}_date_precision") != precision
+            or kind not in {"caregiver_entered", "unknown"}
+            or (value is None and kind != "unknown")
+            or (value is not None and kind != "caregiver_entered")
+        ):
+            raise TreatmentProjectionError(
+                "treatment_projection_invalid",
+                "Treatment discrepancy course snapshot is inconsistent.",
+            )
+    _validate_public_value(snapshot)
+
+
+def _effective_citation_kind(discrepancy: dict) -> str | None:
+    citation_kind = discrepancy.get("citation_kind")
+    if citation_kind is None:
+        if discrepancy.get("course_id") is not None:
+            return "source_vs_course"
+        if discrepancy.get("comparison_source_fact_ref") is None:
+            return "legacy_incomplete"
+    return citation_kind
+
+
 def _source_fact_ref(receipt_id: str, change_id: str) -> str:
     return _digest("txref", {"receipt": receipt_id, "change": change_id}, 64)
 
 
 def _source_maps(profile: dict) -> tuple[dict[str, dict], dict[str, list[dict]]]:
     sources: dict[str, dict] = {}
-    for source in profile.get("source_documents", []):
+    source_rows = profile.get("source_documents")
+    document_rows = profile.get("documents")
+    if (
+        not isinstance(source_rows, list)
+        or any(not isinstance(item, dict) for item in source_rows)
+        or not isinstance(document_rows, list)
+        or any(not isinstance(item, dict) for item in document_rows)
+    ):
+        raise TreatmentProjectionError(
+            "treatment_projection_invalid",
+            "Treatment source authority is inconsistent.",
+        )
+    for source in source_rows:
         source_id = source.get("id")
         if not isinstance(source_id, str) or not source_id or source_id in sources:
             raise TreatmentProjectionError(
@@ -221,12 +412,7 @@ def _source_maps(profile: dict) -> tuple[dict[str, dict], dict[str, list[dict]]]
         _validate_nested(source)
         sources[source_id] = source
     documents: dict[str, list[dict]] = {}
-    for document in profile.get("documents", []):
-        if not isinstance(document, dict):
-            raise TreatmentProjectionError(
-                "treatment_projection_invalid",
-                "Treatment source authority is inconsistent.",
-            )
+    for document in document_rows:
         _validate_nested(document)
         source_id = document.get("source_document_id")
         if isinstance(source_id, str):
@@ -349,26 +535,28 @@ def _source_fact_projection(
             "treatment_projection_invalid",
             "Treatment source wording is inconsistent.",
         )
-    return {
-        "public": {
-            "ref": ref,
-            "token": _digest("txfact", authority),
-            "observed_text": observed_text,
-            "record_value": copy.deepcopy(change.get("effective_value")),
-            "operation": change.get("operation"),
-            "review_state": change.get("state"),
-            "receipt_state": receipt.get("status"),
-            "provenance": {
-                "status": ("source_verified" if evidence_text is not None else "source_unverified"),
-                "label": "Exact source" if evidence_text is not None else "No exact source",
-                "source_url": (f"/api/patient/treatment-reconciliation/source-facts/{ref}/source"),
-                "evidence_url": (
-                    f"/api/patient/treatment-reconciliation/source-facts/{ref}/evidence"
-                    if evidence_text is not None
-                    else None
-                ),
-            },
+    public = {
+        "ref": ref,
+        "token": _digest("txfact", authority),
+        "observed_text": observed_text,
+        "record_value": copy.deepcopy(change.get("effective_value")),
+        "operation": change.get("operation"),
+        "review_state": change.get("state"),
+        "receipt_state": receipt.get("status"),
+        "provenance": {
+            "status": ("source_verified" if evidence_text is not None else "source_unverified"),
+            "label": "Exact source" if evidence_text is not None else "No exact source",
+            "source_url": (f"/api/patient/treatment-reconciliation/source-facts/{ref}/source"),
+            "evidence_url": (
+                f"/api/patient/treatment-reconciliation/source-facts/{ref}/evidence"
+                if evidence_text is not None
+                else None
+            ),
         },
+    }
+    _validate_source_fact_snapshot(public, ref)
+    return {
+        "public": public,
         "authority": authority,
         "source_id": source_id,
         "source_text": source_text,
@@ -406,6 +594,36 @@ def _legacy_projection(profile: dict, revisions: dict[str, int]) -> list[dict]:
             "treatment_projection_invalid",
             "Legacy treatment component identity is inconsistent.",
         )
+    if any(
+        not isinstance(row.get("source_order"), int)
+        or isinstance(row.get("source_order"), bool)
+        or row["source_order"] < 0
+        or row["source_order"] >= len(raw_rows)
+        or not isinstance(row.get("component_order"), int)
+        or isinstance(row.get("component_order"), bool)
+        or row["component_order"] < 0
+        or not isinstance(row.get("text"), str)
+        for row in components
+    ):
+        raise TreatmentProjectionError(
+            "treatment_projection_invalid",
+            "Legacy treatment component authority is inconsistent.",
+        )
+    if any(
+        not isinstance(row.get("id"), str)
+        or not row["id"]
+        or not isinstance(row.get("text"), str)
+        or (row.get("label") is not None and not isinstance(row.get("label"), str))
+        or (row.get("category") is not None and not isinstance(row.get("category"), str))
+        or (row.get("date") is not None and not isinstance(row.get("date"), str))
+        or not isinstance(row.get("source_treatment_ids"), list)
+        or any(not isinstance(item, str) for item in row.get("source_treatment_ids", []))
+        for row in classified
+    ):
+        raise TreatmentProjectionError(
+            "treatment_projection_invalid",
+            "Generated treatment compatibility authority is inconsistent.",
+        )
     result = []
     for source_order, raw_text in enumerate(raw_rows):
         mapped = [row for row in components if row.get("source_order") == source_order]
@@ -424,6 +642,21 @@ def _legacy_projection(profile: dict, revisions: dict[str, int]) -> list[dict]:
             }
             for row in generated
         ]
+        if any(
+            not isinstance(row.get("id"), str)
+            or not row["id"]
+            or not isinstance(row.get("text"), str)
+            or (row.get("label") is not None and not isinstance(row.get("label"), str))
+            or (row.get("category") is not None and not isinstance(row.get("category"), str))
+            or (row.get("date") is not None and not isinstance(row.get("date"), str))
+            or not isinstance(row.get("source_treatment_ids"), list)
+            or any(not isinstance(item, str) for item in row.get("source_treatment_ids", []))
+            for row in public_generated
+        ):
+            raise TreatmentProjectionError(
+                "treatment_projection_invalid",
+                "Generated treatment compatibility authority is inconsistent.",
+            )
         authority = {
             "raw_text": raw_text,
             "source_order": source_order,
@@ -433,24 +666,24 @@ def _legacy_projection(profile: dict, revisions: dict[str, int]) -> list[dict]:
             "classification_job_id": profile.get("treatments_classification_job_id"),
             "revisions": revisions,
         }
-        result.append(
-            {
-                "id": _digest("txlegacy", {"order": source_order, "components": mapped_ids}, 24),
-                "token": _digest("txlegacyrow", authority),
-                "raw_text": raw_text,
-                "source_order": source_order,
-                "components": [
-                    {
-                        "id": row["id"],
-                        "text": row.get("text"),
-                        "component_order": row.get("component_order"),
-                    }
-                    for row in mapped
-                ],
-                "generated_classification": public_generated,
-                "authority_label": "Legacy/generated · not caregiver lifecycle authority",
-            }
-        )
+        public_row = {
+            "id": _digest("txlegacy", {"order": source_order, "components": mapped_ids}, 24),
+            "token": _digest("txlegacyrow", authority),
+            "raw_text": raw_text,
+            "source_order": source_order,
+            "components": [
+                {
+                    "id": row["id"],
+                    "text": row.get("text"),
+                    "component_order": row.get("component_order"),
+                }
+                for row in mapped
+            ],
+            "generated_classification": public_generated,
+            "authority_label": "Legacy/generated · not caregiver lifecycle authority",
+        }
+        _validate_public_value(public_row, allowed_keys=frozenset({"raw_text"}))
+        result.append(public_row)
     return result
 
 
@@ -515,34 +748,7 @@ def _validate_course(course: dict, component_ids: set[str], courses_by_id: dict[
 
 def _course_public(course: dict, revisions: dict[str, int]) -> dict:
     authority = {"course": _token_value(course), "revisions": revisions}
-    public_fields = {
-        "id",
-        "status",
-        "treatment_text",
-        "treatment_type_text",
-        "dose_text",
-        "route_text",
-        "frequency_text",
-        "cycle_text",
-        "schedule_text",
-        "formulation_text",
-        "indication_text",
-        "notes",
-        "legacy_component_ids",
-        "start_date",
-        "start_date_precision",
-        "start_date_kind",
-        "stop_date",
-        "stop_date_precision",
-        "stop_date_kind",
-        "planned_date",
-        "planned_date_precision",
-        "planned_date_kind",
-        "previous_course_id",
-        "created_at",
-        "updated_at",
-    }
-    result = {key: copy.deepcopy(course.get(key)) for key in public_fields}
+    result = {key: copy.deepcopy(course.get(key)) for key in _COURSE_PUBLIC_FIELDS}
     result["token"] = _digest("txcourse", authority)
     result["provenance"] = {
         "status": "caregiver_entered_unverified",
@@ -582,6 +788,12 @@ def _discrepancy_public(
     for field in _DISCREPANCY_TEXT_LIMITS:
         _bounded_text(discrepancy, field, _DISCREPANCY_TEXT_LIMITS)
     source = source_facts.get(discrepancy.get("source_fact_ref"))
+    comparison_source_ref = discrepancy.get("comparison_source_fact_ref")
+    comparison_source = (
+        source_facts.get(comparison_source_ref)
+        if isinstance(comparison_source_ref, str) and comparison_source_ref
+        else None
+    )
     course = courses.get(discrepancy.get("course_id")) if discrepancy.get("course_id") else None
     action = (
         actions.get(discrepancy.get("caregiver_action_id"))
@@ -589,6 +801,7 @@ def _discrepancy_public(
         else None
     )
     confirmations = discrepancy.get("confirmations")
+    citation_kind = _effective_citation_kind(discrepancy)
     if (
         not isinstance(discrepancy.get("id"), str)
         or not discrepancy["id"].startswith("txd_")
@@ -599,16 +812,6 @@ def _discrepancy_public(
         or not discrepancy["comparison_text"]
         or source is None
         or not isinstance(discrepancy.get("source_fact_snapshot"), dict)
-        or (discrepancy.get("course_id") is not None and course is None)
-        or (
-            course is not None
-            and (
-                not isinstance(discrepancy.get("course_snapshot"), dict)
-                or discrepancy["course_snapshot"].get("id") != course.get("id")
-                or not isinstance(discrepancy["course_snapshot"].get("token"), str)
-            )
-        )
-        or (course is None and discrepancy.get("course_snapshot") is not None)
         or (discrepancy.get("caregiver_action_id") is not None and action is None)
         or discrepancy.get("provenance") != treatment_course_provenance()
         or not isinstance(confirmations, list)
@@ -623,14 +826,59 @@ def _discrepancy_public(
     for confirmation in confirmations:
         _validate_confirmation(confirmation)
     snapshot = discrepancy["source_fact_snapshot"]
-    if (
-        snapshot.get("ref") != discrepancy.get("source_fact_ref")
-        or not isinstance(snapshot.get("token"), str)
-        or not snapshot["token"]
-    ):
+    _validate_source_fact_snapshot(snapshot, discrepancy["source_fact_ref"])
+    comparison_snapshot = discrepancy.get("comparison_source_fact_snapshot")
+    course_snapshot = discrepancy.get("course_snapshot")
+    if citation_kind == "source_vs_source":
+        if (
+            not isinstance(comparison_source_ref, str)
+            or not comparison_source_ref
+            or comparison_source_ref == discrepancy.get("source_fact_ref")
+            or comparison_source is None
+            or not isinstance(comparison_snapshot, dict)
+            or discrepancy.get("course_id") is not None
+            or course_snapshot is not None
+        ):
+            raise TreatmentProjectionError(
+                "treatment_projection_invalid",
+                "Treatment discrepancy citation authority is inconsistent.",
+            )
+        _validate_source_fact_snapshot(comparison_snapshot, comparison_source_ref)
+        authority_state = "complete"
+        incomplete_reason = None
+    elif citation_kind == "source_vs_course":
+        if (
+            not isinstance(discrepancy.get("course_id"), str)
+            or not discrepancy["course_id"]
+            or course is None
+            or not isinstance(course_snapshot, dict)
+            or comparison_source_ref is not None
+            or comparison_snapshot is not None
+        ):
+            raise TreatmentProjectionError(
+                "treatment_projection_invalid",
+                "Treatment discrepancy citation authority is inconsistent.",
+            )
+        _validate_course_snapshot(course_snapshot, discrepancy["course_id"])
+        authority_state = "complete"
+        incomplete_reason = None
+    elif citation_kind == "legacy_incomplete":
+        if (
+            discrepancy.get("course_id") is not None
+            or course_snapshot is not None
+            or comparison_source_ref is not None
+            or comparison_snapshot is not None
+        ):
+            raise TreatmentProjectionError(
+                "treatment_projection_invalid",
+                "Treatment discrepancy legacy citation authority is inconsistent.",
+            )
+        authority_state = "legacy_incomplete"
+        incomplete_reason = "missing_second_citation"
+    else:
         raise TreatmentProjectionError(
             "treatment_projection_invalid",
-            "Treatment discrepancy source snapshot is inconsistent.",
+            "Treatment discrepancy citation authority is inconsistent.",
         )
     recurs_from_id = discrepancy.get("recurs_from_id")
     if recurs_from_id is not None and (not isinstance(recurs_from_id, str) or not recurs_from_id):
@@ -645,20 +893,57 @@ def _discrepancy_public(
         )
     authority = {
         "discrepancy": _token_value(discrepancy),
-        "current_source_fact": source["authority"],
-        "current_course": _token_value(course),
+        "current_source_fact_a": source["authority"],
+        "current_source_fact_b": (
+            comparison_source["authority"] if comparison_source is not None else None
+        ),
+        "current_course_b": _token_value(course),
         "linked_action": _token_value(action),
         "revisions": revisions,
     }
+    complete = authority_state == "complete"
     return {
         "id": discrepancy["id"],
         "token": _digest("txdiscrepancy", authority),
         "status": discrepancy["status"],
         "category": discrepancy["category"],
         "comparison_text": discrepancy["comparison_text"],
+        "citation_kind": citation_kind,
+        "citation_authority": {
+            "state": authority_state,
+            "reason": incomplete_reason,
+        },
+        "eligibility": {
+            "resolve": complete and discrepancy["status"] == "open",
+            "reopen": complete and discrepancy["status"] == "resolved",
+            "recur": complete and discrepancy["status"] == "resolved",
+        },
+        "citations": {
+            "source_a": {
+                "snapshot": copy.deepcopy(snapshot),
+                "current": copy.deepcopy(source["public"]),
+            },
+            "source_b": (
+                {
+                    "snapshot": copy.deepcopy(comparison_snapshot),
+                    "current": copy.deepcopy(comparison_source["public"]),
+                }
+                if comparison_source is not None
+                else None
+            ),
+            "course_b": (
+                {
+                    "snapshot": copy.deepcopy(course_snapshot),
+                    "current": _course_public(course, revisions),
+                }
+                if course is not None
+                else None
+            ),
+        },
         "course_id": discrepancy.get("course_id"),
-        "source_fact": copy.deepcopy(discrepancy["source_fact_snapshot"]),
-        "course_snapshot": copy.deepcopy(discrepancy.get("course_snapshot")),
+        "source_fact": copy.deepcopy(snapshot),
+        "comparison_source_fact": copy.deepcopy(comparison_snapshot),
+        "course_snapshot": copy.deepcopy(course_snapshot),
         "recurs_from_id": discrepancy.get("recurs_from_id"),
         "confirmations": [
             {
@@ -716,7 +1001,13 @@ def _build_projection(
         for change in receipt.get("changes", [])
         if isinstance(change, dict) and change.get("category") == "treatments"
     ]
-    raw_rows = profile.get("patient", {}).get("current_treatments", [])
+    patient = profile.get("patient")
+    if not isinstance(patient, dict):
+        raise TreatmentProjectionError(
+            "treatment_projection_invalid",
+            "Legacy treatment authority is inconsistent.",
+        )
+    raw_rows = patient.get("current_treatments", [])
     if (
         len(treatment_changes) > MAX_SOURCE_FACTS
         or not isinstance(raw_rows, list)
@@ -756,11 +1047,22 @@ def _build_projection(
             "treatment_projection_invalid",
             "Treatment source authority is inconsistent.",
         )
-    total_source_bytes = sum(
-        source.get("text", {}).get("length", MAX_SOURCE_TEXT_BYTES + 1)
-        for source_id in referenced_source_ids
-        if (source := sources.get(source_id)) is not None
-    )
+    total_source_bytes = 0
+    for source_id in referenced_source_ids:
+        source = sources.get(source_id)
+        text_meta = source.get("text") if isinstance(source, dict) else None
+        length = text_meta.get("length") if isinstance(text_meta, dict) else None
+        if (
+            not isinstance(length, int)
+            or isinstance(length, bool)
+            or length < 0
+            or length > MAX_SOURCE_TEXT_BYTES
+        ):
+            raise TreatmentProjectionError(
+                "treatment_projection_invalid",
+                "Treatment source authority is inconsistent.",
+            )
+        total_source_bytes += length
     if total_source_bytes > MAX_TOTAL_SOURCE_TEXT_BYTES:
         raise TreatmentProjectionError(
             "treatment_projection_too_large",
@@ -784,8 +1086,7 @@ def _build_projection(
             "treatment_projection_invalid",
             "Treatment source identity is inconsistent.",
         )
-    patient = profile.get("patient")
-    components = patient.get("current_treatment_records") if isinstance(patient, dict) else None
+    components = patient.get("current_treatment_records")
     classified = profile.get("treatments_classified", [])
     if (
         not isinstance(components, list)
@@ -841,6 +1142,38 @@ def _build_projection(
             "treatment_projection_invalid",
             "Treatment discrepancy recurrence authority is inconsistent.",
         )
+    discrepancies_by_id = {item["id"]: item for item in discrepancies_list}
+    for discrepancy in discrepancies_list:
+        seen = {discrepancy["id"]}
+        prior_id = discrepancy.get("recurs_from_id")
+        while prior_id is not None:
+            if prior_id in seen:
+                raise TreatmentProjectionError(
+                    "treatment_projection_invalid",
+                    "Treatment discrepancy recurrence authority is inconsistent.",
+                )
+            seen.add(prior_id)
+            prior_id = discrepancies_by_id[prior_id].get("recurs_from_id")
+        prior_id = discrepancy.get("recurs_from_id")
+        if prior_id is None:
+            continue
+        prior = discrepancies_by_id[prior_id]
+        citation_fields = (
+            "source_fact_ref",
+            "source_fact_snapshot",
+            "comparison_source_fact_ref",
+            "comparison_source_fact_snapshot",
+            "course_id",
+            "course_snapshot",
+        )
+        if _effective_citation_kind(discrepancy) != _effective_citation_kind(prior) or any(
+            _canonical(discrepancy.get(field)) != _canonical(prior.get(field))
+            for field in citation_fields
+        ):
+            raise TreatmentProjectionError(
+                "treatment_projection_invalid",
+                "Treatment discrepancy recurrence authority is inconsistent.",
+            )
     linked_discrepancy_actions = [
         item.get("caregiver_action_id")
         for item in discrepancies_list
@@ -923,6 +1256,11 @@ def _build_projection(
             "text": TREATMENT_SAFETY_GUIDANCE,
         },
     }
+    if len(_canonical(projection).encode("utf-8")) > MAX_AUTHORITY_BYTES:
+        raise TreatmentProjectionError(
+            "treatment_projection_too_large",
+            "Treatment data exceeds the supported projection limits.",
+        )
     return projection, source_facts, text_cache
 
 
@@ -930,6 +1268,232 @@ def project_treatment_reconciliation(profile: dict) -> dict:
     """Project all treatment authorities without mutation or truncation."""
     projection, _, _ = _build_projection(profile)
     return projection
+
+
+def _safe_public_source(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    try:
+        _validate_source_fact_snapshot(value, value.get("ref"))
+    except TreatmentProjectionError:
+        return False
+    return True
+
+
+def _safe_public_course(value: object) -> bool:
+    if not isinstance(value, dict) or not isinstance(value.get("id"), str):
+        return False
+    try:
+        _validate_course_snapshot(value, value["id"])
+    except TreatmentProjectionError:
+        return False
+    return True
+
+
+def _safe_public_confirmation(value: object) -> bool:
+    return (
+        isinstance(value, dict)
+        and set(value)
+        == {
+            "outcome",
+            "note",
+            "clinician_text",
+            "context_text",
+            "date",
+            "date_precision",
+            "date_kind",
+            "recorded_at",
+            "provenance_label",
+        }
+        and value.get("outcome") in TREATMENT_CONFIRMATION_OUTCOMES
+        and isinstance(value.get("note"), str)
+        and all(
+            value.get(field) is None or isinstance(value.get(field), str)
+            for field in ("clinician_text", "context_text", "date")
+        )
+        and value.get("date_precision") in {"day", "month", "year", "unknown"}
+        and value.get("date_kind") in {"caregiver_entered", "unknown"}
+        and isinstance(value.get("recorded_at"), str)
+        and value.get("provenance_label") == TREATMENT_CONFIRMATION_LABEL
+    )
+
+
+def _safe_public_follow_up(value: object) -> bool:
+    return value is None or (
+        isinstance(value, dict)
+        and set(value) == {"id", "token", "text", "status", "owner", "due_date"}
+        and isinstance(value.get("id"), str)
+        and isinstance(value.get("token"), str)
+        and isinstance(value.get("text"), str)
+        and value.get("status") in {"open", "in_progress", "completed", "cancelled"}
+    )
+
+
+def _safe_public_discrepancy(value: object, expected_id: str) -> bool:
+    if not isinstance(value, dict):
+        return False
+    public_fields = set(value)
+    if (
+        public_fields != _LEGACY_DISCREPANCY_PUBLIC_FIELDS
+        and public_fields != _DISCREPANCY_PUBLIC_FIELDS
+    ):
+        return False
+    try:
+        _validate_public_value(value)
+    except TreatmentProjectionError:
+        return False
+    if (
+        value.get("id") != expected_id
+        or not isinstance(value.get("token"), str)
+        or not value["token"]
+        or value.get("status") not in TREATMENT_DISCREPANCY_STATUSES
+        or value.get("category") not in TREATMENT_DISCREPANCY_CATEGORIES
+        or not isinstance(value.get("comparison_text"), str)
+        or not _safe_public_source(value.get("source_fact"))
+        or not _safe_public_follow_up(value.get("follow_up"))
+        or value.get("provenance")
+        != {
+            "status": "caregiver_entered_unverified",
+            "label": "Caregiver-entered · unverified",
+        }
+        or not isinstance(value.get("confirmations"), list)
+        or any(not _safe_public_confirmation(item) for item in value["confirmations"])
+        or not isinstance(value.get("created_at"), str)
+        or not isinstance(value.get("updated_at"), str)
+        or (value.get("resolved_at") is not None and not isinstance(value.get("resolved_at"), str))
+        or (value["status"] == "open") != (value.get("resolved_at") is None)
+    ):
+        return False
+    course_snapshot = value.get("course_snapshot")
+    if course_snapshot is not None and not _safe_public_course(course_snapshot):
+        return False
+    if public_fields == _LEGACY_DISCREPANCY_PUBLIC_FIELDS:
+        return True
+    kind = value.get("citation_kind")
+    authority = value.get("citation_authority")
+    eligibility = value.get("eligibility")
+    citations = value.get("citations")
+    if (
+        kind not in TREATMENT_DISCREPANCY_CITATION_KINDS | {"legacy_incomplete"}
+        or not isinstance(authority, dict)
+        or set(authority) != {"state", "reason"}
+        or authority.get("state") not in {"complete", "legacy_incomplete"}
+        or not isinstance(eligibility, dict)
+        or set(eligibility) != {"resolve", "reopen", "recur"}
+        or any(not isinstance(item, bool) for item in eligibility.values())
+        or not isinstance(citations, dict)
+        or set(citations) != {"source_a", "source_b", "course_b"}
+    ):
+        return False
+    source_a = citations["source_a"]
+    if (
+        not isinstance(source_a, dict)
+        or set(source_a) != {"snapshot", "current"}
+        or source_a["snapshot"] != value["source_fact"]
+        or not _safe_public_source(source_a["snapshot"])
+        or not _safe_public_source(source_a["current"])
+    ):
+        return False
+    source_b = citations["source_b"]
+    course_b = citations["course_b"]
+    if kind == "source_vs_source":
+        return (
+            authority == {"state": "complete", "reason": None}
+            and eligibility
+            == {
+                "resolve": value["status"] == "open",
+                "reopen": value["status"] == "resolved",
+                "recur": value["status"] == "resolved",
+            }
+            and isinstance(source_b, dict)
+            and set(source_b) == {"snapshot", "current"}
+            and source_b["snapshot"] == value.get("comparison_source_fact")
+            and _safe_public_source(source_b["snapshot"])
+            and _safe_public_source(source_b["current"])
+            and source_a["snapshot"]["ref"] == source_a["current"]["ref"]
+            and source_b["snapshot"]["ref"] == source_b["current"]["ref"]
+            and source_a["snapshot"]["ref"] != source_b["snapshot"]["ref"]
+            and course_b is None
+            and value.get("course_id") is None
+            and course_snapshot is None
+        )
+    if kind == "source_vs_course":
+        return (
+            authority == {"state": "complete", "reason": None}
+            and eligibility
+            == {
+                "resolve": value["status"] == "open",
+                "reopen": value["status"] == "resolved",
+                "recur": value["status"] == "resolved",
+            }
+            and source_a["snapshot"]["ref"] == source_a["current"]["ref"]
+            and source_b is None
+            and value.get("comparison_source_fact") is None
+            and isinstance(course_b, dict)
+            and set(course_b) == {"snapshot", "current"}
+            and course_b["snapshot"] == course_snapshot
+            and _safe_public_course(course_b["snapshot"])
+            and _safe_public_course(course_b["current"])
+            and course_b["snapshot"]["id"] == course_b["current"]["id"]
+            and course_b["snapshot"]["id"] == value.get("course_id")
+        )
+    return (
+        authority == {"state": "legacy_incomplete", "reason": "missing_second_citation"}
+        and eligibility == {"resolve": False, "reopen": False, "recur": False}
+        and source_b is None
+        and course_b is None
+        and value.get("comparison_source_fact") is None
+        and value.get("course_id") is None
+        and course_snapshot is None
+    )
+
+
+def treatment_replay_response_is_safe(
+    snapshot: object,
+    *,
+    expected_id: str,
+    discrepancy: bool,
+) -> bool:
+    """Validate immutable treatment replay output without consulting current authority."""
+    if not isinstance(snapshot, dict):
+        return False
+    try:
+        _validate_public_value(snapshot)
+        if len(_canonical(snapshot).encode("utf-8")) > MAX_AUTHORITY_BYTES:
+            return False
+    except TreatmentProjectionError:
+        return False
+    if discrepancy:
+        if set(snapshot) != {
+            "discrepancy",
+            "course",
+            "follow_up",
+            "workflow_revision",
+            "profile_revision",
+        } or not _safe_public_discrepancy(snapshot.get("discrepancy"), expected_id):
+            return False
+        public_discrepancy = snapshot["discrepancy"]
+        course = snapshot.get("course")
+        public_fields = set(public_discrepancy)
+        expected_course_id = public_discrepancy.get("course_id")
+        return (
+            (course is None or _safe_public_course(course))
+            and (
+                (course is None and expected_course_id is None)
+                or (isinstance(course, dict) and course.get("id") == expected_course_id)
+            )
+            and (
+                public_fields != _DISCREPANCY_PUBLIC_FIELDS
+                or public_discrepancy["citations"]["course_b"] is None
+                or course == public_discrepancy["citations"]["course_b"]["current"]
+            )
+            and snapshot.get("follow_up") == public_discrepancy.get("follow_up")
+        )
+    return (
+        set(snapshot) == {"course", "workflow_revision", "profile_revision"}
+        and _safe_public_course(snapshot.get("course"))
+        and snapshot["course"].get("id") == expected_id
+    )
 
 
 def treatment_source_fact_text(profile: dict, record_ref: str, *, evidence_only: bool) -> str:

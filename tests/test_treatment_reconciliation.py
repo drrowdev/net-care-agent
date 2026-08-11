@@ -186,7 +186,7 @@ def test_v13_migration_marks_only_missing_past_authority_losslessly_and_idempote
     first = copy.deepcopy(result)
     second = apply_migrations(result)
 
-    assert result["schema_version"] == 14
+    assert result["schema_version"] == 15
     assert result["treatment_courses"][0]["terminal_qualifier"] == "legacy_unspecified"
     assert "terminal_detail" not in result["treatment_courses"][0]
     assert "terminal_qualifier" not in result["treatment_courses"][1]
@@ -273,6 +273,104 @@ def test_legacy_projection_preserves_duplicate_order_and_stable_component_mappin
         "active"
     )
     assert "unknown_private" not in serialized
+
+
+def test_pre_v6_generated_context_is_separate_complete_and_occurrence_stable(agent, empty_profile):
+    empty_profile["patient"]["current_treatments"] = [
+        f"Synthetic treatment row {index:02d}" for index in range(31)
+    ]
+    agent.sync_treatment_records(empty_profile)
+    component_id = empty_profile["patient"]["current_treatment_records"][0]["id"]
+    mapped = {
+        "id": "txclass_mapped",
+        "text": "Mapped synthetic context",
+        "label": "Mapped synthetic label",
+        "category": "active",
+        "date": None,
+        "source_treatment_ids": [component_id],
+    }
+    unlinked = [
+        {
+            "text": f"Synthetic unlinked context {index % 5}",
+            "label": f"Synthetic unlinked label {index % 5}",
+            "category": "active",
+            "date": None if index == 0 else f"20{index:02d}",
+        }
+        for index in range(10)
+    ]
+    empty_profile["treatments_classified"] = [mapped, *unlinked]
+
+    first = agent.project_treatment_reconciliation(empty_profile)
+    second = agent.project_treatment_reconciliation(copy.deepcopy(empty_profile))
+    rows = first["unlinked_generated_context"]
+
+    assert first["legacy_treatment_count"] == 31
+    assert len(empty_profile["patient"]["current_treatment_records"]) == 31
+    assert first["unlinked_generated_context_count"] == 10
+    assert rows == second["unlinked_generated_context"]
+    assert [row["text"] for row in rows] == [row["text"] for row in unlinked]
+    assert len({row["id"] for row in rows}) == 10
+    assert len({row["token"] for row in rows}) == 10
+    assert rows[0]["text"] == rows[5]["text"]
+    assert rows[0]["id"] != rows[5]["id"]
+    assert rows[0]["token"] != rows[5]["token"]
+    assert first["legacy_treatments"][0]["generated_classification"] == [mapped]
+    assert all(
+        set(row) == {"id", "token", "text", "label", "category", "date", "authority_label"}
+        for row in rows
+    )
+    assert all(
+        row["authority_label"] == agent.TREATMENT_UNLINKED_GENERATED_AUTHORITY_LABEL for row in rows
+    )
+    collision = copy.deepcopy(empty_profile)
+    collision["patient"]["current_treatment_records"][0]["id"] = rows[0]["id"]
+    with pytest.raises(agent.TreatmentProjectionError, match="compatibility identity"):
+        agent.project_treatment_reconciliation(collision)
+    action_collision = copy.deepcopy(empty_profile)
+    action_collision["caregiver_actions"] = [
+        {
+            "id": rows[0]["id"],
+            "text": "Ask the treating team a synthetic question",
+            "status": "open",
+            "owner": None,
+            "due_date": None,
+            "origin_snapshot": {"kind": "manual"},
+            "history": [],
+        }
+    ]
+    with pytest.raises(agent.TreatmentProjectionError, match="public identity"):
+        agent.project_treatment_reconciliation(action_collision)
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {
+            "text": "Synthetic",
+            "label": "Synthetic",
+            "category": "active",
+            "date": [],
+        },
+        {
+            "text": "Synthetic",
+            "label": "Synthetic",
+            "category": "unsafe",
+            "date": "2020",
+        },
+        {
+            "text": "Synthetic",
+            "label": "Synthetic",
+            "category": "active",
+            "date": "2020",
+            "unknown": "not allowlisted",
+        },
+    ],
+)
+def test_malformed_pre_v6_generated_context_still_fails_closed(agent, empty_profile, row):
+    empty_profile["treatments_classified"] = [row]
+
+    with pytest.raises(agent.TreatmentProjectionError, match="compatibility authority"):
+        agent.project_treatment_reconciliation(empty_profile)
 
 
 def test_course_create_preserves_exact_text_dates_and_replays(app_client, agent, empty_profile):

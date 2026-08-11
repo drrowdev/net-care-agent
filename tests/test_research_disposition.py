@@ -113,7 +113,7 @@ def test_v14_migration_preserves_rows_and_assigns_reorder_stable_multiset():
     reordered["trials_tracked"].reverse()
     second = apply_migrations(reordered)
 
-    assert first["schema_version"] == 14
+    assert first["schema_version"] == 15
     assert first["profile_revision"] == 8
     assert first["workflow_revision"] == 3
     assert first["research_considerations"] == []

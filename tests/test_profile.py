@@ -2,7 +2,62 @@
 
 from __future__ import annotations
 
+import importlib
 import json
+
+import pytest
+
+
+def _schema14_production_shape(agent) -> dict:
+    profile = json.loads(json.dumps(agent.DEFAULT_PROFILE))
+    profile["schema_version"] = 14
+    profile.pop("profile_revision")
+    profile["workflow_revision"] = 6
+    profile["patient"]["current_treatments"] = [
+        f"Synthetic treatment row {index:02d}" for index in range(31)
+    ]
+    agent.sync_treatment_records(profile)
+    profile["treatments_classified"] = [
+        {
+            "text": f"Synthetic generated context {index % 5}",
+            "label": f"Synthetic generated label {index % 5}",
+            "category": "active",
+            "date": f"20{index:02d}",
+        }
+        for index in range(10)
+    ]
+    profile["clinical_judgments"] = [
+        {
+            "id": "synthetic-feedback-judgment",
+            "date": "2020",
+            "category": "context",
+            "text": "Synthetic historical feedback provenance",
+            "source": "feedback",
+        }
+    ]
+    profile["symptoms"] = [
+        {
+            "id": "synthetic-legacy-symptom",
+            "date": None,
+            "date_precision": "unknown",
+            "date_kind": "unknown",
+            "source_document_date": None,
+            "source_document_date_precision": "unknown",
+            "symptom": "Synthetic legacy symptom",
+            "severity": None,
+            "source": "manual",
+        }
+    ]
+    for key in ("source_documents", "feedback", "latest_research_update", "profile_updated_at"):
+        profile.pop(key)
+    return profile
+
+
+@pytest.fixture
+def app_client(agent):
+    app_module = importlib.import_module("app")
+    app_module.app.config.update(TESTING=True)
+    return app_module, app_module.app.test_client()
 
 
 def test_load_profile_creates_default_when_missing(agent):
@@ -41,6 +96,40 @@ def test_save_writes_indented_json(agent, empty_profile):
     assert "\n" in text
     # And is valid JSON.
     json.loads(text)
+
+
+def test_schema14_profile_load_materializes_revision_and_all_projections(app_client, agent):
+    raw = _schema14_production_shape(agent)
+    agent.PROFILE_PATH.write_text(json.dumps(raw), encoding="utf-8")
+
+    loaded = agent.load_profile()
+    projections = [
+        agent.project_biomarker_series(loaded),
+        agent.project_imaging_series(loaded),
+        agent.project_symptom_episodes(loaded),
+        agent.project_treatment_reconciliation(loaded),
+        agent.project_research_workspace(loaded),
+    ]
+    _, client = app_client
+    symptom_response = client.get("/api/patient/symptom-episodes")
+    treatment_response = client.get("/api/patient/treatment-reconciliation")
+
+    assert loaded["schema_version"] == 15
+    assert loaded["profile_revision"] == 0
+    assert loaded["workflow_revision"] == 6
+    assert loaded["clinical_judgments"][0]["source"] == "feedback"
+    assert loaded["source_documents"] == []
+    assert loaded["feedback"] == []
+    assert loaded["latest_research_update"] is None
+    assert loaded["profile_updated_at"] is None
+    assert all(projection["profile_revision"] == 0 for projection in projections)
+    assert projections[2]["observation_count"] == 1
+    assert projections[3]["legacy_treatment_count"] == 31
+    assert projections[3]["unlinked_generated_context_count"] == 10
+    assert symptom_response.status_code == 200
+    assert symptom_response.get_json()["profile_revision"] == 0
+    assert treatment_response.status_code == 200
+    assert treatment_response.get_json()["profile_revision"] == 0
 
 
 def test_default_profile_has_required_top_level_keys(agent):

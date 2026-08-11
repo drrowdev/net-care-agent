@@ -211,7 +211,7 @@ Hard constraints captured from oncologist consultations.
 | `date` | `str \| None` |  |
 | `category` | `'constraint' \| 'preference' \| 'outcome' \| 'context' \| null` |  |
 | `text` | `str \| None` |  |
-| `source` | `'manual' \| 'ai' \| null` |  |
+| `source` | `'manual' \| 'ai' \| 'feedback' \| null` | manual/ai provenance, or the exact historical feedback tag written by the legacy feedback flow; feedback is preserved and does not imply verification |
 | `scope` | `str \| None` | Clinical topic or decision this judgment governs |
 | `status` | `'active' \| 'superseded' \| 'needs_review'` |  |
 | `review_after` | `str \| None` | YYYY-MM-DD; review due on/after this date |
@@ -620,4 +620,6 @@ Append-only caregiver-entered research workflow event.
 - `Patient.sstr_score` is the only field with a numeric range constraint (0–4, the Krenning scale).
 - `document_imports[]` is append-only audit provenance. Corrections and undo update active clinical state and append history events; they never delete immutable `source_documents[]` artifacts.
 - Schema v14 adds private stable `research_record_id` occurrence identity without rewriting external NCT/PMID authority or duplicate rows. `research_considerations[]` is separate caregiver workflow authority; its allowlisted snapshot is immutable and source refresh/removal never rewrites or deletes it.
+- Schema v15 backfills `profile_revision=0` only when the top-level key is truly absent. Existing null, invalid, negative, boolean, or integer values are preserved verbatim so downstream revision authority can fail closed.
+- `clinical_judgments[].source=feedback` is the exact historical provenance tag written by the legacy feedback flow. It is preserved without rewriting the judgment and does not itself claim clinician verification.
 - Research lifecycle and communication events are workflow-only, explicitly caregiver-entered and unverified, and excluded from model contexts. Exact latest-batch membership remains external-ID based and separate.

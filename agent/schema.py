@@ -17,7 +17,7 @@ from __future__ import annotations
 import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 # Collection keys that must be lists (or None/missing → coercible to []).
 # Used by structural_check and the coercion step in load_profile.
@@ -157,7 +157,7 @@ DocumentType = Literal[
 AlertPriority = Literal["urgent", "high", "medium", "low"]
 TreatmentCategory = Literal["active", "planned", "completed"]
 JudgmentCategory = Literal["constraint", "preference", "outcome", "context"]
-JudgmentSource = Literal["manual", "ai"]
+JudgmentSource = Literal["manual", "ai", "feedback"]
 JudgmentStatus = Literal["active", "superseded", "needs_review"]
 SymptomSource = Literal["manual", "ai"]
 QuestionCategory = Literal["Treatment", "Diagnostics", "Symptoms", "Trials", "Monitoring", "Other"]
@@ -388,7 +388,13 @@ class ClinicalJudgment(_Lenient):
     date: str | None = None
     category: JudgmentCategory | None = None
     text: str | None = None
-    source: JudgmentSource | None = None
+    source: JudgmentSource | None = Field(
+        None,
+        description=(
+            "manual/ai provenance, or the exact historical feedback tag written by "
+            "the legacy feedback flow; feedback is preserved and does not imply verification"
+        ),
+    )
     scope: str | None = Field(None, description="Clinical topic or decision this judgment governs")
     status: JudgmentStatus = "active"
     review_after: str | None = Field(None, description="YYYY-MM-DD; review due on/after this date")
@@ -865,11 +871,11 @@ class PatientProfile(_Lenient):
     """The complete patient profile. Lives at ${DATA_DIR}/patient_profile.json."""
 
     schema_version: int = Field(
-        default=14,
+        default=15,
         description="Profile schema version. Incremented when a structural migration runs.",
     )
-    profile_revision: int = 0
-    workflow_revision: int = 0
+    profile_revision: StrictInt = 0
+    workflow_revision: StrictInt = 0
     profile_updated_at: str | None = None
     profile_saved_at: str | None = None
     summary_stale: bool = True
@@ -1019,6 +1025,12 @@ def render_schema_markdown() -> str:
         "`research_considerations[]` is separate caregiver workflow authority; its "
         "allowlisted snapshot is immutable and source refresh/removal never rewrites "
         "or deletes it.\n"
+        "- Schema v15 backfills `profile_revision=0` only when the top-level key is "
+        "truly absent. Existing null, invalid, negative, boolean, or integer values "
+        "are preserved verbatim so downstream revision authority can fail closed.\n"
+        "- `clinical_judgments[].source=feedback` is the exact historical provenance "
+        "tag written by the legacy feedback flow. It is preserved without rewriting "
+        "the judgment and does not itself claim clinician verification.\n"
         "- Research lifecycle and communication events are workflow-only, explicitly "
         "caregiver-entered and unverified, and excluded from model contexts. Exact "
         "latest-batch membership remains external-ID based and separate.\n"

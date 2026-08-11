@@ -13122,6 +13122,7 @@
   // ── Treatment reconciliation ────────────────────────────────────────────
   const TREATMENT_SAFETY_GUIDANCE = 'NET/Care records what you enter but does not verify treatment details or advise starting, stopping, or changing treatment. Confirm treatment decisions with the treating team.';
   const TREATMENT_CONFIRMATION_LABEL = 'Caregiver-entered · attributed to clinician · unverified';
+  const TREATMENT_UNLINKED_GENERATED_AUTHORITY_LABEL = 'Machine-generated compatibility context · source linkage unavailable · not a treatment record';
   const TREATMENT_TODAY_LIMIT = 3;
   const TREATMENT_MAX_AUTHORITY_BYTES = 6000000;
   const TREATMENT_COURSE_FIELDS = [
@@ -13445,6 +13446,20 @@
     return true;
   }
 
+  function treatmentUnlinkedGeneratedRowIsValid(row) {
+    return treatmentHasExactKeys(row, [
+      'id', 'token', 'text', 'label', 'category', 'date', 'authority_label',
+    ])
+      && /^txunlinked_[0-9a-f]{24}$/.test(row.id)
+      && treatmentBoundedString(row.token, 200)
+      && Boolean(row.token)
+      && treatmentBoundedString(row.text, 10000)
+      && treatmentBoundedString(row.label, 1000)
+      && ['active', 'planned', 'completed'].includes(row.category)
+      && treatmentBoundedString(row.date, 64, true)
+      && row.authority_label === TREATMENT_UNLINKED_GENERATED_AUTHORITY_LABEL;
+  }
+
   function treatmentConfirmationIsValid(confirmation) {
     return treatmentHasExactKeys(confirmation, [
       'outcome', 'note', 'clinician_text', 'context_text', 'date',
@@ -13563,9 +13578,11 @@
     if (
       !treatmentHasExactKeys(data, [
         'profile_revision', 'workflow_revision', 'projection_token',
-        'source_fact_count', 'legacy_treatment_count', 'course_count',
+        'source_fact_count', 'legacy_treatment_count', 'unlinked_generated_context_count',
+        'course_count',
         'discrepancy_count', 'source_facts', 'legacy_treatments', 'courses',
-        'discrepancies', 'eligible_actions', 'safety_guidance',
+        'unlinked_generated_context', 'discrepancies', 'eligible_actions',
+        'safety_guidance',
       ])
       || !Number.isSafeInteger(data.profile_revision)
       || data.profile_revision < 0
@@ -13579,6 +13596,9 @@
       || !Number.isSafeInteger(data.legacy_treatment_count)
       || data.legacy_treatment_count < 0
       || data.legacy_treatment_count > 2000
+      || !Number.isSafeInteger(data.unlinked_generated_context_count)
+      || data.unlinked_generated_context_count < 0
+      || data.unlinked_generated_context_count > 2000
       || !Number.isSafeInteger(data.course_count)
       || data.course_count < 0
       || data.course_count > 1000
@@ -13589,6 +13609,8 @@
       || data.source_facts.length !== data.source_fact_count
       || !Array.isArray(data.legacy_treatments)
       || data.legacy_treatments.length !== data.legacy_treatment_count
+      || !Array.isArray(data.unlinked_generated_context)
+      || data.unlinked_generated_context.length !== data.unlinked_generated_context_count
       || !Array.isArray(data.courses)
       || data.courses.length !== data.course_count
       || !Array.isArray(data.discrepancies)
@@ -13609,6 +13631,7 @@
     }
     const sources = new Map();
     const sourceTokens = new Set();
+    const allIds = new Set();
     for (const source of data.source_facts) {
       if (
         !treatmentSourceFactIsValid(source)
@@ -13617,33 +13640,67 @@
       ) return false;
       sources.set(source.ref, source);
       sourceTokens.add(source.token);
+      allIds.add(source.ref);
     }
     const componentIds = new Set();
     const generatedIds = new Set();
     const legacyIds = new Set();
     const legacyTokens = new Set();
+    const allTokens = new Set(sourceTokens);
     let generatedCount = 0;
     for (const row of data.legacy_treatments) {
+      if (!treatmentLegacyRowIsValid(row, componentIds, generatedIds)) return false;
+      const rowIds = [
+        row.id,
+        ...row.components.map(item => item.id),
+        ...row.generated_classification.map(item => item.id),
+      ];
       if (
-        !treatmentLegacyRowIsValid(row, componentIds, generatedIds)
-        || legacyIds.has(row.id)
+        legacyIds.has(row.id)
         || legacyTokens.has(row.token)
+        || allTokens.has(row.token)
+        || rowIds.some(id => allIds.has(id))
       ) return false;
+      rowIds.forEach(id => allIds.add(id));
       legacyIds.add(row.id);
       legacyTokens.add(row.token);
+      allTokens.add(row.token);
       generatedCount += row.generated_classification.length;
       if (generatedCount > 2000 || componentIds.size > 4000) return false;
     }
+    const unlinkedIds = new Set();
+    const unlinkedTokens = new Set();
+    for (const row of data.unlinked_generated_context) {
+      if (
+        !treatmentUnlinkedGeneratedRowIsValid(row)
+        || generatedIds.has(row.id)
+        || componentIds.has(row.id)
+        || legacyIds.has(row.id)
+        || unlinkedIds.has(row.id)
+        || allIds.has(row.id)
+        || unlinkedTokens.has(row.token)
+        || allTokens.has(row.token)
+      ) return false;
+      unlinkedIds.add(row.id);
+      unlinkedTokens.add(row.token);
+      allIds.add(row.id);
+      allTokens.add(row.token);
+    }
+    if (generatedCount + data.unlinked_generated_context.length > 2000) return false;
     const courses = new Map();
     const courseTokens = new Set();
     for (const course of data.courses) {
       if (
         !treatmentCourseIsValid(course, componentIds)
         || courses.has(course.id)
+        || allIds.has(course.id)
         || courseTokens.has(course.token)
+        || allTokens.has(course.token)
       ) return false;
       courses.set(course.id, course);
+      allIds.add(course.id);
       courseTokens.add(course.token);
+      allTokens.add(course.token);
     }
     for (const course of data.courses) {
       if (
@@ -13665,10 +13722,14 @@
         !treatmentActionIsValid(action)
         || !['open', 'in_progress'].includes(action.status)
         || actions.has(action.id)
+        || allIds.has(action.id)
         || actionTokens.has(action.token)
+        || allTokens.has(action.token)
       ) return false;
       actions.set(action.id, action);
+      allIds.add(action.id);
       actionTokens.add(action.token);
+      allTokens.add(action.token);
     }
     const discrepancies = new Map();
     const discrepancyTokens = new Set();
@@ -13676,18 +13737,26 @@
       if (
         !treatmentDiscrepancyIsValid(discrepancy, sources, courses, actions)
         || discrepancies.has(discrepancy.id)
+        || allIds.has(discrepancy.id)
         || discrepancyTokens.has(discrepancy.token)
+        || allTokens.has(discrepancy.token)
       ) return false;
       if (discrepancy.follow_up) {
         if (
           actions.has(discrepancy.follow_up.id)
+          || allIds.has(discrepancy.follow_up.id)
           || actionTokens.has(discrepancy.follow_up.token)
+          || allTokens.has(discrepancy.follow_up.token)
         ) return false;
         actions.set(discrepancy.follow_up.id, discrepancy.follow_up);
+        allIds.add(discrepancy.follow_up.id);
         actionTokens.add(discrepancy.follow_up.token);
+        allTokens.add(discrepancy.follow_up.token);
       }
       discrepancies.set(discrepancy.id, discrepancy);
+      allIds.add(discrepancy.id);
       discrepancyTokens.add(discrepancy.token);
+      allTokens.add(discrepancy.token);
     }
     for (const discrepancy of data.discrepancies) {
       if (
@@ -13715,6 +13784,9 @@
       projectionToken: projection.projection_token,
       sourceTokens: new Map(projection.source_facts.map(item => [item.ref, item.token])),
       legacyTokens: new Map(projection.legacy_treatments.map(item => [item.id, item.token])),
+      unlinkedGeneratedTokens: new Map(
+        projection.unlinked_generated_context.map(item => [item.id, item.token]),
+      ),
       courseTokens: new Map(projection.courses.map(item => [item.id, item.token])),
       discrepancyTokens: new Map(projection.discrepancies.map(item => [item.id, item.token])),
       actionTokens: new Map(projection.eligible_actions.map(item => [item.id, item.token])),
@@ -13733,11 +13805,15 @@
       || owner.workflowRevision !== treatmentProjection.workflow_revision
       || owner.sourceTokens.size !== treatmentProjection.source_facts.length
       || owner.legacyTokens.size !== treatmentProjection.legacy_treatments.length
+      || owner.unlinkedGeneratedTokens.size !== treatmentProjection.unlinked_generated_context.length
       || owner.courseTokens.size !== treatmentProjection.courses.length
       || owner.discrepancyTokens.size !== treatmentProjection.discrepancies.length
       || owner.actionTokens.size !== treatmentProjection.eligible_actions.length
       || treatmentProjection.source_facts.some(item => owner.sourceTokens.get(item.ref) !== item.token)
       || treatmentProjection.legacy_treatments.some(item => owner.legacyTokens.get(item.id) !== item.token)
+      || treatmentProjection.unlinked_generated_context.some(
+        item => owner.unlinkedGeneratedTokens.get(item.id) !== item.token,
+      )
       || treatmentProjection.courses.some(item => owner.courseTokens.get(item.id) !== item.token)
       || treatmentProjection.discrepancies.some(item => owner.discrepancyTokens.get(item.id) !== item.token)
       || treatmentProjection.eligible_actions.some(item => owner.actionTokens.get(item.id) !== item.token)
@@ -13986,6 +14062,43 @@
     return card;
   }
 
+  function treatmentUnlinkedGeneratedSection() {
+    const section = treatmentElement('section', 'treatment-unlinked-generated-section');
+    const count = treatmentProjection.unlinked_generated_context_count;
+    section.append(
+      treatmentElement('h3', '', 'Unlinked generated compatibility context'),
+      treatmentElement(
+        'p',
+        'treatment-authority-label',
+        `${TREATMENT_UNLINKED_GENERATED_AUTHORITY_LABEL}. Showing all ${count} rows in server order; 0 omitted.`,
+      ),
+    );
+    if (!count) {
+      section.append(treatmentElement(
+        'p',
+        'treatment-missing',
+        'No unlinked generated compatibility context is recorded.',
+      ));
+      return section;
+    }
+    const list = treatmentElement('ol', 'treatment-unlinked-generated-list');
+    treatmentProjection.unlinked_generated_context.forEach(item => {
+      const entry = treatmentElement('li', 'treatment-unlinked-generated-card');
+      const facts = treatmentElement('dl', 'treatment-facts');
+      treatmentAppendFact(facts, 'Generated text', item, 'text');
+      treatmentAppendFact(facts, 'Generated label', item, 'label');
+      treatmentAppendFact(facts, 'Generated category', item, 'category');
+      treatmentAppendFact(facts, 'Generated date', item, 'date');
+      entry.append(
+        treatmentElement('p', 'treatment-authority-label', item.authority_label),
+        facts,
+      );
+      list.append(entry);
+    });
+    section.append(list);
+    return section;
+  }
+
   function treatmentCitationPanel(label, side, kind) {
     const panel = treatmentElement('section', 'treatment-citation-panel');
     panel.append(treatmentElement('h4', '', label));
@@ -14171,11 +14284,12 @@
       (total, row) => total + row.generated_classification.length,
       0,
     );
+    const unlinkedGeneratedCount = treatmentProjection.unlinked_generated_context_count;
     const shown = active.slice(0, TREATMENT_TODAY_LIMIT);
     const omitted = active.length - shown.length;
     const totals = document.getElementById('today-treatment-totals');
     if (totals) {
-      totals.textContent = `Showing ${shown.length} of ${active.length} current/planned records in server order (${currentCount} current, ${plannedCount} planned; ${omitted} omitted here). Patient also contains ${pastCount} past records, ${treatmentProjection.source_fact_count} document mentions, ${treatmentProjection.legacy_treatment_count} earlier app records, ${generatedCount} generated classifications, and ${openDifferences} open differences.`;
+      totals.textContent = `Showing ${shown.length} of ${active.length} current/planned records in server order (${currentCount} current, ${plannedCount} planned; ${omitted} omitted here). Patient also contains ${pastCount} past records, ${treatmentProjection.source_fact_count} document mentions, ${treatmentProjection.legacy_treatment_count} earlier app records, ${generatedCount} mapped generated classifications, ${unlinkedGeneratedCount} unlinked generated compatibility rows, and ${openDifferences} open differences.`;
     }
     const today = document.getElementById('today-treatment-list');
     if (today) {
@@ -14215,11 +14329,13 @@
     }
     const legacy = document.getElementById('treatment-legacy-list');
     if (legacy) {
-      legacy.replaceChildren(...(
-        treatmentProjection.legacy_treatments.length
-          ? treatmentProjection.legacy_treatments.map(treatmentLegacyCard)
-          : [treatmentElement('div', 'empty-state', 'No earlier app treatment records are recorded.')]
-      ));
+      const legacyRows = treatmentProjection.legacy_treatments.length
+        ? treatmentProjection.legacy_treatments.map(treatmentLegacyCard)
+        : [treatmentElement('div', 'empty-state', 'No earlier app treatment records are recorded.')];
+      legacy.replaceChildren(
+        ...legacyRows,
+        treatmentUnlinkedGeneratedSection(),
+      );
     }
     const counts = {
       records: treatmentProjection.course_count,
@@ -14563,6 +14679,7 @@
         data.courses.length
         || data.source_facts.length
         || data.legacy_treatments.length
+        || data.unlinked_generated_context.length
         || data.discrepancies.length
       ) ? 'current' : 'empty';
       treatmentResponseOwner = newTreatmentResponseOwner(data, request.acceptedPhiEpoch);

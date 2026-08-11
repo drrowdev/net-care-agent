@@ -36,7 +36,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 14
+CURRENT_SCHEMA_VERSION: int = 15
 
 # Append-only ordered registry of migrations.  Never reorder entries.
 _REGISTRY: list[dict[str, Any]] = []
@@ -605,6 +605,15 @@ def _m0014_add_research_disposition_authority(data: dict) -> dict:
     if data.get("research_considerations") is None:
         data["research_considerations"] = []
     data["schema_version"] = 14
+    return data
+
+
+@_migration("0015_add_profile_revision_authority", to_version=15)
+def _m0015_add_profile_revision_authority(data: dict) -> dict:
+    """v14 -> v15: backfill only a truly missing top-level revision."""
+    if "profile_revision" not in data:
+        data["profile_revision"] = 0
+    data["schema_version"] = 15
     return data
 
 

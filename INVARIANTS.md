@@ -261,9 +261,10 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
   Confirm clinical questions with the treating team and trial details with the
   study site.`
 - Treatment receipt occurrences, legacy `patient.current_treatments[]` plus
-  raw component/generated classification mappings, caregiver-maintained
-  `treatment_courses[]`, and caregiver-created `treatment_discrepancies[]` are
-  separate authorities. Schema v12 migration initializes only missing/null
+  raw component/mapped generated classification mappings, pre-v6 unlinked
+  generated compatibility context, caregiver-maintained `treatment_courses[]`,
+  and caregiver-created `treatment_discrepancies[]` are separate authorities.
+  Schema v12 migration initializes only missing/null
   reconciliation collections. Schema v13 marks only pre-extension past courses
   lacking terminal authority as `legacy_unspecified`; both migrations never
   promote, normalize, merge,
@@ -295,6 +296,11 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
   `citation_kind=source_vs_source|source_vs_course` is server-declared; A/B
   carries no chronology, preference, correctness, or clinical meaning.
   Generated classification and legacy raw/component rows are non-citable.
+  Pre-v6 generated rows with no modern ID/source mapping must retain the exact
+  authority label `Machine-generated compatibility context · source linkage unavailable · not a treatment record`. Their public IDs/tokens are
+  deterministic and occurrence-aware, bind the complete allowlisted stored row
+  plus both revisions, preserve every duplicate/order, and never infer
+  source/component linkage or expose controls.
   Client-authored snapshots, missing/mixed/duplicate/dangling/stale citation
   pairs, and recurrence-side substitution are rejected before ID allocation or
   mutation. Resolution preserves the discrepancy, both immutable cited
@@ -435,6 +441,9 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
   quarantine dir.  The file may be valid; retrying may succeed.
 
 ### Judgment lifecycle
+- `source=feedback` is the exact historical provenance tag written by the
+  legacy feedback flow. Preserve it verbatim; it does not by itself mean
+  clinician verification and must not be rewritten to `manual` or `ai`.
 - Legacy judgments without `status` are `active`.
 - Only `status=active` judgments that are neither expired (`valid_until`) nor
   review-due (`review_after`) are hard constraints.

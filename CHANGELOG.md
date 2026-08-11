@@ -170,6 +170,14 @@ incremented when something user-visible or operationally meaningful changes.
   hard invalidation scrub biomarker state, DOM, focus, and pending responses.
 
 ### Fixed
+- **Production profile-load compatibility.** Schema v15 restores only a truly
+  missing top-level `profile_revision` as integer `0`, preserves invalid existing
+  revision authority for fail-closed review, and accepts the exact historical
+  clinical-judgment source tag `feedback` without rewriting its provenance or
+  content. The bounded treatment API and Patient workspace now preserve every
+  well-formed pre-v6 generated compatibility row with unavailable source linkage
+  in a distinct exact-count, occurrence-aware, non-citable, read-only collection;
+  Today counts but never presents those rows as current/planned courses.
 - **Cross-workflow authorization teardown and control targets.** Central PHI
   eviction now aborts and invalidates in-flight document, digest, and deep-sweep
   submissions; clears selected upload bytes, feed errors, focus, and polling; and
@@ -266,6 +274,12 @@ incremented when something user-visible or operationally meaningful changes.
   path-free in logs, and cannot make a successful mutation appear failed.
   Missing markers are repaired after a valid profile load, and stale markers do
   not block snapshot/backup recovery or permit duplicate initialization.
+
+### Operations
+- Profile-load recovery now relies only on deterministic schema v15 migration
+  and normal validation/default materialization. Operators must not add empty
+  treatment source IDs, map generated rows by wording/order, use `/api/status`
+  as a treatment/symptom fallback, or reset an existing null/invalid revision.
 
 ### Added
 - **Deterministic visit recap and safe export.** The appointment workspace now

@@ -131,7 +131,7 @@ All patient state lives in a single JSON file at `${DATA_DIR}/patient_profile.js
 
 ```
 {
-  "schema_version": 14,
+  "schema_version": 15,
   "profile_revision": 42,
   "workflow_revision": 17,
   "profile_updated_at": "2026-07-10T16:51:49",
@@ -152,7 +152,7 @@ All patient state lives in a single JSON file at `${DATA_DIR}/patient_profile.js
   "literature_watched": [ {research_record_id, pmid, title, journal, date}, ... ],
   "research_considerations": [ {id, item_type, research_record_id, source_key, status, snapshot, events, caregiver_action_id, history}, ... ],
   "alerts":      [ {id, priority, action, resolved, resolution, source_document_id, source_dependency_active}, ... ],
-  "judgments":   [ {category, text, scope, status, review_after, valid_until, supersedes}, ... ],
+  "clinical_judgments": [ {category, text, source: "manual|ai|feedback", scope, status, review_after, valid_until, supersedes}, ... ],
   "questions":   [ {id, text, category, priority, asked, generation_job_id, stale}, ... ],
   "feedback":    [ {target, item_id, assessment, note, outcome, timestamps}, ... ],
   "caregiver_actions": [ {id, origin_snapshot, text, owner, due_date, status, outcome, history}, ... ],
@@ -247,6 +247,14 @@ order, ID, or unknown field. The projection publishes exact allowed transitions
 and a server-derived restart eligibility/reason. Restart remains available only
 when private server history proves the terminal course was previously current;
 planned-never-started, cancelled, and direct past records are ineligible.
+Schema v14 assigns stable exact-occurrence identity to tracked research rows
+without collapsing duplicates or changing external NCT/PMID authority. Schema
+v15 backfills `profile_revision=0` only when that top-level key is truly absent;
+an existing null, invalid, boolean, negative, or integer value is retained
+verbatim so bounded projections continue to fail closed when revision authority
+is invalid. Clinical judgment source `feedback` is preserved as the historical
+tag written by the legacy feedback flow; it is provenance, not a verification
+claim.
 
 A daily backup is written to `${DATA_DIR}/backups/profile_YYYYMMDD.json`
 (retention: 30 days).
@@ -454,7 +462,7 @@ The most common loops:
 | Review current priorities | **Today** | Shows assessment freshness, the key concern, and task-oriented next actions before supporting detail |
 | Track durable caregiver follow-through | **Today** → **Follow-through** | Create safe caregiver tasks, accept only current generated actions, filter active/completed/cancelled history, edit owner/due date, and record typed completion or cancellation outcomes with explicit provenance; offline snapshots stay visible but read-only, and one mutation owns all related controls until authoritative reload finishes |
 | Record or review symptom episodes | **Today** → **Current symptom episodes** or **Patient** → **Symptoms** | Record durable caregiver-entered current episodes; Patient adds explicit fact editing, resolution, resolved review, read-only source observations, and atomic existing/manual follow-up linkage. The exact safety statement remains visible and the app makes no urgency, diagnosis, treatment, chronology, or monitoring inference |
-| Reconcile treatment records | **Today** → **Treatment records** or **Patient** → **Treatments** | Today shows the first three current/planned records in server order with exact totals and omissions. Patient keeps caregiver courses, differences, document mentions, and earlier/generated compatibility context separate; lifecycle, restart, discrepancy, outcome, recurrence, and atomic follow-up controls appear only from current server authority |
+| Reconcile treatment records | **Today** → **Treatment records** or **Patient** → **Treatments** | Today shows only the first three current/planned caregiver records in server order with exact totals and omissions. Patient keeps caregiver courses, differences, document mentions, mapped generated context, and pre-v6 generated context with unavailable source linkage separate; every unlinked row is shown in server order with an exact total and no citation, mutation, lifecycle, or source controls |
 | See newly discovered research | **Today** → **Research** | Shows the first three exact latest-batch occurrences in server order with exact totals and omissions. `New research` is passive server membership, never unread/review state |
 | Maintain the research shortlist | **Research** → **Current research** / **Considerations** | Review every occurrence and duplicate in server order; keep external facts, machine-generated compatibility context, discovery provenance, immutable snapshots, and current state separate; explicitly save one exact occurrence, record attributed unverified events, close/resume caregiver consideration, and atomically link/create/unlink one follow-up using only current server eligibility |
 | Add a clinical document | Header → **Add document** → paste text or upload file | Queued on the independent feed executor; PDF parsing is child-only, then intake → orchestrator → exec summary. Authorization loss aborts the browser submission, clears selected bytes and dialog state, and rejects late activation |

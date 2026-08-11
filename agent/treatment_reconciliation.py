@@ -57,6 +57,10 @@ TREATMENT_CONFIRMATION_OUTCOMES = {
     "no_change_documented",
 }
 TREATMENT_CONFIRMATION_LABEL = "Caregiver-entered · attributed to clinician · unverified"
+TREATMENT_UNLINKED_GENERATED_AUTHORITY_LABEL = (
+    "Machine-generated compatibility context · source linkage unavailable · "
+    "not a treatment record"
+)
 TREATMENT_SAFETY_GUIDANCE = (
     "NET/Care records what you enter but does not verify treatment details or advise "
     "starting, stopping, or changing treatment. Confirm treatment decisions with the "
@@ -101,6 +105,13 @@ _CONFIRMATION_TEXT_LIMITS = {
     "context_text": 2_000,
     "date": 32,
     "recorded_at": 64,
+}
+_UNLINKED_GENERATED_FIELDS = frozenset({"text", "label", "category", "date"})
+_UNLINKED_GENERATED_TEXT_LIMITS = {
+    "text": 10_000,
+    "label": 1_000,
+    "category": 500,
+    "date": 64,
 }
 _DATE_PREFIXES = ("start", "stop", "planned")
 _SOURCE_FACT_PUBLIC_FIELDS = {
@@ -634,7 +645,10 @@ def _source_fact_projection(
     }
 
 
-def _legacy_projection(profile: dict, revisions: dict[str, int]) -> list[dict]:
+def _legacy_projection(
+    profile: dict,
+    revisions: dict[str, int],
+) -> tuple[list[dict], list[dict]]:
     patient = profile.get("patient")
     if not isinstance(patient, dict):
         raise TreatmentProjectionError(
@@ -679,21 +693,76 @@ def _legacy_projection(profile: dict, revisions: dict[str, int]) -> list[dict]:
             "treatment_projection_invalid",
             "Legacy treatment component authority is inconsistent.",
         )
-    if any(
-        not isinstance(row.get("id"), str)
-        or not row["id"]
-        or not isinstance(row.get("text"), str)
-        or (row.get("label") is not None and not isinstance(row.get("label"), str))
-        or (row.get("category") is not None and not isinstance(row.get("category"), str))
-        or (row.get("date") is not None and not isinstance(row.get("date"), str))
-        or not isinstance(row.get("source_treatment_ids"), list)
-        or any(not isinstance(item, str) for item in row.get("source_treatment_ids", []))
-        for row in classified
-    ):
-        raise TreatmentProjectionError(
-            "treatment_projection_invalid",
-            "Generated treatment compatibility authority is inconsistent.",
+    mapped_classified = []
+    unlinked_classified = []
+    unlinked_occurrences: dict[str, int] = {}
+    for classified_order, row in enumerate(classified):
+        row_keys = set(row)
+        normalized_unlinked = (
+            row_keys == _UNLINKED_GENERATED_FIELDS | {"id", "source_treatment_ids"}
+            and row.get("id") is None
+            and row.get("source_treatment_ids") == []
         )
+        if row_keys == _UNLINKED_GENERATED_FIELDS or normalized_unlinked:
+            for field, limit in _UNLINKED_GENERATED_TEXT_LIMITS.items():
+                value = row.get(field)
+                if field == "date" and value is None:
+                    continue
+                if not isinstance(value, str):
+                    raise TreatmentProjectionError(
+                        "treatment_projection_invalid",
+                        "Generated treatment compatibility authority is inconsistent.",
+                    )
+                if len(value) > limit:
+                    raise TreatmentProjectionError(
+                        "treatment_projection_too_large",
+                        "Treatment data exceeds the supported projection limits.",
+                    )
+            if row["category"] not in {"active", "planned", "completed"}:
+                raise TreatmentProjectionError(
+                    "treatment_projection_invalid",
+                    "Generated treatment compatibility authority is inconsistent.",
+                )
+            safe_row = {
+                key: copy.deepcopy(row[key]) for key in ("text", "label", "category", "date")
+            }
+            identity_base = _canonical(safe_row)
+            occurrence = unlinked_occurrences.get(identity_base, 0)
+            unlinked_occurrences[identity_base] = occurrence + 1
+            authority = {
+                "stored_row": safe_row,
+                "occurrence": occurrence,
+                "classified_order": classified_order,
+                "revisions": revisions,
+            }
+            unlinked_classified.append(
+                {
+                    "id": _digest(
+                        "txunlinked",
+                        {"stored_row": safe_row, "occurrence": occurrence},
+                        24,
+                    ),
+                    "token": _digest("txunlinkedrow", authority),
+                    **safe_row,
+                    "authority_label": TREATMENT_UNLINKED_GENERATED_AUTHORITY_LABEL,
+                }
+            )
+            continue
+        if (
+            not isinstance(row.get("id"), str)
+            or not row["id"]
+            or not isinstance(row.get("text"), str)
+            or (row.get("label") is not None and not isinstance(row.get("label"), str))
+            or (row.get("category") is not None and not isinstance(row.get("category"), str))
+            or (row.get("date") is not None and not isinstance(row.get("date"), str))
+            or not isinstance(row.get("source_treatment_ids"), list)
+            or any(not isinstance(item, str) for item in row.get("source_treatment_ids", []))
+        ):
+            raise TreatmentProjectionError(
+                "treatment_projection_invalid",
+                "Generated treatment compatibility authority is inconsistent.",
+            )
+        mapped_classified.append(row)
     result = []
     for source_order, raw_text in enumerate(raw_rows):
         mapped = [row for row in components if row.get("source_order") == source_order]
@@ -701,7 +770,7 @@ def _legacy_projection(profile: dict, revisions: dict[str, int]) -> list[dict]:
         mapped_ids = [row["id"] for row in mapped]
         generated = [
             row
-            for row in classified
+            for row in mapped_classified
             if isinstance(row.get("source_treatment_ids"), list)
             and any(component_id in mapped_ids for component_id in row["source_treatment_ids"])
         ]
@@ -754,7 +823,18 @@ def _legacy_projection(profile: dict, revisions: dict[str, int]) -> list[dict]:
         }
         _validate_public_value(public_row, allowed_keys=frozenset({"raw_text"}))
         result.append(public_row)
-    return result
+    mapped_classification_ids = {
+        row["id"] for row in mapped_classified if isinstance(row.get("id"), str) and row.get("id")
+    }
+    unlinked_ids = {row["id"] for row in unlinked_classified}
+    if (mapped_classification_ids | set(component_ids)) & unlinked_ids or len(unlinked_ids) != len(
+        unlinked_classified
+    ):
+        raise TreatmentProjectionError(
+            "treatment_projection_invalid",
+            "Generated treatment compatibility identity is inconsistent.",
+        )
+    return result, unlinked_classified
 
 
 def _linked_action_public(action: dict) -> dict:
@@ -1404,7 +1484,41 @@ def _build_projection(
         if action.get("status") in {"open", "in_progress"}
         and not action_owner_refs(profile, action.get("id"))
     ]
-    legacy = _legacy_projection(profile, revisions)
+    public_source = [item["public"] for item in projected_source]
+    legacy, unlinked_generated_context = _legacy_projection(profile, revisions)
+    public_ids = [
+        *(item["ref"] for item in public_source),
+        *(item["id"] for item in legacy),
+        *(component["id"] for item in legacy for component in item["components"]),
+        *(generated["id"] for item in legacy for generated in item["generated_classification"]),
+        *(item["id"] for item in unlinked_generated_context),
+        *(item["id"] for item in public_courses),
+        *(item["id"] for item in public_discrepancies),
+        *(
+            item["follow_up"]["id"]
+            for item in public_discrepancies
+            if item["follow_up"] is not None
+        ),
+        *(item["id"] for item in eligible_actions),
+    ]
+    public_tokens = [
+        *(item["token"] for item in public_source),
+        *(item["token"] for item in legacy),
+        *(item["token"] for item in unlinked_generated_context),
+        *(item["token"] for item in public_courses),
+        *(item["token"] for item in public_discrepancies),
+        *(
+            item["follow_up"]["token"]
+            for item in public_discrepancies
+            if item["follow_up"] is not None
+        ),
+        *(item["token"] for item in eligible_actions),
+    ]
+    if len(public_ids) != len(set(public_ids)) or len(public_tokens) != len(set(public_tokens)):
+        raise TreatmentProjectionError(
+            "treatment_projection_invalid",
+            "Treatment public identity is inconsistent.",
+        )
     authority_bytes = (
         sum(len(_canonical(item["authority"]).encode("utf-8")) for item in projected_source)
         + sum(
@@ -1428,11 +1542,13 @@ def _build_projection(
             "treatment_projection_too_large",
             "Treatment authority exceeds the supported projection limits.",
         )
-    public_source = [item["public"] for item in projected_source]
     manifest = {
         **revisions,
         "source_facts": [{"ref": item["ref"], "token": item["token"]} for item in public_source],
         "legacy": [{"id": item["id"], "token": item["token"]} for item in legacy],
+        "unlinked_generated_context": [
+            {"id": item["id"], "token": item["token"]} for item in unlinked_generated_context
+        ],
         "courses": [{"id": item["id"], "token": item["token"]} for item in public_courses],
         "discrepancies": [
             {"id": item["id"], "token": item["token"]} for item in public_discrepancies
@@ -1447,10 +1563,12 @@ def _build_projection(
         "projection_token": _digest("txprojection", manifest),
         "source_fact_count": len(public_source),
         "legacy_treatment_count": len(legacy),
+        "unlinked_generated_context_count": len(unlinked_generated_context),
         "course_count": len(public_courses),
         "discrepancy_count": len(public_discrepancies),
         "source_facts": public_source,
         "legacy_treatments": legacy,
+        "unlinked_generated_context": unlinked_generated_context,
         "courses": public_courses,
         "discrepancies": public_discrepancies,
         "eligible_actions": eligible_actions,

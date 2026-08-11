@@ -579,7 +579,9 @@ excluded from all model prompts.
 **Today → Treatment records** shows at most the first three Current or Planned
 caregiver records in exact server order. It states the exact current/planned
 totals and omitted count, plus exact Past, document-mention, earlier-app,
-generated-classification, and open-difference counts. **Review all treatment
+mapped-generated, unlinked-generated, and open-difference counts. Unlinked
+generated context is counted only; Today never presents it as a current or
+planned course. **Review all treatment
 information** opens the complete **Patient → Treatments** workspace. Today and
 Patient use the same accepted projection; neither uses `/api/status` treatment
 data.
@@ -606,7 +608,13 @@ Patient separates four kinds of information:
    machine-generated compatibility context separate and read-only.
    Machine-generated context is not a treatment record and neither legacy nor
    generated data can appear in lifecycle, discrepancy, outcome, or follow-up
-   authority controls.
+   authority controls. Pre-v6 generated rows whose source linkage was never
+   stored appear in a distinct section labelled exactly **Machine-generated
+   compatibility context · source linkage unavailable · not a treatment
+   record**. The section shows every row in stored order, including duplicates,
+   and states the exact total and that zero rows were omitted. It has no source
+   links, citations, lifecycle, mutation, follow-up, or other controls and makes
+   no currentness, verification, relevance, or treatment-advice claim.
 
 Current lifecycle buttons are exactly those returned by the server. Do not
 interpret their presence as treatment advice. A new Past record or a transition
@@ -638,6 +646,13 @@ choices must be selected again. Rejected submitted fields keep the current
 projection and draft. A malformed or hard treatment read clears treatment
 content; authorization loss clears all patient PHI. Normal refresh does not
 move focus.
+
+If the treatment or symptom workspace reports that records could not be
+verified safely after an upgrade, do not use `/api/status` as a fallback and do
+not edit the profile ad hoc. Confirm the profile loaded through the normal
+migration path at schema v15. A genuinely missing top-level
+`profile_revision` is restored as `0`; an existing null or invalid revision
+remains invalid by design and requires operator review of a valid backup.
 
 The fixed statement remains visible in every state:
 

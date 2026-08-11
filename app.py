@@ -1342,6 +1342,11 @@ def _validate_episode_action_link(
             raise _SymptomConflictError(
                 "The caregiver follow-up is already linked to another symptom episode."
             )
+    for discrepancy in profile.get("treatment_discrepancies", []):
+        if isinstance(discrepancy, dict) and discrepancy.get("caregiver_action_id") == action_id:
+            raise _SymptomConflictError(
+                "The caregiver follow-up is already linked to a treatment discrepancy."
+            )
     return action
 
 
@@ -1381,6 +1386,279 @@ def _symptom_mutation_error(exc: Exception):
     if isinstance(exc, _SymptomConflictError | agent.FollowThroughConflict):
         return jsonify({"error": str(exc), "code": "symptom_conflict"}), 409
     return jsonify({"error": str(exc), "code": "invalid_symptom_request"}), 400
+
+
+_TREATMENT_META_FIELDS = {
+    "mutation_id",
+    "expected_profile_revision",
+    "expected_workflow_revision",
+    "expected_projection_token",
+}
+_TREATMENT_COURSE_TEXT_FIELDS = {
+    "treatment_text",
+    "treatment_type_text",
+    "dose_text",
+    "route_text",
+    "frequency_text",
+    "cycle_text",
+    "schedule_text",
+    "formulation_text",
+    "indication_text",
+    "notes",
+}
+_TREATMENT_COURSE_DATE_FIELDS = {"start_date", "stop_date", "planned_date"}
+_TREATMENT_COURSE_FIELDS = (
+    _TREATMENT_COURSE_TEXT_FIELDS | _TREATMENT_COURSE_DATE_FIELDS | {"legacy_component_ids"}
+)
+_TREATMENT_TEXT_LIMITS = {
+    "treatment_text": 1000,
+    "treatment_type_text": 500,
+    "dose_text": 500,
+    "route_text": 500,
+    "frequency_text": 500,
+    "cycle_text": 500,
+    "schedule_text": 1000,
+    "formulation_text": 500,
+    "indication_text": 1000,
+    "notes": 10000,
+    "comparison_text": 10000,
+    "note": 10000,
+    "clinician_text": 500,
+    "context_text": 2000,
+}
+
+
+class _TreatmentConflictError(ValueError):
+    pass
+
+
+class _TreatmentNotFoundError(ValueError):
+    pass
+
+
+def _treatment_projection(profile: dict) -> dict:
+    return agent.project_treatment_reconciliation(profile)
+
+
+def _require_treatment_revisions(profile: dict, data: dict) -> None:
+    expected_profile = data.get("expected_profile_revision")
+    expected_workflow = data.get("expected_workflow_revision")
+    if isinstance(expected_profile, bool) or not isinstance(expected_profile, int):
+        raise ValueError("expected_profile_revision must be an integer.")
+    if isinstance(expected_workflow, bool) or not isinstance(expected_workflow, int):
+        raise ValueError("expected_workflow_revision must be an integer.")
+    if expected_profile != int(profile.get("profile_revision") or 0):
+        raise _TreatmentConflictError("The patient profile changed. Refresh and try again.")
+    if expected_workflow != int(profile.get("workflow_revision") or 0):
+        raise _TreatmentConflictError("The workflow changed. Refresh and try again.")
+
+
+def _require_treatment_projection_token(projection: dict, data: dict) -> None:
+    token = data.get("expected_projection_token")
+    if not isinstance(token, str) or not token:
+        raise ValueError("expected_projection_token is required.")
+    if not hmac.compare_digest(token, projection["projection_token"]):
+        raise _TreatmentConflictError(
+            "The treatment reconciliation record changed. Refresh and try again."
+        )
+
+
+def _exact_treatment_text(value: Any, field: str, *, required: bool = False) -> str | None:
+    if value is None:
+        if required:
+            raise ValueError(f"{field} is required.")
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be text or null.")
+    if required and not value.strip():
+        raise ValueError(f"{field} is required.")
+    if len(value) > _TREATMENT_TEXT_LIMITS[field]:
+        raise ValueError(f"{field} is too long.")
+    if any(ord(char) < 32 and char not in "\n\t" for char in value):
+        raise ValueError(f"{field} contains unsupported control characters.")
+    return value
+
+
+def _treatment_date(value: Any, field: str) -> tuple[str | None, str, str]:
+    if value is None:
+        return None, "unknown", "unknown"
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a YYYY, YYYY-MM, or YYYY-MM-DD date or null.")
+    precision = derive_date_precision(value)
+    if precision == "unknown":
+        raise ValueError(f"{field} must be a valid YYYY, YYYY-MM, or YYYY-MM-DD date.")
+    return value, precision, "caregiver_entered"
+
+
+def _course_content(
+    data: dict,
+    projection: dict,
+    *,
+    existing: dict | None = None,
+) -> dict:
+    result = copy.deepcopy(existing or {})
+    for field in _TREATMENT_COURSE_TEXT_FIELDS:
+        if existing is None or field in data:
+            result[field] = _exact_treatment_text(
+                data.get(field),
+                field,
+                required=field == "treatment_text",
+            )
+    if existing is None or "legacy_component_ids" in data:
+        values = data.get("legacy_component_ids", [])
+        if not isinstance(values, list) or any(
+            not isinstance(value, str) or not value for value in values
+        ):
+            raise ValueError("legacy_component_ids must be a list of component IDs.")
+        if len(values) != len(set(values)):
+            raise ValueError("legacy_component_ids cannot contain duplicates.")
+        available = {
+            component["id"]
+            for row in projection["legacy_treatments"]
+            for component in row["components"]
+        }
+        if any(value not in available for value in values):
+            raise _TreatmentConflictError(
+                "A selected legacy treatment component changed. Refresh and try again."
+            )
+        result["legacy_component_ids"] = list(values)
+    for field in _TREATMENT_COURSE_DATE_FIELDS:
+        if existing is None or field in data:
+            value, precision, kind = _treatment_date(data.get(field), field)
+            result[field] = value
+            result[f"{field}_precision"] = precision
+            result[f"{field}_kind"] = kind
+    return result
+
+
+def _treatment_row(projection: dict, collection: str, record_id: str, token: Any) -> dict:
+    row = next((item for item in projection[collection] if item.get("id") == record_id), None)
+    if row is None:
+        raise _TreatmentNotFoundError("Treatment reconciliation record not found.")
+    if not isinstance(token, str) or not token:
+        raise ValueError("Expected record token is required.")
+    if not hmac.compare_digest(token, row["token"]):
+        raise _TreatmentConflictError(
+            "The treatment reconciliation record changed. Refresh and try again."
+        )
+    return row
+
+
+def _treatment_source_fact(projection: dict, record_ref: Any, token: Any) -> dict:
+    if not isinstance(record_ref, str) or not record_ref:
+        raise ValueError("source_fact_ref is required.")
+    row = next((item for item in projection["source_facts"] if item["ref"] == record_ref), None)
+    if row is None:
+        raise _TreatmentNotFoundError("Treatment source fact not found.")
+    if not isinstance(token, str) or not token:
+        raise ValueError("expected_source_fact_token is required.")
+    if not hmac.compare_digest(token, row["token"]):
+        raise _TreatmentConflictError("The treatment source fact changed. Refresh and try again.")
+    return row
+
+
+def _course_record(profile: dict, course_id: str) -> dict:
+    course = next(
+        (
+            item
+            for item in profile.get("treatment_courses", [])
+            if isinstance(item, dict) and item.get("id") == course_id
+        ),
+        None,
+    )
+    if course is None:
+        raise _TreatmentNotFoundError("Treatment course not found.")
+    return course
+
+
+def _discrepancy_record(profile: dict, discrepancy_id: str) -> dict:
+    discrepancy = next(
+        (
+            item
+            for item in profile.get("treatment_discrepancies", [])
+            if isinstance(item, dict) and item.get("id") == discrepancy_id
+        ),
+        None,
+    )
+    if discrepancy is None:
+        raise _TreatmentNotFoundError("Treatment discrepancy not found.")
+    return discrepancy
+
+
+def _treatment_mutation_response(
+    profile: dict,
+    *,
+    course_id: str | None = None,
+    discrepancy_id: str | None = None,
+) -> dict:
+    projection = _treatment_projection(profile)
+    if discrepancy_id is None:
+        course = next((item for item in projection["courses"] if item["id"] == course_id), None)
+        if course is None:
+            raise RuntimeError("Treatment course disappeared before response generation.")
+        return {
+            "course": course,
+            "workflow_revision": projection["workflow_revision"],
+            "profile_revision": projection["profile_revision"],
+        }
+    discrepancy = next(
+        (item for item in projection["discrepancies"] if item["id"] == discrepancy_id),
+        None,
+    )
+    if discrepancy is None:
+        raise RuntimeError("Treatment discrepancy disappeared before response generation.")
+    course = next(
+        (item for item in projection["courses"] if item["id"] == discrepancy.get("course_id")),
+        None,
+    )
+    return {
+        "discrepancy": discrepancy,
+        "course": course,
+        "follow_up": discrepancy.get("follow_up"),
+        "workflow_revision": projection["workflow_revision"],
+        "profile_revision": projection["profile_revision"],
+    }
+
+
+def _treatment_mutation_error(exc: Exception):
+    if isinstance(exc, agent.TreatmentProjectionError):
+        return jsonify({"error": exc.public_message, "code": exc.code}), 422
+    if isinstance(exc, _TreatmentNotFoundError):
+        return jsonify({"error": str(exc), "code": "not_found"}), 404
+    if isinstance(exc, _TreatmentConflictError | agent.FollowThroughConflict):
+        return jsonify({"error": str(exc), "code": "treatment_conflict"}), 409
+    return jsonify({"error": str(exc), "code": "invalid_treatment_request"}), 400
+
+
+def _treatment_action_link(
+    profile: dict,
+    *,
+    action_id: Any,
+    expected_token: Any,
+    discrepancy_id: str | None,
+) -> dict:
+    if not isinstance(action_id, str) or not action_id:
+        raise ValueError("caregiver_action_id is required.")
+    action = _action_record(profile, action_id)
+    if action.get("status") not in {"open", "in_progress"}:
+        raise _TreatmentConflictError("The caregiver follow-up is no longer eligible.")
+    if not isinstance(expected_token, str) or not expected_token:
+        raise ValueError("expected_action_token is required.")
+    if not hmac.compare_digest(expected_token, agent.semantic_token(action)):
+        raise _TreatmentConflictError("The caregiver follow-up changed. Refresh and try again.")
+    for episode in profile.get("symptom_episodes", []):
+        if isinstance(episode, dict) and episode.get("caregiver_action_id") == action_id:
+            raise _TreatmentConflictError(
+                "The caregiver follow-up is already linked to a symptom episode."
+            )
+    for discrepancy in profile.get("treatment_discrepancies", []):
+        if not isinstance(discrepancy, dict) or discrepancy.get("id") == discrepancy_id:
+            continue
+        if discrepancy.get("caregiver_action_id") == action_id:
+            raise _TreatmentConflictError(
+                "The caregiver follow-up is already linked to another treatment discrepancy."
+            )
+    return action
 
 
 def _refresh_summary(profile: dict, *, generation_id: str) -> str | None:
@@ -2422,6 +2700,53 @@ def api_symptom_observation_source(record_ref):
 def api_symptom_observation_evidence(record_ref):
     """Resolve an opaque symptom observation reference to exact evidence text."""
     return _symptom_observation_text_response(record_ref, evidence_only=True)
+
+
+@app.route("/api/patient/treatment-reconciliation")
+def api_treatment_reconciliation():
+    """Return the complete bounded treatment reconciliation projection."""
+    profile = agent.load_profile()
+    try:
+        projection = _treatment_projection(profile)
+    except agent.TreatmentProjectionError as exc:
+        return jsonify({"error": exc.public_message, "code": exc.code}), 422
+    return jsonify(projection)
+
+
+def _treatment_source_fact_text_response(record_ref: str, *, evidence_only: bool):
+    profile = agent.load_profile()
+    try:
+        text = agent.treatment_source_fact_text(
+            profile,
+            record_ref,
+            evidence_only=evidence_only,
+        )
+    except agent.TreatmentProjectionError as exc:
+        status = (
+            404
+            if exc.code
+            in {
+                "treatment_source_fact_not_found",
+                "treatment_evidence_unavailable",
+            }
+            else 422
+        )
+        return jsonify({"error": exc.public_message, "code": exc.code}), status
+    return app.response_class(text, mimetype="text/plain")
+
+
+@app.route("/api/patient/treatment-reconciliation/source-facts/<record_ref>/source")
+@_source_auth_required
+def api_treatment_source_fact_source(record_ref):
+    """Resolve an opaque treatment source-fact reference to validated source text."""
+    return _treatment_source_fact_text_response(record_ref, evidence_only=False)
+
+
+@app.route("/api/patient/treatment-reconciliation/source-facts/<record_ref>/evidence")
+@_source_auth_required
+def api_treatment_source_fact_evidence(record_ref):
+    """Resolve an opaque treatment source-fact reference to exact evidence text."""
+    return _treatment_source_fact_text_response(record_ref, evidence_only=True)
 
 
 @app.route("/api/feed", methods=["POST"])
@@ -4732,6 +5057,776 @@ def api_link_symptom_episode_follow_up(episode_id):
         return jsonify(result)
     except (agent.FollowThroughError, ValueError, TypeError) as exc:
         return _symptom_mutation_error(exc)
+
+
+# ── treatment reconciliation ─────────────────────────────────────────────────
+@app.route("/api/treatment-reconciliation/courses", methods=["POST"])
+def api_create_treatment_course():
+    try:
+        data = _workflow_request()
+        _reject_unsupported_fields(
+            data,
+            _TREATMENT_META_FIELDS | _TREATMENT_COURSE_FIELDS | {"status"},
+            "Unsupported treatment course field.",
+        )
+        mutation_id = agent.validate_mutation_id(data.get("mutation_id"))
+        status = data.get("status")
+        if status not in agent.TREATMENT_COURSE_STATUSES:
+            raise ValueError("status must be current, past, or planned.")
+        endpoint = "POST /api/treatment-reconciliation/courses"
+        operation = "created"
+        target = "treatment_course:create"
+        with agent.serialized_mutation():
+            profile = agent.load_profile()
+            replay = _idempotent_result(
+                profile,
+                mutation_id,
+                data,
+                endpoint=endpoint,
+                operation=operation,
+                target=target,
+            )
+            if replay is not None:
+                return jsonify(replay)
+            projection = _treatment_projection(profile)
+            _require_treatment_revisions(profile, data)
+            _require_treatment_projection_token(projection, data)
+            timestamp = now_stamp()
+            course = {
+                "id": agent.new_treatment_course_id(),
+                "status": status,
+                **_course_content(data, projection),
+                "previous_course_id": None,
+                "provenance": agent.treatment_course_provenance(),
+                "created_at": timestamp,
+                "updated_at": timestamp,
+                "history": [],
+            }
+            profile.setdefault("treatment_courses", []).append(course)
+            event = agent.append_history(
+                course,
+                endpoint=endpoint,
+                operation=operation,
+                target=target,
+                mutation_id=mutation_id,
+                payload=data,
+                before_token=None,
+                changes={"status": {"before": None, "after": status}},
+            )
+            result = _save_workflow_mutation(
+                profile,
+                clinical_change=True,
+                reason="A caregiver-maintained treatment course changed.",
+                event=event,
+                response_factory=lambda: _treatment_mutation_response(
+                    profile, course_id=course["id"]
+                ),
+            )
+        return jsonify(result), 201
+    except (agent.FollowThroughError, ValueError, TypeError) as exc:
+        return _treatment_mutation_error(exc)
+
+
+@app.route("/api/treatment-reconciliation/courses/<course_id>", methods=["PATCH"])
+def api_edit_treatment_course(course_id):
+    try:
+        data = _workflow_request()
+        _reject_unsupported_fields(
+            data,
+            _TREATMENT_META_FIELDS | _TREATMENT_COURSE_FIELDS | {"expected_course_token"},
+            "Unsupported treatment course field.",
+        )
+        changed_fields = set(data) & _TREATMENT_COURSE_FIELDS
+        if not changed_fields:
+            raise ValueError("At least one treatment course field is required.")
+        mutation_id = agent.validate_mutation_id(data.get("mutation_id"))
+        endpoint = "PATCH /api/treatment-reconciliation/courses/<course_id>"
+        operation = "edited"
+        target = f"treatment_course:{course_id}"
+        with agent.serialized_mutation():
+            profile = agent.load_profile()
+            replay = _idempotent_result(
+                profile,
+                mutation_id,
+                data,
+                endpoint=endpoint,
+                operation=operation,
+                target=target,
+            )
+            if replay is not None:
+                return jsonify(replay)
+            projection = _treatment_projection(profile)
+            _require_treatment_revisions(profile, data)
+            _require_treatment_projection_token(projection, data)
+            _treatment_row(projection, "courses", course_id, data.get("expected_course_token"))
+            course = _course_record(profile, course_id)
+            updated = _course_content(data, projection, existing=course)
+            changes = {
+                field: {"before": course.get(field), "after": updated.get(field)}
+                for field in (
+                    _TREATMENT_COURSE_FIELDS
+                    | {f"{date}_precision" for date in _TREATMENT_COURSE_DATE_FIELDS}
+                    | {f"{date}_kind" for date in _TREATMENT_COURSE_DATE_FIELDS}
+                )
+                if course.get(field) != updated.get(field)
+            }
+            if not changes:
+                raise ValueError("The treatment course already has those values.")
+            before_token = agent.semantic_token(course)
+            for field in changes:
+                course[field] = copy.deepcopy(updated.get(field))
+            course["updated_at"] = now_stamp()
+            event = agent.append_history(
+                course,
+                endpoint=endpoint,
+                operation=operation,
+                target=target,
+                mutation_id=mutation_id,
+                payload=data,
+                before_token=before_token,
+                changes=changes,
+            )
+            result = _save_workflow_mutation(
+                profile,
+                clinical_change=True,
+                reason="A caregiver-maintained treatment course changed.",
+                event=event,
+                response_factory=lambda: _treatment_mutation_response(profile, course_id=course_id),
+            )
+        return jsonify(result)
+    except (agent.FollowThroughError, ValueError, TypeError) as exc:
+        return _treatment_mutation_error(exc)
+
+
+@app.route(
+    "/api/treatment-reconciliation/courses/<course_id>/transition",
+    methods=["POST"],
+)
+def api_transition_treatment_course(course_id):
+    try:
+        data = _workflow_request()
+        _reject_unsupported_fields(
+            data,
+            _TREATMENT_META_FIELDS | {"expected_course_token", "status"},
+            "Unsupported treatment transition field.",
+        )
+        mutation_id = agent.validate_mutation_id(data.get("mutation_id"))
+        new_status = data.get("status")
+        endpoint = "POST /api/treatment-reconciliation/courses/<course_id>/transition"
+        operation = "transitioned"
+        target = f"treatment_course:{course_id}"
+        with agent.serialized_mutation():
+            profile = agent.load_profile()
+            replay = _idempotent_result(
+                profile,
+                mutation_id,
+                data,
+                endpoint=endpoint,
+                operation=operation,
+                target=target,
+            )
+            if replay is not None:
+                return jsonify(replay)
+            projection = _treatment_projection(profile)
+            _require_treatment_revisions(profile, data)
+            _require_treatment_projection_token(projection, data)
+            _treatment_row(projection, "courses", course_id, data.get("expected_course_token"))
+            course = _course_record(profile, course_id)
+            allowed = {
+                "planned": {"current", "past"},
+                "current": {"past"},
+                "past": set(),
+            }
+            if new_status not in allowed.get(course.get("status"), set()):
+                raise _TreatmentConflictError("That treatment course transition is not allowed.")
+            before_status = course["status"]
+            before_token = agent.semantic_token(course)
+            course["status"] = new_status
+            course["updated_at"] = now_stamp()
+            event = agent.append_history(
+                course,
+                endpoint=endpoint,
+                operation=operation,
+                target=target,
+                mutation_id=mutation_id,
+                payload=data,
+                before_token=before_token,
+                changes={"status": {"before": before_status, "after": new_status}},
+            )
+            result = _save_workflow_mutation(
+                profile,
+                clinical_change=True,
+                reason="A caregiver-maintained treatment course changed.",
+                event=event,
+                response_factory=lambda: _treatment_mutation_response(profile, course_id=course_id),
+            )
+        return jsonify(result)
+    except (agent.FollowThroughError, ValueError, TypeError) as exc:
+        return _treatment_mutation_error(exc)
+
+
+@app.route(
+    "/api/treatment-reconciliation/courses/<course_id>/restart",
+    methods=["POST"],
+)
+def api_restart_treatment_course(course_id):
+    try:
+        data = _workflow_request()
+        _reject_unsupported_fields(
+            data,
+            _TREATMENT_META_FIELDS | _TREATMENT_COURSE_FIELDS | {"expected_course_token", "status"},
+            "Unsupported treatment restart field.",
+        )
+        mutation_id = agent.validate_mutation_id(data.get("mutation_id"))
+        status = data.get("status")
+        if status not in {"current", "planned"}:
+            raise ValueError("A restarted course must be current or planned.")
+        endpoint = "POST /api/treatment-reconciliation/courses/<course_id>/restart"
+        operation = "restarted"
+        target = f"treatment_course:{course_id}:restart"
+        with agent.serialized_mutation():
+            profile = agent.load_profile()
+            replay = _idempotent_result(
+                profile,
+                mutation_id,
+                data,
+                endpoint=endpoint,
+                operation=operation,
+                target=target,
+            )
+            if replay is not None:
+                return jsonify(replay)
+            projection = _treatment_projection(profile)
+            _require_treatment_revisions(profile, data)
+            _require_treatment_projection_token(projection, data)
+            prior_public = _treatment_row(
+                projection, "courses", course_id, data.get("expected_course_token")
+            )
+            prior = _course_record(profile, course_id)
+            if prior.get("status") != "past":
+                raise _TreatmentConflictError("Only a past treatment course can be restarted.")
+            timestamp = now_stamp()
+            course = {
+                "id": agent.new_treatment_course_id(),
+                "status": status,
+                **_course_content(data, projection),
+                "previous_course_id": course_id,
+                "provenance": agent.treatment_course_provenance(),
+                "created_at": timestamp,
+                "updated_at": timestamp,
+                "history": [],
+            }
+            profile.setdefault("treatment_courses", []).append(course)
+            event = agent.append_history(
+                course,
+                endpoint=endpoint,
+                operation=operation,
+                target=target,
+                mutation_id=mutation_id,
+                payload=data,
+                before_token=prior_public["token"],
+                changes={
+                    "status": {"before": None, "after": status},
+                    "previous_course_id": {"before": None, "after": course_id},
+                },
+            )
+            result = _save_workflow_mutation(
+                profile,
+                clinical_change=True,
+                reason="A caregiver-maintained treatment course changed.",
+                event=event,
+                response_factory=lambda: _treatment_mutation_response(
+                    profile, course_id=course["id"]
+                ),
+            )
+        return jsonify(result), 201
+    except (agent.FollowThroughError, ValueError, TypeError) as exc:
+        return _treatment_mutation_error(exc)
+
+
+@app.route("/api/treatment-reconciliation/discrepancies", methods=["POST"])
+def api_create_treatment_discrepancy():
+    try:
+        data = _workflow_request()
+        _reject_unsupported_fields(
+            data,
+            _TREATMENT_META_FIELDS
+            | {
+                "category",
+                "comparison_text",
+                "source_fact_ref",
+                "expected_source_fact_token",
+                "course_id",
+                "expected_course_token",
+                "recurs_from_id",
+                "expected_recurs_from_token",
+            },
+            "Unsupported treatment discrepancy field.",
+        )
+        mutation_id = agent.validate_mutation_id(data.get("mutation_id"))
+        category = data.get("category")
+        if category not in agent.TREATMENT_DISCREPANCY_CATEGORIES:
+            raise ValueError("Invalid treatment discrepancy category.")
+        comparison_text = _exact_treatment_text(
+            data.get("comparison_text"), "comparison_text", required=True
+        )
+        endpoint = "POST /api/treatment-reconciliation/discrepancies"
+        operation = "created"
+        target = "treatment_discrepancy:create"
+        with agent.serialized_mutation():
+            profile = agent.load_profile()
+            replay = _idempotent_result(
+                profile,
+                mutation_id,
+                data,
+                endpoint=endpoint,
+                operation=operation,
+                target=target,
+            )
+            if replay is not None:
+                return jsonify(replay)
+            projection = _treatment_projection(profile)
+            _require_treatment_revisions(profile, data)
+            _require_treatment_projection_token(projection, data)
+            source_fact = _treatment_source_fact(
+                projection,
+                data.get("source_fact_ref"),
+                data.get("expected_source_fact_token"),
+            )
+            course_id = data.get("course_id")
+            course_snapshot = None
+            if course_id is not None:
+                if not isinstance(course_id, str) or not course_id:
+                    raise ValueError("course_id must be a treatment course ID or null.")
+                course_snapshot = _treatment_row(
+                    projection,
+                    "courses",
+                    course_id,
+                    data.get("expected_course_token"),
+                )
+            elif data.get("expected_course_token") is not None:
+                raise ValueError("expected_course_token requires course_id.")
+            recurs_from_id = data.get("recurs_from_id")
+            if recurs_from_id is not None:
+                prior = _treatment_row(
+                    projection,
+                    "discrepancies",
+                    recurs_from_id,
+                    data.get("expected_recurs_from_token"),
+                )
+                if prior.get("status") != "resolved":
+                    raise _TreatmentConflictError(
+                        "A recurring discrepancy must link to a resolved discrepancy."
+                    )
+            elif data.get("expected_recurs_from_token") is not None:
+                raise ValueError("expected_recurs_from_token requires recurs_from_id.")
+            timestamp = now_stamp()
+            discrepancy = {
+                "id": agent.new_treatment_discrepancy_id(),
+                "status": "open",
+                "category": category,
+                "comparison_text": comparison_text,
+                "course_id": course_id,
+                "source_fact_ref": source_fact["ref"],
+                "source_fact_snapshot": copy.deepcopy(source_fact),
+                "course_snapshot": copy.deepcopy(course_snapshot),
+                "recurs_from_id": recurs_from_id,
+                "confirmations": [],
+                "caregiver_action_id": None,
+                "provenance": agent.treatment_course_provenance(),
+                "created_at": timestamp,
+                "updated_at": timestamp,
+                "resolved_at": None,
+                "history": [],
+            }
+            profile.setdefault("treatment_discrepancies", []).append(discrepancy)
+            event = agent.append_history(
+                discrepancy,
+                endpoint=endpoint,
+                operation=operation,
+                target=target,
+                mutation_id=mutation_id,
+                payload=data,
+                before_token=None,
+                changes={"status": {"before": None, "after": "open"}},
+            )
+            result = _save_workflow_mutation(
+                profile,
+                clinical_change=True,
+                reason="A caregiver-entered treatment discrepancy changed.",
+                event=event,
+                response_factory=lambda: _treatment_mutation_response(
+                    profile, discrepancy_id=discrepancy["id"]
+                ),
+            )
+        return jsonify(result), 201
+    except (agent.FollowThroughError, ValueError, TypeError) as exc:
+        return _treatment_mutation_error(exc)
+
+
+@app.route(
+    "/api/treatment-reconciliation/discrepancies/<discrepancy_id>/resolve",
+    methods=["POST"],
+)
+def api_resolve_treatment_discrepancy(discrepancy_id):
+    try:
+        data = _workflow_request()
+        _reject_unsupported_fields(
+            data,
+            _TREATMENT_META_FIELDS
+            | {
+                "expected_discrepancy_token",
+                "outcome",
+                "note",
+                "clinician_text",
+                "context_text",
+                "date",
+                "course_patch",
+                "expected_course_token",
+            },
+            "Unsupported treatment discrepancy resolution field.",
+        )
+        mutation_id = agent.validate_mutation_id(data.get("mutation_id"))
+        outcome = data.get("outcome")
+        if outcome not in agent.TREATMENT_CONFIRMATION_OUTCOMES:
+            raise ValueError("Invalid treatment confirmation outcome.")
+        note = _exact_treatment_text(data.get("note"), "note", required=True)
+        clinician_text = _exact_treatment_text(data.get("clinician_text"), "clinician_text")
+        context_text = _exact_treatment_text(data.get("context_text"), "context_text")
+        date, date_precision, date_kind = _treatment_date(data.get("date"), "date")
+        endpoint = "POST /api/treatment-reconciliation/discrepancies/<id>/resolve"
+        operation = "resolved"
+        target = f"treatment_discrepancy:{discrepancy_id}"
+        with agent.serialized_mutation():
+            profile = agent.load_profile()
+            replay = _idempotent_result(
+                profile,
+                mutation_id,
+                data,
+                endpoint=endpoint,
+                operation=operation,
+                target=target,
+            )
+            if replay is not None:
+                return jsonify(replay)
+            projection = _treatment_projection(profile)
+            _require_treatment_revisions(profile, data)
+            _require_treatment_projection_token(projection, data)
+            _treatment_row(
+                projection,
+                "discrepancies",
+                discrepancy_id,
+                data.get("expected_discrepancy_token"),
+            )
+            discrepancy = _discrepancy_record(profile, discrepancy_id)
+            if discrepancy.get("status") != "open":
+                raise _TreatmentConflictError("Only an open discrepancy can be resolved.")
+            course_patch = data.get("course_patch")
+            if outcome == "caregiver_record_corrected":
+                if not isinstance(course_patch, dict) or not course_patch:
+                    raise ValueError(
+                        "course_patch is required when correcting the caregiver record."
+                    )
+                if set(course_patch) - _TREATMENT_COURSE_FIELDS:
+                    raise ValueError("Unsupported treatment course correction field.")
+                course_id = discrepancy.get("course_id")
+                if not isinstance(course_id, str):
+                    raise ValueError(
+                        "A linked treatment course is required for caregiver_record_corrected."
+                    )
+                _treatment_row(
+                    projection,
+                    "courses",
+                    course_id,
+                    data.get("expected_course_token"),
+                )
+                course = _course_record(profile, course_id)
+                updated = _course_content(course_patch, projection, existing=course)
+                course_changes = {
+                    field: {"before": course.get(field), "after": updated.get(field)}
+                    for field in (
+                        _TREATMENT_COURSE_FIELDS
+                        | {f"{field}_precision" for field in _TREATMENT_COURSE_DATE_FIELDS}
+                        | {f"{field}_kind" for field in _TREATMENT_COURSE_DATE_FIELDS}
+                    )
+                    if course.get(field) != updated.get(field)
+                }
+                if not course_changes:
+                    raise ValueError("course_patch must change the caregiver record.")
+                course_before = agent.semantic_token(course)
+                for field in course_changes:
+                    course[field] = copy.deepcopy(updated.get(field))
+                course["updated_at"] = now_stamp()
+                agent.append_history(
+                    course,
+                    endpoint=endpoint + ":course",
+                    operation="corrected_with_discrepancy",
+                    target=f"treatment_course:{course_id}",
+                    mutation_id=(
+                        "txcourse:" + hashlib.sha256(mutation_id.encode("ascii")).hexdigest()[:32]
+                    ),
+                    payload=course_patch,
+                    before_token=course_before,
+                    changes=course_changes,
+                )
+            elif course_patch is not None or data.get("expected_course_token") is not None:
+                raise ValueError(
+                    "Only caregiver_record_corrected can include a course patch or course token."
+                )
+            timestamp = now_stamp()
+            confirmation = {
+                "outcome": outcome,
+                "note": note,
+                "clinician_text": clinician_text,
+                "context_text": context_text,
+                "date": date,
+                "date_precision": date_precision,
+                "date_kind": date_kind,
+                "provenance": agent.treatment_confirmation_provenance(),
+                "recorded_at": timestamp,
+            }
+            before_token = agent.semantic_token(discrepancy)
+            discrepancy.setdefault("confirmations", []).append(confirmation)
+            discrepancy["status"] = "resolved"
+            discrepancy["resolved_at"] = timestamp
+            discrepancy["updated_at"] = timestamp
+            event = agent.append_history(
+                discrepancy,
+                endpoint=endpoint,
+                operation=operation,
+                target=target,
+                mutation_id=mutation_id,
+                payload=data,
+                before_token=before_token,
+                changes={
+                    "status": {"before": "open", "after": "resolved"},
+                    "confirmation": copy.deepcopy(confirmation),
+                },
+            )
+            result = _save_workflow_mutation(
+                profile,
+                clinical_change=True,
+                reason="A caregiver-entered treatment discrepancy changed.",
+                event=event,
+                response_factory=lambda: _treatment_mutation_response(
+                    profile, discrepancy_id=discrepancy_id
+                ),
+            )
+        return jsonify(result)
+    except (agent.FollowThroughError, ValueError, TypeError) as exc:
+        return _treatment_mutation_error(exc)
+
+
+@app.route(
+    "/api/treatment-reconciliation/discrepancies/<discrepancy_id>/reopen",
+    methods=["POST"],
+)
+def api_reopen_treatment_discrepancy(discrepancy_id):
+    try:
+        data = _workflow_request()
+        _reject_unsupported_fields(
+            data,
+            _TREATMENT_META_FIELDS | {"expected_discrepancy_token"},
+            "Unsupported treatment discrepancy reopen field.",
+        )
+        mutation_id = agent.validate_mutation_id(data.get("mutation_id"))
+        endpoint = "POST /api/treatment-reconciliation/discrepancies/<id>/reopen"
+        operation = "reopened"
+        target = f"treatment_discrepancy:{discrepancy_id}"
+        with agent.serialized_mutation():
+            profile = agent.load_profile()
+            replay = _idempotent_result(
+                profile,
+                mutation_id,
+                data,
+                endpoint=endpoint,
+                operation=operation,
+                target=target,
+            )
+            if replay is not None:
+                return jsonify(replay)
+            projection = _treatment_projection(profile)
+            _require_treatment_revisions(profile, data)
+            _require_treatment_projection_token(projection, data)
+            _treatment_row(
+                projection,
+                "discrepancies",
+                discrepancy_id,
+                data.get("expected_discrepancy_token"),
+            )
+            discrepancy = _discrepancy_record(profile, discrepancy_id)
+            if discrepancy.get("status") != "resolved":
+                raise _TreatmentConflictError("Only a resolved discrepancy can be reopened.")
+            before_token = agent.semantic_token(discrepancy)
+            prior_resolved_at = discrepancy.get("resolved_at")
+            discrepancy["status"] = "open"
+            discrepancy["resolved_at"] = None
+            discrepancy["updated_at"] = now_stamp()
+            event = agent.append_history(
+                discrepancy,
+                endpoint=endpoint,
+                operation=operation,
+                target=target,
+                mutation_id=mutation_id,
+                payload=data,
+                before_token=before_token,
+                changes={
+                    "status": {"before": "resolved", "after": "open"},
+                    "resolved_at": {"before": prior_resolved_at, "after": None},
+                },
+            )
+            result = _save_workflow_mutation(
+                profile,
+                clinical_change=False,
+                reason="A treatment discrepancy workflow state changed.",
+                event=event,
+                response_factory=lambda: _treatment_mutation_response(
+                    profile, discrepancy_id=discrepancy_id
+                ),
+            )
+        return jsonify(result)
+    except (agent.FollowThroughError, ValueError, TypeError) as exc:
+        return _treatment_mutation_error(exc)
+
+
+@app.route(
+    "/api/treatment-reconciliation/discrepancies/<discrepancy_id>/follow-up",
+    methods=["PATCH"],
+)
+def api_link_treatment_discrepancy_follow_up(discrepancy_id):
+    try:
+        data = _workflow_request()
+        _reject_unsupported_fields(
+            data,
+            _TREATMENT_META_FIELDS
+            | {
+                "expected_discrepancy_token",
+                "caregiver_action_id",
+                "expected_action_token",
+                "follow_up",
+            },
+            "Unsupported treatment follow-up field.",
+        )
+        has_action_id = "caregiver_action_id" in data
+        has_inline = "follow_up" in data
+        if has_action_id == has_inline:
+            raise ValueError(
+                "Use exactly one follow-up operation: caregiver_action_id or follow_up."
+            )
+        mutation_id = agent.validate_mutation_id(data.get("mutation_id"))
+        if has_inline:
+            if "expected_action_token" in data:
+                raise ValueError("expected_action_token cannot be used with follow_up.")
+            operation = "follow_up_created_and_linked"
+        else:
+            operation = (
+                "follow_up_unlinked"
+                if data.get("caregiver_action_id") is None
+                else "follow_up_linked"
+            )
+        endpoint = "PATCH /api/treatment-reconciliation/discrepancies/<id>/follow-up"
+        target = f"treatment_discrepancy:{discrepancy_id}:follow_up"
+        with agent.serialized_mutation():
+            profile = agent.load_profile()
+            replay = _idempotent_result(
+                profile,
+                mutation_id,
+                data,
+                endpoint=endpoint,
+                operation=operation,
+                target=target,
+            )
+            if replay is not None:
+                return jsonify(replay)
+            projection = _treatment_projection(profile)
+            _require_treatment_revisions(profile, data)
+            _require_treatment_projection_token(projection, data)
+            _treatment_row(
+                projection,
+                "discrepancies",
+                discrepancy_id,
+                data.get("expected_discrepancy_token"),
+            )
+            discrepancy = _discrepancy_record(profile, discrepancy_id)
+            current_action_id = discrepancy.get("caregiver_action_id")
+            new_action_id = data.get("caregiver_action_id") if has_action_id else None
+            inline = None
+            if has_inline:
+                if current_action_id is not None:
+                    raise _TreatmentConflictError(
+                        "Unlink the current caregiver follow-up before creating another."
+                    )
+                inline = _validate_inline_episode_follow_up(data.get("follow_up"))
+                if len(profile.get("caregiver_actions", [])) >= agent.MAX_TREATMENT_ACTIONS:
+                    raise agent.TreatmentProjectionError(
+                        "treatment_projection_too_large",
+                        "Treatment data exceeds the supported projection limits.",
+                    )
+            elif new_action_id is None:
+                if current_action_id is None:
+                    raise _TreatmentConflictError(
+                        "The treatment discrepancy has no linked caregiver follow-up."
+                    )
+                action = _action_record(profile, current_action_id)
+                expected = data.get("expected_action_token")
+                if not isinstance(expected, str) or not expected:
+                    raise ValueError("expected_action_token is required.")
+                if not hmac.compare_digest(expected, agent.semantic_token(action)):
+                    raise _TreatmentConflictError(
+                        "The caregiver follow-up changed. Refresh and try again."
+                    )
+            else:
+                if current_action_id is not None:
+                    raise _TreatmentConflictError(
+                        "Unlink the current caregiver follow-up before linking another."
+                    )
+                _treatment_action_link(
+                    profile,
+                    action_id=new_action_id,
+                    expected_token=data.get("expected_action_token"),
+                    discrepancy_id=discrepancy_id,
+                )
+            if inline is not None:
+                linked_action = _new_action(
+                    profile,
+                    inline,
+                    mutation_id=mutation_id,
+                    history_mutation_id=(
+                        "txaction:" + hashlib.sha256(mutation_id.encode("ascii")).hexdigest()[:32]
+                    ),
+                    history_endpoint=endpoint,
+                )
+                new_action_id = linked_action["id"]
+            before_token = agent.semantic_token(discrepancy)
+            discrepancy["caregiver_action_id"] = new_action_id
+            discrepancy["updated_at"] = now_stamp()
+            event = agent.append_history(
+                discrepancy,
+                endpoint=endpoint,
+                operation=operation,
+                target=target,
+                mutation_id=mutation_id,
+                payload=data,
+                before_token=before_token,
+                changes={
+                    "caregiver_action_id": {
+                        "before": current_action_id,
+                        "after": new_action_id,
+                    }
+                },
+            )
+            result = _save_workflow_mutation(
+                profile,
+                clinical_change=False,
+                reason="A treatment discrepancy follow-up link changed.",
+                event=event,
+                response_factory=lambda: _treatment_mutation_response(
+                    profile, discrepancy_id=discrepancy_id
+                ),
+            )
+        return jsonify(result)
+    except (agent.FollowThroughError, ValueError, TypeError) as exc:
+        return _treatment_mutation_error(exc)
 
 
 # ── symptoms ─────────────────────────────────────────────────────────────────

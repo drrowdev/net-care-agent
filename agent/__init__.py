@@ -149,6 +149,22 @@ from .tools import (
     search_clinical_trials,
     search_pubmed,
 )
+from .treatment_reconciliation import (
+    MAX_TREATMENT_ACTIONS,
+    TREATMENT_CONFIRMATION_LABEL,
+    TREATMENT_CONFIRMATION_OUTCOMES,
+    TREATMENT_COURSE_STATUSES,
+    TREATMENT_DISCREPANCY_CATEGORIES,
+    TREATMENT_DISCREPANCY_STATUSES,
+    TREATMENT_SAFETY_GUIDANCE,
+    TreatmentProjectionError,
+    new_treatment_course_id,
+    new_treatment_discrepancy_id,
+    project_treatment_reconciliation,
+    treatment_confirmation_provenance,
+    treatment_course_provenance,
+    treatment_source_fact_text,
+)
 from .trials_poll import poll_tracked_trials
 from .verify import verification_note, verify_references
 
@@ -207,6 +223,20 @@ __all__ = [
     "symptom_episode_provenance",
     "symptom_observation_identity_base",
     "symptom_observation_text",
+    "MAX_TREATMENT_ACTIONS",
+    "TREATMENT_CONFIRMATION_LABEL",
+    "TREATMENT_CONFIRMATION_OUTCOMES",
+    "TREATMENT_COURSE_STATUSES",
+    "TREATMENT_DISCREPANCY_CATEGORIES",
+    "TREATMENT_DISCREPANCY_STATUSES",
+    "TREATMENT_SAFETY_GUIDANCE",
+    "TreatmentProjectionError",
+    "new_treatment_course_id",
+    "new_treatment_discrepancy_id",
+    "project_treatment_reconciliation",
+    "treatment_confirmation_provenance",
+    "treatment_course_provenance",
+    "treatment_source_fact_text",
     "ACTION_STATUSES",
     "VISIT_STATUSES",
     "DECISION_STATUSES",

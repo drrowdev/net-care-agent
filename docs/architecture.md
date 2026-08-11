@@ -28,6 +28,7 @@ the Azure Files mount at `/home/data/patient_profile.json`. There is one user
                 │     │  biomarker-series       │
                 │     │  imaging-series         │
                 │     │  symptom-episodes       │
+                │     │  treatment-reconciliation│
                 │     ├─ /api/feedback           │
                 │     ├─ /api/follow-ups         │
                 │     ├─ /api/visits + recap     │
@@ -253,6 +254,47 @@ visit/decision/alert action provenance is untouched, duplicate episode linkage
 is rejected, and neither lifecycle cascades. The legacy `/api/symptoms` and
 `/api/status` payloads remain backend compatibility surfaces, but the SPA makes
 no symptom requests to them; only `symptoms[]` enters model prompts.
+
+`GET /api/patient/treatment-reconciliation` is the complete bounded backend
+contract for four deliberately separate authorities: every treatment receipt
+occurrence, the legacy raw/component/generated-classification compatibility
+view, caregiver-maintained treatment courses, and caregiver-created
+discrepancies. Schema v12 migration adds only empty `treatment_courses[]` and
+`treatment_discrepancies[]`; it never promotes or rewrites existing treatment,
+component, classification, source, receipt, evidence, duplicate, order, or
+unknown-field authority.
+
+Courses store exact caregiver text and explicit current/past/planned workflow
+state. Dates preserve only explicitly entered YYYY, YYYY-MM, or YYYY-MM-DD
+precision. Planned may transition to current or past and current to past; past
+is terminal. Restart creates a new explicitly populated current/planned course
+linked by `previous_course_id`, never reopening the old record. No source fact,
+date, action, visit, decision, clock, or model changes lifecycle.
+
+Discrepancies are created only by a caregiver request against one opaque source
+fact and optional exact course token. Neutral outcomes retain the immutable
+source/course snapshots and exact note with the fixed label
+`Caregiver-entered · attributed to clinician · unverified`. Only
+`caregiver_record_corrected` may include an explicit course patch, atomically in
+the same save. Resolution never erases facts or history; reopen is workflow-only
+and recurrence creates a new linked discrepancy.
+
+All course/discrepancy mutations require both expected revisions, the complete
+projection token, applicable row/source/action tokens, and a scoped mutation
+ID. They run under `serialized_mutation`, append request-hash audit, capture a
+safe replay response, and save once. Clinical course/discrepancy changes advance
+both revisions; reopen and follow-up link/unlink/create-link advance workflow
+only. An action can link to at most one symptom episode or treatment
+discrepancy, and neither lifecycle cascades.
+
+Opaque source/evidence routes resolve receipt/change identity server-side and
+validate each referenced artifact once per projection. Public JSON contains no
+path, source/import/job/receipt/change ID, quote, or offset. Corrupt,
+inconsistent, duplicate-ID, tampered, or oversized authority fails the complete
+read with a bounded `422`; incomplete/manual/unverified facts remain visible.
+The projector is side-effect-free and the new course/discrepancy/confirmation
+state does not enter chat, orchestrator, executive summary, questions, deep
+sweep, or other model input in this backend-only PR.
 
 One responsive client authority model renders current episodes on Today and
 the complete current/resolved/source-observation workflow on Patient. It
@@ -514,6 +556,7 @@ only with exact `APP_ORIGIN` or canonical HTTPS `WEBSITE_HOSTNAME`.
 | Vanilla SPA, not React | Caregiver runs the UI on a phone occasionally — zero build pipeline beats lighter frameworks. The split SPA uses one responsive Today/Patient/Questions/Activity shell on every screen size. `static/index.html` owns semantic markup and dialogs, `static/app.js` owns API state/rendering, symptom/imaging/biomarker projection and mutation authority, receipt reconciliation, appointment and alert-resolution owners/epochs/drafts, focus/inert behavior, and load states, and `static/styles.css` provides the desktop rail, locally scrollable authority tables, overflow-safe dialogs, full-height phone sheets, and fixed phone navigation. |
 | Flask + gunicorn, not FastAPI/Containers | App Service runs Python natively; no Docker needed; rapid `az webapp deploy` cycle. |
 | No MSAL | Single user. App Service Easy Auth gates hosted APIs except health/liveness. Local API bypass is explicit (`ALLOW_LOCAL_AUTH_BYPASS=1`), never implicit. |
+| Separate treatment reconciliation authority | Source observations and legacy model classification cannot safely establish longitudinal current/past/planned truth. Explicit caregiver courses and discrepancies preserve source history while stable tokens, replay/CAS, and one-save audit make later shared Patient/Today UI work possible without browser inference. |
 | Per-agent model env vars | Lets us downgrade exec_summary or chat to Haiku independently for cost without touching code. |
 | Separate imported appointments and workflow visits | Receipt-correctable source facts remain immutable evidence; caregiver working state can evolve without pretending generated questions or captured statements are source-verified. |
 | Clinical + workflow revisions | Administrative follow-through does not invalidate expensive clinical artifacts, while new model-context facts still stale every dependent artifact safely. |
@@ -534,6 +577,8 @@ only with exact `APP_ORIGIN` or canonical HTTPS `WEBSITE_HOSTNAME`.
 | Anthropic API outage | Each agent has a JSON-decode fallback that returns "insufficient_data" rather than 500 |
 | Irrelevant literature pollution | `agent.tools._is_relevant` rule-based filter before persistence |
 | Treatment duplicates | `agent.intake._treatment_similarity` synonym dedup (Somatuline = lanreotide) |
+| Treatment source correction invalidates a cited comparison | The discrepancy keeps its immutable cited snapshot while the projection token also binds current receipt/source authority; correction/removal/undo rotates tokens but never deletes courses, discrepancies, confirmations, or links |
+| Partial treatment workflow write or duplicate retry | Serialized full-authority validation, both revisions, scoped mutation ID, canonical request hash, append-only audit, one atomic save, and validated immutable replay response |
 | Oncologist disagreement with AI | `clinical_judgments` injected verbatim into orchestrator + exec summary system prompts as hard constraints |
 | Unsupported extraction evidence | Intake validates normalized model quotes against immutable source text, then stores the exact source span or explicit `missing`/`invalid` status |
 | Biomarker aliases merge distinct tests | Boundary-exact allowlist only; grouping never grants comparability, and 5-HIAA specimen contexts remain separate. |

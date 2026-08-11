@@ -9,6 +9,23 @@ incremented when something user-visible or operationally meaningful changes.
 ## [Unreleased]
 
 ### Added
+- **Treatment reconciliation backend foundation.** Schema v12 adds separate
+  caregiver-maintained treatment courses and explicit neutral discrepancies
+  without promoting or rewriting legacy raw/component/classified treatment or
+  source-receipt authority. A complete authenticated no-store projection keeps
+  every receipt occurrence and legacy duplicate separate, binds private
+  source/evidence/history/action authority into opaque tokens, serves only
+  opaque integrity-validated source/evidence routes, and fails closed on
+  corrupt or oversized authority.
+- **Replay/CAS-safe treatment workflow APIs.** Explicit course create/edit/
+  transition/restart, discrepancy create/resolve/reopen, and mutually exclusive
+  durable action link/unlink/manual create-link mutations require both
+  revisions and complete target authority, append audit, and commit once.
+  Restarts create new linked episodes; treating-team outcomes retain exact
+  caregiver wording with fixed unverified clinician attribution; no date,
+  source, action, visit, model, or clock causes a lifecycle change. The new
+  authority remains excluded from model prompts and no Patient/Today UI is
+  included in this backend-only slice.
 - **Shared Today/Patient symptom episode workflow.** Today now summarizes every
   current caregiver-entered episode and linked follow-up; Patient provides the
   complete current/resolved lifecycle plus a separate read-only source

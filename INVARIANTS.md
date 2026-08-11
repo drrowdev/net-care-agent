@@ -201,6 +201,59 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
   recommendation is permitted. Episodes never enter chat, orchestrator,
   questions, or executive-summary prompts; legacy `symptoms[]` behavior stays
   compatible.
+- Treatment receipt occurrences, legacy `patient.current_treatments[]` plus
+  raw component/generated classification mappings, caregiver-maintained
+  `treatment_courses[]`, and caregiver-created `treatment_discrepancies[]` are
+  separate authorities. Schema v12 migration initializes only missing/null
+  reconciliation collections and never promotes, normalizes, merges,
+  deduplicates, reorders, relabels, or deletes legacy facts, duplicates, IDs,
+  mappings, evidence, receipt history, or unknown extras.
+- Course current/past/planned status and start/stop/planned dates are explicit
+  caregiver workflow authority, not inferred clinical truth. Dates retain only
+  entered day/month/year precision; document/import/visit/current dates never
+  substitute. Planned may transition to current/past and current to past. Past
+  is terminal; restart is a new explicit current/planned course ID linked to the
+  prior course. No date, source, action, visit, decision, clock, or model
+  transition is permitted.
+- Treatment names/types, dose, route, frequency, cycle, schedule, formulation,
+  indication, and notes remain exact text. Only explicitly selected stable
+  legacy component IDs may link; no fuzzy, substring, brand/generic, regimen,
+  class, dose-conversion, schedule-normalization, adherence, suitability, or
+  clinical comparison logic is part of reconciliation.
+- Discrepancies are explicit caregiver-created neutral comparisons against one
+  opaque source fact and optional exact course. They are never model- or
+  client-inferred. Resolution preserves the discrepancy, immutable cited
+  snapshots, source facts, and all prior outcomes. Confirmation notes retain
+  exact wording and fixed
+  `Caregiver-entered · attributed to clinician · unverified` provenance.
+  Bounded outcomes never claim verification, prescription, recommendation, EHR
+  authority, safety, error, urgency, interaction, contraindication, duplicate
+  therapy, adherence, or causality. Only `caregiver_record_corrected` may carry
+  an explicit atomic course patch. Reopen preserves outcomes; recurrence is a
+  new linked discrepancy ID.
+- `GET /api/patient/treatment-reconciliation` is a deterministic authenticated/
+  no-store complete bounded projection. Both revisions and opaque tokens bind
+  full raw/classified/component/source/document/import/receipt/evidence/course/
+  discrepancy/history/action authority. Public output exposes no paths,
+  offsets, quotes, raw source/import/job/receipt/change IDs, or client-
+  constructible evidence coordinates. Opaque same-origin routes serve only
+  integrity-validated text/span. Invalid, inconsistent, duplicate-ID, tampered,
+  or overflowing authority fails the entire read with bounded path-free `422`;
+  valid incomplete/manual/unverified facts remain visible.
+- Every treatment reconciliation mutation requires both expected revisions,
+  complete projection and applicable source/course/discrepancy/action tokens,
+  a stable target, full canonical request, and scoped mutation ID under
+  `serialized_mutation`. It appends audit and saves once. Exact replay returns
+  the immutable original response without another action, event, revision, or
+  save; conflicts and save failure commit nothing. Course/discrepancy clinical
+  changes advance both revisions; reopen and follow-up link/unlink/create-link
+  advance workflow only. An action links to at most one symptom episode or
+  treatment discrepancy and lifecycle never cascades.
+- Receipt correction/removal/undo may rotate source-fact/projection tokens and
+  legacy compatibility state but never deletes or rewrites courses,
+  discrepancies, confirmations, or action links. New reconciliation state is
+  excluded from every model prompt; existing raw/classified treatment prompt
+  behavior remains unchanged.
 - Every Layer 2 mutation is stable-ID/target-token CAS under
   `serialized_mutation`, appends one request-hash audit event, increments each
   applicable revision once, and saves once. Exact `mutation_id` retries are

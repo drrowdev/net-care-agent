@@ -89,6 +89,8 @@ DEFAULT_PROFILE: dict = {
     "alerts": [],
     "symptoms": [],
     "symptom_episodes": [],
+    "treatment_courses": [],
+    "treatment_discrepancies": [],
     "clinical_judgments": [],
     "appointment_questions": [],
     "questions_generation_id": None,

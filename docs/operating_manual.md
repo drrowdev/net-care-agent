@@ -13,13 +13,15 @@ requires App Service Easy Auth path exclusions. Local APIs are protected unless
 
 ## Interface map
 
-The desktop and phone layouts use the same four views, so every workflow is
+The desktop and phone layouts use the same five views, so every workflow is
 available at every screen size:
 
-- **Today** — assessment freshness, key concern, next actions, and the latest
-  net-new trials and research papers.
+- **Today** — assessment freshness, key concern, next actions, a bounded exact
+  latest-batch research summary, and a bounded open-consideration summary.
 - **Patient** — profile snapshot, treatments, complete biomarker history,
   alerts, symptoms, imaging history, and immutable document/source history.
+- **Research** — every current trial/paper occurrence and every open/closed
+  caregiver consideration in exact server order.
 - **Questions** — appointment questions, visit working mode, and clinical notes
   from the treating team.
 - **Activity** — digest/deep-sweep controls, processing status, and reports.
@@ -28,12 +30,15 @@ If an API request is unauthorized, forbidden, offline, or otherwise fails, the
 page shows an explicit error and retry action instead of replacing the patient
 record with empty states. The phone layout keeps these same views in a fixed
 bottom navigation bar.
-Failed status/evidence loads also clear previously rendered patient metadata,
-research additions, treatment/results/alert rows, search caches, and filters so
-old PHI is not left looking current in the browser.
+Failed status/evidence loads clear their patient metadata, treatment/results/
+alert rows, search caches, and filters so old PHI is not left looking current.
+The research endpoint has its own failure boundary: malformed, `422`, or hard
+research loads clear only Research/Today research authority, while ambiguous
+transport retains the last verified workspace visibly stale and read-only.
 Authorization failure additionally clears open reports/receipts, chat turns and
-revision, summary feedback, tracked-item dialogs, and clinical text still in the
-feed dialog. A missing selected activity is treated the same way.
+revision, summary feedback, all research rows/snapshots/events/dialog drafts and
+retry bytes, and clinical text still in the feed dialog. A missing selected
+activity is treated the same way.
 
 ## Review biomarker history
 
@@ -151,8 +156,9 @@ shows:
 The server returns `202` with a job ID. The UI polls active work every three
 seconds and loads the
 report only from that individual job after completion. If the analysis discovers
-research that was not already tracked, **Today** identifies the exact new trials
-and papers and highlights them in their tracked lists. Alerts appear under
+research that was not already tracked, the shared research workspace reloads;
+**Today** then shows the bounded exact latest-batch summary and **Research**
+shows every occurrence in server order. Alerts appear under
 **Patient**. The job status moves `queued → running → done` in the activity list;
 press **Esc** or click the backdrop to dismiss the document dialog at any time
 without submitting. Idle polling backs off to 30 seconds (60 seconds while the
@@ -235,10 +241,12 @@ Use this when no new document has arrived but you want a fresh literature/trial 
 
 Only one digest may be active; a duplicate request returns `409`. The report is
 not embedded in job history—it is loaded on demand when the activity item opens.
-At completion, **Today** reports the net-new trial and paper counts for that
-digest. Clicking a count opens the complete tracked list with those exact records
-sorted first and labelled **New**. A digest that finds only already-tracked
-research explicitly reports that it found nothing new.
+At completion, the shared research workspace reloads from
+`GET /api/patient/research-workspace`; the browser never merges job-result rows
+into display authority. **Today** shows the first three exact current
+latest-batch occurrences in server order, with exact trial/paper totals and an
+omitted count. **Research** remains complete. A digest that finds only
+already-tracked research produces an exact zero-member latest batch.
 
 ## 2b. Run an ensemble deep-sweep (pre-appointment deep prep)
 
@@ -637,31 +645,38 @@ The fixed statement remains visible in every state:
 
 ## 5c. See newly discovered research
 
-**Today** shows the exact trials and papers added by the latest research
-discovery batch. A routine digest always replaces this snapshot, including with
-zero results. Document processing replaces it only when that run actually adds a
-trial or paper, so an unrelated fed document does not erase the most recent
-research additions.
+**Today** shows at most the first three exact trial/paper occurrences that the
+server marks `latest_batch_member`, in the projection's order. It states the
+exact total and omitted count and separately shows at most the first three open
+considerations. A routine digest always replaces latest-batch membership,
+including with zero results. Document processing replaces it only when that run
+adds research, so an unrelated fed document does not erase the prior batch.
 
-Click **new trials** or **new papers** to open the complete tracked list. Records
-from the latest batch appear first with a green **New** label. No review,
-acknowledgement, or clearing action is required; manually entered and
-document-derived clinical information does not create a generic unread count.
+Open **Research** for the complete workspace:
 
-PRRT labels are screening descriptions such as **potential fit** or **may fit**,
-not eligibility decisions. The tracked trial highlighted on Today is a **Trial
-to discuss**, not a best match. The treating team and trial site confirm
-candidacy/eligibility. Missing DOTATATE/receptor imaging is shown as a data gap
-and is not automatically promoted above documented clinical priorities.
-
-### Backend research shortlist authority (UI deferred)
-
-Schema v14 provides authenticated API authority for a future shared Today/
-Research shortlist workflow. The caregiver SPA does not expose it in this
-release. API clients can read `GET /api/patient/research-workspace`, then use the
-server-published eligibility and exact tokens to shortlist one exact occurrence,
-record an attributed unverified note/next step/communication, explicitly close
-or resume consideration, and atomically link or create one caregiver follow-up.
+1. **Current research** preserves every occurrence, duplicate, and order. Each
+   row keeps external registry/bibliographic facts, machine-generated
+   compatibility context, discovery provenance, and caregiver workflow separate.
+   External navigation is offered only for an exact server canonical
+   ClinicalTrials.gov/PubMed URL.
+2. Select **Save exact occurrence for consideration** only when the server
+   publishes shortlist eligibility. This captures one immutable snapshot; a
+   later same-NCT/PMID row with a different occurrence ID is not substituted.
+3. **Considerations** keeps the immutable snapshot separate from the exact
+   current occurrence and reports occurrence presence plus external/generated/
+   discovery equality independently. It does not translate change into clinical
+   relevance, availability, suitability, eligibility, or obsolescence.
+4. Record only server-allowed caregiver note, next step, treating-team
+   communication, or trial-site communication types. Trial-site communication is
+   available only for trials. Optional partial dates are stored exactly without
+   defaults or browser date interpretation. Attribution remains visibly
+   caregiver-entered and unverified.
+5. Close or resume only through server eligibility. Closing stops active
+   caregiver consideration; it does not mean irrelevant, unavailable, unsuitable,
+   ineligible, or rejected, and resume preserves all event/lifecycle history.
+6. Link one current eligible action, create one blank manual action and link it
+   atomically, or unlink the current action. Research never performs a separate
+   action create and never copies generated/source wording into caregiver fields.
 
 This workflow never determines relevance, eligibility, enrollment, availability,
 or treatment suitability. Closing is only a caregiver organization choice.
@@ -670,8 +685,8 @@ unverified. Source refresh/removal and action completion never change lifecycle.
 The immutable capture remains separate from current external facts,
 machine-generated compatibility context, and discovery provenance.
 
-The **New** labels described above remain only exact latest-batch NCT/PMID
-membership. Shortlisting, opening, noting, closing, resuming, and linking do not
+The **New research** labels remain only exact server-published per-occurrence
+latest-batch membership. Shortlisting, opening, noting, closing, resuming, and linking do not
 mark research read, reviewed, acknowledged, old, or new. No reminders,
 monitoring, contact automation, or background site communication is added.
 

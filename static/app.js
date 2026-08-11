@@ -3,7 +3,29 @@
   let pollingInterval = null;
   let currentReportText = '';
   let activeView = 'today';
-  let latestResearchUpdate = null;
+  let researchProjection = null;
+  let researchResponseOwner = null;
+  let researchProjectionState = 'idle';
+  let researchNetworkAmbiguous = false;
+  let researchLoadEpoch = 0;
+  let researchSelectionEpoch = 0;
+  let researchDialogEpoch = 0;
+  let researchMutationEpoch = 0;
+  let researchRequestController = null;
+  let researchMutationController = null;
+  let researchActiveTab = 'current';
+  let researchDialogOpen = false;
+  let researchDialogMode = null;
+  let researchSelection = null;
+  let researchMutationOwner = null;
+  let researchMutationPending = false;
+  let activeResearchIntent = null;
+  let pendingResearchSubmission = null;
+  let pendingResearchCompletion = null;
+  let researchDraft = null;
+  let researchConflictRequiresReselection = false;
+  const researchControlAuthority = new WeakMap();
+  const researchActionOptionAuthority = new WeakMap();
   let lastDialogTrigger = null;
   let hadActiveJobs = false;
   let pendingSummary = null;
@@ -346,6 +368,14 @@
       typeof treatmentRequestController !== 'undefined'
       && treatmentRequestController !== null
     );
+    const researchWasLoaded = (
+      typeof researchProjection !== 'undefined'
+      && researchProjection !== null
+    );
+    const researchRequestWasActive = (
+      typeof researchRequestController !== 'undefined'
+      && researchRequestController !== null
+    );
     phiEpoch += 1;
     if (typeof markBiomarkerProjectionStale === 'function') {
       markBiomarkerProjectionStale(
@@ -398,6 +428,18 @@
         && typeof ensureTreatmentReconciliation === 'function'
       ) {
         Promise.resolve().then(() => ensureTreatmentReconciliation());
+      }
+    }
+    if (
+      options.preserveResearchRequest !== true
+      && (researchWasLoaded || researchRequestWasActive)
+      && typeof markResearchProjectionStale === 'function'
+    ) {
+      markResearchProjectionStale(
+        'The patient record changed. Research is read-only until the authoritative workspace reloads.',
+      );
+      if (typeof loadResearchWorkspace === 'function') {
+        Promise.resolve().then(() => loadResearchWorkspace({ force: true }));
       }
     }
     taskSelectionEpoch += 1;
@@ -516,6 +558,7 @@
           || options.treatmentMutation === true
         ),
         preserveTreatmentMutation: options.treatmentMutation === true,
+        preserveResearchRequest: options.researchProjection === true,
         deferConvergence: options.alertResolution === true,
         preserveVisitRecapExportOwner: options.preserveVisitRecapExportOwner === true,
       });
@@ -646,6 +689,32 @@
         );
         if (typeof ensureTreatmentReconciliation === 'function') {
           Promise.resolve().then(() => ensureTreatmentReconciliation());
+        }
+      }
+      const researchNeedsWorkflowRefresh = (
+        options.researchProjection !== true
+        && options.researchMutation !== true
+        && !profileAdvanced
+        && (
+          (
+            typeof researchProjection !== 'undefined'
+            && researchProjection !== null
+          )
+          || (
+            typeof researchRequestController !== 'undefined'
+            && researchRequestController !== null
+          )
+        )
+      );
+      if (
+        researchNeedsWorkflowRefresh
+        && typeof markResearchProjectionStale === 'function'
+      ) {
+        markResearchProjectionStale(
+          'The caregiver workflow changed. Research is read-only until the authoritative workspace reloads.',
+        );
+        if (typeof loadResearchWorkspace === 'function') {
+          Promise.resolve().then(() => loadResearchWorkspace({ force: true }));
         }
       }
       if (
@@ -1284,6 +1353,16 @@
     ) {
       refreshes.push(ensureTreatmentReconciliation());
     }
+    if (
+      researchNetworkAmbiguous
+      || (
+        options.onlineRecovery !== true
+        && ['today', 'research'].includes(activeView)
+        && !researchProjection
+      )
+    ) {
+      refreshes.push(loadResearchWorkspace({ force: true }));
+    }
     if (appointmentDialogOpen && activeAppointmentTab === 'recap') {
       refreshes.push(loadVisitRecap());
     }
@@ -1319,11 +1398,18 @@
       ensureTreatmentReconciliation();
     } else if (name === 'activity') {
       loadTasks();
+    } else if (name === 'research') {
+      if (!researchProjection || researchProjectionState === 'stale') {
+        loadResearchWorkspace({ force: true });
+      }
     } else if (name === 'today') {
       loadStatus();
       loadSummary();
       loadFollowUps();
       ensureSymptomEpisodes();
+      if (!researchProjection || researchProjectionState === 'stale') {
+        loadResearchWorkspace({ force: true });
+      }
     }
     if (window.location.hash !== `#${name}`) {
       history.replaceState(null, '', `#${name}`);
@@ -1360,6 +1446,9 @@
     }
     if (appointmentDialogOpen && activeAppointmentTab === 'recap') {
       refreshes.push(loadVisitRecap());
+    }
+    if (researchNetworkAmbiguous) {
+      refreshes.push(loadResearchWorkspace({ force: true }));
     }
     Promise.allSettled(refreshes);
   }
@@ -3011,8 +3100,6 @@
     const patientMeta = document.getElementById('patient-meta');
     const alerts = document.getElementById('alerts-list');
     redactGeneratedQuestionChoices();
-    latestResearchUpdate = null;
-    renderLatestResearchUpdate(null);
     clearFreshnessProjection();
     if (patient) patient.textContent = 'Patient profile unavailable';
     if (patientMeta) patientMeta.innerHTML = '';
@@ -3030,8 +3117,15 @@
     summaryLoadEpoch += 1;
     taskLoadEpoch += 1;
     latestProfileRevision = null;
-    latestResearchUpdate = null;
     patientEvidence = null;
+    if (typeof clearResearchProjection === 'function') {
+      clearResearchProjection({
+        state: 'error',
+        message: 'Research was cleared because current patient authority is unavailable.',
+        retry: false,
+        fullEviction: true,
+      });
+    }
     if (typeof clearSymptomProjection === 'function') {
       clearSymptomProjection({
         state: 'error',
@@ -3123,7 +3217,6 @@
     chatHistory = [];
     chatHistoryRevision = null;
     document.querySelectorAll('.action-feedback').forEach(editor => editor.remove());
-    renderLatestResearchUpdate(null);
     clearFreshnessProjection();
 
     const clear = (id, html = '') => {
@@ -3271,10 +3364,6 @@
     report?.classList.add('collapsed');
     report?.setAttribute('aria-hidden', 'true');
     clearReportCopyState();
-    const modal = document.getElementById('modal-overlay');
-    modal?.classList.remove('open');
-    modal?.setAttribute('aria-hidden', 'true');
-    clear('modal-body');
     const chat = document.getElementById('chat-panel');
     if (chat) {
       chat.style.display = 'none';
@@ -3397,49 +3486,11 @@
     updateAppointmentFormValidity();
   }
 
-  function renderLatestResearchUpdate(update) {
-    const card = document.getElementById('research-update-card');
-    if (!card) return;
-    if (!update) {
-      document.getElementById('research-update-title').textContent = '';
-      document.getElementById('research-update-detail').textContent = '';
-      document.getElementById('research-update-trials').hidden = true;
-      document.getElementById('research-update-papers').hidden = true;
-      card.hidden = true;
-      return;
-    }
-
-    const trialCount = Number(update.trial_count) || 0;
-    const paperCount = Number(update.paper_count) || 0;
-    const total = trialCount + paperCount;
-    const source = update.trigger === 'digest' ? 'Latest digest' : 'Latest document analysis';
-    const when = update.completed_at ? ` · completed ${relativeTime(update.completed_at)}` : '';
-    document.getElementById('research-update-title').textContent = total
-      ? 'Latest research additions'
-      : 'No new trials or papers';
-    document.getElementById('research-update-detail').textContent = total
-      ? `${trialCount} trial${trialCount === 1 ? '' : 's'} and ${paperCount} paper${paperCount === 1 ? '' : 's'} were not previously tracked. ${source}${when}.`
-      : `${source}${when} found no research that was not already tracked.`;
-
-    const trialsButton = document.getElementById('research-update-trials');
-    const papersButton = document.getElementById('research-update-papers');
-    trialsButton.hidden = trialCount === 0;
-    papersButton.hidden = paperCount === 0;
-    trialsButton.textContent = `${trialCount} new trial${trialCount === 1 ? '' : 's'}`;
-    papersButton.textContent = `${paperCount} new paper${paperCount === 1 ? '' : 's'}`;
-    card.classList.toggle('empty', total === 0);
-    card.hidden = false;
-  }
-
   function renderSidebar(d) {
     const p = d.patient || {};
-    latestResearchUpdate = d.latest_research_update || null;
-    renderLatestResearchUpdate(latestResearchUpdate);
     document.getElementById('patient-dx').textContent = p.diagnosis || 'No diagnosis recorded';
 
     const sstrClass = p.sstr_status === 'positive' ? 'positive' : p.sstr_status === 'negative' ? 'negative' : 'unknown';
-    const newTrials = Number(latestResearchUpdate?.trial_count) || 0;
-    const newPapers = Number(latestResearchUpdate?.paper_count) || 0;
     document.getElementById('patient-meta').innerHTML = `
       <div class="meta-row">
         <span class="meta-label">Age / Sex</span>
@@ -3452,14 +3503,6 @@
       <div class="meta-row">
         <span class="meta-label">SSTR</span>
         <span class="meta-val ${sstrClass}">${escHtml(p.sstr_status || 'unknown')}${p.sstr_score != null ? ' ('+escHtml(p.sstr_score)+')' : ''}</span>
-      </div>
-      <div class="meta-row">
-        <span class="meta-label">Trials</span>
-        <button class="meta-val clickable" onclick="openModal('trials')">${escHtml((d.stats && d.stats.trials_tracked != null) ? d.stats.trials_tracked : 0)}${newTrials ? ` <span class="meta-new-count">${escHtml(newTrials)} new</span>` : ''}</button>
-      </div>
-      <div class="meta-row">
-        <span class="meta-label">Papers</span>
-        <button class="meta-val clickable" onclick="openModal('papers')">${escHtml((d.stats && d.stats.literature_watched != null) ? d.stats.literature_watched : 0)}${newPapers ? ` <span class="meta-new-count">${escHtml(newPapers)} new</span>` : ''}</button>
       </div>
     `;
 
@@ -7146,132 +7189,1548 @@
       </div>`;
     }
 
-    // Trial for clinician discussion (never presented as an eligibility finding).
-    if (d.best_trial && d.best_trial.nct_id) {
-      html += `<div class="summary-section">
-        <div class="summary-section-label">Trial to discuss</div>
-        <div class="trial-chip">
-          <a class="trial-chip-id" href="https://clinicaltrials.gov/study/${encodeURIComponent(d.best_trial.nct_id)}" target="_blank" rel="noopener noreferrer">${escHtml(d.best_trial.nct_id)}</a>
-          <span class="trial-chip-why">${escHtml(d.best_trial.why_relevant||d.best_trial.title||'')}</span>
-        </div>
-      </div>`;
-    }
-
     body.innerHTML = html;
     refreshGeneratedActionControls();
     if (followUpControlsLocked()) setFollowUpMutationBusy(true);
   }
 
-  // ── Tutkimukset / Artikkelit Modal ───────────────────────────────────────────────
-  async function removeItem(type, id, button) {
-    const endpoint = type === 'trials' ? `/api/trials/${encodeURIComponent(id)}` : `/api/papers/${encodeURIComponent(id)}`;
-    try {
-      await requireOk(await fetch(endpoint, { method: 'DELETE' }));
-      const el = button?.closest('.modal-item');
-      if (el) el.remove();
-      // Refresh sidebar counts
-      await loadStatus();
-    } catch (error) {
-      reportLoadError('action', error);
+  // ── Research shortlist and disposition workspace ─────────────────────────
+  const RESEARCH_SAFETY_GUIDANCE = 'NET/Care records research you choose to follow but does not determine relevance, eligibility, enrollment, or treatment suitability. Confirm clinical questions with the treating team and trial details with the study site.';
+  const RESEARCH_AUTHORITY_LABELS = {
+    external_facts: 'External registry or bibliographic facts',
+    generated_context: 'Machine-generated compatibility context · not relevance, eligibility, enrollment, suitability, or recommendation',
+    discovery_provenance: 'Research discovery provenance',
+    caregiver_workflow: 'Caregiver-maintained shortlist and disposition workflow',
+  };
+  const RESEARCH_ATTRIBUTION_LABELS = {
+    caregiver: 'Caregiver-entered · unverified',
+    clinician: 'Caregiver-entered · attributed to clinician · unverified',
+    trial_site: 'Caregiver-entered · attributed to trial site · unverified',
+  };
+  const RESEARCH_EXTERNAL_FIELDS = {
+    trial: new Set(['nct_id', 'title', 'status', 'phase', 'phases', 'countries', 'brief_summary', 'eligibility_excerpt', 'registry_last_update']),
+    paper: new Set(['pmid', 'title', 'authors', 'journal', 'date']),
+  };
+  const RESEARCH_GENERATED_FIELDS = {
+    trial: new Set(['eligibility_notes']),
+    paper: new Set(['relevance_notes']),
+  };
+  const RESEARCH_DISCOVERY_FIELDS = {
+    trial: new Set(['date_added']),
+    paper: new Set(['query', 'date_added']),
+  };
+  const RESEARCH_EVENT_TYPES = {
+    trial: ['caregiver_note', 'next_step_recorded', 'treating_team_communication', 'trial_site_communication'],
+    paper: ['caregiver_note', 'next_step_recorded', 'treating_team_communication'],
+  };
+  const RESEARCH_EVENT_LABELS = {
+    caregiver_note: 'Caregiver note',
+    next_step_recorded: 'Next step',
+    treating_team_communication: 'Treating-team communication',
+    trial_site_communication: 'Trial-site communication',
+  };
+
+  function researchPlainObject(value) {
+    return value !== null
+      && typeof value === 'object'
+      && !Array.isArray(value)
+      && Object.getPrototypeOf(value) === Object.prototype;
+  }
+
+  function researchExactKeys(value, keys) {
+    return researchPlainObject(value)
+      && Object.keys(value).length === keys.length
+      && keys.every(key => Object.prototype.hasOwnProperty.call(value, key));
+  }
+
+  function researchCanonical(value) {
+    if (Array.isArray(value)) return `[${value.map(researchCanonical).join(',')}]`;
+    if (researchPlainObject(value)) {
+      return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${researchCanonical(value[key])}`).join(',')}}`;
+    }
+    return JSON.stringify(value);
+  }
+
+  function researchNonemptyString(value, max = 100000) {
+    return typeof value === 'string' && value.length > 0 && value.length <= max;
+  }
+
+  function validateResearchNested(value) {
+    const stack = [[value, 0]];
+    let nodes = 0;
+    while (stack.length) {
+      const [current, depth] = stack.pop();
+      nodes += 1;
+      if (nodes > 200000 || depth > 16) throw new Error('Research authority exceeds the supported limits.');
+      if (typeof current === 'string') {
+        if (current.length > 100000) throw new Error('Research authority exceeds the supported limits.');
+      } else if (Array.isArray(current)) {
+        if (current.length > 20000) throw new Error('Research authority exceeds the supported limits.');
+        current.forEach(item => stack.push([item, depth + 1]));
+      } else if (researchPlainObject(current)) {
+        const keys = Object.keys(current);
+        if (keys.length > 5000 || keys.some(key => key.length > 500)) {
+          throw new Error('Research authority exceeds the supported limits.');
+        }
+        keys.forEach(key => stack.push([current[key], depth + 1]));
+      } else if (
+        current !== null
+        && typeof current !== 'boolean'
+        && !(typeof current === 'number' && Number.isFinite(current))
+      ) {
+        throw new Error('Research authority contains an unsupported value.');
+      }
     }
   }
 
-  async function openModal(type) {
-    const requestPhiEpoch = phiEpoch;
-    const trigger = document.activeElement;
-    const overlay = document.getElementById('modal-overlay');
-    overlay.classList.add('open');
-    overlay.setAttribute('aria-hidden', 'false');
-    document.getElementById('modal-title').textContent =
-      type === 'trials' ? 'Clinical trials' : 'Research papers';
-    document.getElementById('modal-body').innerHTML =
-      '<div class="modal-empty">Loading…</div>';
-    activateDialog(overlay.querySelector('.modal'), trigger);
+  function validateResearchAllowedFields(value, allowed) {
+    if (!researchPlainObject(value) || Object.keys(value).some(key => !allowed.has(key))) {
+      throw new Error('Research authority contains unsupported fields.');
+    }
+    validateResearchNested(value);
+  }
 
-    try {
-      const r = await fetch(`/api/${type}`);
-      const items = await readJsonResponse(r);
-      if (requestPhiEpoch !== phiEpoch) return;
-      renderModal(type, items);
-    } catch(e) {
-      if (requestPhiEpoch !== phiEpoch) return;
-      document.getElementById('modal-body').innerHTML =
-        `<div class="modal-empty">Could not load these items. ${escHtml(e.message)}</div>`;
+  function researchCanonicalExternalUrl(itemType, externalId, value) {
+    const validId = itemType === 'trial'
+      ? /^NCT\d{8}$/.test(externalId)
+      : /^[1-9]\d{0,8}$/.test(externalId);
+    const expected = validId
+      ? (
+        itemType === 'trial'
+          ? `https://clinicaltrials.gov/study/${externalId}`
+          : `https://pubmed.ncbi.nlm.nih.gov/${externalId}/`
+      )
+      : null;
+    if (value !== expected) throw new Error('Research contains an unsafe external link.');
+    return expected;
+  }
+
+  function researchExpectedProvenance(eventType) {
+    if (eventType === 'treating_team_communication') {
+      return {
+        capture_method: 'caregiver_entered',
+        attributed_to: 'clinician',
+        source_verification: 'unverified',
+        label: RESEARCH_ATTRIBUTION_LABELS.clinician,
+      };
+    }
+    if (eventType === 'trial_site_communication') {
+      return {
+        capture_method: 'caregiver_entered',
+        attributed_to: 'trial_site',
+        source_verification: 'unverified',
+        label: RESEARCH_ATTRIBUTION_LABELS.trial_site,
+      };
+    }
+    return {
+      capture_method: 'caregiver_entered',
+      source_verification: 'unverified',
+      label: RESEARCH_ATTRIBUTION_LABELS.caregiver,
+    };
+  }
+
+  function researchPartialDatePrecision(value) {
+    if (value === null) return 'unknown';
+    if (typeof value !== 'string') return null;
+    if (/^\d{4}$/.test(value)) return 'year';
+    const month = value.match(/^(\d{4})-(\d{2})$/);
+    if (month && Number(month[2]) >= 1 && Number(month[2]) <= 12) return 'month';
+    const day = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!day) return null;
+    const yearNumber = Number(day[1]);
+    const monthNumber = Number(day[2]);
+    const dayNumber = Number(day[3]);
+    if (monthNumber < 1 || monthNumber > 12 || dayNumber < 1) return null;
+    const leap = yearNumber % 4 === 0 && (yearNumber % 100 !== 0 || yearNumber % 400 === 0);
+    const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    return dayNumber <= days[monthNumber - 1] ? 'day' : null;
+  }
+
+  function validateResearchAction(action, eligible = false) {
+    if (!researchExactKeys(action, ['id', 'token', 'text', 'status', 'owner', 'due_date'])) {
+      throw new Error('Research follow-up authority is invalid.');
+    }
+    if (
+      !researchNonemptyString(action.id)
+      || !researchNonemptyString(action.token)
+      || typeof action.text !== 'string'
+      || !researchNonemptyString(action.status, 100)
+      || (action.owner !== null && typeof action.owner !== 'string')
+      || (action.due_date !== null && typeof action.due_date !== 'string')
+      || (eligible && !['open', 'in_progress'].includes(action.status))
+    ) throw new Error('Research follow-up authority is invalid.');
+    validateResearchNested(action);
+  }
+
+  function validateResearchEvent(event, itemType) {
+    if (!researchExactKeys(event, ['id', 'token', 'event_type', 'note', 'who', 'context', 'occurred_on', 'occurred_on_precision', 'provenance', 'recorded_at'])) {
+      throw new Error('Research event authority is invalid.');
+    }
+    const allowed = RESEARCH_EVENT_TYPES[itemType];
+    if (
+      !researchNonemptyString(event.id)
+      || !researchNonemptyString(event.token)
+      || !allowed.includes(event.event_type)
+      || typeof event.note !== 'string'
+      || !event.note.trim()
+      || event.note.length > 20000
+      || (event.who !== null && (typeof event.who !== 'string' || !event.who.trim() || event.who.length > 500))
+      || (event.context !== null && (typeof event.context !== 'string' || !event.context.trim() || event.context.length > 2000))
+      || researchPartialDatePrecision(event.occurred_on) !== event.occurred_on_precision
+      || !researchNonemptyString(event.recorded_at)
+      || researchCanonical(event.provenance) !== researchCanonical(researchExpectedProvenance(event.event_type))
+    ) throw new Error('Research event authority is invalid.');
+  }
+
+  function validateResearchSnapshot(snapshot, itemType, recordId, sourceKey) {
+    if (!researchExactKeys(snapshot, ['item_type', 'research_record_id', 'source_key', 'external_facts', 'generated_context', 'discovery_provenance'])) {
+      throw new Error('Research snapshot authority is invalid.');
+    }
+    if (
+      snapshot.item_type !== itemType
+      || snapshot.research_record_id !== recordId
+      || snapshot.source_key !== sourceKey
+    ) throw new Error('Research snapshot identity is invalid.');
+    validateResearchAllowedFields(snapshot.external_facts, RESEARCH_EXTERNAL_FIELDS[itemType]);
+    validateResearchAllowedFields(snapshot.generated_context, RESEARCH_GENERATED_FIELDS[itemType]);
+    validateResearchAllowedFields(snapshot.discovery_provenance, RESEARCH_DISCOVERY_FIELDS[itemType]);
+    const externalId = snapshot.external_facts[itemType === 'trial' ? 'nct_id' : 'pmid'];
+    const expectedSource = itemType === 'trial' ? `ctgov:${externalId}` : `pubmed:${externalId}`;
+    if (
+      !(itemType === 'trial' ? /^NCT\d{8}$/.test(externalId) : /^[1-9]\d{0,8}$/.test(externalId))
+      || sourceKey !== expectedSource
+    ) throw new Error('Research snapshot source identity is invalid.');
+    if (new TextEncoder().encode(JSON.stringify(snapshot)).length > 1500000) {
+      throw new Error('Research snapshot exceeds the supported limits.');
     }
   }
 
-  function closeModal(e) {
-    if (!e || e.target === document.getElementById('modal-overlay') || !e.target) {
-      document.getElementById('modal-overlay').classList.remove('open');
-      document.getElementById('modal-overlay').setAttribute('aria-hidden', 'true');
-      deactivateDialog(document.querySelector('#modal-overlay .modal'));
+  function validateResearchConsideration(consideration) {
+    if (!researchExactKeys(consideration, ['id', 'token', 'item_type', 'research_record_id', 'source_key', 'status', 'snapshot', 'current_state', 'events', 'history', 'follow_up', 'eligibility', 'created_at', 'updated_at', 'closed_at'])) {
+      throw new Error('Research consideration authority is invalid.');
+    }
+    const itemType = consideration.item_type;
+    if (
+      !['trial', 'paper'].includes(itemType)
+      || !researchNonemptyString(consideration.id)
+      || !researchNonemptyString(consideration.token)
+      || !researchNonemptyString(consideration.research_record_id)
+      || !researchNonemptyString(consideration.source_key)
+      || !['open', 'closed'].includes(consideration.status)
+      || !researchNonemptyString(consideration.created_at)
+      || !researchNonemptyString(consideration.updated_at)
+      || (consideration.closed_at !== null && !researchNonemptyString(consideration.closed_at))
+    ) throw new Error('Research consideration authority is invalid.');
+    validateResearchSnapshot(
+      consideration.snapshot,
+      itemType,
+      consideration.research_record_id,
+      consideration.source_key,
+    );
+    if (
+      !researchExactKeys(consideration.current_state, ['occurrence', 'external_facts', 'generated_context', 'discovery_provenance'])
+      || !['present', 'missing'].includes(consideration.current_state.occurrence)
+      || ['external_facts', 'generated_context', 'discovery_provenance'].some(key => (
+        !['unchanged', 'changed', 'unavailable'].includes(consideration.current_state[key])
+      ))
+    ) throw new Error('Research current-state authority is invalid.');
+    if (
+      consideration.current_state.occurrence === 'missing'
+      && ['external_facts', 'generated_context', 'discovery_provenance'].some(key => consideration.current_state[key] !== 'unavailable')
+    ) throw new Error('Research missing-current authority is invalid.');
+    if (!Array.isArray(consideration.events) || consideration.events.length > 5000) {
+      throw new Error('Research events exceed the supported limits.');
+    }
+    consideration.events.forEach(event => validateResearchEvent(event, itemType));
+    const eventIds = consideration.events.map(event => event.id);
+    if (new Set(eventIds).size !== eventIds.length) throw new Error('Research event identity is duplicated.');
+    const historyChanges = {
+      created: ['status'],
+      event_recorded: ['event_id', 'event_type'],
+      closed: ['status'],
+      resumed: ['status'],
+      follow_up_changed: ['caregiver_action_id'],
+    };
+    if (!Array.isArray(consideration.history) || consideration.history.some(entry => (
+      !researchExactKeys(entry, ['operation', 'at', 'changes'])
+      || !Object.prototype.hasOwnProperty.call(historyChanges, entry.operation)
+      || !researchNonemptyString(entry.at)
+      || !researchExactKeys(entry.changes, historyChanges[entry.operation])
+    ))) throw new Error('Research lifecycle history is invalid.');
+    if (consideration.follow_up !== null) validateResearchAction(consideration.follow_up);
+    const eligibility = consideration.eligibility;
+    if (
+      !researchExactKeys(eligibility, ['close', 'resume', 'allowed_event_types', 'follow_up_variants'])
+      || !researchExactKeys(eligibility.close, ['eligible', 'reason'])
+      || !researchExactKeys(eligibility.resume, ['eligible', 'reason'])
+      || typeof eligibility.close.eligible !== 'boolean'
+      || typeof eligibility.resume.eligible !== 'boolean'
+      || JSON.stringify(eligibility.allowed_event_types) !== JSON.stringify(RESEARCH_EVENT_TYPES[itemType])
+      || !Array.isArray(eligibility.follow_up_variants)
+      || JSON.stringify(eligibility.follow_up_variants) !== JSON.stringify(
+        consideration.follow_up === null ? ['link_existing', 'create_and_link'] : ['unlink']
+      )
+      || eligibility.close.eligible !== (consideration.status === 'open')
+      || eligibility.resume.eligible !== (consideration.status === 'closed')
+      || eligibility.close.reason !== (consideration.status === 'open' ? null : 'closed')
+      || eligibility.resume.reason !== (consideration.status === 'closed' ? null : 'already_open')
+    ) throw new Error('Research eligibility authority is invalid.');
+    validateResearchNested(consideration);
+    return consideration;
+  }
+
+  function validateResearchWorkspace(data) {
+    const keys = ['profile_revision', 'workflow_revision', 'projection_token', 'item_count', 'consideration_count', 'items', 'considerations', 'eligible_actions', 'attribution_labels', 'authority_labels', 'safety_guidance'];
+    if (!researchExactKeys(data, keys)) throw new Error('Research workspace shape is invalid.');
+    validateResearchNested(data);
+    if (new TextEncoder().encode(JSON.stringify(data)).length > 20000000) {
+      throw new Error('Research workspace exceeds the supported limits.');
+    }
+    if (
+      !Number.isSafeInteger(data.profile_revision)
+      || data.profile_revision < 0
+      || !Number.isSafeInteger(data.workflow_revision)
+      || data.workflow_revision < 0
+      || !researchNonemptyString(data.projection_token)
+      || !Number.isSafeInteger(data.item_count)
+      || !Number.isSafeInteger(data.consideration_count)
+      || !Array.isArray(data.items)
+      || data.items.length > 2000
+      || !Array.isArray(data.considerations)
+      || data.considerations.length > 1000
+      || !Array.isArray(data.eligible_actions)
+      || data.eligible_actions.length > 1000
+      || data.item_count !== data.items.length
+      || data.consideration_count !== data.considerations.length
+      || researchCanonical(data.attribution_labels) !== researchCanonical(RESEARCH_ATTRIBUTION_LABELS)
+      || researchCanonical(data.authority_labels) !== researchCanonical(RESEARCH_AUTHORITY_LABELS)
+      || !researchExactKeys(data.safety_guidance, ['kind', 'text'])
+      || data.safety_guidance.kind !== 'fixed_non_clinical'
+      || data.safety_guidance.text !== RESEARCH_SAFETY_GUIDANCE
+    ) throw new Error('Research workspace authority is invalid.');
+
+    const itemIds = new Set();
+    data.items.forEach(item => {
+      if (!researchExactKeys(item, ['id', 'token', 'item_type', 'source_identity', 'external_facts', 'generated_context', 'discovery_provenance', 'external_url', 'latest_batch_member', 'shortlist', 'consideration_id'])) {
+        throw new Error('Research occurrence authority is invalid.');
+      }
+      const itemType = item.item_type;
+      if (
+        !['trial', 'paper'].includes(itemType)
+        || !researchNonemptyString(item.id)
+        || !researchNonemptyString(item.token)
+        || itemIds.has(item.id)
+        || typeof item.latest_batch_member !== 'boolean'
+        || !researchExactKeys(item.source_identity, ['external_id', 'source_key', 'authority'])
+        || !['validated', 'missing_or_invalid'].includes(item.source_identity.authority)
+        || (item.consideration_id !== null && !researchNonemptyString(item.consideration_id))
+        || !researchExactKeys(item.shortlist, ['eligible', 'reason'])
+        || typeof item.shortlist.eligible !== 'boolean'
+        || !['already_shortlisted', 'missing_or_invalid_source_id', 'snapshot_too_large', null].includes(item.shortlist.reason)
+        || item.shortlist.eligible !== (item.shortlist.reason === null)
+      ) throw new Error('Research occurrence authority is invalid.');
+      itemIds.add(item.id);
+      validateResearchAllowedFields(item.external_facts, RESEARCH_EXTERNAL_FIELDS[itemType]);
+      validateResearchAllowedFields(item.generated_context, RESEARCH_GENERATED_FIELDS[itemType]);
+      validateResearchAllowedFields(item.discovery_provenance, RESEARCH_DISCOVERY_FIELDS[itemType]);
+      const externalId = item.source_identity.external_id;
+      const validId = typeof externalId === 'string' && (
+        itemType === 'trial' ? /^NCT\d{8}$/.test(externalId) : /^[1-9]\d{0,8}$/.test(externalId)
+      );
+      const expectedSource = validId
+        ? `${itemType === 'trial' ? 'ctgov' : 'pubmed'}:${externalId}`
+        : null;
+      if (
+        item.source_identity.source_key !== expectedSource
+        || item.source_identity.authority !== (validId ? 'validated' : 'missing_or_invalid')
+        || item.external_facts[itemType === 'trial' ? 'nct_id' : 'pmid'] !== externalId
+      ) throw new Error('Research occurrence source identity is invalid.');
+      researchCanonicalExternalUrl(itemType, externalId, item.external_url);
+    });
+
+    const considerationIds = new Set();
+    const considerationRecords = new Set();
+    const eventIds = new Set();
+    const linkedActionIds = new Set();
+    data.considerations.forEach(consideration => {
+      validateResearchConsideration(consideration);
+      if (
+        considerationIds.has(consideration.id)
+        || considerationRecords.has(consideration.research_record_id)
+      ) throw new Error('Research consideration identity is duplicated.');
+      considerationIds.add(consideration.id);
+      considerationRecords.add(consideration.research_record_id);
+      consideration.events.forEach(event => {
+        if (eventIds.has(event.id)) throw new Error('Research event identity is duplicated.');
+        eventIds.add(event.id);
+      });
+      if (consideration.follow_up) {
+        if (linkedActionIds.has(consideration.follow_up.id)) throw new Error('Research follow-up ownership is duplicated.');
+        linkedActionIds.add(consideration.follow_up.id);
+      }
+      const exactItem = data.items.find(item => item.id === consideration.research_record_id);
+      if (
+        consideration.current_state.occurrence === 'present'
+        && (!exactItem || exactItem.item_type !== consideration.item_type)
+      ) throw new Error('Research current occurrence reference is invalid.');
+      if (consideration.current_state.occurrence === 'missing' && exactItem) {
+        throw new Error('Research missing occurrence reference is invalid.');
+      }
+      if (exactItem) {
+        for (const section of ['external_facts', 'generated_context', 'discovery_provenance']) {
+          const expectedState = researchCanonical(exactItem[section]) === researchCanonical(consideration.snapshot[section])
+            ? 'unchanged'
+            : 'changed';
+          if (consideration.current_state[section] !== expectedState) {
+            throw new Error('Research section-specific current state is invalid.');
+          }
+        }
+      }
+    });
+    data.items.forEach(item => {
+      const expected = data.considerations.find(value => value.research_record_id === item.id);
+      if ((expected?.id || null) !== item.consideration_id) {
+        throw new Error('Research occurrence consideration reference is invalid.');
+      }
+    });
+    const eligibleActionIds = new Set();
+    data.eligible_actions.forEach(action => {
+      validateResearchAction(action, true);
+      if (eligibleActionIds.has(action.id) || linkedActionIds.has(action.id)) {
+        throw new Error('Research follow-up eligibility is invalid.');
+      }
+      eligibleActionIds.add(action.id);
+    });
+    return data;
+  }
+
+  function validateResearchMutationResponse(data, expectedConsiderationId = null) {
+    const keys = ['consideration', 'workflow_revision', 'profile_revision'];
+    const replayKeys = [...keys, 'idempotent_replay'];
+    if (!researchExactKeys(data, keys) && !researchExactKeys(data, replayKeys)) {
+      throw new Error('Research mutation response is invalid.');
+    }
+    if (
+      !Number.isSafeInteger(data.profile_revision)
+      || data.profile_revision < 0
+      || !Number.isSafeInteger(data.workflow_revision)
+      || data.workflow_revision < 0
+      || ('idempotent_replay' in data && data.idempotent_replay !== true)
+    ) throw new Error('Research mutation response revisions are invalid.');
+    validateResearchConsideration(data.consideration);
+    if (expectedConsiderationId && data.consideration.id !== expectedConsiderationId) {
+      throw new Error('Research mutation returned a different consideration.');
+    }
+    return data;
+  }
+
+  function researchValueMarkup(value) {
+    if (value === null) return '<span class="research-null">Null</span>';
+    if (value === '') return '<span class="research-empty-value">Empty string</span>';
+    if (Array.isArray(value)) {
+      if (!value.length) return '<span class="research-empty-value">Empty list</span>';
+      return `<ol class="research-value-list">${value.map(item => `<li>${researchValueMarkup(item)}</li>`).join('')}</ol>`;
+    }
+    if (researchPlainObject(value)) {
+      if (!Object.keys(value).length) return '<span class="research-empty-value">Empty object</span>';
+      const exact = JSON.stringify(value, null, 2);
+      return `<details class="research-exact-details"><summary>Show exact object</summary><pre>${escHtml(exact)}</pre></details>`;
+    }
+    const text = String(value);
+    if (text.length > 240 || text.includes('\n')) {
+      return `<details class="research-exact-details"><summary>Show exact content</summary><div class="research-long-value">${escHtml(text)}</div></details>`;
+    }
+    return `<span>${escHtml(text)}</span>`;
+  }
+
+  function researchAuthorityMarkup(label, value, allowedFields) {
+    const rows = [...allowedFields].map(key => {
+      const present = Object.prototype.hasOwnProperty.call(value, key);
+      return `<div class="research-fact-row"><dt>${escHtml(key.replaceAll('_', ' '))}</dt><dd>${present ? researchValueMarkup(value[key]) : '<span class="research-missing-value">Missing field</span>'}</dd></div>`;
+    }).join('');
+    return `<section class="research-authority-section"><h4>${escHtml(label)}</h4><dl class="research-fact-list">${rows}</dl></section>`;
+  }
+
+  function researchItemTitle(item) {
+    const title = item.external_facts.title;
+    if (!Object.prototype.hasOwnProperty.call(item.external_facts, 'title')) return 'Title field missing';
+    if (title === null) return 'Title is null';
+    if (title === '') return 'Title is empty';
+    return String(title);
+  }
+
+  function researchIdentityLabel(item) {
+    const externalId = item.source_identity.external_id;
+    if (externalId === null) return 'External identifier is null';
+    if (externalId === '') return 'External identifier is empty';
+    return externalId == null ? 'External identifier missing' : String(externalId);
+  }
+
+  function appendResearchControl(container, label, authority, tone = 'secondary') {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `button ${tone} research-mutation-control`;
+    button.textContent = label;
+    button.disabled = researchProjectionState !== 'current' || researchMutationPending;
+    researchControlAuthority.set(button, authority);
+    button.addEventListener('click', () => {
+      const selected = researchControlAuthority.get(button);
+      if (!selected || researchProjectionState !== 'current') return;
+      if (selected.kind === 'navigate-consideration') {
+        selectResearchTab('considerations');
+        document.getElementById('research-workspace-heading')?.focus();
+        return;
+      }
+      openResearchDialog(selected.kind, selected.value, button);
+    });
+    container.appendChild(button);
+  }
+
+  function renderResearchOccurrence(item, compact = false) {
+    const article = document.createElement('article');
+    article.className = compact ? 'research-compact-item' : 'research-occurrence-card';
+    const canonical = item.external_url;
+    article.innerHTML = `
+      <header class="research-card-header">
+        <div>
+          <span class="research-type">${escHtml(item.item_type === 'trial' ? 'Clinical trial' : 'Research paper')}</span>
+          <h3>${escHtml(researchItemTitle(item))}</h3>
+          <p class="research-source-id">${escHtml(researchIdentityLabel(item))}</p>
+        </div>
+        ${item.latest_batch_member ? '<span class="research-latest-badge">New research</span>' : ''}
+      </header>
+      ${canonical ? `<p><a class="research-external-link" href="${escHtml(canonical)}" target="_blank" rel="noopener noreferrer">Open exact ${item.item_type === 'trial' ? 'ClinicalTrials.gov' : 'PubMed'} record <span aria-hidden="true">↗</span></a></p>` : '<p class="research-mechanical-reason">No validated canonical external link is available.</p>'}
+    `;
+    if (!compact) {
+      article.insertAdjacentHTML('beforeend', `
+        <div class="research-authority-grid">
+          ${researchAuthorityMarkup(RESEARCH_AUTHORITY_LABELS.external_facts, item.external_facts, RESEARCH_EXTERNAL_FIELDS[item.item_type])}
+          ${researchAuthorityMarkup(RESEARCH_AUTHORITY_LABELS.generated_context, item.generated_context, RESEARCH_GENERATED_FIELDS[item.item_type])}
+          ${researchAuthorityMarkup(RESEARCH_AUTHORITY_LABELS.discovery_provenance, item.discovery_provenance, RESEARCH_DISCOVERY_FIELDS[item.item_type])}
+        </div>
+      `);
+    }
+    const actions = document.createElement('div');
+    actions.className = 'research-card-actions';
+    if (item.shortlist.eligible) {
+      appendResearchControl(actions, 'Save exact occurrence for consideration', { kind: 'shortlist', value: item }, 'primary');
+    } else if (item.consideration_id) {
+      appendResearchControl(actions, 'Open existing consideration', { kind: 'navigate-consideration', value: item });
+    } else {
+      const reasons = {
+        missing_or_invalid_source_id: 'Saving is unavailable because this occurrence has no validated source identifier.',
+        snapshot_too_large: 'Saving is unavailable because this exact occurrence exceeds the supported snapshot limit.',
+        already_shortlisted: 'This exact occurrence already has a caregiver consideration.',
+      };
+      actions.innerHTML = `<p class="research-mechanical-reason">${escHtml(reasons[item.shortlist.reason] || 'Saving is mechanically unavailable for this exact occurrence.')}</p>`;
+    }
+    article.appendChild(actions);
+    return article;
+  }
+
+  function researchCurrentSectionMarkup(consideration, item, section, label, allowedFields) {
+    const state = consideration.current_state[section];
+    const value = item ? item[section] : {};
+    return `<section class="research-current-section">
+      <div class="research-current-heading"><h4>${escHtml(label)}</h4><span class="research-change-state ${escHtml(state)}">${escHtml(state)}</span></div>
+      ${item ? researchAuthorityMarkup('Current exact section', value, allowedFields) : '<p class="research-missing-value">The exact saved occurrence is not present in the current source rows.</p>'}
+    </section>`;
+  }
+
+  function renderResearchConsideration(consideration, compact = false) {
+    const article = document.createElement('article');
+    article.className = compact ? 'research-compact-item' : 'research-consideration-card';
+    const currentItem = researchProjection.items.find(item => item.id === consideration.research_record_id) || null;
+    const snapshot = consideration.snapshot;
+    const snapshotTitle = Object.prototype.hasOwnProperty.call(snapshot.external_facts, 'title')
+      ? snapshot.external_facts.title
+      : 'Title field missing';
+    article.innerHTML = `
+      <header class="research-card-header">
+        <div>
+          <span class="research-type">${escHtml(consideration.item_type === 'trial' ? 'Clinical trial consideration' : 'Research paper consideration')}</span>
+          <h3>${escHtml(snapshotTitle === null ? 'Title is null' : snapshotTitle === '' ? 'Title is empty' : String(snapshotTitle))}</h3>
+        </div>
+        <span class="research-workflow-state ${escHtml(consideration.status)}">${escHtml(consideration.status)}</span>
+      </header>
+      <p class="research-attribution">${escHtml(RESEARCH_AUTHORITY_LABELS.caregiver_workflow)}</p>
+    `;
+    if (!compact) {
+      article.insertAdjacentHTML('beforeend', `
+        <div class="research-snapshot-current-grid">
+          <section class="research-snapshot-section" aria-label="Immutable saved snapshot">
+            <h3>Immutable saved snapshot</h3>
+            ${researchAuthorityMarkup(RESEARCH_AUTHORITY_LABELS.external_facts, snapshot.external_facts, RESEARCH_EXTERNAL_FIELDS[consideration.item_type])}
+            ${researchAuthorityMarkup(RESEARCH_AUTHORITY_LABELS.generated_context, snapshot.generated_context, RESEARCH_GENERATED_FIELDS[consideration.item_type])}
+            ${researchAuthorityMarkup(RESEARCH_AUTHORITY_LABELS.discovery_provenance, snapshot.discovery_provenance, RESEARCH_DISCOVERY_FIELDS[consideration.item_type])}
+          </section>
+          <section class="research-current-section-group" aria-label="Current exact occurrence">
+            <div class="research-current-heading"><h3>Current exact occurrence</h3><span class="research-change-state ${escHtml(consideration.current_state.occurrence)}">${escHtml(consideration.current_state.occurrence)}</span></div>
+            ${researchCurrentSectionMarkup(consideration, currentItem, 'external_facts', RESEARCH_AUTHORITY_LABELS.external_facts, RESEARCH_EXTERNAL_FIELDS[consideration.item_type])}
+            ${researchCurrentSectionMarkup(consideration, currentItem, 'generated_context', RESEARCH_AUTHORITY_LABELS.generated_context, RESEARCH_GENERATED_FIELDS[consideration.item_type])}
+            ${researchCurrentSectionMarkup(consideration, currentItem, 'discovery_provenance', RESEARCH_AUTHORITY_LABELS.discovery_provenance, RESEARCH_DISCOVERY_FIELDS[consideration.item_type])}
+          </section>
+        </div>
+        <section class="research-events-section"><h3>Caregiver-entered events</h3>
+          ${consideration.events.length ? `<ol class="research-history-list">${consideration.events.map(event => `<li>
+            <div class="research-history-heading"><strong>${escHtml(RESEARCH_EVENT_LABELS[event.event_type])}</strong><span>${escHtml(event.occurred_on === null ? 'No event date entered' : event.occurred_on)}</span></div>
+            <p class="research-attribution">${escHtml(event.provenance.label)}</p>
+            <div class="research-event-note">${researchValueMarkup(event.note)}</div>
+            <dl class="research-event-meta"><div><dt>Who</dt><dd>${researchValueMarkup(event.who)}</dd></div><div><dt>Context</dt><dd>${researchValueMarkup(event.context)}</dd></div><div><dt>Recorded</dt><dd>${researchValueMarkup(event.recorded_at)}</dd></div></dl>
+          </li>`).join('')}</ol>` : '<p class="research-empty-value">No caregiver events are recorded.</p>'}
+        </section>
+        <section class="research-events-section"><h3>Lifecycle history</h3>
+          ${consideration.history.length ? `<div class="research-scroll-region" role="region" aria-label="Lifecycle history in server order" tabindex="0"><table class="research-history-table"><thead><tr><th>Operation</th><th>Recorded</th><th>Exact changes</th></tr></thead><tbody>${consideration.history.map(entry => `<tr><td>${escHtml(entry.operation)}</td><td>${escHtml(entry.at)}</td><td><pre>${escHtml(JSON.stringify(entry.changes, null, 2))}</pre></td></tr>`).join('')}</tbody></table></div>` : '<p class="research-empty-value">No lifecycle history is recorded.</p>'}
+        </section>
+        <section class="research-follow-up-summary"><h3>Durable follow-up</h3>
+          ${consideration.follow_up ? `<dl class="research-event-meta"><div><dt>Text</dt><dd>${researchValueMarkup(consideration.follow_up.text)}</dd></div><div><dt>Status</dt><dd>${researchValueMarkup(consideration.follow_up.status)}</dd></div><div><dt>Owner</dt><dd>${researchValueMarkup(consideration.follow_up.owner)}</dd></div><div><dt>Due date</dt><dd>${researchValueMarkup(consideration.follow_up.due_date)}</dd></div></dl>` : '<p class="research-empty-value">No caregiver follow-up is linked.</p>'}
+        </section>
+      `);
+    }
+    const actions = document.createElement('div');
+    actions.className = 'research-card-actions';
+    appendResearchControl(actions, 'Record event', { kind: 'event', value: consideration }, 'primary');
+    if (consideration.eligibility.close.eligible) {
+      appendResearchControl(actions, 'Close consideration', { kind: 'close', value: consideration });
+    }
+    if (consideration.eligibility.resume.eligible) {
+      appendResearchControl(actions, 'Resume consideration', { kind: 'resume', value: consideration });
+    }
+    if (consideration.eligibility.follow_up_variants.length) {
+      appendResearchControl(actions, consideration.follow_up ? 'Unlink follow-up' : 'Link or create follow-up', { kind: 'follow-up', value: consideration });
+    }
+    article.appendChild(actions);
+    return article;
+  }
+
+  function setResearchStatus(message, tone = '') {
+    for (const id of ['research-status', 'today-research-status']) {
+      const node = document.getElementById(id);
+      if (!node) continue;
+      node.textContent = message || '';
+      node.className = `research-status${tone ? ` ${safeClassToken(tone)}` : ''}`;
+    }
+    const labels = {
+      current: 'Current',
+      loading: 'Loading',
+      stale: 'Stale · read-only',
+      error: 'Unavailable',
+      idle: 'Not loaded',
+    };
+    for (const id of ['research-freshness', 'today-research-freshness']) {
+      const node = document.getElementById(id);
+      if (!node) continue;
+      node.textContent = labels[researchProjectionState] || labels.idle;
+      node.className = `research-freshness ${safeClassToken(researchProjectionState, 'idle')}`;
     }
   }
 
-  function renderModal(type, items) {
-    const body = document.getElementById('modal-body');
-    if (!items.length) {
-      body.innerHTML = `<div class="modal-empty">No ${type} found yet.<br>Run a digest to search for relevant ${type}.</div>`;
+  function renderResearchWorkspace() {
+    const currentList = document.getElementById('research-occurrence-list');
+    const considerationList = document.getElementById('research-consideration-list');
+    const todayLatest = document.getElementById('today-latest-research-list');
+    const todayOpen = document.getElementById('today-open-consideration-list');
+    if (!researchProjection) {
+      const copy = researchProjectionState === 'loading'
+        ? 'Loading authoritative research…'
+        : 'No verified research workspace is available.';
+      [currentList, considerationList, todayLatest, todayOpen].forEach(node => {
+        if (node) node.innerHTML = `<div class="research-empty-state">${escHtml(copy)}</div>`;
+      });
+      document.getElementById('research-count-current').textContent = '0';
+      document.getElementById('research-count-considerations').textContent = '0';
+      document.getElementById('today-latest-research-totals').textContent = 'No latest-batch totals are available.';
+      document.getElementById('today-open-consideration-totals').textContent = 'No consideration totals are available.';
       return;
     }
+    currentList.replaceChildren();
+    considerationList.replaceChildren();
+    researchProjection.items.forEach(item => currentList.appendChild(renderResearchOccurrence(item)));
+    researchProjection.considerations.forEach(item => considerationList.appendChild(renderResearchConsideration(item)));
+    if (!researchProjection.items.length) currentList.innerHTML = '<div class="research-empty-state">No current research occurrences are present in the authoritative workspace.</div>';
+    if (!researchProjection.considerations.length) considerationList.innerHTML = '<div class="research-empty-state">No caregiver considerations are recorded.</div>';
+    document.getElementById('research-count-current').textContent = String(researchProjection.item_count);
+    document.getElementById('research-count-considerations').textContent = String(researchProjection.consideration_count);
 
-    const idField = type === 'trials' ? 'nct_id' : 'pmid';
-    const updateField = type === 'trials' ? 'trial_ids' : 'paper_ids';
-    const newIds = new Set(
-      Array.isArray(latestResearchUpdate?.[updateField])
-        ? latestResearchUpdate[updateField].map(String)
-        : []
-    );
-    const orderedItems = [...items].sort(
-      (a, b) => Number(newIds.has(String(b[idField] || ''))) - Number(newIds.has(String(a[idField] || '')))
-    );
-    const newCount = orderedItems.filter(item => newIds.has(String(item[idField] || ''))).length;
-    document.getElementById('modal-title').textContent =
-      `${type === 'trials' ? 'Clinical trials' : 'Research papers'}${newCount ? ` · ${newCount} new` : ''}`;
+    const latest = researchProjection.items.filter(item => item.latest_batch_member);
+    const open = researchProjection.considerations.filter(item => item.status === 'open');
+    const latestVisible = latest.slice(0, 3);
+    const openVisible = open.slice(0, 3);
+    todayLatest.replaceChildren();
+    todayOpen.replaceChildren();
+    latestVisible.forEach(item => todayLatest.appendChild(renderResearchOccurrence(item, true)));
+    openVisible.forEach(item => todayOpen.appendChild(renderResearchConsideration(item, true)));
+    if (!latestVisible.length) todayLatest.innerHTML = '<div class="research-empty-state">The server reports no current exact latest-batch occurrences.</div>';
+    if (!openVisible.length) todayOpen.innerHTML = '<div class="research-empty-state">No open caregiver considerations are recorded.</div>';
+    const trialTotal = latest.filter(item => item.item_type === 'trial').length;
+    const paperTotal = latest.filter(item => item.item_type === 'paper').length;
+    document.getElementById('today-latest-research-totals').textContent =
+      `${latest.length} exact latest-batch occurrence${latest.length === 1 ? '' : 's'} (${trialTotal} trial${trialTotal === 1 ? '' : 's'}, ${paperTotal} paper${paperTotal === 1 ? '' : 's'}). Showing ${latestVisible.length}; ${Math.max(0, latest.length - latestVisible.length)} omitted from Today.`;
+    document.getElementById('today-open-consideration-totals').textContent =
+      `${open.length} open consideration${open.length === 1 ? '' : 's'}. Showing ${openVisible.length}; ${Math.max(0, open.length - openVisible.length)} omitted from Today.`;
+    document.querySelectorAll('.research-mutation-control').forEach(control => {
+      control.disabled = researchProjectionState !== 'current' || researchMutationPending;
+    });
+  }
 
-    if (type === 'trials') {
-      body.innerHTML = orderedItems.map(t => {
-        const url = safeExternalUrl(t.url);
-        const isNew = newIds.has(String(t.nct_id || ''));
-        return `
-        <div class="modal-item${isNew ? ' new-research' : ''}">
-          <div class="modal-item-heading">
-            <div class="modal-item-title">${escHtml(t.title || 'Untitled')}</div>
-            ${isNew ? '<span class="new-research-badge">New</span>' : ''}
-          </div>
-          <div class="modal-item-meta">
-            <span class="modal-item-id">${escHtml(t.nct_id || '')}</span>
-            <span class="modal-tag ${(t.status||'').toLowerCase() === 'recruiting' ? 'recruiting' : ''}">${escHtml(t.status || '—')}</span>
-            ${t.phase ? `<span class="modal-tag">${escHtml(t.phase)}</span>` : ''}
-            ${(t.countries||[]).length ? `<span class="modal-item-sub">${escHtml(t.countries.join(', '))}</span>` : ''}
-            ${url ? `<a class="modal-item-link" href="${escHtml(url)}" target="_blank" rel="noopener noreferrer">View ↗</a>` : ''}
-            <button class="modal-close" data-item-id="${escHtml(t.nct_id)}" style="margin-left:auto" title="Remove tracked trial" aria-label="Remove tracked trial" onclick="removeItem('trials',this.dataset.itemId,this)">✕</button>
-          </div>
-          ${t.brief_summary ? `<div class="modal-item-sub" style="margin-top:5px;color:var(--text2)">${escHtml(t.brief_summary.slice(0,200))}${t.brief_summary.length>200?'…':''}</div>` : ''}
-          <div style="font-family:var(--mono);font-size:10px;color:var(--text2);margin-top:4px">Added ${escHtml(fmtDate(t.date_added||''))}</div>
-        </div>`;
-      }).join('');
-    } else {
-      body.innerHTML = orderedItems.map(p => {
-        const url = safeExternalUrl(p.url);
-        const isNew = newIds.has(String(p.pmid || ''));
-        return `
-        <div class="modal-item${isNew ? ' new-research' : ''}">
-          <div class="modal-item-heading">
-            <div class="modal-item-title">${escHtml(p.title || 'Untitled')}</div>
-            ${isNew ? '<span class="new-research-badge">New</span>' : ''}
-          </div>
-          <div class="modal-item-meta">
-            <span class="modal-item-id">PMID ${escHtml(p.pmid || '')}</span>
-            <span class="modal-item-sub">${escHtml(p.journal || '')}${p.date ? ' · ' + escHtml(p.date) : ''}</span>
-            ${url ? `<a class="modal-item-link" href="${escHtml(url)}" target="_blank" rel="noopener noreferrer">PubMed ↗</a>` : ''}
-            <button class="modal-close" data-item-id="${escHtml(p.pmid)}" style="margin-left:auto" title="Remove tracked paper" aria-label="Remove tracked paper" onclick="removeItem('papers',this.dataset.itemId,this)">✕</button>
-          </div>
-          ${p.authors ? `<div class="modal-item-sub" style="margin-top:3px">${escHtml(p.authors)}</div>` : ''}
-          <div style="font-family:var(--mono);font-size:10px;color:var(--text2);margin-top:4px">Query: ${escHtml(p.query||'')} · Added ${escHtml(fmtDate(p.date_added||''))}</div>
-        </div>`;
-      }).join('');
+  function selectResearchTab(name, focus = false) {
+    if (!['current', 'considerations'].includes(name)) return;
+    if (researchActiveTab !== name) {
+      researchActiveTab = name;
+      researchSelectionEpoch += 1;
+      if (researchDialogOpen) closeResearchDialog(false);
     }
+    for (const value of ['current', 'considerations']) {
+      const active = value === name;
+      const tab = document.getElementById(`research-tab-${value}`);
+      const panel = document.getElementById(`research-panel-${value}`);
+      tab?.classList.toggle('active', active);
+      tab?.setAttribute('aria-selected', String(active));
+      if (tab) tab.tabIndex = active ? 0 : -1;
+      if (panel) panel.hidden = !active;
+    }
+    if (focus) document.getElementById(`research-tab-${name}`)?.focus();
+  }
+
+  function handleResearchTabKeydown(event) {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const next = event.key === 'Home' || event.key === 'ArrowLeft' ? 'current' : 'considerations';
+    selectResearchTab(next, true);
+  }
+
+  function openResearchWorkspace() {
+    switchView('research', document.getElementById('nav-research'));
+    document.getElementById('research-workspace-heading')?.focus();
+  }
+
+  function markResearchProjectionStale(message, options = {}) {
+    researchProjectionState = 'stale';
+    researchNetworkAmbiguous = options.networkAmbiguous === true;
+    if (options.abortRequest !== false && researchRequestController) {
+      researchRequestController.abort();
+      researchRequestController = null;
+      researchLoadEpoch += 1;
+    }
+    setResearchStatus(message || 'Research is read-only until the authoritative workspace reloads.', 'stale');
+    document.getElementById('research-retry').hidden = false;
+    document.getElementById('research-retry-message').textContent = message || 'Research needs a fresh authoritative workspace.';
+    document.getElementById('today-research-retry-refresh').hidden = false;
+    renderResearchWorkspace();
+  }
+
+  function relocateResearchFocus() {
+    const researchRoot = document.getElementById('research-workspace');
+    const todayRoot = document.getElementById('research-today-card');
+    const dialog = document.getElementById('research-dialog');
+    if (
+      researchRoot?.contains(document.activeElement)
+      || todayRoot?.contains(document.activeElement)
+      || dialog?.contains(document.activeElement)
+    ) {
+      (document.getElementById(`nav-${activeView}`) || document.getElementById('nav-today'))?.focus();
+    }
+  }
+
+  function clearResearchProjection(options = {}) {
+    relocateResearchFocus();
+    researchLoadEpoch += 1;
+    researchSelectionEpoch += 1;
+    researchDialogEpoch += 1;
+    researchMutationEpoch += 1;
+    researchRequestController?.abort();
+    researchMutationController?.abort();
+    researchRequestController = null;
+    researchMutationController = null;
+    researchProjection = null;
+    researchResponseOwner = null;
+    researchProjectionState = options.state || 'error';
+    researchNetworkAmbiguous = false;
+    researchMutationOwner = null;
+    researchMutationPending = false;
+    activeResearchIntent = null;
+    if (pendingResearchSubmission) pendingResearchSubmission.bodyText = '';
+    pendingResearchSubmission = null;
+    pendingResearchCompletion = null;
+    researchDraft = null;
+    closeResearchDialog(false);
+    setResearchStatus(
+      options.message || 'Research authority could not be verified safely. No prior research content remains in this view.',
+      'error',
+    );
+    const retry = options.retry !== false;
+    document.getElementById('research-retry').hidden = !retry;
+    document.getElementById('today-research-retry-refresh').hidden = !retry;
+    renderResearchWorkspace();
+  }
+
+  async function loadResearchWorkspace(options = {}) {
+    if (
+      researchRequestController
+      && options.force !== true
+    ) return null;
+    if (researchRequestController) researchRequestController.abort();
+    const controller = new AbortController();
+    const request = capturePatientRequest();
+    const loadEpoch = ++researchLoadEpoch;
+    researchRequestController = controller;
+    const owner = {};
+    const current = () => (
+      researchRequestController === controller
+      && loadEpoch === researchLoadEpoch
+      && request.requestPhiEpoch === phiEpoch
+    );
+    if (!researchProjection) {
+      researchProjectionState = 'loading';
+      setResearchStatus('Loading the authoritative research workspace…', 'loading');
+      renderResearchWorkspace();
+    }
+    try {
+      const response = await fetch('/api/patient/research-workspace', { signal: controller.signal });
+      if (!current()) return null;
+      const raw = await readJsonResponse(response, current);
+      if (!current()) return null;
+      const projection = validateResearchWorkspace(raw);
+      if (
+        researchProjection
+        && (
+          projection.profile_revision < researchProjection.profile_revision
+          || projection.workflow_revision < researchProjection.workflow_revision
+        )
+      ) return null;
+      const authority = authorizePatientResponse(request, projection, {
+        workflow: 'projection',
+        researchProjection: true,
+      });
+      request.requestPhiEpoch = authority.requestPhiEpoch;
+      if (!authority.accepted || !current()) return null;
+      syncChatRevision(projection.profile_revision, false, false);
+      const unchangedAuthority = researchProjection?.projection_token === projection.projection_token
+        && researchProjection.profile_revision === projection.profile_revision
+        && researchProjection.workflow_revision === projection.workflow_revision;
+      const wasReadOnly = researchProjectionState !== 'current';
+      if (!unchangedAuthority) relocateResearchFocus();
+      researchProjection = projection;
+      researchResponseOwner = owner;
+      researchProjectionState = 'current';
+      researchNetworkAmbiguous = false;
+      document.getElementById('research-retry').hidden = true;
+      document.getElementById('today-research-retry-refresh').hidden = true;
+      setResearchStatus(
+        projection.items.length || projection.considerations.length
+          ? 'Authoritative research workspace loaded.'
+          : 'Authoritative research workspace loaded with no current occurrences or considerations.',
+        'current',
+      );
+      if (!unchangedAuthority || wasReadOnly || pendingResearchCompletion) renderResearchWorkspace();
+      const verified = verifyResearchCompletion(projection);
+      if (!verified && pendingResearchCompletion) {
+        markResearchProjectionStale(
+          'The mutation response was accepted, but the replacement workspace did not confirm the expected result. Retry refresh only.',
+        );
+        showResearchRefreshRetry('The save was accepted, but replacement verification is incomplete.');
+      }
+      if (researchDialogOpen && !pendingResearchCompletion) revalidateResearchDialogSelection();
+      reportLoadSuccess('research');
+      return projection;
+    } catch (error) {
+      if (!current() || error?.name === 'AbortError') return null;
+      if (error?.status === 401 || error?.status === 403) {
+        reportLoadError('research', error);
+        evictClientPhi(error);
+        return null;
+      }
+      const ambiguous = error instanceof TypeError || navigator.onLine === false;
+      if (ambiguous && researchProjection) {
+        markResearchProjectionStale(
+          'Research refresh is ambiguous. The last verified workspace remains visible and read-only.',
+          { networkAmbiguous: true, abortRequest: false },
+        );
+      } else {
+        clearResearchProjection({
+          state: 'error',
+          message: error?.status === 422
+            ? 'Research authority could not be verified safely. The research workspace was cleared.'
+            : 'Research could not be loaded. The research workspace was cleared.',
+          retry: true,
+        });
+      }
+      reportLoadError('research', new Error('Research workspace is unavailable.'));
+      return null;
+    } finally {
+      if (researchRequestController === controller && loadEpoch === researchLoadEpoch) {
+        researchRequestController = null;
+      }
+    }
+  }
+
+  function researchSelectionStillCurrent(selection) {
+    if (!researchProjection || !selection) return false;
+    const collection = selection.kind === 'item' ? researchProjection.items : researchProjection.considerations;
+    return collection.some(value => value.id === selection.id && value.token === selection.token);
+  }
+
+  function revalidateResearchDialogSelection() {
+    if (researchConflictRequiresReselection) {
+      researchConflictRequiresReselection = false;
+      closeResearchDialog(false, true);
+      setResearchStatus('Research changed during the request. Select a current row to review the retained caregiver draft.', 'stale');
+      return false;
+    }
+    if (researchSelectionStillCurrent(researchSelection)) return true;
+    closeResearchDialog(false);
+    setResearchStatus('The selected research authority changed. Select the current row again.', 'stale');
+    return false;
+  }
+
+  function setResearchDialogStatus(message, tone = '') {
+    const node = document.getElementById('research-dialog-status');
+    node.textContent = message || '';
+    node.className = `follow-up-dialog-status${tone ? ` ${safeClassToken(tone)}` : ''}`;
+  }
+
+  function scrubResearchDialogFields() {
+    for (const id of [
+      'research-event-note', 'research-event-who', 'research-event-context', 'research-event-date',
+      'research-follow-up-text', 'research-follow-up-owner', 'research-follow-up-due',
+    ]) {
+      const input = document.getElementById(id);
+      if (input) input.value = '';
+    }
+    document.getElementById('research-event-type').replaceChildren();
+    document.getElementById('research-follow-up-existing-action').replaceChildren();
+    document.getElementById('research-follow-up-modes').replaceChildren(
+      Object.assign(document.createElement('legend'), { textContent: 'Follow-up operation' })
+    );
+    for (const id of [
+      'research-shortlist-error', 'research-event-error', 'research-lifecycle-error',
+      'research-follow-up-error', 'research-dialog-context', 'research-follow-up-linked-copy',
+    ]) {
+      const node = document.getElementById(id);
+      if (node) node.textContent = '';
+    }
+    setResearchDialogStatus('');
+    clearResearchRetry();
+  }
+
+  function closeResearchDialog(restoreFocus = true, preserveDraft = false) {
+    const overlay = document.getElementById('research-dialog-overlay');
+    const dialog = document.getElementById('research-dialog');
+    researchDialogOpen = false;
+    researchDialogMode = null;
+    researchSelection = null;
+    researchSelectionEpoch += 1;
+    researchDialogEpoch += 1;
+    if (!preserveDraft) researchDraft = null;
+    researchConflictRequiresReselection = false;
+    scrubResearchDialogFields();
+    overlay?.classList.remove('open');
+    overlay?.setAttribute('aria-hidden', 'true');
+    if (overlay) overlay.inert = true;
+    if (dialog) dialog.inert = true;
+    deactivateDialog(dialog, restoreFocus);
+  }
+
+  function closeResearchDialogFromBackdrop(event) {
+    if (event.target === document.getElementById('research-dialog-overlay')) closeResearchDialog();
+  }
+
+  function researchDialogContextMarkup(value) {
+    const item = value.snapshot
+      ? { item_type: value.item_type, external_facts: value.snapshot.external_facts, source_identity: { external_id: value.snapshot.external_facts[value.item_type === 'trial' ? 'nct_id' : 'pmid'] } }
+      : value;
+    return `<h3 id="research-dialog-context-heading">${escHtml(researchItemTitle(item))}</h3>
+      <p>${escHtml(item.item_type === 'trial' ? 'Clinical trial' : 'Research paper')} · ${escHtml(researchIdentityLabel(item))}</p>`;
+  }
+
+  function openResearchDialog(mode, value, trigger) {
+    if (researchProjectionState !== 'current' || researchMutationPending) return;
+    const isItem = mode === 'shortlist';
+    const current = (isItem ? researchProjection.items : researchProjection.considerations)
+      .find(item => item.id === value.id && item.token === value.token);
+    if (!current) return;
+    researchDialogMode = mode;
+    researchDialogOpen = true;
+    researchSelectionEpoch += 1;
+    researchDialogEpoch += 1;
+    researchSelection = {
+      kind: isItem ? 'item' : 'consideration',
+      id: current.id,
+      token: current.token,
+    };
+    const retainedDraft = researchDraft;
+    researchDraft = null;
+    scrubResearchDialogFields();
+    const titles = {
+      shortlist: 'Save exact occurrence',
+      event: 'Record caregiver event',
+      close: 'Close caregiver consideration',
+      resume: 'Resume caregiver consideration',
+      'follow-up': current.follow_up ? 'Unlink durable follow-up' : 'Link or create durable follow-up',
+    };
+    document.getElementById('research-dialog-title').textContent = titles[mode];
+    document.getElementById('research-dialog-context').innerHTML = researchDialogContextMarkup(current);
+    for (const form of ['shortlist', 'event', 'lifecycle', 'follow-up']) {
+      document.getElementById(`research-${form}-form`).hidden = !(
+        form === mode || (form === 'lifecycle' && ['close', 'resume'].includes(mode))
+      );
+    }
+    if (mode === 'event') configureResearchEventForm(current);
+    if (['close', 'resume'].includes(mode)) configureResearchLifecycleForm(mode, current);
+    if (mode === 'follow-up') configureResearchFollowUpForm(current);
+    restoreResearchDraft(retainedDraft);
+    const overlay = document.getElementById('research-dialog-overlay');
+    const dialog = document.getElementById('research-dialog');
+    overlay.inert = false;
+    dialog.inert = false;
+    overlay.classList.add('open');
+    overlay.setAttribute('aria-hidden', 'false');
+    activateDialog(dialog, trigger);
+  }
+
+  function configureResearchEventForm(consideration) {
+    const select = document.getElementById('research-event-type');
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = 'Choose an allowed event type';
+    select.appendChild(placeholder);
+    consideration.eligibility.allowed_event_types.forEach(type => {
+      const option = document.createElement('option');
+      option.value = type;
+      option.textContent = RESEARCH_EVENT_LABELS[type];
+      select.appendChild(option);
+    });
+    document.getElementById('research-event-submit').disabled = true;
+  }
+
+  function clearResearchSubmissionRetryOnly() {
+    if (pendingResearchSubmission) pendingResearchSubmission.bodyText = '';
+    pendingResearchSubmission = null;
+    document.getElementById('research-retry-submission').hidden = true;
+    if (!pendingResearchCompletion) document.getElementById('research-dialog-retry').hidden = true;
+  }
+
+  function changeResearchEventType() {
+    clearResearchSubmissionRetryOnly();
+    for (const id of ['research-event-note', 'research-event-who', 'research-event-context', 'research-event-date']) {
+      document.getElementById(id).value = '';
+    }
+    const type = document.getElementById('research-event-type').value;
+    const attribution = type === 'treating_team_communication'
+      ? RESEARCH_ATTRIBUTION_LABELS.clinician
+      : type === 'trial_site_communication'
+        ? RESEARCH_ATTRIBUTION_LABELS.trial_site
+        : type ? RESEARCH_ATTRIBUTION_LABELS.caregiver : 'Choose an allowed event type.';
+    document.getElementById('research-event-attribution').textContent =
+      type ? `Attribution preview · ${attribution}` : attribution;
+    document.getElementById('research-event-submit').disabled = !type;
+    researchDraft = null;
+  }
+
+  function configureResearchLifecycleForm(mode, consideration) {
+    const close = mode === 'close';
+    document.getElementById('research-lifecycle-copy').textContent = close
+      ? 'Closing stops active caregiver consideration only. It does not mean this research is irrelevant, unavailable, unsuitable, ineligible, or rejected.'
+      : 'Resuming returns this caregiver consideration to the open workflow and preserves every prior event and lifecycle history item.';
+    document.getElementById('research-lifecycle-submit').textContent = close ? 'Close consideration' : 'Resume consideration';
+    const eligible = close ? consideration.eligibility.close.eligible : consideration.eligibility.resume.eligible;
+    document.getElementById('research-lifecycle-submit').disabled = !eligible;
+  }
+
+  function configureResearchFollowUpForm(consideration) {
+    const fieldset = document.getElementById('research-follow-up-modes');
+    const legend = document.createElement('legend');
+    legend.textContent = 'Follow-up operation';
+    fieldset.replaceChildren(legend);
+    consideration.eligibility.follow_up_variants.forEach((variant, index) => {
+      const label = document.createElement('label');
+      label.className = 'research-follow-up-mode';
+      const input = document.createElement('input');
+      input.type = 'radio';
+      input.name = 'research-follow-up-mode';
+      input.value = variant;
+      input.checked = index === 0;
+      input.addEventListener('change', updateResearchFollowUpMode);
+      label.append(input, document.createTextNode({
+        link_existing: 'Link one current eligible action',
+        create_and_link: 'Create one manual action and link atomically',
+        unlink: 'Unlink the current action',
+      }[variant]));
+      fieldset.appendChild(label);
+    });
+    const select = document.getElementById('research-follow-up-existing-action');
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = 'Choose a current eligible action';
+    select.appendChild(placeholder);
+    researchProjection.eligible_actions.forEach((action, index) => {
+      const option = document.createElement('option');
+      option.value = String(index + 1);
+      option.textContent = action.text;
+      researchActionOptionAuthority.set(option, action);
+      select.appendChild(option);
+    });
+    select.onchange = updateResearchFollowUpValidity;
+    document.getElementById('research-follow-up-linked-copy').textContent = consideration.follow_up
+      ? `Current linked action: ${consideration.follow_up.text}`
+      : '';
+    updateResearchFollowUpMode();
+  }
+
+  function selectedResearchFollowUpMode() {
+    return document.querySelector('input[name="research-follow-up-mode"]:checked')?.value || '';
+  }
+
+  function updateResearchFollowUpMode() {
+    clearResearchSubmissionRetryOnly();
+    const mode = selectedResearchFollowUpMode();
+    document.getElementById('research-follow-up-existing-panel').hidden = mode !== 'link_existing';
+    document.getElementById('research-follow-up-inline-panel').hidden = mode !== 'create_and_link';
+    document.getElementById('research-follow-up-unlink-panel').hidden = mode !== 'unlink';
+    document.getElementById('research-follow-up-existing-action').selectedIndex = 0;
+    for (const id of ['research-follow-up-text', 'research-follow-up-owner', 'research-follow-up-due']) {
+      document.getElementById(id).value = '';
+    }
+    researchDraft = null;
+    updateResearchFollowUpValidity();
+  }
+
+  function updateResearchFollowUpValidity() {
+    const mode = selectedResearchFollowUpMode();
+    const valid = mode === 'unlink'
+      || (mode === 'link_existing' && document.getElementById('research-follow-up-existing-action').selectedIndex > 0)
+      || (mode === 'create_and_link' && Boolean(document.getElementById('research-follow-up-text').value.trim()));
+    document.getElementById('research-follow-up-submit').disabled = !valid;
+  }
+
+  function captureResearchDraft() {
+    if (!researchDialogOpen) return null;
+    if (researchDialogMode === 'event') {
+      return {
+        kind: 'event',
+        event_type: document.getElementById('research-event-type').value,
+        note: document.getElementById('research-event-note').value,
+        who: document.getElementById('research-event-who').value,
+        context: document.getElementById('research-event-context').value,
+        occurred_on: document.getElementById('research-event-date').value,
+      };
+    }
+    if (researchDialogMode === 'follow-up' && selectedResearchFollowUpMode() === 'create_and_link') {
+      return {
+        kind: 'follow-up',
+        text: document.getElementById('research-follow-up-text').value,
+        owner: document.getElementById('research-follow-up-owner').value,
+        due_date: document.getElementById('research-follow-up-due').value,
+      };
+    }
+    return null;
+  }
+
+  function restoreResearchDraft(draft) {
+    if (!draft) return false;
+    if (researchDialogMode === 'event' && draft.kind === 'event') {
+      const consideration = researchSelectedAuthority();
+      if (!consideration?.eligibility.allowed_event_types.includes(draft.event_type)) return false;
+      document.getElementById('research-event-type').value = draft.event_type;
+      changeResearchEventType();
+      document.getElementById('research-event-note').value = draft.note;
+      document.getElementById('research-event-who').value = draft.who;
+      document.getElementById('research-event-context').value = draft.context;
+      document.getElementById('research-event-date').value = draft.occurred_on;
+    } else if (researchDialogMode === 'follow-up' && draft.kind === 'follow-up') {
+      const mode = document.querySelector('input[name="research-follow-up-mode"][value="create_and_link"]');
+      if (!mode) return false;
+      mode.checked = true;
+      updateResearchFollowUpMode();
+      document.getElementById('research-follow-up-text').value = draft.text;
+      document.getElementById('research-follow-up-owner').value = draft.owner;
+      document.getElementById('research-follow-up-due').value = draft.due_date;
+      updateResearchFollowUpValidity();
+    } else {
+      return false;
+    }
+    researchDraft = captureResearchDraft();
+    setResearchDialogStatus('Caregiver-entered draft restored after authority reload. Review it before submitting.', 'conflict');
+    return true;
+  }
+
+  function handleResearchDraftChange() {
+    if (pendingResearchSubmission) {
+      clearResearchSubmissionRetryOnly();
+      setResearchDialogStatus('The caregiver draft changed. Submit it as a new request after review.', 'conflict');
+    }
+    researchDraft = captureResearchDraft();
+    if (researchDialogMode === 'follow-up') updateResearchFollowUpValidity();
+  }
+
+  function clearResearchRetry() {
+    clearResearchSubmissionRetryOnly();
+    pendingResearchCompletion = null;
+    document.getElementById('research-retry-verification').hidden = true;
+    document.getElementById('research-dialog-retry').hidden = true;
+    document.getElementById('research-dialog-retry-message').textContent = '';
+  }
+
+  function showResearchSubmissionRetry(message) {
+    document.getElementById('research-dialog-retry').hidden = false;
+    document.getElementById('research-dialog-retry-message').textContent = message;
+    document.getElementById('research-retry-submission').hidden = false;
+    document.getElementById('research-retry-verification').hidden = true;
+  }
+
+  function showResearchRefreshRetry(message) {
+    document.getElementById('research-dialog-retry').hidden = false;
+    document.getElementById('research-dialog-retry-message').textContent = message;
+    document.getElementById('research-retry-submission').hidden = true;
+    document.getElementById('research-retry-verification').hidden = false;
+  }
+
+  function researchBaseMutationBody() {
+    if (!researchProjection) throw new Error('Reload the research workspace before saving.');
+    return {
+      mutation_id: newMutationId(),
+      expected_profile_revision: researchProjection.profile_revision,
+      expected_workflow_revision: researchProjection.workflow_revision,
+      expected_projection_token: researchProjection.projection_token,
+    };
+  }
+
+  function beginResearchMutation(allowStale = false) {
+    if (
+      researchMutationPending
+      || (researchProjectionState !== 'current' && !(allowStale && researchProjectionState === 'stale'))
+    ) return null;
+    const owner = {};
+    researchMutationOwner = owner;
+    researchMutationPending = true;
+    researchMutationEpoch += 1;
+    researchMutationController = new AbortController();
+    renderResearchWorkspace();
+    return owner;
+  }
+
+  function releaseResearchMutation(intent) {
+    if (researchMutationOwner !== intent.mutationOwner) return false;
+    researchMutationOwner = null;
+    researchMutationPending = false;
+    if (researchMutationController === intent.controller) researchMutationController = null;
+    if (activeResearchIntent === intent) activeResearchIntent = null;
+    renderResearchWorkspace();
+    return true;
+  }
+
+  function createResearchIntent(method, url, body, expected) {
+    const owner = beginResearchMutation();
+    if (!owner) return null;
+    const bodyText = JSON.stringify(body);
+    return {
+      method,
+      url,
+      bodyText,
+      expected,
+      mutationOwner: owner,
+      mutationEpoch: researchMutationEpoch,
+      controller: researchMutationController,
+      requestPhiEpoch: phiEpoch,
+      selectionEpoch: researchSelectionEpoch,
+      dialogEpoch: researchDialogEpoch,
+    };
+  }
+
+  function researchIntentCurrent(intent) {
+    return researchMutationPending
+      && researchMutationOwner === intent.mutationOwner
+      && researchMutationEpoch === intent.mutationEpoch
+      && researchMutationController === intent.controller
+      && phiEpoch === intent.requestPhiEpoch
+      && researchSelectionEpoch === intent.selectionEpoch
+      && researchDialogEpoch === intent.dialogEpoch;
+  }
+
+  function expectedResearchCompletion(intent, response) {
+    const result = response.consideration;
+    const expected = {
+      profile_revision: response.profile_revision,
+      workflow_revision: response.workflow_revision,
+      consideration_id: result.id,
+      record_id: result.research_record_id,
+      mode: intent.expected.mode,
+    };
+    if (intent.expected.mode === 'event') {
+      const prior = new Set(intent.expected.priorEventIds);
+      const added = result.events.filter(event => !prior.has(event.id));
+      if (added.length !== 1 || added[0].event_type !== intent.expected.eventType) {
+        throw new Error('Research mutation response did not contain the expected event.');
+      }
+      expected.event_id = added[0].id;
+    } else if (['close', 'resume'].includes(intent.expected.mode)) {
+      expected.status = intent.expected.mode === 'close' ? 'closed' : 'open';
+      if (result.status !== expected.status) throw new Error('Research lifecycle response is inconsistent.');
+    } else if (intent.expected.mode === 'follow-up') {
+      expected.follow_up_id = result.follow_up?.id || null;
+      if (intent.expected.followUpMode === 'unlink' && result.follow_up !== null) {
+        throw new Error('Research unlink response is inconsistent.');
+      }
+      if (intent.expected.followUpMode !== 'unlink' && result.follow_up === null) {
+        throw new Error('Research follow-up response is inconsistent.');
+      }
+    }
+    return expected;
+  }
+
+  function verifyResearchCompletion(projection) {
+    const expected = pendingResearchCompletion;
+    if (!expected) return true;
+    if (
+      projection.profile_revision !== expected.profile_revision
+      || projection.workflow_revision !== expected.workflow_revision
+    ) return false;
+    const consideration = projection.considerations.find(item => item.id === expected.consideration_id);
+    if (!consideration || consideration.research_record_id !== expected.record_id) return false;
+    if (expected.event_id && !consideration.events.some(event => event.id === expected.event_id)) return false;
+    if (expected.status && consideration.status !== expected.status) return false;
+    if ('follow_up_id' in expected && (consideration.follow_up?.id || null) !== expected.follow_up_id) return false;
+    pendingResearchCompletion = null;
+    researchDraft = null;
+    closeResearchDialog();
+    setResearchStatus('Saved and verified against the complete authoritative research workspace.', 'current');
+    return true;
+  }
+
+  async function performResearchIntent(intent, explicitRetry = false) {
+    if (!intent || !researchIntentCurrent(intent)) return null;
+    activeResearchIntent = intent;
+    if (explicitRetry) {
+      pendingResearchSubmission = null;
+      document.getElementById('research-retry-submission').hidden = true;
+    } else {
+      clearResearchSubmissionRetryOnly();
+    }
+    setResearchDialogStatus(explicitRetry ? 'Retrying the unchanged request…' : 'Saving…', 'saving');
+    try {
+      const response = await fetch(intent.url, {
+        method: intent.method,
+        headers: { 'Content-Type': 'application/json' },
+        body: intent.bodyText,
+        signal: intent.controller.signal,
+      });
+      if (!researchIntentCurrent(intent)) return null;
+      const raw = await readJsonResponse(response, () => researchIntentCurrent(intent));
+      if (!researchIntentCurrent(intent)) return null;
+      const expectedId = intent.expected.considerationId || null;
+      const data = validateResearchMutationResponse(raw, expectedId);
+      if (!researchIntentCurrent(intent)) return null;
+      intent.requestPhiEpoch = phiEpoch;
+      pendingResearchCompletion = expectedResearchCompletion(intent, data);
+      clearResearchSubmissionRetryOnly();
+      markResearchProjectionStale(
+        'The request was accepted. Research is read-only while the complete workspace verifies the result.',
+        { abortRequest: false },
+      );
+      showResearchRefreshRetry('The request was accepted. Verifying the complete workspace…');
+      releaseResearchMutation(intent);
+      await loadResearchWorkspace({ force: true });
+      return data;
+    } catch (error) {
+      if (!researchIntentCurrent(intent)) return null;
+      if (error?.status === 401 || error?.status === 403) {
+        evictClientPhi(error);
+        return null;
+      }
+      if (error?.status === 409) {
+        researchDraft = captureResearchDraft();
+        researchConflictRequiresReselection = true;
+        clearResearchSubmissionRetryOnly();
+        setResearchDialogStatus('The research workspace changed. Review the reloaded authority before submitting again.', 'conflict');
+        releaseResearchMutation(intent);
+        markResearchProjectionStale('Research changed during the request. Reloading authoritative workspace.', { abortRequest: false });
+        await loadResearchWorkspace({ force: true });
+        return null;
+      }
+      if (error instanceof TypeError || navigator.onLine === false) {
+        researchDraft = captureResearchDraft();
+        pendingResearchSubmission = intent;
+        markResearchProjectionStale(
+          'The submission result is ambiguous. Research remains visible and read-only until authority reloads.',
+          { networkAmbiguous: true, abortRequest: false },
+        );
+        showResearchSubmissionRetry('Submission status is unknown. Retry only the unchanged request.');
+        releaseResearchMutation(intent);
+        return null;
+      }
+      if ([400, 404, 422].includes(error?.status)) {
+        researchDraft = captureResearchDraft();
+        setResearchDialogStatus('The request was not accepted. Review the caregiver-entered fields and current authority.', 'error');
+        releaseResearchMutation(intent);
+        return null;
+      }
+      setResearchDialogStatus('The request could not be saved.', 'error');
+      releaseResearchMutation(intent);
+      return null;
+    } finally {
+      releaseResearchMutation(intent);
+    }
+  }
+
+  function researchSelectedAuthority() {
+    if (!researchSelection || !researchProjection) return null;
+    const collection = researchSelection.kind === 'item'
+      ? researchProjection.items
+      : researchProjection.considerations;
+    return collection.find(value => value.id === researchSelection.id && value.token === researchSelection.token) || null;
+  }
+
+  async function submitResearchShortlist() {
+    const item = researchSelectedAuthority();
+    if (!item || !item.shortlist.eligible) return;
+    const body = {
+      ...researchBaseMutationBody(),
+      research_record_id: item.id,
+      expected_item_token: item.token,
+    };
+    const intent = createResearchIntent('POST', '/api/research-considerations', body, {
+      mode: 'shortlist',
+      recordId: item.id,
+    });
+    if (intent) await performResearchIntent(intent);
+  }
+
+  async function submitResearchEvent() {
+    const consideration = researchSelectedAuthority();
+    const eventType = document.getElementById('research-event-type').value;
+    const note = document.getElementById('research-event-note').value;
+    const who = document.getElementById('research-event-who').value;
+    const context = document.getElementById('research-event-context').value;
+    const occurredOn = document.getElementById('research-event-date').value;
+    if (
+      !consideration
+      || !consideration.eligibility.allowed_event_types.includes(eventType)
+      || !note.trim()
+      || note.length > 20000
+      || who.length > 500
+      || context.length > 2000
+      || (occurredOn && researchPartialDatePrecision(occurredOn) === null)
+    ) {
+      setFormError('research-event-error', 'Enter an allowed event type, a note, and an optional exact partial date.');
+      return;
+    }
+    const body = {
+      ...researchBaseMutationBody(),
+      expected_consideration_token: consideration.token,
+      event_type: eventType,
+      note,
+      who: who.trim() ? who : null,
+      context: context.trim() ? context : null,
+      occurred_on: occurredOn || null,
+    };
+    const intent = createResearchIntent(
+      'POST',
+      `/api/research-considerations/${encodeURIComponent(consideration.id)}/events`,
+      body,
+      {
+        mode: 'event',
+        considerationId: consideration.id,
+        eventType,
+        priorEventIds: consideration.events.map(event => event.id),
+      },
+    );
+    if (intent) await performResearchIntent(intent);
+  }
+
+  async function submitResearchLifecycle() {
+    const consideration = researchSelectedAuthority();
+    const mode = researchDialogMode;
+    const eligibility = mode === 'close' ? consideration?.eligibility.close : consideration?.eligibility.resume;
+    if (!consideration || !eligibility?.eligible) return;
+    const body = {
+      ...researchBaseMutationBody(),
+      expected_consideration_token: consideration.token,
+    };
+    const intent = createResearchIntent(
+      'POST',
+      `/api/research-considerations/${encodeURIComponent(consideration.id)}/${mode}`,
+      body,
+      { mode, considerationId: consideration.id },
+    );
+    if (intent) await performResearchIntent(intent);
+  }
+
+  async function submitResearchFollowUp() {
+    const consideration = researchSelectedAuthority();
+    const mode = selectedResearchFollowUpMode();
+    if (!consideration || !consideration.eligibility.follow_up_variants.includes(mode)) return;
+    const body = {
+      ...researchBaseMutationBody(),
+      expected_consideration_token: consideration.token,
+    };
+    if (mode === 'link_existing') {
+      const option = document.getElementById('research-follow-up-existing-action').selectedOptions[0];
+      const action = researchActionOptionAuthority.get(option);
+      if (!action || !researchProjection.eligible_actions.some(value => value.id === action.id && value.token === action.token)) {
+        setFormError('research-follow-up-error', 'Select a current eligible action.');
+        return;
+      }
+      body.caregiver_action_id = action.id;
+      body.expected_action_token = action.token;
+    } else if (mode === 'create_and_link') {
+      const text = document.getElementById('research-follow-up-text').value;
+      const owner = document.getElementById('research-follow-up-owner').value;
+      const dueDate = document.getElementById('research-follow-up-due').value;
+      if (!text.trim() || text.length > 1000 || owner.length > 100) {
+        setFormError('research-follow-up-error', 'Enter a bounded caregiver follow-up description.');
+        return;
+      }
+      body.follow_up = {
+        text,
+        owner: owner.trim() ? owner : null,
+        due_date: dueDate || null,
+      };
+    } else {
+      if (!consideration.follow_up) return;
+      body.caregiver_action_id = null;
+      body.expected_action_token = consideration.follow_up.token;
+    }
+    const intent = createResearchIntent(
+      'PATCH',
+      `/api/research-considerations/${encodeURIComponent(consideration.id)}/follow-up`,
+      body,
+      {
+        mode: 'follow-up',
+        followUpMode: mode,
+        considerationId: consideration.id,
+      },
+    );
+    if (intent) await performResearchIntent(intent);
+  }
+
+  async function retryResearchSubmission() {
+    const prior = pendingResearchSubmission;
+    if (!prior?.bodyText) return;
+    if (
+      !researchDialogOpen
+      || prior.selectionEpoch !== researchSelectionEpoch
+      || prior.dialogEpoch !== researchDialogEpoch
+    ) {
+      clearResearchSubmissionRetryOnly();
+      setResearchDialogStatus('Submission retry authority expired. Review and submit a new request.', 'conflict');
+      return;
+    }
+    const owner = beginResearchMutation(true);
+    if (!owner) return;
+    const intent = {
+      ...prior,
+      mutationOwner: owner,
+      mutationEpoch: researchMutationEpoch,
+      controller: researchMutationController,
+      requestPhiEpoch: phiEpoch,
+    };
+    pendingResearchSubmission = intent;
+    await performResearchIntent(intent, true);
+  }
+
+  async function retryResearchRefresh() {
+    if (!pendingResearchCompletion && !researchNetworkAmbiguous) return;
+    await loadResearchWorkspace({ force: true });
   }
 
   // ── Task log ────────────────────────────────────────────────────────────
@@ -7955,6 +9414,10 @@
   document.addEventListener('keydown', (e) => {
     if (trapDialogFocus(e)) return;
     if (e.key !== 'Escape') return;
+    if (researchDialogOpen) {
+      closeResearchDialog();
+      return;
+    }
     if (treatmentDialogOpen) {
       closeTreatmentDialog();
       return;
@@ -7978,10 +9441,6 @@
     const pop = document.getElementById('feed-popover');
     if (pop?.classList.contains('visible')) {
       toggleFeedPopover(false);
-      return;
-    }
-    if (document.getElementById('modal-overlay')?.classList.contains('open')) {
-      closeModal();
       return;
     }
     if (!document.getElementById('report-panel')?.classList.contains('collapsed')) {
@@ -8058,6 +9517,12 @@
       reportLoadSuccess('action');
       return true;
     } catch (e) {
+      if (e instanceof TypeError || navigator.onLine === false) {
+        markResearchProjectionStale(
+          'The document submission result is ambiguous. Research remains read-only until authority reloads.',
+          { networkAmbiguous: true },
+        );
+      }
       showFeedError(e.message);
       return false;
     } finally {
@@ -8128,6 +9593,12 @@
       reportLoadSuccess('action');
       return true;
     } catch (e) {
+      if (e instanceof TypeError || navigator.onLine === false) {
+        markResearchProjectionStale(
+          'The document submission result is ambiguous. Research remains read-only until authority reloads.',
+          { networkAmbiguous: true },
+        );
+      }
       showFeedError(e.message);
       return false;
     } finally {
@@ -8144,6 +9615,12 @@
       await activateSubmittedTask(d);
       reportLoadSuccess('action');
     } catch (e) {
+      if (e instanceof TypeError || navigator.onLine === false) {
+        markResearchProjectionStale(
+          'The digest submission result is ambiguous. Research remains read-only until authority reloads.',
+          { networkAmbiguous: true },
+        );
+      }
       reportLoadError('action', e);
     } finally {
       btn.disabled = false;
@@ -8181,6 +9658,10 @@
       if (hadActiveJobs && !hasActiveJobs) {
         const refreshes = [loadSummary()];
         if (activeView !== 'today') refreshes.push(loadStatus());
+        markResearchProjectionStale(
+          'A manual research source run completed. Reloading the authoritative research workspace.',
+        );
+        refreshes.push(loadResearchWorkspace({ force: true }));
         await Promise.allSettled(refreshes);
       }
 
@@ -14559,9 +16040,16 @@
   const symptomSurface = document.getElementById('symptom-dialog');
   symptomSurface?.addEventListener('input', invalidateSymptomRetryOnDraftChange);
   symptomSurface?.addEventListener('change', invalidateSymptomRetryOnDraftChange);
+  const researchSurface = document.getElementById('research-dialog');
+  researchSurface?.addEventListener('input', event => {
+    if (event.target?.id !== 'research-event-type') handleResearchDraftChange();
+  });
+  researchSurface?.addEventListener('change', event => {
+    if (event.target?.id !== 'research-event-type') handleResearchDraftChange();
+  });
   updateFormValidity();
   startPolling();
   const requestedView = window.location.hash.replace('#', '');
-  if (['today', 'patient', 'questions', 'activity'].includes(requestedView) && requestedView !== 'today') {
+  if (['today', 'patient', 'research', 'questions', 'activity'].includes(requestedView) && requestedView !== 'today') {
     switchView(requestedView, document.getElementById(`nav-${requestedView}`));
   }

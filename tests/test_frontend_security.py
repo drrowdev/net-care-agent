@@ -178,7 +178,7 @@ function advancePatientAuthority(revision) {
             _response_authority_source(),
             _executable_function_source("readJsonResponse", "readJobSubmission"),
             _function_source("shouldEvictClientPhi", "restoreDialogFocus"),
-            _function_source("evictClientPhi", "renderLatestResearchUpdate"),
+            _function_source("evictClientPhi", "renderSidebar"),
             _executable_function_source("loadSummary", "renderPendingSummary"),
             _function_source("renderFreshness", "renderClaimEvidence"),
             """
@@ -349,7 +349,7 @@ def test_escape_closes_only_the_topmost_open_surface():
     handler_start = APP_JS.index("document.addEventListener('keydown'")
     handler_end = APP_JS.index("function switchTab", handler_start)
     handler = APP_JS[handler_start:handler_end]
-    assert "modal-overlay" in handler
+    assert "researchDialogOpen" in handler
     assert handler.count("return;") >= 4
 
 
@@ -363,7 +363,7 @@ def test_dialogs_trap_focus_and_make_background_inert():
     assert "event.key !== 'Tab'" in trap
     assert "event.shiftKey" in trap
     assert "activateDialog(pop, trigger)" in APP_JS
-    assert "activateDialog(overlay.querySelector('.modal'), trigger)" in APP_JS
+    assert "activateDialog(dialog, trigger)" in APP_JS
     assert "activateDialog(report, lastDialogTrigger)" in APP_JS
     assert "activateDialog(panel, trigger)" in APP_JS
 
@@ -401,11 +401,9 @@ def test_load_failures_distinguish_auth_offline_and_retry_states():
 
 
 def test_status_failure_clears_all_status_derived_phi_and_caches():
-    failure = _function_source("renderStatusFailure", "renderLatestResearchUpdate")
+    failure = _function_source("renderStatusFailure", "evictClientPhi")
     for expression in (
         "redactGeneratedQuestionChoices()",
-        "latestResearchUpdate = null",
-        "renderLatestResearchUpdate(null)",
         "patientMeta.innerHTML = ''",
     ):
         assert expression in failure
@@ -420,7 +418,7 @@ def test_status_failure_clears_all_status_derived_phi_and_caches():
 
 
 def test_central_phi_eviction_clears_patient_panels_dialogs_and_histories():
-    eviction = _function_source("evictClientPhi", "renderLatestResearchUpdate")
+    eviction = _function_source("evictClientPhi", "renderSidebar")
     for expression in (
         "taskSelectionEpoch += 1",
         "summaryLoadEpoch += 1",
@@ -1022,7 +1020,7 @@ def test_alert_resolution_filters_link_sources_and_labels_provenance_precisely()
 def test_alert_resolution_conflict_offline_and_eviction_fail_closed():
     conflict = _function_source("handleAlertResolutionConflict", "performAlertResolutionIntent")
     performer = _function_source("performAlertResolutionIntent", "submitAlertResolution")
-    eviction = _function_source("evictClientPhi", "renderLatestResearchUpdate")
+    eviction = _function_source("evictClientPhi", "renderSidebar")
     polling = _function_source("startPolling", "currentVisit")
     assert "captureAlertResolutionDraft()" in conflict
     assert "clearAlertResolutionRetry()" in conflict
@@ -1747,10 +1745,10 @@ def test_patient_history_joins_documents_and_keeps_orphaned_legacy_records():
 
 
 def test_claim_evidence_and_decision_support_wording_are_non_definitive():
-    summary = _function_source("renderSummary", "removeItem")
+    summary = _function_source("renderSummary", "researchPlainObject")
     assert "POTENTIAL FIT" in summary
     assert "MAY FIT" in summary
-    assert "Trial to discuss" in summary
+    assert "Trial to discuss" not in summary
     assert "Best matched trial" not in APP_JS
     assert "PRRT: ELIGIBLE" not in APP_JS
     assert "renderClaimEvidence" in summary
@@ -1779,17 +1777,17 @@ def test_empty_form_handlers_surface_inline_feedback():
     assert "field === 'new_lesions'" in fields
 
 
-def test_latest_research_update_labels_only_exact_batch_records():
+def test_latest_research_membership_uses_only_workspace_occurrence_authority():
     sidebar = _function_source("renderSidebar", "toggleSummary")
-    assert "d.latest_research_update" in sidebar
-    assert "latestResearchUpdate?.trial_count" in sidebar
-    assert "latestResearchUpdate?.paper_count" in sidebar
-
-    modal = _function_source("renderModal", "loadTasks")
-    assert "latestResearchUpdate[updateField].map(String)" in modal
-    assert "newIds.has(String" in modal
-    assert "new-research-badge" in modal
-    assert "orderedItems" in modal
+    assert "latest_research_update" not in sidebar
+    renderer = _function_source("renderResearchOccurrence", "researchCurrentSectionMarkup")
+    today = _function_source("renderResearchWorkspace", "selectResearchTab")
+    assert "item.latest_batch_member" in renderer
+    assert "researchProjection.items.filter(item => item.latest_batch_member)" in today
+    assert "unread" not in renderer.lower()
+    assert "reviewed" not in renderer.lower()
+    assert "/api/trials" not in APP_JS
+    assert "/api/papers" not in APP_JS
     assert "/api/changes" not in APP_JS
 
 
@@ -2340,7 +2338,7 @@ function updateAppointmentFormValidity() {}
 """,
             _executable_function_source("workflowIntentCanRender", "refreshClinicalWorkflowState"),
             _executable_function_source("consumeWorkflowResponse", "handleWorkflowConflict"),
-            _function_source("evictClientPhi", "renderLatestResearchUpdate"),
+            _function_source("evictClientPhi", "renderSidebar"),
             """
 (async () => {
   const authStatus = Number(process.argv[1]);
@@ -3442,7 +3440,7 @@ def test_appointment_revision_epoch_conflict_and_eviction_guards_are_complete():
     consume = _function_source("consumeWorkflowResponse", "handleWorkflowConflict")
     conflicts = _function_source("handleWorkflowConflict", "performWorkflowIntent")
     performer = _function_source("performWorkflowIntent", "submitWorkflowMutation")
-    eviction = _function_source("evictClientPhi", "renderLatestResearchUpdate")
+    eviction = _function_source("evictClientPhi", "renderSidebar")
 
     assert "expectedPhiEpoch !== phiEpoch" in context
     assert "requestVisitEpoch !== visitSelectionEpoch" in context
@@ -3564,7 +3562,7 @@ def test_visit_recap_uses_atomic_projection_and_strict_authority_gates():
     projection = _function_source("applyVisitRecapProjection", "loadVisitRecap")
     authority = _function_source("visitRecapAuthorityIsCurrent", "updateVisitRecapExportControls")
     stale = _function_source("markVisitRecapStale", "visitRecapAuthorityIsCurrent")
-    eviction = _function_source("evictClientPhi", "renderLatestResearchUpdate")
+    eviction = _function_source("evictClientPhi", "renderSidebar")
     polling = _function_source("startPolling", "revokeVisitRecapDownloadUrl")
 
     assert "/recap?expected_visit_token=" in loader
@@ -7322,7 +7320,7 @@ def test_follow_up_retry_conflict_eviction_and_loading_contracts_are_strict():
     retry = _function_source("retryFollowUpIntent", "createManualFollowUp")
     conflict = _function_source("handleFollowUpConflict", "consumeFollowUpResponse")
     consumer = _function_source("consumeFollowUpResponse", "restoreFollowUpMutationFocus")
-    eviction = _function_source("evictClientPhi", "renderLatestResearchUpdate")
+    eviction = _function_source("evictClientPhi", "renderSidebar")
     loader = _function_source("loadFollowUps", "beginFollowUpMutation")
     polling = _function_source("startPolling", "currentVisit")
 

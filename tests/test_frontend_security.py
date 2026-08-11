@@ -390,7 +390,7 @@ def test_load_failures_distinguish_auth_offline_and_retry_states():
         "loadSummary()",
         "loadQuestions()",
         "loadJudgments()",
-        "loadSymptoms()",
+        "ensureSymptomEpisodes()",
     ):
         assert loader in retry
     assert "updateHeaderStatus(null, e)" in APP_JS
@@ -440,9 +440,7 @@ def test_central_phi_eviction_clears_patient_panels_dialogs_and_histories():
         "clearReportCopyState()",
         "'judgment-input'",
         "'q-add-input'",
-        "'sym-name'",
-        "'sym-note'",
-        "severity.value = ''",
+        "clearSymptomProjection({",
         ".judgment-edit-text",
         ".receipt-editor input",
     ):
@@ -486,13 +484,13 @@ def test_central_phi_eviction_clears_patient_panels_dialogs_and_histories():
     questions = _function_source("generateQuestions", "addQuestion")
     assert "const request = capturePatientRequest()" in questions
     assert "patientRequestIsCurrent(request)" in questions
-    for handler, next_name in (
-        ("addJudgment", "deleteJudgment"),
-        ("addSymptom", "deleteSymptom"),
-    ):
+    for handler, next_name in (("addJudgment", "deleteJudgment"),):
         source = _function_source(handler, next_name)
         assert "const requestPhiEpoch = phiEpoch" in source
         assert "requestPhiEpoch !== phiEpoch" in source
+    symptom_mutation = _function_source("performSymptomIntent", "retrySymptomIntent")
+    assert "symptomIntentOwnsMutation(intent, intent.requestPhiEpoch)" in symptom_mutation
+    assert "evictClientPhi(safeError)" in symptom_mutation
     add_question = _function_source("addQuestion", "toggleQuestion")
     assert "const request = capturePatientRequest()" in add_question
     assert "authorizePatientResponse(request, result)" in add_question
@@ -1764,7 +1762,6 @@ def test_empty_form_handlers_surface_inline_feedback():
     cases = (
         ("addQuestion", "toggleQuestion", "q-form-error"),
         ("addJudgment", "deleteJudgment", "judgment-form-error"),
-        ("addSymptom", "deleteSymptom", "sym-form-error"),
     )
     for name, next_name, error_id in cases:
         source = _function_source(name, next_name)
@@ -1854,7 +1851,7 @@ def test_stored_values_are_not_interpolated_into_event_handlers():
     assert 'data-task-id="${escHtml(t.id)}"' in APP_JS
     assert 'data-judgment-id="${escHtml(j.id)}"' in APP_JS
     assert 'data-question-id="${escHtml(q.id)}"' in APP_JS
-    assert 'data-id="${escHtml(s.id)}"' in APP_JS
+    assert "symptomElement('h3', '', episode.symptom_text)" in APP_JS
 
 
 def test_malicious_stored_display_fields_are_escaped():
@@ -1864,7 +1861,6 @@ def test_malicious_stored_display_fields_are_escaped():
         "escHtml(p.sex || '—')",
         "escHtml(alert.priority || '—')",
         "escHtml(j.date||'')",
-        "escHtml(s.date || '')",
         "escHtml(task.stage || 'processing')",
         "escHtml(translateCategory(q.category||'Other'))",
         "escHtml(item.event || '')",

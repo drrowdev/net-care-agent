@@ -115,6 +115,25 @@
         </div>
       </section>
 
+      <section class="content-card symptom-today-card" id="symptom-today-card" aria-labelledby="today-symptoms-heading">
+        <div class="card-header compact split-header">
+          <div>
+            <p class="eyebrow">Caregiver-entered · unverified</p>
+            <h2 id="today-symptoms-heading">Current symptom episodes</h2>
+          </div>
+          <span class="symptom-freshness loading" id="today-symptom-freshness">Not loaded</span>
+        </div>
+        <p class="symptom-safety-guidance">NET/Care records what you enter but does not assess urgency or monitor symptoms. Contact the treating team about symptoms or concerns. If you think this may be a medical emergency, contact local emergency services.</p>
+        <div class="symptom-status" id="today-symptom-status" role="status" aria-live="polite">Loading the authoritative symptom record…</div>
+        <div class="symptom-episode-list compact" id="today-symptom-list">
+          <div class="loading-state">Loading current symptom episodes…</div>
+        </div>
+        <div class="symptom-workflow-actions">
+          <button class="button primary" id="today-symptom-add" type="button" onclick="openSymptomAddDialog(this)">＋ Record symptom episode</button>
+          <button class="button secondary" type="button" onclick="openPatientSymptoms()">Review all symptom records</button>
+        </div>
+      </section>
+
       <section class="content-card summary-card" id="summary-card" aria-labelledby="summary-heading">
         <div class="card-header">
           <div>
@@ -230,16 +249,58 @@
           <div id="alerts-list"><div class="loading-state">Loading alerts…</div></div>
         </section>
 
-        <section class="content-card" aria-labelledby="symptoms-heading">
-          <div class="card-header compact"><div><p class="eyebrow">Patient reported</p><h2 id="symptoms-heading">Symptoms</h2></div></div>
-          <div class="symptom-form">
-            <label><span>Symptom</span><input id="sym-name" placeholder="e.g. nausea" maxlength="60"></label>
-            <label><span>Severity</span><select id="sym-sev"><option value="">Not set</option><option value="1">1 — mild</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5 — severe</option></select></label>
-            <label class="symptom-note-field"><span>Optional note</span><input id="sym-note" placeholder="Add context" maxlength="200" onkeydown="if(event.key==='Enter')addSymptom()"></label>
-            <button class="button secondary" id="sym-add-btn" onclick="addSymptom()" disabled>Log symptom</button>
-            <p class="form-error" id="sym-form-error" role="alert" aria-live="polite"></p>
+        <section class="content-card span-two symptom-workspace" id="symptom-workspace" aria-labelledby="symptoms-heading">
+          <div class="card-header compact split-header">
+            <div>
+              <p class="eyebrow">Caregiver episodes and source observations</p>
+              <h2 id="symptoms-heading" tabindex="-1">Symptoms</h2>
+            </div>
+            <div class="symptom-header-actions">
+              <span class="symptom-freshness loading" id="patient-symptom-freshness">Not loaded</span>
+              <button class="button secondary" id="symptom-refresh-button" type="button" onclick="loadSymptomEpisodes({ force: true })">Refresh</button>
+              <button class="button primary" id="patient-symptom-add" type="button" onclick="openSymptomAddDialog(this)">＋ Record episode</button>
+            </div>
           </div>
-          <div id="symptoms-list"><div class="loading-state">Loading symptoms…</div></div>
+          <p class="symptom-safety-guidance">NET/Care records what you enter but does not assess urgency or monitor symptoms. Contact the treating team about symptoms or concerns. If you think this may be a medical emergency, contact local emergency services.</p>
+          <div class="symptom-status loading" id="patient-symptom-status" role="status" aria-live="polite">
+            Loading the authoritative symptom record…
+          </div>
+          <div class="symptom-tabs" role="tablist" aria-label="Symptom record sections" onkeydown="handleSymptomTabKeydown(event)">
+            <button class="symptom-tab active" id="symptom-tab-current" role="tab" aria-selected="true" aria-controls="symptom-panel-current" tabindex="0" onclick="selectSymptomTab('current')">Current episodes <span id="symptom-count-current">0</span></button>
+            <button class="symptom-tab" id="symptom-tab-resolved" role="tab" aria-selected="false" aria-controls="symptom-panel-resolved" tabindex="-1" onclick="selectSymptomTab('resolved')">Resolved episodes <span id="symptom-count-resolved">0</span></button>
+            <button class="symptom-tab" id="symptom-tab-observations" role="tab" aria-selected="false" aria-controls="symptom-panel-observations" tabindex="-1" onclick="selectSymptomTab('observations')">Source observations <span id="symptom-count-observations">0</span></button>
+          </div>
+          <section class="symptom-panel" id="symptom-panel-current" role="tabpanel" aria-labelledby="symptom-tab-current">
+            <div class="symptom-episode-list" id="patient-current-symptom-list">
+              <div class="loading-state">Loading current symptom episodes…</div>
+            </div>
+          </section>
+          <section class="symptom-panel" id="symptom-panel-resolved" role="tabpanel" aria-labelledby="symptom-tab-resolved" hidden>
+            <div class="symptom-episode-list" id="patient-resolved-symptom-list"></div>
+          </section>
+          <section class="symptom-panel" id="symptom-panel-observations" role="tabpanel" aria-labelledby="symptom-tab-observations" hidden>
+            <p class="symptom-observation-note">Source observations are read-only mentions from imported or legacy records. They are not current symptom episodes.</p>
+            <div class="symptom-observation-table-region" id="symptom-observation-table-region" role="region" aria-labelledby="symptom-observation-caption" tabindex="0">
+              <table class="symptom-observation-table">
+                <caption id="symptom-observation-caption">Complete read-only symptom observations in server-supplied order</caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Recorded symptom</th>
+                    <th scope="col">Stored severity</th>
+                    <th scope="col">Symptom date authority</th>
+                    <th scope="col">Recorded context</th>
+                    <th scope="col">Source authority</th>
+                  </tr>
+                </thead>
+                <tbody id="symptom-observation-table-body">
+                  <tr><td colspan="5"><div class="loading-state">Loading source observations…</div></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+          <div class="symptom-retry" id="symptom-retry" hidden>
+            <button class="button secondary" type="button" onclick="loadSymptomEpisodes({ force: true })">Retry symptom record</button>
+          </div>
         </section>
 
         <section class="content-card span-two imaging-explorer" id="imaging-explorer" aria-labelledby="imaging-heading">
@@ -399,6 +460,105 @@
       </section>
     </section>
   </main>
+</div>
+
+<div class="follow-up-overlay symptom-dialog-overlay" id="symptom-dialog-overlay" aria-hidden="true" onclick="closeSymptomDialogFromBackdrop(event)" inert>
+  <section class="follow-up-dialog symptom-dialog" id="symptom-dialog" role="dialog" aria-modal="true" aria-labelledby="symptom-dialog-title" tabindex="-1" inert>
+    <header class="dialog-header">
+      <div>
+        <p class="eyebrow">Caregiver-entered · unverified</p>
+        <h2 id="symptom-dialog-title">Symptom episode</h2>
+      </div>
+      <button class="icon-button" id="symptom-dialog-close" type="button" onclick="closeSymptomDialog()" aria-label="Close symptom episode dialog">×</button>
+    </header>
+    <p class="symptom-safety-guidance dialog-guidance">NET/Care records what you enter but does not assess urgency or monitor symptoms. Contact the treating team about symptoms or concerns. If you think this may be a medical emergency, contact local emergency services.</p>
+    <div id="symptom-dialog-status" class="follow-up-dialog-status" role="status" aria-live="polite"></div>
+    <div class="follow-up-dialog-body">
+      <form id="symptom-details-form" class="follow-up-form symptom-details-form" onsubmit="event.preventDefault();submitSymptomDetails()">
+        <label><span>Symptom description</span><textarea id="symptom-text" maxlength="500" rows="3" placeholder="Record the symptom in your own words."></textarea></label>
+        <div class="symptom-form-grid">
+          <label><span>Severity (optional)</span><select id="symptom-severity"><option value="">Not recorded</option><option value="mild">Mild</option><option value="moderate">Moderate</option><option value="severe">Severe</option></select></label>
+          <label><span>Reported subject</span><select id="symptom-reported-subject"><option value="unspecified">Not specified</option><option value="patient">Patient</option><option value="caregiver">Caregiver</option></select></label>
+        </div>
+        <label><span>Severity detail (optional)</span><input id="symptom-severity-detail" maxlength="500" placeholder="Exact additional wording"></label>
+        <label><span>Onset date (optional)</span><input id="symptom-onset-date" maxlength="10" inputmode="numeric" placeholder="YYYY, YYYY-MM, or YYYY-MM-DD" aria-describedby="symptom-date-help"></label>
+        <label id="symptom-edit-resolution-field" hidden><span>Resolution date (optional)</span><input id="symptom-edit-resolved-date" maxlength="10" inputmode="numeric" placeholder="YYYY, YYYY-MM, or YYYY-MM-DD"></label>
+        <p class="helper-text" id="symptom-date-help">Partial dates are allowed and are stored exactly as entered. The date is never defaulted.</p>
+        <div class="symptom-form-grid">
+          <label><span>Timing (optional)</span><input id="symptom-timing" maxlength="500"></label>
+          <label><span>Frequency (optional)</span><input id="symptom-frequency" maxlength="500"></label>
+        </div>
+        <label><span>Triggers (optional)</span><textarea id="symptom-triggers" maxlength="1000" rows="2"></textarea></label>
+        <label><span>Notes (optional)</span><textarea id="symptom-notes" maxlength="2000" rows="3"></textarea></label>
+        <fieldset class="symptom-follow-up-fieldset" id="symptom-create-follow-up-fieldset">
+          <legend>Optional follow-up</legend>
+          <label><input type="radio" name="symptom-create-follow-up-mode" value="none" checked onchange="renderSymptomCreateFollowUpMode()"> No follow-up</label>
+          <label><input type="radio" name="symptom-create-follow-up-mode" value="existing" onchange="renderSymptomCreateFollowUpMode()"> Link an eligible existing action</label>
+          <label><input type="radio" name="symptom-create-follow-up-mode" value="inline" onchange="renderSymptomCreateFollowUpMode()"> Create and link one manual action</label>
+        </fieldset>
+        <section class="symptom-follow-up-panel" id="symptom-create-existing-panel" hidden>
+          <label><span>Eligible action</span><select id="symptom-create-existing-action"></select></label>
+        </section>
+        <section class="symptom-follow-up-panel" id="symptom-create-inline-panel" hidden>
+          <label><span>What needs follow-through?</span><textarea id="symptom-create-follow-up-text" maxlength="1000" rows="3"></textarea></label>
+          <div class="symptom-form-grid">
+            <label><span>Owner</span><input id="symptom-create-follow-up-owner" maxlength="100"></label>
+            <label><span>Due date</span><input id="symptom-create-follow-up-due" type="date"></label>
+          </div>
+        </section>
+        <p class="form-error" id="symptom-details-error" role="alert" aria-live="polite"></p>
+        <div class="follow-up-dialog-actions">
+          <button class="button primary" id="symptom-details-submit" type="submit" disabled>Save episode</button>
+          <button class="button secondary" type="button" onclick="closeSymptomDialog()">Cancel</button>
+        </div>
+      </form>
+
+      <form id="symptom-resolve-form" class="follow-up-form" onsubmit="event.preventDefault();submitSymptomResolution()" hidden>
+        <p class="follow-up-dialog-copy" id="symptom-resolve-copy"></p>
+        <label><span>Resolution date (optional)</span><input id="symptom-resolved-date" maxlength="10" inputmode="numeric" placeholder="YYYY, YYYY-MM, or YYYY-MM-DD"></label>
+        <label class="symptom-resolution-confirm"><input id="symptom-resolve-confirm" type="checkbox" oninput="updateSymptomFormValidity()"> Resolving ends this episode. It cannot be reopened. If the symptom happens again, record a new episode.</label>
+        <p class="form-error" id="symptom-resolve-error" role="alert" aria-live="polite"></p>
+        <div class="follow-up-dialog-actions">
+          <button class="button primary" id="symptom-resolve-submit" type="submit" disabled>Resolve episode</button>
+          <button class="button secondary" type="button" onclick="closeSymptomDialog()">Cancel</button>
+        </div>
+      </form>
+
+      <form id="symptom-follow-up-form" class="follow-up-form" onsubmit="event.preventDefault();submitSymptomFollowUp()" hidden>
+        <p class="follow-up-dialog-copy" id="symptom-follow-up-copy"></p>
+        <fieldset class="symptom-follow-up-fieldset" id="symptom-existing-follow-up-modes">
+          <legend>Follow-up operation</legend>
+          <label><input type="radio" name="symptom-follow-up-mode" value="existing" checked onchange="renderSymptomFollowUpMode()"> Link an eligible existing action</label>
+          <label><input type="radio" name="symptom-follow-up-mode" value="inline" onchange="renderSymptomFollowUpMode()"> Create and link one manual action</label>
+        </fieldset>
+        <section class="symptom-follow-up-panel" id="symptom-existing-action-panel">
+          <label><span>Eligible action</span><select id="symptom-existing-action"></select></label>
+        </section>
+        <section class="symptom-follow-up-panel" id="symptom-inline-action-panel" hidden>
+          <label><span>What needs follow-through?</span><textarea id="symptom-follow-up-text" maxlength="1000" rows="3"></textarea></label>
+          <div class="symptom-form-grid">
+            <label><span>Owner</span><input id="symptom-follow-up-owner" maxlength="100"></label>
+            <label><span>Due date</span><input id="symptom-follow-up-due" type="date"></label>
+          </div>
+        </section>
+        <section class="symptom-linked-action-panel" id="symptom-linked-action-panel" hidden>
+          <strong>Linked follow-up</strong>
+          <p id="symptom-linked-action-copy"></p>
+          <p class="helper-text">Unlinking does not change the episode or the action lifecycle.</p>
+        </section>
+        <p class="form-error" id="symptom-follow-up-error" role="alert" aria-live="polite"></p>
+        <div class="follow-up-dialog-actions">
+          <button class="button primary" id="symptom-follow-up-submit" type="submit" disabled>Link follow-up</button>
+          <button class="button secondary danger" id="symptom-unlink-submit" type="button" onclick="submitSymptomUnlink()" hidden>Unlink follow-up</button>
+          <button class="button secondary" type="button" onclick="closeSymptomDialog()">Cancel</button>
+        </div>
+      </form>
+    </div>
+    <div class="follow-up-retry dialog-retry" id="symptom-dialog-retry" hidden>
+      <span id="symptom-dialog-retry-message">The request may not have reached the server. Review the unchanged request before retrying.</span>
+      <button class="button secondary" id="symptom-dialog-retry-button" type="button" onclick="retrySymptomIntent()">Retry unchanged request</button>
+    </div>
+  </section>
 </div>
 
 <div class="follow-up-overlay alert-resolution-overlay" id="alert-resolution-overlay" aria-hidden="true" onclick="closeAlertResolutionFromBackdrop(event)" inert>

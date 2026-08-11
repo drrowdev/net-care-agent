@@ -9,6 +9,17 @@ incremented when something user-visible or operationally meaningful changes.
 ## [Unreleased]
 
 ### Added
+- **Shared Today/Patient symptom episode workflow.** Today now summarizes every
+  current caregiver-entered episode and linked follow-up; Patient provides the
+  complete current/resolved lifecycle plus a separate read-only source
+  observation table. One responsive accessible dialog supports bounded add,
+  edit, resolve, existing-action link, atomic manual create-and-link, and unlink
+  operations without delete, reopen, lifecycle cascade, date defaulting, or
+  clinical inference. The SPA uses only the complete symptom projection,
+  validates all authority before rendering, preserves server order and
+  duplicates, displays the exact fixed safety statement, and enforces owned
+  CAS/replay/reload, endpoint-specific stale retention, PHI clearing, focus
+  safety, and 1280/360 overflow boundaries.
 - **Atomic follow-up creation for an existing symptom episode.**
   `PATCH /api/symptom-episodes/<episode_id>/follow-up` now accepts a third,
   mutually exclusive bounded manual follow-up variant alongside exact existing
@@ -16,7 +27,7 @@ incremented when something user-visible or operationally meaningful changes.
   action, records action and episode history against their exact IDs, advances
   workflow revision only, saves once, and replays the immutable generated
   action without duplication. Conflict or save failure commits no partial
-  state, and the caregiver UI remains deferred.
+  state.
 - **Durable symptom episode backend foundation.** Schema v11 keeps every legacy
   `symptoms[]` observation separate while adding explicit caregiver-maintained
   current/resolved `symptom_episodes[]`. Migration preserves IDs, duplicates,
@@ -30,8 +41,7 @@ incremented when something user-visible or operationally meaningful changes.
   or create and link one bounded manual follow-up; replay returns the original
   response, while conflict/save failure leaves neither partial record. Fixed
   non-diagnostic safety copy is returned without model/rules triage. Episodes
-  remain excluded from all model prompts, and the shared Patient/Today episode
-  UI is deferred.
+  remain excluded from all model prompts.
 - **Provenance-safe imaging longitudinal backend contract.** Schema v10
   deterministically backfills missing imaging IDs from source/span and full-row
   authority without rewriting existing IDs, wording, dates, unknown fields, list

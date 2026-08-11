@@ -250,11 +250,24 @@ and bounds before generating the action, creates both action and episode audit,
 and commits one save; conflict or save failure leaves neither action nor link.
 Exact replay returns the immutable original episode/action response. Existing
 visit/decision/alert action provenance is untouched, duplicate episode linkage
-is rejected, and neither lifecycle cascades. The legacy `/api/symptoms`,
-`/api/status`, SPA, and model contexts remain compatibility surfaces; only
-`symptoms[]` enters prompts. The existing-episode create-follow-up UI remains
-deferred.
-Static Patient/Today episode UI work is deferred.
+is rejected, and neither lifecycle cascades. The legacy `/api/symptoms` and
+`/api/status` payloads remain backend compatibility surfaces, but the SPA makes
+no symptom requests to them; only `symptoms[]` enters model prompts.
+
+One responsive client authority model renders current episodes on Today and
+the complete current/resolved/source-observation workflow on Patient. It
+validates the full projection, safety copy, lifecycle/link graph, tokens, and
+strict same-origin opaque source/evidence routes before replacing any state or
+DOM. Dedicated load/selection/dialog/mutation epochs and owned abort
+controllers reject late or replaced effects. Either revision advancing marks
+the retained projection stale/read-only and triggers an independent reload;
+unchanged revision pairs do not refetch. Only ambiguous endpoint transport may
+retain stale symptom PHI. Authorization invokes central PHI eviction, while
+hard symptom failures scrub symptom rows, dialogs, drafts, serialized retry
+bodies, focus, and hidden DOM without clearing unrelated Patient surfaces.
+Create/edit/resolve/link/create-and-link/unlink use one mutation owner, exact
+CAS authority, duplicate-submit suppression, byte-identical explicit replay,
+and authoritative projection reload before completion.
 
 Receipt correction/removal and whole-document undo are serialized profile
 mutations. Each request carries the receipt revision plus a canonical target
@@ -498,7 +511,7 @@ only with exact `APP_ORIGIN` or canonical HTTPS `WEBSITE_HOSTNAME`.
 | Decision | Why |
 |---|---|
 | JSON file, not Postgres | Single patient, single writer; auditable diffs; trivial backup. |
-| Vanilla SPA, not React | Caregiver runs the UI on a phone occasionally — zero build pipeline beats lighter frameworks. The split SPA uses one responsive Today/Patient/Questions/Activity shell on every screen size. `static/index.html` owns semantic markup and dialogs, `static/app.js` owns API state/rendering, biomarker projection/token/request/selection authority, receipt reconciliation, appointment and alert-resolution owners/epochs/drafts, focus/inert behavior, and load states, and `static/styles.css` provides the green/amber desktop rail, locally scrollable biomarker table and point charts, overflow-safe alert sheet, full-height phone appointment sheet, and fixed phone navigation. |
+| Vanilla SPA, not React | Caregiver runs the UI on a phone occasionally — zero build pipeline beats lighter frameworks. The split SPA uses one responsive Today/Patient/Questions/Activity shell on every screen size. `static/index.html` owns semantic markup and dialogs, `static/app.js` owns API state/rendering, symptom/imaging/biomarker projection and mutation authority, receipt reconciliation, appointment and alert-resolution owners/epochs/drafts, focus/inert behavior, and load states, and `static/styles.css` provides the desktop rail, locally scrollable authority tables, overflow-safe dialogs, full-height phone sheets, and fixed phone navigation. |
 | Flask + gunicorn, not FastAPI/Containers | App Service runs Python natively; no Docker needed; rapid `az webapp deploy` cycle. |
 | No MSAL | Single user. App Service Easy Auth gates hosted APIs except health/liveness. Local API bypass is explicit (`ALLOW_LOCAL_AUTH_BYPASS=1`), never implicit. |
 | Per-agent model env vars | Lets us downgrade exec_summary or chat to Haiku independently for cost without touching code. |

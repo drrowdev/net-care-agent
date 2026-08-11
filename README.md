@@ -288,14 +288,15 @@ state and withholds the prior clinical content.
 │   ├── cli.py            # `python net_agent.py {feed|digest|status|resolve-alert|update-profile}`
 │   └── tools/            # PubMed, ClinicalTrials.gov, biomarker trends + dispatcher
 ├── static/                 # Responsive caregiver workspace
-│   ├── index.html          # Shared four-view shell + document/chat/appointment dialogs
-│   ├── app.js              # API authority, imaging/biomarker explorers, jobs, feed, chat
-│   └── styles.css          # Responsive explorers, appointment sheet, and phone navigation
+│   ├── index.html          # Shared shell + symptom/document/chat/appointment dialogs
+│   ├── app.js              # API authority, symptom/imaging/biomarker workflows, jobs, chat
+│   └── styles.css          # Responsive workflows, dialogs, tables, and phone navigation
 ├── startup.sh            # gunicorn launcher (Azure App Service)
 ├── pyproject.toml        # Python deps + tooling config
 ├── .env.example          # Template for local secrets
 ├── tests/                # pytest suite (no network or API key needed)
 │   ├── test_imaging_timeline_ui.py # actual-function Node + live responsive browser coverage
+│   ├── test_symptom_workflow_ui.py # symptom authority + live lifecycle/responsive coverage
 │   └── test_symptom_episodes.py # backend identity/lifecycle/replay/projection contract
 └── docs/                 # Architecture & schema docs
     ├── architecture.md
@@ -379,8 +380,9 @@ and requires the caregiver to select exactly two current records and confirm the
 pair before showing raw facts side by side. It never uses `/api/status` or the
 legacy `/api/patient/evidence` imaging array as fallback authority.
 
-`GET /api/patient/symptom-episodes` is the authenticated, no-store backend
-contract for the next shared Patient/Today symptom workflow. Schema v11 keeps
+`GET /api/patient/symptom-episodes` is the sole symptom read authority behind
+the shared **Today → Current symptom episodes** summary and complete
+**Patient → Symptoms** workflow. Schema v11 keeps
 legacy `symptoms[]` observations separate and read-only in this contract; it
 never promotes a note/document mention into a current episode or assigns the
 document date as symptom onset. Every duplicate and unknown field remains in
@@ -395,8 +397,13 @@ link, exact unlink, or bounded manual-action create-and-link variants; these
 link-only workflow changes do not advance the clinical profile revision. Fixed
 safety copy states that NET/Care neither assesses urgency nor monitors
 symptoms. Episodes are excluded from all model prompts; legacy symptom context
-remains unchanged. The responsive episode UI, including existing-episode
-follow-up creation, is deliberately deferred.
+remains unchanged. The browser validates and atomically accepts the complete
+projection, preserves every server-ordered row, and never falls back to
+`/api/status` or the retired SPA `/api/symptoms` flow. Add, edit, resolve,
+existing-action link, manual create-and-link, and unlink use one responsive
+dialog model with exact token/revision authority, byte-identical explicit
+replay, conflict reload, endpoint-specific stale retention, and PHI-safe hard
+clearing.
 
 The orchestrator's behaviour is shaped by **clinical_judgments** captured from
 oncologist consultations. These act as hard constraints: anything the oncologist
@@ -411,6 +418,7 @@ The most common loops:
 |---|---|---|
 | Review current priorities | **Today** | Shows assessment freshness, the key concern, and task-oriented next actions before supporting detail |
 | Track durable caregiver follow-through | **Today** → **Follow-through** | Create safe caregiver tasks, accept only current generated actions, filter active/completed/cancelled history, edit owner/due date, and record typed completion or cancellation outcomes with explicit provenance; offline snapshots stay visible but read-only, and one mutation owns all related controls until authoritative reload finishes |
+| Record or review symptom episodes | **Today** → **Current symptom episodes** or **Patient** → **Symptoms** | Record durable caregiver-entered current episodes; Patient adds explicit fact editing, resolution, resolved review, read-only source observations, and atomic existing/manual follow-up linkage. The exact safety statement remains visible and the app makes no urgency, diagnosis, treatment, chronology, or monitoring inference |
 | See newly discovered research | **Today** → **Latest research additions** | Shows the exact net-new trials and papers from the latest digest or document analysis; opening either list highlights those records |
 | Add a clinical document | Header → **Add document** → paste text or upload file | Queued on the independent feed executor; PDF parsing is child-only, then intake → orchestrator → exec summary |
 | Reconcile or correct an import | **Activity** → select that feed job | Shows only that document's additions, old → new changes, conflicts, and evidence; correct/remove a value or safely undo the document's direct structured changes |

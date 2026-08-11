@@ -516,52 +516,61 @@ text. If a background run updates the assessment while the feedback editor is
 open, submission is disabled and the server rejects any stale request with
 `409`; close the editor, review the updated action, and reopen it.
 
-## 5a. Legacy symptom log and episode foundation
+## 5a. Record and review symptom episodes
 
-Open **Patient** and use the **Symptoms** card.
-This card remains the legacy observation log in the current release; the shared
-Patient/Today current/resolved episode interface is not yet exposed.
+**Today → Current symptom episodes** shows every current caregiver-maintained
+episode in server order and its linked follow-up state. Use **Record symptom
+episode** there, or open **Patient → Symptoms** for the complete workflow.
+Desktop and phone use the same projection, renderer, and dialogs.
 
-1. Type the symptom name (e.g. *nausea*).
-2. Pick a severity 1–5 (1 = mild, 5 = severe).
-3. Optionally add a short note.
-4. Click **Log symptom**. The entry is saved with `source="manual"` and today's date.
+In **Patient → Symptoms**:
 
-When the intake agent processes a doctor's note that mentions a
-patient-reported symptom (e.g. *"patient reports grade-2 diarrhea since
-starting lanreotide"*) it logs the symptom automatically with
-`source="ai"`. AI-captured entries get a small `AI` tag in the list. Each source
-mention is now retained independently, including duplicates. Because intake
-does not extract a per-symptom event date, the clinical symptom date remains
-unknown; a document date is retained only as separate source-document
-authority. No note, visit, import, or ingestion date is promoted to symptom
-onset.
+1. **Current episodes** contains durable caregiver-entered, unverified episodes.
+   Use **Edit episode facts** to correct only explicit fields, **Resolve episode**
+   for the sole current-to-resolved transition, and **Add follow-up** to link one
+   currently eligible action or atomically create and link one manual action.
+2. **Resolved episodes** retains completed episodes for review. Resolved facts
+   can be corrected where the server permits, but an episode cannot be reopened.
+   If the symptom happens again, use **Record episode** to create a new current
+   episode.
+3. **Source observations** is a separate read-only table of imported and legacy
+   mentions. Every row and duplicate remains independent in server order. A
+   mention is never promoted, merged, deduplicated, or treated as a current
+   episode.
 
-All downstream agents read the recent-symptoms block in the patient
-summary, so a fresh digest will surface side-effect-management
-literature if the orchestrator decides the legacy observations warrant it.
-Caregiver-maintained current/resolved episodes are deliberately excluded from
-model prompts.
+The episode form accepts exact symptom wording; optional
+Mild/Moderate/Severe selection and exact detail; reported subject; timing,
+frequency, triggers, and notes; and an optional `YYYY`, `YYYY-MM`, or
+`YYYY-MM-DD` onset. Resolution date is also optional and starts blank. The
+browser does not fill today's date, parse dates into another timezone, compare
+chronology, score severity, or infer urgency. Empty, missing, partial, and
+unknown server values remain visibly distinct.
 
-The backend now stores caregiver episodes separately with explicit wording,
-neutral mild/moderate/severe caregiver-entered severity plus optional exact
-detail, timing/frequency/triggers, explicit partial dates, current/resolved
-lifecycle, unverified provenance, and an optional durable caregiver follow-up.
-Creation can atomically link one eligible existing follow-up or create and link
-one bounded manual follow-up. The backend can also atomically create and link
-that same bounded manual follow-up later for an existing current or resolved
-episode. Exact retries cannot create a second action; mixed create/link/unlink
-requests and stale episode, action, projection, or revision authority are
-rejected without a partial save. Episode and follow-up lifecycles never change
-each other. The caregiver UI for this existing-episode operation remains
-deferred. The fixed safety statement for the future shared UI is:
+Follow-up modes are mutually exclusive. Linking selects one exact eligible
+action from the current projection. Manual creation sends one symptom mutation
+that creates and links the action atomically; it never creates an action first.
+Unlinking changes neither the episode lifecycle nor the action lifecycle.
+Existing visit, decision, and alert action provenance is preserved.
+
+Only an uncertain symptom-endpoint transport keeps the last accepted snapshot
+visible, marked stale and read-only. Use the explicit unchanged-request retry
+after an uncertain mutation; if the save succeeded but the authoritative
+reload is uncertain, the retry reloads only and does not resend the mutation.
+A conflict reloads the record for explicit review and never auto-submits a
+draft. Authorization failure clears all patient information from the browser;
+a malformed or hard symptom failure clears the symptom surfaces without
+removing unrelated Patient cards.
+
+The fixed statement is always visible:
 
 > NET/Care records what you enter but does not assess urgency or monitor
 > symptoms. Contact the treating team about symptoms or concerns. If you think
 > this may be a medical emergency, contact local emergency services.
 
 This is static information, not a symptom assessment, triage decision,
-treatment recommendation, or monitoring promise.
+treatment recommendation, or monitoring promise. Legacy observations remain
+available to the existing model context; caregiver-maintained episodes remain
+excluded from all model prompts.
 
 ## 5c. See newly discovered research
 

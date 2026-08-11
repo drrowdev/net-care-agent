@@ -21,6 +21,29 @@
   let imagingRequestController = null;
   let imagingProjectionState = 'idle';
   let imagingNetworkAmbiguous = false;
+  let symptomProjection = null;
+  let symptomResponseOwner = null;
+  let symptomProjectionState = 'idle';
+  let symptomNetworkAmbiguous = false;
+  let symptomLoadEpoch = 0;
+  let symptomSelectionEpoch = 0;
+  let symptomDialogEpoch = 0;
+  let symptomMutationEpoch = 0;
+  let symptomRequestController = null;
+  let symptomMutationController = null;
+  let symptomActiveTab = 'current';
+  let symptomDialogOpen = false;
+  let symptomDialogMode = null;
+  let selectedSymptomEpisodeId = null;
+  let selectedSymptomEpisodeToken = null;
+  let selectedSymptomActionId = null;
+  let selectedSymptomActionToken = null;
+  let symptomMutationOwner = null;
+  let symptomMutationPending = false;
+  let activeSymptomIntent = null;
+  let pendingSymptomIntent = null;
+  let pendingSymptomCompletion = null;
+  let symptomDrafts = new Map();
   let biomarkerProjection = null;
   let biomarkerResponseOwner = null;
   let selectedBiomarkerAnalyteId = null;
@@ -287,6 +310,14 @@
       typeof imagingRequestController !== 'undefined'
       && imagingRequestController !== null
     );
+    const symptomWasLoaded = (
+      typeof symptomProjection !== 'undefined'
+      && symptomProjection !== null
+    );
+    const symptomRequestWasActive = (
+      typeof symptomRequestController !== 'undefined'
+      && symptomRequestController !== null
+    );
     phiEpoch += 1;
     if (typeof markBiomarkerProjectionStale === 'function') {
       markBiomarkerProjectionStale(
@@ -306,6 +337,19 @@
         {
           abortRequest: options.preserveImagingRequest !== true,
           ownerPhiEpoch: phiEpoch,
+        },
+      );
+    }
+    if (
+      (symptomWasLoaded || symptomRequestWasActive)
+      && typeof markSymptomProjectionStale === 'function'
+    ) {
+      markSymptomProjectionStale(
+        'The patient record changed. Symptoms are read-only until the authoritative record reloads.',
+        {
+          abortRequest: options.preserveSymptomRequest !== true,
+          ownerPhiEpoch: phiEpoch,
+          preserveMutation: options.preserveSymptomMutation === true,
         },
       );
     }
@@ -349,6 +393,14 @@
       && typeof ensureImagingSeries === 'function'
     ) {
       Promise.resolve().then(() => ensureImagingSeries());
+    }
+    if (
+      options.preserveSymptomRequest !== true
+      && options.preserveSymptomMutation !== true
+      && (symptomWasLoaded || symptomRequestWasActive)
+      && typeof ensureSymptomEpisodes === 'function'
+    ) {
+      Promise.resolve().then(() => ensureSymptomEpisodes());
     }
     return true;
   }
@@ -410,6 +462,8 @@
         preserveAlertIntent: options.alertResolution === true,
         preserveBiomarkerRequest: options.biomarkerProjection === true,
         preserveImagingRequest: options.imagingProjection === true,
+        preserveSymptomRequest: options.symptomProjection === true,
+        preserveSymptomMutation: options.symptomMutation === true,
         deferConvergence: options.alertResolution === true,
         preserveVisitRecapExportOwner: options.preserveVisitRecapExportOwner === true,
       });
@@ -488,6 +542,32 @@
           && typeof ensureImagingSeries === 'function'
         ) {
           Promise.resolve().then(() => ensureImagingSeries());
+        }
+      }
+      const symptomNeedsWorkflowRefresh = (
+        options.symptomProjection !== true
+        && options.symptomMutation !== true
+        && !profileAdvanced
+        && (
+          (
+            typeof symptomProjection !== 'undefined'
+            && symptomProjection !== null
+          )
+          || (
+            typeof symptomRequestController !== 'undefined'
+            && symptomRequestController !== null
+          )
+        )
+      );
+      if (
+        symptomNeedsWorkflowRefresh
+        && typeof markSymptomProjectionStale === 'function'
+      ) {
+        markSymptomProjectionStale(
+          'The patient workflow changed. Symptoms are read-only until the authoritative record reloads.',
+        );
+        if (typeof ensureSymptomEpisodes === 'function') {
+          Promise.resolve().then(() => ensureSymptomEpisodes());
         }
       }
       if (
@@ -1009,19 +1089,15 @@
   function updateFormValidity() {
     const question = (document.getElementById('q-add-input')?.value || '').trim();
     const judgment = (document.getElementById('judgment-input')?.value || '').trim();
-    const symptom = (document.getElementById('sym-name')?.value || '').trim();
     const chat = (document.getElementById('chat-input')?.value || '').trim();
     const questionButton = document.getElementById('q-add-btn');
     const judgmentButton = document.getElementById('judgment-add-btn');
-    const symptomButton = document.getElementById('sym-add-btn');
     const chatButton = document.getElementById('chat-send-btn');
     if (questionButton) questionButton.disabled = !question;
     if (judgmentButton) judgmentButton.disabled = !judgment;
-    if (symptomButton) symptomButton.disabled = !symptom;
     if (chatButton && !chatButton.dataset.busy) chatButton.disabled = !chat;
     if (question) setFormError('q-form-error', '');
     if (judgment) setFormError('judgment-form-error', '');
-    if (symptom) setFormError('sym-form-error', '');
     if (chat) setFormError('chat-form-error', '');
     updateAppointmentFormValidity();
   }
@@ -1092,7 +1168,6 @@
       loadSummary(),
       loadQuestions(),
       loadJudgments(),
-      loadSymptoms(),
       loadPatientEvidence(),
       loadVisits(),
       loadFollowUps(),
@@ -1110,6 +1185,16 @@
       )
     ) {
       refreshes.push(ensureImagingSeries());
+    }
+    if (
+      symptomNetworkAmbiguous
+      || (
+        options.onlineRecovery !== true
+        && ['today', 'patient'].includes(activeView)
+        && !symptomProjection
+      )
+    ) {
+      refreshes.push(ensureSymptomEpisodes());
     }
     if (appointmentDialogOpen && activeAppointmentTab === 'recap') {
       refreshes.push(loadVisitRecap());
@@ -1139,16 +1224,17 @@
       loadFollowUps();
     } else if (name === 'patient') {
       loadStatus();
-      loadSymptoms();
       loadPatientEvidence();
       loadBiomarkerSeries();
       ensureImagingSeries();
+      ensureSymptomEpisodes();
     } else if (name === 'activity') {
       loadTasks();
     } else if (name === 'today') {
       loadStatus();
       loadSummary();
       loadFollowUps();
+      ensureSymptomEpisodes();
     }
     if (window.location.hash !== `#${name}`) {
       history.replaceState(null, '', `#${name}`);
@@ -1163,12 +1249,17 @@
   function refreshAfterVisibilityRestore() {
     if (document.hidden) return;
     const refreshes = [loadTasks(), loadStatus()];
-    if (activeView === 'today') refreshes.push(loadSummary(), loadFollowUps());
+    if (activeView === 'today') refreshes.push(loadSummary(), loadFollowUps(), ensureSymptomEpisodes());
     if (activeView === 'questions' || appointmentDialogOpen) {
       refreshes.push(loadVisits(), loadFollowUps(), loadQuestions());
     }
     if (activeView === 'patient') {
-      refreshes.push(loadBiomarkerSeries(), loadPatientEvidence(), ensureImagingSeries());
+      refreshes.push(
+        loadBiomarkerSeries(),
+        loadPatientEvidence(),
+        ensureImagingSeries(),
+        ensureSymptomEpisodes(),
+      );
     }
     if (appointmentDialogOpen && activeAppointmentTab === 'recap') {
       refreshes.push(loadVisitRecap());
@@ -2846,6 +2937,15 @@
     latestProfileRevision = null;
     latestResearchUpdate = null;
     patientEvidence = null;
+    if (typeof clearSymptomProjection === 'function') {
+      clearSymptomProjection({
+        state: 'error',
+        statusLabel: 'Patient data unavailable',
+        message: 'Symptom data was cleared because current authority is unavailable.',
+        retry: false,
+        fullEviction: true,
+      });
+    }
     if (typeof clearImagingProjection === 'function') {
       clearImagingProjection({
         state: 'error',
@@ -2956,7 +3056,6 @@
     clear('alert-resolution-result-provenance');
     clear('alert-resolution-result-links');
     clear('judgments-list');
-    clear('symptoms-list');
     clear('summary-status-inline');
     clear('summary-updated');
     clear('summary-body', '<div class="summary-empty">Patient assessment unavailable.</div>');
@@ -3090,7 +3189,7 @@
     const chatInput = document.getElementById('chat-input');
     if (chatInput) chatInput.value = '';
     for (const id of [
-      'judgment-input', 'q-add-input', 'sym-name', 'sym-note',
+      'judgment-input', 'q-add-input',
       'visit-create-title', 'visit-create-date', 'visit-create-time',
       'visit-create-clinician', 'visit-create-location',
       'visit-edit-title', 'visit-edit-date', 'visit-edit-time',
@@ -3107,8 +3206,6 @@
       const input = document.getElementById(id);
       if (input) input.value = '';
     }
-    const severity = document.getElementById('sym-sev');
-    if (severity) severity.value = '';
     for (const id of ['visit-manual-category', 'visit-manual-priority']) {
       const select = document.getElementById(id);
       if (select) select.value = '';
@@ -4650,96 +4747,2042 @@
     }
   }
 
-  // ── Symptoms ─────────────────────────────────────────────────────────────
-  async function loadSymptoms() {
-    const request = capturePatientRequest();
+  // ── Symptom episodes and source observations ─────────────────────────────
+  const SYMPTOM_SAFETY_GUIDANCE =
+    'NET/Care records what you enter but does not assess urgency or monitor symptoms. '
+    + 'Contact the treating team about symptoms or concerns. If you think this may be a '
+    + 'medical emergency, contact local emergency services.';
+  const SYMPTOM_MAX_OBSERVATIONS = 2000;
+  const SYMPTOM_MAX_EPISODES = 1000;
+  const SYMPTOM_MAX_ACTIONS = 500;
+  const SYMPTOM_MAX_AUTHORITY_CHARS = 4000000;
+  const SYMPTOM_DATE_PRECISIONS = new Set(['day', 'month', 'year', 'unknown']);
+  const SYMPTOM_OBSERVATION_DATE_KINDS = new Set(['clinical', 'legacy_unknown', 'unknown']);
+  const SYMPTOM_EPISODE_DATE_KINDS = new Set(['caregiver_entered', 'unknown']);
+  const SYMPTOM_SEVERITIES = new Set(['mild', 'moderate', 'severe']);
+  const SYMPTOM_REPORTED_SUBJECTS = new Set(['patient', 'caregiver', 'unspecified']);
+  const SYMPTOM_OBSERVATION_PROVENANCE = new Set([
+    'caregiver_corrected_unverified',
+    'source_verified',
+    'source_unverified',
+    'legacy_caregiver_entered_unverified',
+    'legacy_model_extracted_unverified',
+    'legacy_unknown',
+  ]);
+  const SYMPTOM_ACTION_STATUSES = new Set(['open', 'in_progress', 'completed', 'cancelled']);
+
+  function symptomPlainObject(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+  }
+
+  function symptomHasExactKeys(value, keys, optional = []) {
+    if (!symptomPlainObject(value)) return false;
+    const actual = Object.keys(value).sort();
+    const required = new Set(keys);
+    const allowed = new Set([...keys, ...optional]);
+    return keys.every(key => Object.prototype.hasOwnProperty.call(value, key))
+      && actual.every(key => allowed.has(key))
+      && actual.length >= required.size;
+  }
+
+  function symptomBoundedString(value, maximum, nullable = false) {
+    if (nullable && value == null) return true;
+    return typeof value === 'string' && value.length <= maximum;
+  }
+
+  function symptomObservationUrlParts(value, expectedAction) {
+    if (typeof value !== 'string' || !value || value.length > 220 || value.includes('\\')) return null;
+    const match = value.match(
+      /^\/api\/patient\/symptom-episodes\/observations\/(symref_[0-9a-f]{64})\/(source|evidence)$/,
+    );
+    if (!match || match[2] !== expectedAction) return null;
     try {
-      const r = await fetch('/api/symptoms');
-      const list = await readJsonResponse(r);
-      if (!authorizePatientResponse(request, list).accepted) return [];
-      renderSymptoms(list);
-      reportLoadSuccess('symptoms');
-      return list;
-    } catch (e) {
-      if (!patientRequestIsCurrent(request)) return [];
-      if (shouldEvictClientPhi(e)) {
-        evictClientPhi(e);
-        return [];
+      const base = document.baseURI || window.location.href || window.location.origin;
+      const pageUrl = new URL(base);
+      const url = new URL(value, base);
+      if (
+        !/^(https?):$/.test(url.protocol)
+        || url.origin !== pageUrl.origin
+        || url.username
+        || url.password
+        || url.search
+        || url.hash
+        || url.pathname !== value
+      ) return null;
+      return { href: value, recordRef: match[1], action: match[2] };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function safeSymptomObservationUrl(value, expectedAction) {
+    return symptomObservationUrlParts(value, expectedAction)?.href || '';
+  }
+
+  function symptomDateAuthorityIsValid(date, episode = false) {
+    const expectedKeys = episode
+      ? ['value', 'precision', 'kind']
+      : [
+        'value',
+        'precision',
+        'kind',
+        'source_document_date',
+        'source_document_date_precision',
+      ];
+    if (
+      !symptomHasExactKeys(date, expectedKeys)
+      || !symptomBoundedString(date.value, 32, true)
+      || !SYMPTOM_DATE_PRECISIONS.has(date.precision)
+      || !(episode ? SYMPTOM_EPISODE_DATE_KINDS : SYMPTOM_OBSERVATION_DATE_KINDS).has(date.kind)
+      || (date.precision === 'unknown' && date.kind !== 'unknown')
+    ) return false;
+    const derivedPrecision = symptomDatePrecision(date.value);
+    if (date.precision !== derivedPrecision) return false;
+    if (!episode && (
+      !symptomBoundedString(date.source_document_date, 32, true)
+      || !SYMPTOM_DATE_PRECISIONS.has(date.source_document_date_precision)
+      || date.source_document_date_precision !== symptomDatePrecision(date.source_document_date)
+    )) return false;
+    return true;
+  }
+
+  function symptomActionIsValid(action, eligible = false) {
+    return symptomHasExactKeys(action, ['id', 'token', 'text', 'status', 'owner', 'due_date'])
+      && symptomBoundedString(action.id, 200)
+      && Boolean(action.id)
+      && symptomBoundedString(action.token, 200)
+      && Boolean(action.token)
+      && symptomBoundedString(action.text, 1000)
+      && Boolean(action.text.trim())
+      && SYMPTOM_ACTION_STATUSES.has(action.status)
+      && (!eligible || ['open', 'in_progress'].includes(action.status))
+      && symptomBoundedString(action.owner, 200, true)
+      && symptomBoundedString(action.due_date, 10, true);
+  }
+
+  function symptomObservationIsValid(observation, refs) {
+    if (
+      !symptomHasExactKeys(observation, [
+        'id',
+        'token',
+        'date',
+        'symptom',
+        'severity',
+        'note',
+        'related_treatment',
+        'provenance',
+      ])
+      || !symptomBoundedString(observation.id, 200)
+      || !observation.id
+      || !symptomBoundedString(observation.token, 200)
+      || !observation.token
+      || !symptomDateAuthorityIsValid(observation.date)
+      || !symptomBoundedString(observation.symptom, 1000, true)
+      || (
+        observation.severity != null
+        && (
+          !Number.isSafeInteger(observation.severity)
+          || observation.severity < 1
+          || observation.severity > 5
+        )
+      )
+      || !symptomBoundedString(observation.note, 50000, true)
+      || !symptomBoundedString(observation.related_treatment, 5000, true)
+      || !symptomHasExactKeys(observation.provenance, [
+        'status',
+        'label',
+        'source_url',
+        'evidence_url',
+      ])
+      || !SYMPTOM_OBSERVATION_PROVENANCE.has(observation.provenance.status)
+      || !symptomBoundedString(observation.provenance.label, 200)
+      || !observation.provenance.label
+      || !symptomBoundedString(observation.provenance.source_url, 220, true)
+      || !symptomBoundedString(observation.provenance.evidence_url, 220, true)
+    ) return false;
+    const source = observation.provenance.source_url == null
+      ? null
+      : symptomObservationUrlParts(observation.provenance.source_url, 'source');
+    const evidence = observation.provenance.evidence_url == null
+      ? null
+      : symptomObservationUrlParts(observation.provenance.evidence_url, 'evidence');
+    if (
+      (observation.provenance.source_url != null && !source)
+      || (observation.provenance.evidence_url != null && !evidence)
+      || (evidence && (!source || evidence.recordRef !== source.recordRef))
+      || (source && refs.has(source.recordRef))
+    ) return false;
+    if (source) refs.add(source.recordRef);
+    return true;
+  }
+
+  function symptomEpisodeIsValid(episode) {
+    if (
+      !symptomHasExactKeys(episode, [
+        'id',
+        'token',
+        'status',
+        'symptom_text',
+        'severity',
+        'reported_subject',
+        'timing_text',
+        'frequency_text',
+        'triggers_text',
+        'notes',
+        'onset',
+        'resolution',
+        'provenance',
+        'follow_up',
+        'created_at',
+        'updated_at',
+      ])
+      || !/^syme_[0-9a-f]{32}$/.test(episode.id)
+      || !symptomBoundedString(episode.token, 200)
+      || !episode.token
+      || !['current', 'resolved'].includes(episode.status)
+      || !symptomBoundedString(episode.symptom_text, 1000)
+      || !episode.symptom_text.trim()
+      || !symptomHasExactKeys(episode.severity, ['level', 'detail', 'authority'])
+      || (
+        episode.severity.level != null
+        && !SYMPTOM_SEVERITIES.has(episode.severity.level)
+      )
+      || !symptomBoundedString(episode.severity.detail, 500, true)
+      || episode.severity.authority !== 'caregiver_entered_unverified'
+      || !SYMPTOM_REPORTED_SUBJECTS.has(episode.reported_subject)
+      || !symptomBoundedString(episode.timing_text, 2000, true)
+      || !symptomBoundedString(episode.frequency_text, 2000, true)
+      || !symptomBoundedString(episode.triggers_text, 2000, true)
+      || !symptomBoundedString(episode.notes, 10000, true)
+      || !symptomDateAuthorityIsValid(episode.onset, true)
+      || !symptomHasExactKeys(episode.provenance, ['status', 'label'])
+      || episode.provenance.status !== 'caregiver_entered_unverified'
+      || episode.provenance.label !== 'Caregiver-entered · unverified'
+      || !symptomBoundedString(episode.created_at, 64)
+      || !symptomBoundedString(episode.updated_at, 64)
+      || (episode.follow_up != null && !symptomActionIsValid(episode.follow_up))
+    ) return false;
+    if (episode.status === 'current') return episode.resolution === null;
+    return symptomHasExactKeys(episode.resolution, [
+      'value',
+      'precision',
+      'kind',
+      'recorded_at',
+    ])
+      && symptomDateAuthorityIsValid({
+        value: episode.resolution.value,
+        precision: episode.resolution.precision,
+        kind: episode.resolution.kind,
+      }, true)
+      && symptomBoundedString(episode.resolution.recorded_at, 64);
+  }
+
+  function symptomProjectionPayloadIsValid(data) {
+    if (
+      !symptomHasExactKeys(data, [
+        'profile_revision',
+        'workflow_revision',
+        'projection_token',
+        'observation_count',
+        'episode_count',
+        'observations',
+        'episodes',
+        'eligible_actions',
+        'safety_guidance',
+      ])
+      || !Number.isSafeInteger(data.profile_revision)
+      || data.profile_revision < 0
+      || !Number.isSafeInteger(data.workflow_revision)
+      || data.workflow_revision < 0
+      || !symptomBoundedString(data.projection_token, 200)
+      || !data.projection_token
+      || !Number.isSafeInteger(data.observation_count)
+      || data.observation_count < 0
+      || data.observation_count > SYMPTOM_MAX_OBSERVATIONS
+      || !Number.isSafeInteger(data.episode_count)
+      || data.episode_count < 0
+      || data.episode_count > SYMPTOM_MAX_EPISODES
+      || !Array.isArray(data.observations)
+      || data.observations.length !== data.observation_count
+      || !Array.isArray(data.episodes)
+      || data.episodes.length !== data.episode_count
+      || !Array.isArray(data.eligible_actions)
+      || data.eligible_actions.length > SYMPTOM_MAX_ACTIONS
+      || !symptomHasExactKeys(data.safety_guidance, ['kind', 'text'])
+      || data.safety_guidance.kind !== 'fixed_non_diagnostic'
+      || data.safety_guidance.text !== SYMPTOM_SAFETY_GUIDANCE
+    ) return false;
+
+    const observationIds = new Set();
+    const observationTokens = new Set();
+    const episodeIds = new Set();
+    const episodeTokens = new Set();
+    const actionIds = new Set();
+    const actionTokens = new Set();
+    const linkedActionIds = new Set();
+    const refs = new Set();
+    for (const observation of data.observations) {
+      if (
+        !symptomObservationIsValid(observation, refs)
+        || observationIds.has(observation.id)
+        || observationTokens.has(observation.token)
+      ) return false;
+      observationIds.add(observation.id);
+      observationTokens.add(observation.token);
+    }
+    for (const episode of data.episodes) {
+      if (
+        !symptomEpisodeIsValid(episode)
+        || episodeIds.has(episode.id)
+        || episodeTokens.has(episode.token)
+      ) return false;
+      episodeIds.add(episode.id);
+      episodeTokens.add(episode.token);
+      if (episode.follow_up) {
+        if (
+          linkedActionIds.has(episode.follow_up.id)
+          || actionIds.has(episode.follow_up.id)
+          || actionTokens.has(episode.follow_up.token)
+        ) return false;
+        linkedActionIds.add(episode.follow_up.id);
+        actionIds.add(episode.follow_up.id);
+        actionTokens.add(episode.follow_up.token);
       }
-      document.getElementById('symptoms-list').innerHTML = loadFailureMarkup('Symptoms', 'loadSymptoms()');
-      reportLoadError('symptoms', e);
-      return [];
+    }
+    for (const action of data.eligible_actions) {
+      if (
+        !symptomActionIsValid(action, true)
+        || actionIds.has(action.id)
+        || actionTokens.has(action.token)
+      ) return false;
+      actionIds.add(action.id);
+      actionTokens.add(action.token);
+    }
+    return JSON.stringify(data).length <= SYMPTOM_MAX_AUTHORITY_CHARS;
+  }
+
+  function symptomMutationPayloadIsValid(data) {
+    if (
+      !symptomHasExactKeys(
+        data,
+        ['episode', 'follow_up', 'workflow_revision', 'profile_revision'],
+        ['idempotent_replay'],
+      )
+      || !Number.isSafeInteger(data.profile_revision)
+      || data.profile_revision < 0
+      || !Number.isSafeInteger(data.workflow_revision)
+      || data.workflow_revision < 0
+      || !symptomEpisodeIsValid(data.episode)
+      || (data.follow_up != null && !symptomActionIsValid(data.follow_up))
+      || (
+        data.follow_up == null
+          ? data.episode.follow_up !== null
+          : (
+            data.episode.follow_up == null
+            || data.follow_up.id !== data.episode.follow_up.id
+            || data.follow_up.token !== data.episode.follow_up.token
+          )
+      )
+      || (
+        Object.prototype.hasOwnProperty.call(data, 'idempotent_replay')
+        && data.idempotent_replay !== true
+      )
+    ) return false;
+    return true;
+  }
+
+  function newSymptomResponseOwner(projection, ownerPhiEpoch = phiEpoch) {
+    return {
+      requestPhiEpoch: ownerPhiEpoch,
+      loadEpoch: symptomLoadEpoch,
+      profileRevision: projection.profile_revision,
+      workflowRevision: projection.workflow_revision,
+      projectionToken: projection.projection_token,
+      observationTokens: new Map(
+        projection.observations.map(observation => [observation.id, observation.token]),
+      ),
+      episodeTokens: new Map(
+        projection.episodes.map(episode => [episode.id, episode.token]),
+      ),
+      eligibleActionTokens: new Map(
+        projection.eligible_actions.map(action => [action.id, action.token]),
+      ),
+    };
+  }
+
+  function symptomResponseOwnerIsCurrent(owner = symptomResponseOwner) {
+    if (
+      !owner
+      || owner !== symptomResponseOwner
+      || owner.requestPhiEpoch !== phiEpoch
+      || owner.loadEpoch !== symptomLoadEpoch
+      || !symptomProjection
+      || owner.projectionToken !== symptomProjection.projection_token
+      || owner.profileRevision !== symptomProjection.profile_revision
+      || owner.workflowRevision !== symptomProjection.workflow_revision
+      || owner.observationTokens.size !== symptomProjection.observations.length
+      || owner.episodeTokens.size !== symptomProjection.episodes.length
+      || owner.eligibleActionTokens.size !== symptomProjection.eligible_actions.length
+      || symptomProjection.observations.some(
+        observation => owner.observationTokens.get(observation.id) !== observation.token,
+      )
+      || symptomProjection.episodes.some(
+        episode => owner.episodeTokens.get(episode.id) !== episode.token,
+      )
+      || symptomProjection.eligible_actions.some(
+        action => owner.eligibleActionTokens.get(action.id) !== action.token,
+      )
+    ) return false;
+    if (symptomProjectionState === 'stale') return true;
+    const currentProfile = normalizedRevision(latestProfileRevision);
+    const currentWorkflow = normalizedRevision(workflowRevision);
+    return (
+      (!Number.isSafeInteger(currentProfile) || currentProfile === owner.profileRevision)
+      && (!Number.isSafeInteger(currentWorkflow) || currentWorkflow === owner.workflowRevision)
+    );
+  }
+
+  function symptomElement(tag, className = '', text = null) {
+    const element = document.createElement(tag);
+    if (className) element.className = className;
+    if (text != null) element.textContent = text;
+    return element;
+  }
+
+  function symptomScalar(value) {
+    if (value == null) return 'Not recorded';
+    return value === '' ? 'Empty string recorded' : String(value);
+  }
+
+  function symptomDatePresentation(date, label) {
+    const kind = {
+      caregiver_entered: `${label} entered by caregiver`,
+      clinical: 'Recorded symptom-event date',
+      legacy_unknown: 'Legacy date; symptom-event authority not confirmed',
+      unknown: `${label} authority unknown`,
+    }[date.kind] || `${label} authority unknown`;
+    return `${symptomScalar(date.value)} · ${date.precision} precision · ${kind}`;
+  }
+
+  function symptomSeverityPresentation(episode) {
+    const label = {
+      mild: 'Mild',
+      moderate: 'Moderate',
+      severe: 'Severe',
+    }[episode.severity.level] || 'Not recorded';
+    return episode.severity.detail == null
+      ? label
+      : `${label} · ${symptomScalar(episode.severity.detail)}`;
+  }
+
+  function symptomReportedSubjectLabel(value) {
+    return {
+      patient: 'Patient',
+      caregiver: 'Caregiver',
+      unspecified: 'Not specified',
+    }[value];
+  }
+
+  function setSymptomFreshness(state, text) {
+    for (const id of ['today-symptom-freshness', 'patient-symptom-freshness']) {
+      const node = document.getElementById(id);
+      if (!node) continue;
+      node.className = `symptom-freshness ${safeClassToken(state, 'error')}`;
+      node.textContent = text;
     }
   }
 
-  function renderSymptoms(symptoms) {
-    const wrap = document.getElementById('symptoms-list');
-    if (!wrap) return;
-    if (!symptoms.length) {
-      wrap.innerHTML = '<div class="sym-empty">No symptoms logged.</div>';
+  function setSymptomStatus(message, state = '', retry = false) {
+    for (const id of ['today-symptom-status', 'patient-symptom-status']) {
+      const node = document.getElementById(id);
+      if (!node) continue;
+      node.className = `symptom-status${state ? ` ${safeClassToken(state)}` : ''}`;
+      node.textContent = message || '';
+    }
+    const retryNode = document.getElementById('symptom-retry');
+    if (retryNode) retryNode.hidden = !retry;
+    const refresh = document.getElementById('symptom-refresh-button');
+    if (refresh) refresh.disabled = symptomRequestController !== null;
+  }
+
+  function symptomEpisodeById(episodeId) {
+    return symptomProjection?.episodes.find(episode => episode.id === episodeId) || null;
+  }
+
+  function symptomActionById(actionId) {
+    if (!actionId || !symptomProjection) return null;
+    const eligible = symptomProjection.eligible_actions.find(action => action.id === actionId);
+    if (eligible) return eligible;
+    for (const episode of symptomProjection.episodes) {
+      if (episode.follow_up?.id === actionId) return episode.follow_up;
+    }
+    return null;
+  }
+
+  function symptomAppendFact(parent, label, value) {
+    const item = symptomElement('div', 'symptom-fact');
+    item.append(
+      symptomElement('dt', '', label),
+      symptomElement('dd', value == null || value === '' ? 'symptom-missing' : '', symptomScalar(value)),
+    );
+    parent.append(item);
+  }
+
+  function symptomEpisodeCard(episode, compact = false) {
+    const card = symptomElement('article', `symptom-episode-card${compact ? ' compact' : ''}`);
+    const heading = symptomElement('div', 'symptom-episode-heading');
+    heading.append(
+      symptomElement('span', `symptom-lifecycle ${episode.status}`, episode.status === 'current'
+        ? 'Current episode'
+        : 'Resolved episode'),
+      symptomElement('span', 'symptom-provenance', episode.provenance.label),
+    );
+    const title = symptomElement('h3', '', episode.symptom_text);
+    const summary = symptomElement('dl', 'symptom-episode-summary');
+    symptomAppendFact(summary, 'Severity entered by caregiver', symptomSeverityPresentation(episode));
+    symptomAppendFact(
+      summary,
+      'Reported subject entered by caregiver',
+      symptomReportedSubjectLabel(episode.reported_subject),
+    );
+    symptomAppendFact(summary, 'Onset date authority', symptomDatePresentation(episode.onset, 'Onset date'));
+    if (episode.resolution) {
+      symptomAppendFact(
+        summary,
+        'Resolution date authority',
+        symptomDatePresentation(episode.resolution, 'Resolution date'),
+      );
+    }
+    if (!compact) {
+      symptomAppendFact(summary, 'Timing', episode.timing_text);
+      symptomAppendFact(summary, 'Frequency', episode.frequency_text);
+      symptomAppendFact(summary, 'Triggers', episode.triggers_text);
+      symptomAppendFact(summary, 'Notes', episode.notes);
+    }
+    card.append(heading, title, summary);
+    if (episode.follow_up) {
+      const followUp = symptomElement('div', 'symptom-linked-follow-up');
+      followUp.append(
+        symptomElement('strong', '', 'Linked caregiver follow-up'),
+        symptomElement('p', '', episode.follow_up.text),
+        symptomElement(
+          'span',
+          '',
+          `${episode.follow_up.status} · ${symptomScalar(episode.follow_up.owner)} · due ${symptomScalar(episode.follow_up.due_date)}`,
+        ),
+      );
+      card.append(followUp);
+    }
+    if (!compact) {
+      const actions = symptomElement('div', 'symptom-episode-actions');
+      const edit = symptomElement('button', 'button secondary', 'Edit episode facts');
+      edit.type = 'button';
+      edit.disabled = symptomProjectionState !== 'current';
+      edit.addEventListener('click', () => openSymptomEditDialog(edit, episode.id));
+      actions.append(edit);
+      if (episode.status === 'current') {
+        const resolve = symptomElement('button', 'button secondary', 'Resolve episode');
+        resolve.type = 'button';
+        resolve.disabled = symptomProjectionState !== 'current';
+        resolve.addEventListener('click', () => openSymptomResolveDialog(resolve, episode.id));
+        actions.append(resolve);
+      }
+      const followUp = symptomElement('button', 'button secondary', episode.follow_up
+        ? 'Review linked follow-up'
+        : 'Add follow-up');
+      followUp.type = 'button';
+      followUp.disabled = symptomProjectionState !== 'current';
+      followUp.addEventListener('click', () => openSymptomFollowUpDialog(followUp, episode.id));
+      actions.append(followUp);
+      card.append(actions);
+    }
+    return card;
+  }
+
+  function symptomObservationSourceDetails(observation) {
+    const details = symptomElement('details', 'symptom-source-details');
+    details.append(symptomElement('summary', '', 'Source details'));
+    const body = symptomElement('div');
+    body.append(
+      symptomElement('p', '', `${observation.provenance.label} · ${observation.provenance.status}`),
+      symptomElement(
+        'p',
+        '',
+        `Source document date (not symptom chronology): ${
+          symptomScalar(observation.date.source_document_date)
+        } · ${observation.date.source_document_date_precision} precision`,
+      ),
+    );
+    const links = symptomElement('div', 'symptom-source-actions');
+    const evidenceUrl = safeSymptomObservationUrl(
+      observation.provenance.evidence_url,
+      'evidence',
+    );
+    const sourceUrl = safeSymptomObservationUrl(observation.provenance.source_url, 'source');
+    if (evidenceUrl) {
+      const link = symptomElement('a', '', 'Open exact span');
+      link.href = evidenceUrl;
+      link.target = '_blank';
+      link.rel = 'noopener';
+      links.append(link);
+    }
+    if (sourceUrl) {
+      const link = symptomElement('a', '', 'Open source');
+      link.href = sourceUrl;
+      link.target = '_blank';
+      link.rel = 'noopener';
+      links.append(link);
+    }
+    if (!links.childElementCount) {
+      links.append(symptomElement('span', 'symptom-missing', 'No source link supplied'));
+    }
+    body.append(links);
+    details.append(body);
+    return details;
+  }
+
+  function symptomObservationRow(observation) {
+    const row = symptomElement('tr');
+    const symptomCell = symptomElement('td');
+    symptomCell.append(symptomElement(
+      'strong',
+      observation.symptom == null || observation.symptom === '' ? 'symptom-missing' : '',
+      symptomScalar(observation.symptom),
+    ));
+    const severityCell = symptomElement(
+      'td',
+      observation.severity == null ? 'symptom-missing' : '',
+      symptomScalar(observation.severity),
+    );
+    const dateCell = symptomElement('td');
+    dateCell.append(symptomElement(
+      'span',
+      '',
+      symptomDatePresentation(observation.date, 'Symptom date'),
+    ));
+    const contextCell = symptomElement('td');
+    const context = symptomElement('dl', 'symptom-observation-context');
+    symptomAppendFact(context, 'Note', observation.note);
+    symptomAppendFact(context, 'Related treatment wording', observation.related_treatment);
+    contextCell.append(context);
+    const sourceCell = symptomElement('td');
+    sourceCell.append(
+      symptomElement('strong', '', observation.provenance.label),
+      symptomObservationSourceDetails(observation),
+    );
+    row.append(symptomCell, severityCell, dateCell, contextCell, sourceCell);
+    return row;
+  }
+
+  function updateSymptomControls() {
+    const mutable = (
+      ['current', 'empty'].includes(symptomProjectionState)
+      && symptomResponseOwnerIsCurrent()
+      && !symptomMutationPending
+      && !pendingSymptomCompletion
+    );
+    for (const id of ['today-symptom-add', 'patient-symptom-add']) {
+      const button = document.getElementById(id);
+      if (button) button.disabled = !mutable;
+    }
+    document.querySelectorAll(
+      '#symptom-workspace .symptom-episode-actions button, #symptom-dialog button, '
+      + '#symptom-dialog input, #symptom-dialog textarea, #symptom-dialog select',
+    ).forEach(control => {
+      if (symptomMutationPending) {
+        if (!('symptomWasDisabled' in control.dataset)) {
+          control.dataset.symptomWasDisabled = String(control.disabled);
+        }
+        control.disabled = true;
+      } else if ('symptomWasDisabled' in control.dataset) {
+        control.disabled = control.dataset.symptomWasDisabled === 'true';
+        delete control.dataset.symptomWasDisabled;
+      }
+    });
+    if (!symptomMutationPending) updateSymptomFormValidity();
+  }
+
+  function renderSymptomProjection(owner = symptomResponseOwner) {
+    if (!symptomResponseOwnerIsCurrent(owner)) return false;
+    const current = symptomProjection.episodes.filter(episode => episode.status === 'current');
+    const resolved = symptomProjection.episodes.filter(episode => episode.status === 'resolved');
+    const today = document.getElementById('today-symptom-list');
+    const currentList = document.getElementById('patient-current-symptom-list');
+    const resolvedList = document.getElementById('patient-resolved-symptom-list');
+    const observations = document.getElementById('symptom-observation-table-body');
+    if (today) {
+      today.replaceChildren(...(
+        current.length
+          ? current.map(episode => symptomEpisodeCard(episode, true))
+          : [symptomElement('div', 'empty-state', 'No current symptom episodes are recorded.')]
+      ));
+    }
+    if (currentList) {
+      currentList.replaceChildren(...(
+        current.length
+          ? current.map(episode => symptomEpisodeCard(episode))
+          : [symptomElement('div', 'empty-state', 'No current symptom episodes are recorded.')]
+      ));
+    }
+    if (resolvedList) {
+      resolvedList.replaceChildren(...(
+        resolved.length
+          ? resolved.map(episode => symptomEpisodeCard(episode))
+          : [symptomElement('div', 'empty-state', 'No resolved symptom episodes are recorded.')]
+      ));
+    }
+    if (observations) {
+      if (symptomProjection.observations.length) {
+        observations.replaceChildren(...symptomProjection.observations.map(symptomObservationRow));
+      } else {
+        const row = symptomElement('tr');
+        const cell = symptomElement('td');
+        cell.colSpan = 5;
+        cell.append(symptomElement('div', 'empty-state', 'No source observations are recorded.'));
+        row.append(cell);
+        observations.replaceChildren(row);
+      }
+    }
+    const counts = {
+      current: current.length,
+      resolved: resolved.length,
+      observations: symptomProjection.observations.length,
+    };
+    Object.entries(counts).forEach(([name, count]) => {
+      const node = document.getElementById(`symptom-count-${name}`);
+      if (node) node.textContent = String(count);
+    });
+    if (symptomProjectionState === 'stale') {
+      setSymptomFreshness('stale', 'Stale snapshot');
+      setSymptomStatus(
+        'Stale snapshot · read-only until the authoritative symptom record reloads.',
+        'stale',
+        true,
+      );
+    } else {
+      symptomProjectionState = symptomProjection.episodes.length
+        || symptomProjection.observations.length
+        ? 'current'
+        : 'empty';
+      setSymptomFreshness('current', symptomProjectionState === 'empty' ? 'Current · empty' : 'Current');
+      setSymptomStatus(
+        `Authoritative symptom record loaded · patient revision ${
+          symptomProjection.profile_revision
+        } · workflow revision ${symptomProjection.workflow_revision}.`,
+        'current',
+        false,
+      );
+    }
+    selectSymptomTab(symptomActiveTab, false);
+    updateSymptomControls();
+    return true;
+  }
+
+  function renderSymptomUnavailable(message, state, statusLabel, retry = true) {
+    const today = document.getElementById('today-symptom-list');
+    const current = document.getElementById('patient-current-symptom-list');
+    const resolved = document.getElementById('patient-resolved-symptom-list');
+    if (today) today.replaceChildren(symptomElement('div', 'empty-state', message));
+    if (current) current.replaceChildren(symptomElement('div', 'empty-state', message));
+    if (resolved) resolved.replaceChildren();
+    const table = document.getElementById('symptom-observation-table-body');
+    if (table) {
+      const row = symptomElement('tr');
+      const cell = symptomElement('td');
+      cell.colSpan = 5;
+      cell.append(symptomElement('div', 'empty-state', message));
+      row.append(cell);
+      table.replaceChildren(row);
+    }
+    for (const name of ['current', 'resolved', 'observations']) {
+      const count = document.getElementById(`symptom-count-${name}`);
+      if (count) count.textContent = '0';
+    }
+    setSymptomFreshness(state, statusLabel);
+    setSymptomStatus(message, state, retry);
+    updateSymptomControls();
+  }
+
+  function symptomFocusFallback() {
+    const surfaces = [
+      document.getElementById('symptom-workspace'),
+      document.getElementById('symptom-today-card'),
+      document.getElementById('symptom-dialog'),
+    ];
+    if (!surfaces.some(surface => surface?.contains(document.activeElement))) return;
+    document.activeElement?.blur();
+    const target = activeView === 'patient'
+      ? document.getElementById('nav-patient')
+      : document.getElementById('nav-today');
+    target?.focus();
+    lastDialogTrigger = null;
+  }
+
+  function abortSymptomRequest() {
+    const controller = symptomRequestController;
+    symptomRequestController = null;
+    if (controller && !controller.signal.aborted) controller.abort();
+  }
+
+  function abortSymptomMutation() {
+    const controller = symptomMutationController;
+    symptomMutationController = null;
+    if (controller && !controller.signal.aborted) controller.abort();
+  }
+
+  function clearSymptomRetry() {
+    if (pendingSymptomIntent) pendingSymptomIntent.bodyText = '';
+    if (activeSymptomIntent && activeSymptomIntent !== pendingSymptomIntent) {
+      activeSymptomIntent.bodyText = '';
+    }
+    pendingSymptomIntent = null;
+    pendingSymptomCompletion = null;
+    const retry = document.getElementById('symptom-dialog-retry');
+    if (retry) retry.hidden = true;
+  }
+
+  function scrubSymptomDialog(options = {}) {
+    const dialog = document.getElementById('symptom-dialog');
+    const wasActive = symptomDialogOpen || activeDialogSurface === dialog;
+    symptomDialogOpen = false;
+    symptomDialogMode = null;
+    selectedSymptomEpisodeId = null;
+    selectedSymptomEpisodeToken = null;
+    selectedSymptomActionId = null;
+    selectedSymptomActionToken = null;
+    symptomSelectionEpoch += 1;
+    symptomDialogEpoch += 1;
+    symptomDrafts = new Map();
+    clearSymptomRetry();
+    for (const id of [
+      'symptom-text',
+      'symptom-severity-detail',
+      'symptom-onset-date',
+      'symptom-edit-resolved-date',
+      'symptom-timing',
+      'symptom-frequency',
+      'symptom-triggers',
+      'symptom-notes',
+      'symptom-resolved-date',
+      'symptom-create-follow-up-text',
+      'symptom-create-follow-up-owner',
+      'symptom-create-follow-up-due',
+      'symptom-follow-up-text',
+      'symptom-follow-up-owner',
+      'symptom-follow-up-due',
+    ]) {
+      const control = document.getElementById(id);
+      if (control) control.value = '';
+    }
+    for (const id of [
+      'symptom-create-existing-action',
+      'symptom-existing-action',
+    ]) {
+      const select = document.getElementById(id);
+      if (select) {
+        select.replaceChildren();
+        select.value = '';
+      }
+    }
+    const severity = document.getElementById('symptom-severity');
+    if (severity) severity.value = '';
+    const subject = document.getElementById('symptom-reported-subject');
+    if (subject) subject.value = 'unspecified';
+    const confirm = document.getElementById('symptom-resolve-confirm');
+    if (confirm) confirm.checked = false;
+    for (const id of [
+      'symptom-resolve-copy',
+      'symptom-follow-up-copy',
+      'symptom-linked-action-copy',
+      'symptom-dialog-status',
+      'symptom-details-error',
+      'symptom-resolve-error',
+      'symptom-follow-up-error',
+    ]) {
+      const node = document.getElementById(id);
+      if (node) node.textContent = '';
+    }
+    const overlay = document.getElementById('symptom-dialog-overlay');
+    overlay?.classList.remove('open');
+    overlay?.setAttribute('aria-hidden', 'true');
+    if (overlay) overlay.inert = true;
+    if (dialog) dialog.inert = true;
+    if (wasActive) {
+      document.activeElement?.blur();
+      if (activeDialogSurface === dialog) deactivateDialog(dialog, false);
+      lastDialogTrigger = null;
+      if (options.moveFocus !== false) {
+        document.getElementById(`nav-${activeView}`)?.focus();
+      }
+    }
+  }
+
+  function clearSymptomProjection(options = {}) {
+    symptomFocusFallback();
+    symptomLoadEpoch += 1;
+    symptomMutationEpoch += 1;
+    abortSymptomRequest();
+    abortSymptomMutation();
+    if (activeSymptomIntent) activeSymptomIntent.bodyText = '';
+    activeSymptomIntent = null;
+    symptomMutationOwner = null;
+    symptomMutationPending = false;
+    scrubSymptomDialog({ moveFocus: false });
+    symptomProjection = null;
+    symptomResponseOwner = null;
+    symptomNetworkAmbiguous = false;
+    symptomProjectionState = options.state || 'error';
+    renderSymptomUnavailable(
+      options.message || 'Symptom records could not be loaded.',
+      symptomProjectionState,
+      options.statusLabel || 'Unavailable',
+      options.retry !== false,
+    );
+  }
+
+  function markSymptomProjectionStale(message, options = {}) {
+    if (symptomDialogOpen) captureSymptomDraft();
+    if (options.abortRequest !== false) {
+      symptomLoadEpoch += 1;
+      abortSymptomRequest();
+    }
+    if (options.preserveMutation !== true) abortSymptomMutation();
+    symptomProjectionState = 'stale';
+    if (!symptomProjection) {
+      renderSymptomUnavailable(
+        message || 'Symptoms are unavailable until an authoritative reload succeeds.',
+        'stale',
+        'Not current',
+        true,
+      );
       return;
     }
-    wrap.innerHTML = symptoms.slice(0, 30).map(s => {
-      const sev = s.severity ? `<span class="sym-sev sev-${safeClassToken(s.severity, 'unknown')}">${escHtml(s.severity)}</span>` : '';
-      const src = s.source === 'ai' ? '<span class="sym-ai" title="auto-captured by intake">AI</span>' : '';
-      const note = s.note ? `<div class="sym-note">${escHtml(s.note)}</div>` : '';
-      const related = s.related_treatment ? `<span class="sym-related">↳ ${escHtml(s.related_treatment)}</span>` : '';
-      return `
-        <div class="sym-row" data-id="${escHtml(s.id)}">
-          <div class="sym-head">
-            <span class="sym-date">${escHtml(s.date || '')}</span>
-            ${sev}
-            <span class="sym-name">${escHtml(s.symptom || '')}</span>
-            ${src}
-            <button class="sym-del" onclick="deleteSymptom(this.closest('.sym-row').dataset.id)" title="Delete symptom" aria-label="Delete symptom">✕</button>
-          </div>
-          ${note}
-          ${related}
-        </div>`;
-    }).join('');
+    symptomResponseOwner = newSymptomResponseOwner(
+      symptomProjection,
+      options.ownerPhiEpoch ?? phiEpoch,
+    );
+    renderSymptomProjection(symptomResponseOwner);
+    setSymptomStatus(
+      message || 'Stale snapshot · read-only until the authoritative symptom record reloads.',
+      'stale',
+      true,
+    );
   }
 
-  async function addSymptom() {
-    const requestPhiEpoch = phiEpoch;
-    const name = document.getElementById('sym-name').value.trim();
-    if (!name) {
-      setFormError('sym-form-error', 'Enter a symptom before logging it.');
-      updateFormValidity();
+  function renderSymptomLoading() {
+    if (symptomProjection) {
+      symptomProjectionState = 'stale';
+      setSymptomFreshness('loading', 'Checking…');
+      setSymptomStatus(
+        'Checking the authoritative symptom record. The displayed snapshot is read-only.',
+        'loading',
+        false,
+      );
+      updateSymptomControls();
       return;
     }
-    const sev = document.getElementById('sym-sev').value;
-    const note = document.getElementById('sym-note').value.trim();
-    try {
-      await readJsonResponse(await fetch('/api/symptoms', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          symptom: name,
-          severity: sev ? parseInt(sev, 10) : null,
-          note: note || null,
-        }),
-      }));
-      document.getElementById('sym-name').value = '';
-      document.getElementById('sym-sev').value = '';
-      document.getElementById('sym-note').value = '';
-      await loadSymptoms();
-      setFormError('sym-form-error', '');
-    } catch (e) {
-      if (requestPhiEpoch !== phiEpoch) return;
-      setFormError('sym-form-error', e.message || 'The symptom could not be logged.');
-      reportLoadError('action', e);
-    }
-    updateFormValidity();
+    symptomProjectionState = 'loading';
+    renderSymptomUnavailable(
+      'Loading the complete authoritative symptom record…',
+      'loading',
+      'Loading…',
+      false,
+    );
   }
 
-  async function deleteSymptom(sid) {
-    if (!confirm('Delete this symptom entry?')) return;
+  function symptomTransportRequestIsCurrent(request, acceptedPhiEpoch = null) {
+    const ownerPhiEpoch = acceptedPhiEpoch ?? request.requestPhiEpoch;
+    return Boolean(
+      request
+      && request.controller === symptomRequestController
+      && !request.controller.signal.aborted
+      && request.loadEpoch === symptomLoadEpoch
+      && ownerPhiEpoch === phiEpoch
+    );
+  }
+
+  function symptomAuthorityMatchesKnown() {
+    if (!symptomProjection || !symptomResponseOwnerIsCurrent()) return false;
+    const currentProfile = normalizedRevision(latestProfileRevision);
+    const currentWorkflow = normalizedRevision(workflowRevision);
+    return (
+      (!Number.isSafeInteger(currentProfile)
+        || symptomProjection.profile_revision === currentProfile)
+      && (!Number.isSafeInteger(currentWorkflow)
+        || symptomProjection.workflow_revision === currentWorkflow)
+    );
+  }
+
+  function ensureSymptomEpisodes(options = {}) {
+    const current = (
+      symptomProjection
+      && ['current', 'empty'].includes(symptomProjectionState)
+      && !symptomNetworkAmbiguous
+      && symptomAuthorityMatchesKnown()
+    );
+    if (!options.force && current) return Promise.resolve(symptomProjection);
+    if (!options.force && symptomRequestController) return Promise.resolve(null);
+    return loadSymptomEpisodes(options);
+  }
+
+  function symptomSelectionSurvives(projection) {
+    if (!symptomDialogOpen || symptomDialogMode === 'add') return true;
+    const episode = projection.episodes.find(
+      item => item.id === selectedSymptomEpisodeId && item.token === selectedSymptomEpisodeToken,
+    );
+    if (!episode) return false;
+    if (symptomDialogMode === 'resolve' && episode.status !== 'current') return false;
+    if (selectedSymptomActionId) {
+      const actions = [
+        ...projection.eligible_actions,
+        ...projection.episodes.map(item => item.follow_up).filter(Boolean),
+      ];
+      if (!actions.some(
+        action => (
+          action.id === selectedSymptomActionId
+          && action.token === selectedSymptomActionToken
+        ),
+      )) return false;
+    }
+    return true;
+  }
+
+  async function loadSymptomEpisodes(options = {}) {
+    if (!options.force && symptomRequestController) return null;
+    const previousController = symptomRequestController;
+    const controller = new AbortController();
+    const request = {
+      ...capturePatientRequest(),
+      loadEpoch: ++symptomLoadEpoch,
+      controller,
+    };
+    symptomRequestController = controller;
+    if (previousController && !previousController.signal.aborted) previousController.abort();
+    renderSymptomLoading();
     try {
-      await requireOk(await fetch(`/api/symptoms/${encodeURIComponent(sid)}`, { method: 'DELETE' }));
-      await loadSymptoms();
+      const response = await fetch('/api/patient/symptom-episodes', {
+        headers: { Accept: 'application/json' },
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+      const requestIsCurrent = () => symptomTransportRequestIsCurrent(request);
+      if (!requestIsCurrent()) return null;
+      const data = await readJsonResponse(response, () => false);
+      if (!requestIsCurrent()) return null;
+      if (!symptomProjectionPayloadIsValid(data)) {
+        const invalid = new Error('Symptom records could not be verified safely.');
+        invalid.status = 422;
+        throw invalid;
+      }
+      const currentProfile = normalizedRevision(latestProfileRevision);
+      const currentWorkflow = normalizedRevision(workflowRevision);
+      if (
+        (Number.isSafeInteger(currentProfile) && data.profile_revision < currentProfile)
+        || (Number.isSafeInteger(currentWorkflow) && data.workflow_revision < currentWorkflow)
+      ) {
+        markSymptomProjectionStale(
+          'A newer patient or workflow revision is available. Symptoms remain read-only while reloading.',
+          { abortRequest: false },
+        );
+        return null;
+      }
+      const authority = authorizePatientResponse(request, data, {
+        workflow: 'projection',
+        symptomProjection: true,
+      });
+      if (!authority.accepted) return null;
+      request.acceptedPhiEpoch = authority.requestPhiEpoch;
+      if (!symptomTransportRequestIsCurrent(request, request.acceptedPhiEpoch)) return null;
+      if (!symptomSelectionSurvives(data)) {
+        scrubSymptomDialog({ moveFocus: false });
+      }
+      symptomProjection = data;
+      symptomNetworkAmbiguous = false;
+      symptomProjectionState = data.episodes.length || data.observations.length
+        ? 'current'
+        : 'empty';
+      symptomResponseOwner = newSymptomResponseOwner(data, request.acceptedPhiEpoch);
+      if (!symptomTransportRequestIsCurrent(request, request.acceptedPhiEpoch)) return null;
+      if (!renderSymptomProjection(symptomResponseOwner)) return null;
+      if (symptomDialogOpen) renderSymptomDialog();
+      reportLoadSuccess('symptom-episodes');
+      return data;
     } catch (error) {
-      reportLoadError('action', error);
+      const acceptedPhiEpoch = request.acceptedPhiEpoch ?? null;
+      if (
+        error?.name === 'AbortError'
+        || !symptomTransportRequestIsCurrent(request, acceptedPhiEpoch)
+      ) return null;
+      if (error?.status === 401 || error?.status === 403) {
+        const safeError = new Error('Symptom authorization is unavailable.');
+        safeError.status = error.status;
+        reportLoadError('symptom-episodes', safeError);
+        if (symptomTransportRequestIsCurrent(request, acceptedPhiEpoch)) {
+          evictClientPhi(safeError);
+        }
+        return null;
+      }
+      if (error instanceof TypeError) {
+        symptomNetworkAmbiguous = true;
+        markSymptomProjectionStale(
+          symptomProjection
+            ? 'Symptom transport is uncertain. The last accepted snapshot is stale and read-only.'
+            : 'The symptom endpoint could not be reached and no prior snapshot is available.',
+          { abortRequest: false, preserveMutation: options.preserveMutation === true },
+        );
+        reportLoadError(
+          'symptom-episodes',
+          new TypeError('The symptom endpoint could not be reached.'),
+        );
+        return null;
+      }
+      const corrupt = error?.status === 422;
+      clearSymptomProjection({
+        state: corrupt ? 'corrupt' : 'error',
+        statusLabel: corrupt ? 'Record unavailable' : 'Load failed',
+        message: corrupt
+          ? 'Symptom records are unavailable because the authoritative response could not be verified safely.'
+          : 'Symptom records could not be loaded. No prior symptom facts remain in this view.',
+      });
+      const safeError = new Error(
+        corrupt
+          ? 'Symptom records could not be verified safely.'
+          : 'Symptom records could not be loaded.',
+      );
+      safeError.status = error?.status;
+      reportLoadError('symptom-episodes', safeError);
+      return null;
+    } finally {
+      if (
+        symptomRequestController === controller
+        && request.loadEpoch === symptomLoadEpoch
+      ) {
+        symptomRequestController = null;
+        const refresh = document.getElementById('symptom-refresh-button');
+        if (refresh) refresh.disabled = false;
+      }
     }
+  }
+
+  function selectSymptomTab(name, moveFocus = true) {
+    if (!['current', 'resolved', 'observations'].includes(name)) return false;
+    symptomActiveTab = name;
+    for (const tabName of ['current', 'resolved', 'observations']) {
+      const selected = tabName === name;
+      const tab = document.getElementById(`symptom-tab-${tabName}`);
+      const panel = document.getElementById(`symptom-panel-${tabName}`);
+      tab?.classList.toggle('active', selected);
+      tab?.setAttribute('aria-selected', String(selected));
+      if (tab) tab.tabIndex = selected ? 0 : -1;
+      if (panel) panel.hidden = !selected;
+    }
+    if (moveFocus) document.getElementById(`symptom-tab-${name}`)?.focus();
+    return true;
+  }
+
+  function handleSymptomTabKeydown(event) {
+    const names = ['current', 'resolved', 'observations'];
+    const tabs = names.map(name => document.getElementById(`symptom-tab-${name}`));
+    const current = tabs.indexOf(document.activeElement);
+    if (current < 0) return;
+    let next = current;
+    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') next = (current + 1) % tabs.length;
+    else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+      next = (current - 1 + tabs.length) % tabs.length;
+    } else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = tabs.length - 1;
+    else return;
+    event.preventDefault();
+    selectSymptomTab(names[next]);
+  }
+
+  function openPatientSymptoms() {
+    switchView('patient', document.getElementById('nav-patient'));
+    selectSymptomTab('current', false);
+    document.getElementById('symptoms-heading')?.focus();
+  }
+
+  function symptomDraftKey() {
+    return `${symptomDialogMode || 'closed'}:${selectedSymptomEpisodeId || 'new'}`;
+  }
+
+  function captureSymptomDraft() {
+    if (!symptomDialogOpen || !symptomDialogMode) return;
+    if (symptomDialogMode === 'add' || symptomDialogMode === 'edit') {
+      symptomDrafts.set(symptomDraftKey(), {
+        text: document.getElementById('symptom-text')?.value || '',
+        severity: document.getElementById('symptom-severity')?.value || '',
+        severityDetail: document.getElementById('symptom-severity-detail')?.value || '',
+        subject: document.getElementById('symptom-reported-subject')?.value || 'unspecified',
+        onsetDate: document.getElementById('symptom-onset-date')?.value || '',
+        resolvedDate: document.getElementById('symptom-edit-resolved-date')?.value || '',
+        timing: document.getElementById('symptom-timing')?.value || '',
+        frequency: document.getElementById('symptom-frequency')?.value || '',
+        triggers: document.getElementById('symptom-triggers')?.value || '',
+        notes: document.getElementById('symptom-notes')?.value || '',
+        followUpMode: document.querySelector(
+          'input[name="symptom-create-follow-up-mode"]:checked',
+        )?.value || 'none',
+        actionId: document.getElementById('symptom-create-existing-action')?.value || '',
+        followUpText: document.getElementById('symptom-create-follow-up-text')?.value || '',
+        followUpOwner: document.getElementById('symptom-create-follow-up-owner')?.value || '',
+        followUpDue: document.getElementById('symptom-create-follow-up-due')?.value || '',
+      });
+    } else if (symptomDialogMode === 'resolve') {
+      symptomDrafts.set(symptomDraftKey(), {
+        resolvedDate: document.getElementById('symptom-resolved-date')?.value || '',
+        confirmed: document.getElementById('symptom-resolve-confirm')?.checked === true,
+      });
+    } else if (symptomDialogMode === 'follow-up') {
+      symptomDrafts.set(symptomDraftKey(), {
+        mode: document.querySelector('input[name="symptom-follow-up-mode"]:checked')?.value
+          || 'existing',
+        actionId: document.getElementById('symptom-existing-action')?.value || '',
+        text: document.getElementById('symptom-follow-up-text')?.value || '',
+        owner: document.getElementById('symptom-follow-up-owner')?.value || '',
+        due: document.getElementById('symptom-follow-up-due')?.value || '',
+      });
+    }
+  }
+
+  function setSymptomDialogStatus(message, tone = '') {
+    const node = document.getElementById('symptom-dialog-status');
+    if (!node) return;
+    node.className = `follow-up-dialog-status${tone ? ` ${safeClassToken(tone)}` : ''}`;
+    node.textContent = message || '';
+  }
+
+  function populateSymptomActionSelect(selectId, preferredId = '') {
+    const select = document.getElementById(selectId);
+    if (!select) return;
+    select.replaceChildren();
+    if (!symptomProjection?.eligible_actions.length) {
+      const option = symptomElement('option', '', 'No eligible actions available');
+      option.value = '';
+      select.append(option);
+      select.disabled = true;
+      return;
+    }
+    select.disabled = false;
+    for (const action of symptomProjection.eligible_actions) {
+      const option = symptomElement(
+        'option',
+        '',
+        `${action.text} · ${action.status} · ${symptomScalar(action.owner)} · due ${symptomScalar(action.due_date)}`,
+      );
+      option.value = action.id;
+      select.append(option);
+    }
+    select.value = symptomProjection.eligible_actions.some(action => action.id === preferredId)
+      ? preferredId
+      : symptomProjection.eligible_actions[0].id;
+  }
+
+  function restoreSymptomDetailsForm(episode = null) {
+    const draft = symptomDrafts.get(symptomDraftKey());
+    document.getElementById('symptom-text').value = draft?.text ?? episode?.symptom_text ?? '';
+    document.getElementById('symptom-severity').value =
+      draft?.severity ?? episode?.severity.level ?? '';
+    document.getElementById('symptom-severity-detail').value =
+      draft?.severityDetail ?? episode?.severity.detail ?? '';
+    document.getElementById('symptom-reported-subject').value =
+      draft?.subject ?? episode?.reported_subject ?? 'unspecified';
+    document.getElementById('symptom-onset-date').value =
+      draft?.onsetDate ?? episode?.onset.value ?? '';
+    const resolutionField = document.getElementById('symptom-edit-resolution-field');
+    const editResolved = symptomDialogMode === 'edit' && episode?.status === 'resolved';
+    if (resolutionField) resolutionField.hidden = !editResolved;
+    document.getElementById('symptom-edit-resolved-date').value =
+      editResolved ? (draft?.resolvedDate ?? episode?.resolution?.value ?? '') : '';
+    document.getElementById('symptom-timing').value =
+      draft?.timing ?? episode?.timing_text ?? '';
+    document.getElementById('symptom-frequency').value =
+      draft?.frequency ?? episode?.frequency_text ?? '';
+    document.getElementById('symptom-triggers').value =
+      draft?.triggers ?? episode?.triggers_text ?? '';
+    document.getElementById('symptom-notes').value =
+      draft?.notes ?? episode?.notes ?? '';
+    const fieldset = document.getElementById('symptom-create-follow-up-fieldset');
+    if (fieldset) fieldset.hidden = symptomDialogMode !== 'add';
+    const mode = symptomDialogMode === 'add' ? (draft?.followUpMode || 'none') : 'none';
+    const modeControl = document.querySelector(
+      `input[name="symptom-create-follow-up-mode"][value="${mode}"]`,
+    );
+    if (modeControl) modeControl.checked = true;
+    populateSymptomActionSelect('symptom-create-existing-action', draft?.actionId);
+    document.getElementById('symptom-create-follow-up-text').value = draft?.followUpText || '';
+    document.getElementById('symptom-create-follow-up-owner').value = draft?.followUpOwner || '';
+    document.getElementById('symptom-create-follow-up-due').value = draft?.followUpDue || '';
+    renderSymptomCreateFollowUpMode();
+  }
+
+  function renderSymptomDialog() {
+    if (!symptomDialogOpen) return;
+    const episode = selectedSymptomEpisodeId
+      ? symptomEpisodeById(selectedSymptomEpisodeId)
+      : null;
+    const details = document.getElementById('symptom-details-form');
+    const resolve = document.getElementById('symptom-resolve-form');
+    const followUp = document.getElementById('symptom-follow-up-form');
+    details.hidden = !['add', 'edit'].includes(symptomDialogMode);
+    resolve.hidden = symptomDialogMode !== 'resolve';
+    followUp.hidden = symptomDialogMode !== 'follow-up';
+    const title = document.getElementById('symptom-dialog-title');
+    if (symptomDialogMode === 'add') {
+      title.textContent = 'Record current symptom episode';
+      document.getElementById('symptom-details-submit').textContent = 'Record episode';
+      restoreSymptomDetailsForm();
+    } else if (!episode || episode.token !== selectedSymptomEpisodeToken) {
+      scrubSymptomDialog();
+      return;
+    } else if (symptomDialogMode === 'edit') {
+      title.textContent = 'Edit symptom episode facts';
+      document.getElementById('symptom-details-submit').textContent = 'Save episode facts';
+      restoreSymptomDetailsForm(episode);
+    } else if (symptomDialogMode === 'resolve') {
+      title.textContent = 'Resolve symptom episode';
+      document.getElementById('symptom-resolve-copy').textContent = episode.symptom_text;
+      const draft = symptomDrafts.get(symptomDraftKey());
+      document.getElementById('symptom-resolved-date').value = draft?.resolvedDate || '';
+      document.getElementById('symptom-resolve-confirm').checked = draft?.confirmed === true;
+    } else {
+      title.textContent = episode.follow_up ? 'Review linked follow-up' : 'Add symptom follow-up';
+      document.getElementById('symptom-follow-up-copy').textContent = episode.symptom_text;
+      const linkedPanel = document.getElementById('symptom-linked-action-panel');
+      const modes = document.getElementById('symptom-existing-follow-up-modes');
+      const existingPanel = document.getElementById('symptom-existing-action-panel');
+      const inlinePanel = document.getElementById('symptom-inline-action-panel');
+      const submit = document.getElementById('symptom-follow-up-submit');
+      const unlink = document.getElementById('symptom-unlink-submit');
+      if (episode.follow_up) {
+        linkedPanel.hidden = false;
+        modes.hidden = true;
+        existingPanel.hidden = true;
+        inlinePanel.hidden = true;
+        submit.hidden = true;
+        unlink.hidden = false;
+        document.getElementById('symptom-linked-action-copy').textContent =
+          `${episode.follow_up.text} · ${episode.follow_up.status} · ${
+            symptomScalar(episode.follow_up.owner)
+          } · due ${symptomScalar(episode.follow_up.due_date)}`;
+        selectedSymptomActionId = episode.follow_up.id;
+        selectedSymptomActionToken = episode.follow_up.token;
+      } else {
+        linkedPanel.hidden = true;
+        modes.hidden = false;
+        submit.hidden = false;
+        unlink.hidden = true;
+        const draft = symptomDrafts.get(symptomDraftKey());
+        const mode = draft?.mode || 'existing';
+        const modeControl = document.querySelector(
+          `input[name="symptom-follow-up-mode"][value="${mode}"]`,
+        );
+        if (modeControl) modeControl.checked = true;
+        populateSymptomActionSelect('symptom-existing-action', draft?.actionId);
+        document.getElementById('symptom-follow-up-text').value = draft?.text || '';
+        document.getElementById('symptom-follow-up-owner').value = draft?.owner || '';
+        document.getElementById('symptom-follow-up-due').value = draft?.due || '';
+        renderSymptomFollowUpMode();
+      }
+    }
+    updateSymptomFormValidity();
+  }
+
+  function openSymptomDialog(mode, trigger, episodeId = null) {
+    if (
+      !['current', 'empty'].includes(symptomProjectionState)
+      || !symptomResponseOwnerIsCurrent()
+      || symptomMutationPending
+      || pendingSymptomCompletion
+    ) {
+      setSymptomStatus('Reload the current symptom record before making changes.', 'stale', true);
+      return;
+    }
+    if (!['add', 'edit', 'resolve', 'follow-up'].includes(mode)) return;
+    const episode = episodeId ? symptomEpisodeById(episodeId) : null;
+    if (episodeId && !episode) {
+      markSymptomProjectionStale('This episode is no longer available. Reloading the symptom record.');
+      ensureSymptomEpisodes({ force: true });
+      return;
+    }
+    if (mode === 'resolve' && episode?.status !== 'current') return;
+    selectedSymptomEpisodeId = episode?.id || null;
+    selectedSymptomEpisodeToken = episode?.token || null;
+    selectedSymptomActionId = null;
+    selectedSymptomActionToken = null;
+    symptomSelectionEpoch += 1;
+    symptomDialogEpoch += 1;
+    symptomDialogMode = mode;
+    symptomDialogOpen = true;
+    clearSymptomRetry();
+    setSymptomDialogStatus('');
+    for (const id of ['symptom-details-error', 'symptom-resolve-error', 'symptom-follow-up-error']) {
+      setFormError(id, '');
+    }
+    const overlay = document.getElementById('symptom-dialog-overlay');
+    const dialog = document.getElementById('symptom-dialog');
+    overlay.inert = false;
+    overlay.classList.add('open');
+    overlay.setAttribute('aria-hidden', 'false');
+    dialog.inert = false;
+    renderSymptomDialog();
+    activateDialog(dialog, trigger);
+  }
+
+  function openSymptomAddDialog(trigger) {
+    openSymptomDialog('add', trigger);
+  }
+
+  function openSymptomEditDialog(trigger, episodeId) {
+    openSymptomDialog('edit', trigger, episodeId);
+  }
+
+  function openSymptomResolveDialog(trigger, episodeId) {
+    openSymptomDialog('resolve', trigger, episodeId);
+  }
+
+  function openSymptomFollowUpDialog(trigger, episodeId) {
+    openSymptomDialog('follow-up', trigger, episodeId);
+  }
+
+  function closeSymptomDialog(preserveDraft = true, force = false, restoreFocus = true) {
+    if (!symptomDialogOpen) return;
+    if (symptomMutationPending && !force) {
+      setSymptomDialogStatus('Saving is still in progress. Wait for the result before closing.', 'saving');
+      return;
+    }
+    if (preserveDraft) captureSymptomDraft();
+    symptomDialogOpen = false;
+    symptomDialogMode = null;
+    selectedSymptomEpisodeId = null;
+    selectedSymptomEpisodeToken = null;
+    selectedSymptomActionId = null;
+    selectedSymptomActionToken = null;
+    symptomSelectionEpoch += 1;
+    symptomDialogEpoch += 1;
+    clearSymptomRetry();
+    const overlay = document.getElementById('symptom-dialog-overlay');
+    const dialog = document.getElementById('symptom-dialog');
+    overlay?.classList.remove('open');
+    overlay?.setAttribute('aria-hidden', 'true');
+    if (overlay) overlay.inert = true;
+    if (dialog) dialog.inert = true;
+    deactivateDialog(dialog, restoreFocus);
+  }
+
+  function closeSymptomDialogFromBackdrop(event) {
+    if (event?.target === document.getElementById('symptom-dialog-overlay')) {
+      closeSymptomDialog();
+    }
+  }
+
+  function renderSymptomCreateFollowUpMode() {
+    const mode = document.querySelector(
+      'input[name="symptom-create-follow-up-mode"]:checked',
+    )?.value || 'none';
+    const existing = document.getElementById('symptom-create-existing-panel');
+    const inline = document.getElementById('symptom-create-inline-panel');
+    if (existing) existing.hidden = mode !== 'existing';
+    if (inline) inline.hidden = mode !== 'inline';
+    updateSymptomFormValidity();
+  }
+
+  function renderSymptomFollowUpMode() {
+    const mode = document.querySelector('input[name="symptom-follow-up-mode"]:checked')?.value
+      || 'existing';
+    const existing = document.getElementById('symptom-existing-action-panel');
+    const inline = document.getElementById('symptom-inline-action-panel');
+    if (existing) existing.hidden = mode !== 'existing';
+    if (inline) inline.hidden = mode !== 'inline';
+    const submit = document.getElementById('symptom-follow-up-submit');
+    if (submit) submit.textContent = mode === 'existing'
+      ? 'Link existing action'
+      : 'Create and link action';
+    updateSymptomFormValidity();
+  }
+
+  function symptomDatePrecision(value) {
+    if (value == null || value === '') return 'unknown';
+    const match = value.match(/^(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?$/);
+    if (!match) return 'unknown';
+    const year = Number(match[1]);
+    if (year < 1 || year > 9999) return 'unknown';
+    if (match[2] == null) return 'year';
+    const month = Number(match[2]);
+    if (month < 1 || month > 12) return 'unknown';
+    if (match[3] == null) return 'month';
+    const day = Number(match[3]);
+    const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    const maximum = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+    return day >= 1 && day <= maximum ? 'day' : 'unknown';
+  }
+
+  function symptomDateInputIsValid(value) {
+    return value === '' || symptomDatePrecision(value) !== 'unknown';
+  }
+
+  function updateSymptomFormValidity() {
+    const locked = (
+      symptomMutationPending
+      || !['current', 'empty'].includes(symptomProjectionState)
+      || !symptomResponseOwnerIsCurrent()
+    );
+    const text = (document.getElementById('symptom-text')?.value || '').trim();
+    const onset = document.getElementById('symptom-onset-date')?.value || '';
+    const editResolved = document.getElementById('symptom-edit-resolved-date')?.value || '';
+    const detailSubmit = document.getElementById('symptom-details-submit');
+    const createMode = document.querySelector(
+      'input[name="symptom-create-follow-up-mode"]:checked',
+    )?.value || 'none';
+    const createAction = document.getElementById('symptom-create-existing-action')?.value || '';
+    const createText = (
+      document.getElementById('symptom-create-follow-up-text')?.value || ''
+    ).trim();
+    const createFollowUpValid = symptomDialogMode !== 'add'
+      || createMode === 'none'
+      || (createMode === 'existing' && Boolean(createAction))
+      || (createMode === 'inline' && Boolean(createText));
+    if (detailSubmit) {
+      detailSubmit.disabled = locked
+        || !text
+        || !symptomDateInputIsValid(onset)
+        || !symptomDateInputIsValid(editResolved)
+        || !createFollowUpValid;
+    }
+    const resolveSubmit = document.getElementById('symptom-resolve-submit');
+    const resolvedDate = document.getElementById('symptom-resolved-date')?.value || '';
+    if (resolveSubmit) {
+      resolveSubmit.disabled = locked
+        || document.getElementById('symptom-resolve-confirm')?.checked !== true
+        || !symptomDateInputIsValid(resolvedDate);
+    }
+    const followUpSubmit = document.getElementById('symptom-follow-up-submit');
+    const mode = document.querySelector('input[name="symptom-follow-up-mode"]:checked')?.value
+      || 'existing';
+    const action = document.getElementById('symptom-existing-action')?.value || '';
+    const followUpText = (document.getElementById('symptom-follow-up-text')?.value || '').trim();
+    if (followUpSubmit) {
+      followUpSubmit.disabled = locked
+        || (mode === 'existing' ? !action : !followUpText);
+    }
+    const unlink = document.getElementById('symptom-unlink-submit');
+    if (unlink) unlink.disabled = locked;
+  }
+
+  function invalidateSymptomRetryOnDraftChange() {
+    if (pendingSymptomIntent) {
+      pendingSymptomIntent.bodyText = '';
+      pendingSymptomIntent = null;
+      const retry = document.getElementById('symptom-dialog-retry');
+      if (retry) retry.hidden = true;
+      setSymptomDialogStatus(
+        'The draft changed. Review the latest symptom record and submit a new request.',
+        'conflict',
+      );
+    }
+    captureSymptomDraft();
+    updateSymptomFormValidity();
+  }
+
+  function beginSymptomMutation(options = {}) {
+    if (
+      symptomMutationPending
+      || pendingSymptomCompletion
+      || (
+        options.allowStale !== true
+        && !['current', 'empty'].includes(symptomProjectionState)
+      )
+      || !symptomResponseOwnerIsCurrent()
+    ) return null;
+    const owner = {};
+    symptomMutationOwner = owner;
+    symptomMutationPending = true;
+    symptomMutationEpoch += 1;
+    const previous = symptomMutationController;
+    symptomMutationController = new AbortController();
+    if (previous && !previous.signal.aborted) previous.abort();
+    updateSymptomControls();
+    return owner;
+  }
+
+  function releaseSymptomMutation(intent) {
+    if (
+      !symptomMutationPending
+      || symptomMutationOwner !== intent.mutationOwner
+    ) return false;
+    symptomMutationPending = false;
+    symptomMutationOwner = null;
+    if (symptomMutationController === intent.controller) symptomMutationController = null;
+    if (activeSymptomIntent === intent) activeSymptomIntent = null;
+    updateSymptomControls();
+    return true;
+  }
+
+  function symptomIntentOwnsMutation(intent, expectedPhiEpoch = null) {
+    const ownerPhiEpoch = expectedPhiEpoch
+      ?? intent.acceptedPhiEpoch
+      ?? intent.requestPhiEpoch;
+    return Boolean(
+      symptomMutationPending
+      && symptomMutationOwner === intent.mutationOwner
+      && symptomMutationController === intent.controller
+      && !intent.controller.signal.aborted
+      && intent.mutationEpoch === symptomMutationEpoch
+      && ownerPhiEpoch === phiEpoch
+      && intent.selectionEpoch === symptomSelectionEpoch
+      && (
+        intent.targetAccepted === true
+        || (
+          intent.episodeId === selectedSymptomEpisodeId
+          && intent.episodeToken === selectedSymptomEpisodeToken
+          && intent.actionId === selectedSymptomActionId
+          && intent.actionToken === selectedSymptomActionToken
+        )
+      )
+    );
+  }
+
+  function createSymptomIntent(method, url, body, mutationOwner, options = {}) {
+    const canonicalBody = { ...body, mutation_id: newMutationId() };
+    return {
+      method,
+      url,
+      bodyText: JSON.stringify(canonicalBody),
+      mutationOwner,
+      controller: symptomMutationController,
+      mutationEpoch: symptomMutationEpoch,
+      requestPhiEpoch: phiEpoch,
+      selectionEpoch: symptomSelectionEpoch,
+      dialogEpoch: symptomDialogEpoch,
+      episodeId: selectedSymptomEpisodeId,
+      episodeToken: selectedSymptomEpisodeToken,
+      actionId: selectedSymptomActionId,
+      actionToken: selectedSymptomActionToken,
+      draftKey: options.draftKey || symptomDraftKey(),
+      operation: options.operation || '',
+    };
+  }
+
+  function symptomMutationMeta() {
+    return {
+      expected_profile_revision: symptomProjection.profile_revision,
+      expected_workflow_revision: symptomProjection.workflow_revision,
+      expected_projection_token: symptomProjection.projection_token,
+    };
+  }
+
+  function symptomOptionalText(id) {
+    const value = document.getElementById(id)?.value ?? '';
+    return value === '' ? null : value.trim();
+  }
+
+  function symptomDetailsBody() {
+    const body = {
+      ...symptomMutationMeta(),
+      symptom_text: document.getElementById('symptom-text').value.trim(),
+      severity_level: document.getElementById('symptom-severity').value || null,
+      severity_detail: symptomOptionalText('symptom-severity-detail'),
+      reported_subject: document.getElementById('symptom-reported-subject').value,
+      onset_date: document.getElementById('symptom-onset-date').value || null,
+      timing_text: symptomOptionalText('symptom-timing'),
+      frequency_text: symptomOptionalText('symptom-frequency'),
+      triggers_text: symptomOptionalText('symptom-triggers'),
+      notes: symptomOptionalText('symptom-notes'),
+    };
+    if (symptomDialogMode === 'edit') {
+      body.expected_episode_token = selectedSymptomEpisodeToken;
+      if (symptomEpisodeById(selectedSymptomEpisodeId)?.status === 'resolved') {
+        body.resolved_date = document.getElementById('symptom-edit-resolved-date').value || null;
+      }
+    } else {
+      const mode = document.querySelector(
+        'input[name="symptom-create-follow-up-mode"]:checked',
+      )?.value || 'none';
+      if (mode === 'existing') {
+        const action = symptomProjection.eligible_actions.find(
+          item => item.id === document.getElementById('symptom-create-existing-action').value,
+        );
+        if (!action) throw new Error('Select a currently eligible action.');
+        body.caregiver_action_id = action.id;
+        body.expected_action_token = action.token;
+        selectedSymptomActionId = action.id;
+        selectedSymptomActionToken = action.token;
+      } else if (mode === 'inline') {
+        body.follow_up = {
+          text: document.getElementById('symptom-create-follow-up-text').value.trim(),
+          owner: symptomOptionalText('symptom-create-follow-up-owner'),
+          due_date: document.getElementById('symptom-create-follow-up-due').value || null,
+        };
+      }
+    }
+    return body;
+  }
+
+  async function submitSymptomDetails() {
+    const mutationOwner = beginSymptomMutation();
+    if (!mutationOwner) return null;
+    let intent;
+    try {
+      const text = (document.getElementById('symptom-text')?.value || '').trim();
+      const onset = document.getElementById('symptom-onset-date')?.value || '';
+      const editResolved = document.getElementById('symptom-edit-resolved-date')?.value || '';
+      if (!text) throw new Error('Enter the symptom description.');
+      if (!symptomDateInputIsValid(onset)) {
+        throw new Error('Use YYYY, YYYY-MM, or YYYY-MM-DD for the onset date.');
+      }
+      if (!symptomDateInputIsValid(editResolved)) {
+        throw new Error('Use YYYY, YYYY-MM, or YYYY-MM-DD for the resolution date.');
+      }
+      const body = symptomDetailsBody();
+      const creating = symptomDialogMode === 'add';
+      intent = createSymptomIntent(
+        creating ? 'POST' : 'PATCH',
+        creating
+          ? '/api/symptom-episodes'
+          : `/api/symptom-episodes/${encodeURIComponent(selectedSymptomEpisodeId)}`,
+        body,
+        mutationOwner,
+        { operation: creating ? 'create' : 'edit' },
+      );
+      return performSymptomIntent(intent);
+    } catch (error) {
+      setFormError('symptom-details-error', error.message || 'Review the episode fields.');
+      releaseSymptomMutation(intent || {
+        mutationOwner,
+        controller: symptomMutationController,
+      });
+      return null;
+    }
+  }
+
+  async function submitSymptomResolution() {
+    const mutationOwner = beginSymptomMutation();
+    if (!mutationOwner) return null;
+    let intent;
+    try {
+      const episode = symptomEpisodeById(selectedSymptomEpisodeId);
+      const date = document.getElementById('symptom-resolved-date')?.value || '';
+      if (!episode || episode.status !== 'current') throw new Error('This episode is no longer current.');
+      if (document.getElementById('symptom-resolve-confirm')?.checked !== true) {
+        throw new Error('Confirm that this episode can be resolved.');
+      }
+      if (!symptomDateInputIsValid(date)) {
+        throw new Error('Use YYYY, YYYY-MM, or YYYY-MM-DD for the resolution date.');
+      }
+      const body = {
+        ...symptomMutationMeta(),
+        expected_episode_token: selectedSymptomEpisodeToken,
+        resolved_date: date || null,
+      };
+      intent = createSymptomIntent(
+        'POST',
+        `/api/symptom-episodes/${encodeURIComponent(selectedSymptomEpisodeId)}/resolve`,
+        body,
+        mutationOwner,
+        { operation: 'resolve' },
+      );
+      return performSymptomIntent(intent);
+    } catch (error) {
+      setFormError('symptom-resolve-error', error.message || 'Review the resolution.');
+      releaseSymptomMutation(intent || {
+        mutationOwner,
+        controller: symptomMutationController,
+      });
+      return null;
+    }
+  }
+
+  function symptomFollowUpBody(unlink = false) {
+    const episode = symptomEpisodeById(selectedSymptomEpisodeId);
+    if (!episode) throw new Error('This episode is no longer available.');
+    const body = {
+      ...symptomMutationMeta(),
+      expected_episode_token: selectedSymptomEpisodeToken,
+    };
+    if (unlink) {
+      if (!episode.follow_up) throw new Error('This episode has no linked follow-up.');
+      body.caregiver_action_id = null;
+      body.expected_action_token = episode.follow_up.token;
+      selectedSymptomActionId = episode.follow_up.id;
+      selectedSymptomActionToken = episode.follow_up.token;
+      return body;
+    }
+    if (episode.follow_up) throw new Error('Unlink the current follow-up before adding another.');
+    const mode = document.querySelector('input[name="symptom-follow-up-mode"]:checked')?.value
+      || 'existing';
+    if (mode === 'existing') {
+      const action = symptomProjection.eligible_actions.find(
+        item => item.id === document.getElementById('symptom-existing-action').value,
+      );
+      if (!action) throw new Error('Select a currently eligible action.');
+      body.caregiver_action_id = action.id;
+      body.expected_action_token = action.token;
+      selectedSymptomActionId = action.id;
+      selectedSymptomActionToken = action.token;
+    } else {
+      const text = (document.getElementById('symptom-follow-up-text')?.value || '').trim();
+      if (!text) throw new Error('Enter the manual follow-up text.');
+      body.follow_up = {
+        text,
+        owner: symptomOptionalText('symptom-follow-up-owner'),
+        due_date: document.getElementById('symptom-follow-up-due').value || null,
+      };
+    }
+    return body;
+  }
+
+  async function submitSymptomFollowUp() {
+    return submitSymptomFollowUpOperation(false);
+  }
+
+  async function submitSymptomUnlink() {
+    return submitSymptomFollowUpOperation(true);
+  }
+
+  async function submitSymptomFollowUpOperation(unlink) {
+    const mutationOwner = beginSymptomMutation();
+    if (!mutationOwner) return null;
+    let intent;
+    try {
+      const body = symptomFollowUpBody(unlink);
+      intent = createSymptomIntent(
+        'PATCH',
+        `/api/symptom-episodes/${encodeURIComponent(selectedSymptomEpisodeId)}/follow-up`,
+        body,
+        mutationOwner,
+        { operation: unlink ? 'unlink' : 'follow-up' },
+      );
+      return performSymptomIntent(intent);
+    } catch (error) {
+      setFormError('symptom-follow-up-error', error.message || 'Review the follow-up fields.');
+      releaseSymptomMutation(intent || {
+        mutationOwner,
+        controller: symptomMutationController,
+      });
+      return null;
+    }
+  }
+
+  function symptomMutationResultMatchesProjection(data) {
+    if (
+      !symptomProjection
+      || symptomProjection.profile_revision !== data.profile_revision
+      || symptomProjection.workflow_revision !== data.workflow_revision
+    ) return false;
+    const episode = symptomProjection.episodes.find(item => item.id === data.episode.id);
+    return Boolean(
+      episode
+      && episode.token === data.episode.token
+      && (
+        data.follow_up == null
+          ? episode.follow_up === null
+          : episode.follow_up?.id === data.follow_up.id
+            && episode.follow_up?.token === data.follow_up.token
+      )
+    );
+  }
+
+  async function finalizeSymptomMutation(data, intent) {
+    if (!symptomIntentOwnsMutation(intent)) return false;
+    symptomDrafts.delete(intent.draftKey);
+    pendingSymptomCompletion = null;
+    clearSymptomRetry();
+    const hadDialog = symptomDialogOpen;
+    if (hadDialog) closeSymptomDialog(false, true, false);
+    setSymptomStatus('Symptom record saved.', 'current', false);
+    reportLoadSuccess('symptom-mutation');
+    releaseSymptomMutation(intent);
+    const target = document.getElementById(
+      activeView === 'patient' ? 'symptoms-heading' : 'today-symptoms-heading',
+    );
+    target?.focus();
+    return true;
+  }
+
+  async function consumeSymptomMutationResponse(data, intent) {
+    if (!symptomIntentOwnsMutation(intent, intent.requestPhiEpoch)) return false;
+    if (!symptomMutationPayloadIsValid(data)) {
+      clearSymptomProjection({
+        state: 'corrupt',
+        statusLabel: 'Record unavailable',
+        message: 'Symptom records were cleared because a mutation response could not be verified safely.',
+      });
+      return false;
+    }
+    const authority = authorizePatientResponse(intent, data, {
+      workflow: 'targeted',
+      symptomMutation: true,
+    });
+    if (!authority.accepted) return false;
+    intent.acceptedPhiEpoch = authority.requestPhiEpoch;
+    if (!symptomIntentOwnsMutation(intent, intent.acceptedPhiEpoch)) return false;
+    intent.targetAccepted = true;
+    selectedSymptomEpisodeId = data.episode.id;
+    selectedSymptomEpisodeToken = data.episode.token;
+    selectedSymptomActionId = data.follow_up?.id || null;
+    selectedSymptomActionToken = data.follow_up?.token || null;
+    markSymptomProjectionStale(
+      'The symptom change was accepted. Reloading the authoritative record…',
+      {
+        abortRequest: true,
+        ownerPhiEpoch: phiEpoch,
+        preserveMutation: true,
+      },
+    );
+    const reloaded = await loadSymptomEpisodes({ force: true, preserveMutation: true });
+    if (
+      !symptomIntentOwnsMutation(intent, intent.acceptedPhiEpoch)
+      || !reloaded
+      || !symptomMutationResultMatchesProjection(data)
+    ) {
+      if (symptomIntentOwnsMutation(intent, intent.acceptedPhiEpoch)) {
+        pendingSymptomCompletion = { data, intent };
+        const retry = document.getElementById('symptom-dialog-retry');
+        const message = document.getElementById('symptom-dialog-retry-message');
+        if (message) {
+          message.textContent =
+            'The change may be saved, but the authoritative symptom record could not be verified. Retry the reload; the mutation will not be sent again.';
+        }
+        if (retry) retry.hidden = false;
+        setSymptomDialogStatus(
+          'The current symptom record could not be verified. Retry the authoritative reload.',
+          'offline',
+        );
+      }
+      return false;
+    }
+    return finalizeSymptomMutation(data, intent);
+  }
+
+  async function handleSymptomConflict(intent) {
+    if (!symptomIntentOwnsMutation(intent, intent.requestPhiEpoch)) return false;
+    if (symptomDialogOpen) captureSymptomDraft();
+    clearSymptomRetry();
+    setSymptomDialogStatus(
+      'The symptom record changed. Review the latest authoritative episode before submitting again.',
+      'conflict',
+    );
+    setSymptomStatus(
+      'The symptom record changed. Reloading current authority for review.',
+      'stale',
+      false,
+    );
+    markSymptomProjectionStale(
+      'The symptom record changed. Reloading current authority for review.',
+      { preserveMutation: true },
+    );
+    releaseSymptomMutation(intent);
+    await loadSymptomEpisodes({ force: true });
+    return true;
+  }
+
+  async function performSymptomIntent(intent, explicitRetry = false) {
+    if (!symptomIntentOwnsMutation(intent, intent.requestPhiEpoch)) return null;
+    activeSymptomIntent = intent;
+    setSymptomDialogStatus(
+      explicitRetry ? 'Retrying the unchanged request…' : 'Saving…',
+      'saving',
+    );
+    try {
+      const response = await fetch(intent.url, {
+        method: intent.method,
+        headers: { 'Content-Type': 'application/json' },
+        body: intent.bodyText,
+        signal: intent.controller.signal,
+      });
+      if (!symptomIntentOwnsMutation(intent, intent.requestPhiEpoch)) return null;
+      const data = await readJsonResponse(
+        response,
+        () => symptomIntentOwnsMutation(intent, intent.requestPhiEpoch),
+      );
+      if (!symptomIntentOwnsMutation(intent, intent.requestPhiEpoch)) return null;
+      const consumed = await consumeSymptomMutationResponse(data, intent);
+      return consumed ? data : null;
+    } catch (error) {
+      if (
+        error?.name === 'AbortError'
+        || !symptomIntentOwnsMutation(intent, intent.requestPhiEpoch)
+      ) return null;
+      if (error?.status === 401 || error?.status === 403) {
+        const safeError = new Error('Symptom authorization is unavailable.');
+        safeError.status = error.status;
+        reportLoadError('symptom-mutation', safeError);
+        if (symptomIntentOwnsMutation(intent, intent.requestPhiEpoch)) {
+          evictClientPhi(safeError);
+        }
+        return null;
+      }
+      if (error?.status === 409) {
+        await handleSymptomConflict(intent);
+        return null;
+      }
+      if (error instanceof TypeError) {
+        pendingSymptomIntent = intent;
+        symptomNetworkAmbiguous = true;
+        markSymptomProjectionStale(
+          'Symptom mutation transport is uncertain. The last accepted snapshot is stale and read-only.',
+          { abortRequest: false, preserveMutation: true },
+        );
+        const retry = document.getElementById('symptom-dialog-retry');
+        const message = document.getElementById('symptom-dialog-retry-message');
+        if (message) {
+          message.textContent =
+            'The request may not have reached the server. Review and explicitly retry the unchanged request.';
+        }
+        if (retry) retry.hidden = false;
+        setSymptomDialogStatus(
+          'Connection lost. The unchanged request is available for explicit retry.',
+          'offline',
+        );
+        reportLoadError(
+          'symptom-mutation',
+          new TypeError('The symptom endpoint could not be reached.'),
+        );
+        return null;
+      }
+      clearSymptomProjection({
+        state: error?.status === 422 ? 'corrupt' : 'error',
+        statusLabel: 'Record unavailable',
+        message: 'Symptom records were cleared because the request failed without safe retry authority.',
+      });
+      const safeError = new Error('The symptom request could not be saved safely.');
+      safeError.status = error?.status;
+      reportLoadError('symptom-mutation', safeError);
+      return null;
+    } finally {
+      if (activeSymptomIntent === intent) activeSymptomIntent = null;
+      releaseSymptomMutation(intent);
+    }
+  }
+
+  async function retrySymptomIntent() {
+    if (pendingSymptomCompletion) {
+      const completion = pendingSymptomCompletion;
+      const reloaded = await loadSymptomEpisodes({ force: true });
+      if (reloaded && symptomMutationResultMatchesProjection(completion.data)) {
+        symptomDrafts.delete(completion.intent.draftKey);
+        pendingSymptomCompletion = null;
+        clearSymptomRetry();
+        if (symptomDialogOpen) closeSymptomDialog(false, true);
+        setSymptomStatus('Symptom record saved.', 'current', false);
+      }
+      return;
+    }
+    const pending = pendingSymptomIntent;
+    if (!pending || !pending.bodyText || !symptomResponseOwnerIsCurrent()) return;
+    const owner = beginSymptomMutation({ allowStale: true });
+    if (!owner) return;
+    const controller = symptomMutationController;
+    pending.mutationOwner = owner;
+    pending.controller = controller;
+    pending.mutationEpoch = symptomMutationEpoch;
+    pending.requestPhiEpoch = phiEpoch;
+    pending.selectionEpoch = symptomSelectionEpoch;
+    pending.dialogEpoch = symptomDialogEpoch;
+    pendingSymptomIntent = null;
+    return performSymptomIntent(pending, true);
   }
 
   async function loadSummary(options = {}) {
@@ -5920,6 +7963,10 @@
   document.addEventListener('keydown', (e) => {
     if (trapDialogFocus(e)) return;
     if (e.key !== 'Escape') return;
+    if (symptomDialogOpen) {
+      closeSymptomDialog();
+      return;
+    }
     if (alertResolutionDialogOpen) {
       closeAlertResolutionDialog();
       return;
@@ -9497,11 +11544,11 @@
   loadSummary();
   loadQuestions();
   loadJudgments();
-  loadSymptoms();
+  ensureSymptomEpisodes();
   loadPatientEvidence();
   loadVisits();
   loadFollowUps();
-  ['q-add-input', 'judgment-input', 'sym-name', 'chat-input'].forEach(id => {
+  ['q-add-input', 'judgment-input', 'chat-input'].forEach(id => {
     document.getElementById(id)?.addEventListener('input', updateFormValidity);
   });
   [
@@ -9526,6 +11573,9 @@
   const alertResolutionSurface = document.getElementById('alert-resolution-dialog');
   alertResolutionSurface?.addEventListener('input', invalidateAlertResolutionRetryOnDraftChange);
   alertResolutionSurface?.addEventListener('change', invalidateAlertResolutionRetryOnDraftChange);
+  const symptomSurface = document.getElementById('symptom-dialog');
+  symptomSurface?.addEventListener('input', invalidateSymptomRetryOnDraftChange);
+  symptomSurface?.addEventListener('change', invalidateSymptomRetryOnDraftChange);
   updateFormValidity();
   startPolling();
   const requestedView = window.location.hash.replace('#', '');

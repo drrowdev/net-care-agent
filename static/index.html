@@ -134,6 +134,30 @@
         </div>
       </section>
 
+      <section class="content-card treatment-today-card" id="treatment-today-card" aria-labelledby="today-treatment-heading">
+        <div class="card-header compact split-header">
+          <div>
+            <p class="eyebrow">Caregiver-maintained · unverified</p>
+            <h2 id="today-treatment-heading">Treatment records</h2>
+          </div>
+          <span class="treatment-freshness loading" id="today-treatment-freshness">Not loaded</span>
+        </div>
+        <p class="treatment-safety-guidance">NET/Care records what you enter but does not verify treatment details or advise starting, stopping, or changing treatment. Confirm treatment decisions with the treating team.</p>
+        <div class="treatment-status loading" id="today-treatment-status" role="status" aria-live="polite">Loading the authoritative treatment record…</div>
+        <p class="treatment-totals" id="today-treatment-totals">No treatment totals are available yet.</p>
+        <div class="treatment-course-list compact" id="today-treatment-list">
+          <div class="loading-state">Loading current and planned treatment records…</div>
+        </div>
+        <div class="treatment-retry" id="today-treatment-retry" hidden>
+          <span>The authoritative treatment record needs to be refreshed.</span>
+          <button class="button secondary" id="today-treatment-retry-refresh" type="button" onclick="loadTreatmentReconciliation({ force: true })">Retry refresh</button>
+        </div>
+        <div class="treatment-workflow-actions">
+          <button class="button primary" id="today-treatment-add" type="button" onclick="openTreatmentAddDialog(this)">＋ Record treatment</button>
+          <button class="button secondary" type="button" onclick="openPatientTreatments()">Review all treatment information</button>
+        </div>
+      </section>
+
       <section class="content-card summary-card" id="summary-card" aria-labelledby="summary-heading">
         <div class="card-header">
           <div>
@@ -175,9 +199,57 @@
           </div>
         </section>
 
-        <section class="content-card" aria-labelledby="treatments-heading">
-          <div class="card-header compact"><div><p class="eyebrow">Care plan</p><h2 id="treatments-heading">Treatments</h2></div></div>
-          <div class="tx-list" id="tx-list"><div class="loading-state">Loading treatments…</div></div>
+        <section class="content-card span-two treatment-workspace" id="treatment-workspace" aria-labelledby="treatments-heading">
+          <div class="card-header compact split-header">
+            <div>
+              <p class="eyebrow">Caregiver records, document mentions, and earlier app context</p>
+              <h2 id="treatments-heading" tabindex="-1">Treatment reconciliation</h2>
+            </div>
+            <div class="treatment-header-actions">
+              <span class="treatment-freshness loading" id="patient-treatment-freshness">Not loaded</span>
+              <button class="button secondary" id="treatment-refresh-button" type="button" onclick="loadTreatmentReconciliation({ force: true })">Refresh</button>
+              <button class="button primary" id="patient-treatment-add" type="button" onclick="openTreatmentAddDialog(this)">＋ Record treatment</button>
+            </div>
+          </div>
+          <p class="treatment-safety-guidance">NET/Care records what you enter but does not verify treatment details or advise starting, stopping, or changing treatment. Confirm treatment decisions with the treating team.</p>
+          <div class="treatment-status loading" id="patient-treatment-status" role="status" aria-live="polite">Loading the authoritative treatment record…</div>
+          <div class="treatment-tabs" role="tablist" aria-label="Treatment record sections" onkeydown="handleTreatmentTabKeydown(event)">
+            <button class="treatment-tab active" id="treatment-tab-records" role="tab" aria-selected="true" aria-controls="treatment-panel-records" tabindex="0" onclick="selectTreatmentTab('records')">Treatment records <span id="treatment-count-records">0</span></button>
+            <button class="treatment-tab" id="treatment-tab-differences" role="tab" aria-selected="false" aria-controls="treatment-panel-differences" tabindex="-1" onclick="selectTreatmentTab('differences')">Differences to review <span id="treatment-count-differences">0</span></button>
+            <button class="treatment-tab" id="treatment-tab-sources" role="tab" aria-selected="false" aria-controls="treatment-panel-sources" tabindex="-1" onclick="selectTreatmentTab('sources')">Document mentions <span id="treatment-count-sources">0</span></button>
+            <button class="treatment-tab" id="treatment-tab-earlier" role="tab" aria-selected="false" aria-controls="treatment-panel-earlier" tabindex="-1" onclick="selectTreatmentTab('earlier')">Earlier app records <span id="treatment-count-earlier">0</span></button>
+          </div>
+          <section class="treatment-panel" id="treatment-panel-records" role="tabpanel" aria-labelledby="treatment-tab-records">
+            <div class="treatment-panel-toolbar">
+              <p>Complete caregiver-maintained current, planned, and past records in recorded order.</p>
+            </div>
+            <div class="treatment-course-list" id="patient-treatment-list"><div class="loading-state">Loading treatment records…</div></div>
+          </section>
+          <section class="treatment-panel" id="treatment-panel-differences" role="tabpanel" aria-labelledby="treatment-tab-differences" hidden>
+            <div class="treatment-panel-toolbar">
+              <p>Caregiver-recorded differences with neutral, immutable citation snapshots.</p>
+              <button class="button secondary" id="treatment-difference-add" type="button" onclick="openTreatmentDifferenceDialog(this)">Record a difference</button>
+            </div>
+            <div class="treatment-discrepancy-list" id="treatment-discrepancy-list"></div>
+          </section>
+          <section class="treatment-panel" id="treatment-panel-sources" role="tabpanel" aria-labelledby="treatment-tab-sources" hidden>
+            <p class="treatment-authority-note">Document mentions preserve every occurrence exactly as received. They are separate from caregiver treatment records.</p>
+            <div class="treatment-table-region" role="region" aria-labelledby="treatment-source-caption" tabindex="0">
+              <table class="treatment-table">
+                <caption id="treatment-source-caption">All document treatment mentions in recorded order</caption>
+                <thead><tr><th scope="col">Observed wording</th><th scope="col">Recorded value</th><th scope="col">Receipt state</th><th scope="col">Source</th></tr></thead>
+                <tbody id="treatment-source-table-body"><tr><td colspan="4"><div class="loading-state">Loading document mentions…</div></td></tr></tbody>
+              </table>
+            </div>
+          </section>
+          <section class="treatment-panel" id="treatment-panel-earlier" role="tabpanel" aria-labelledby="treatment-tab-earlier" hidden>
+            <p class="treatment-authority-note">Earlier app records and machine-generated compatibility context are read-only, not source-verified, not citable, and not treatment lifecycle authority.</p>
+            <div class="treatment-legacy-list" id="treatment-legacy-list"><div class="loading-state">Loading earlier app records…</div></div>
+          </section>
+          <div class="treatment-retry" id="treatment-retry" hidden>
+            <span id="treatment-retry-message">The authoritative treatment record needs to be refreshed.</span>
+            <button class="button secondary" id="treatment-retry-refresh" type="button" onclick="loadTreatmentReconciliation({ force: true })">Retry refresh</button>
+          </div>
         </section>
 
         <section class="content-card span-two biomarker-explorer" id="biomarker-explorer" aria-labelledby="biomarkers-heading">
@@ -813,6 +885,27 @@
       <span>The last request may not have reached the server. Your draft is still here.</span>
       <button class="button secondary" onclick="retryWorkflowIntent()">Retry unchanged request</button>
     </div>
+  </section>
+</div>
+
+<div class="treatment-dialog-overlay" id="treatment-dialog-overlay" aria-hidden="true" onclick="closeTreatmentDialogFromBackdrop(event)">
+  <section class="treatment-dialog" id="treatment-dialog" role="dialog" aria-modal="true" aria-labelledby="treatment-dialog-title" tabindex="-1">
+    <header class="dialog-header">
+      <div><p class="eyebrow" id="treatment-dialog-eyebrow">Caregiver-maintained · unverified</p><h2 id="treatment-dialog-title">Treatment record</h2></div>
+      <button class="icon-button" id="treatment-dialog-close" type="button" onclick="closeTreatmentDialog()" aria-label="Close treatment dialog">×</button>
+    </header>
+    <p class="treatment-safety-guidance dialog-guidance">NET/Care records what you enter but does not verify treatment details or advise starting, stopping, or changing treatment. Confirm treatment decisions with the treating team.</p>
+    <div class="treatment-dialog-status" id="treatment-dialog-status" role="status" aria-live="polite"></div>
+    <form class="treatment-form" id="treatment-form" onsubmit="submitTreatmentDialog(event)" novalidate>
+      <div id="treatment-dialog-body"></div>
+      <p class="form-error" id="treatment-form-error" role="alert" aria-live="polite"></p>
+      <div class="treatment-dialog-actions">
+        <button class="button primary" id="treatment-submit-button" type="submit">Save</button>
+        <button class="button secondary" type="button" onclick="closeTreatmentDialog()">Cancel</button>
+        <button class="button secondary" id="treatment-retry-submit" type="button" onclick="retryTreatmentSubmission()" hidden>Retry submission</button>
+        <button class="button secondary" id="treatment-retry-verification" type="button" onclick="loadTreatmentReconciliation({ force: true, preserveMutation: true })" hidden>Retry refresh</button>
+      </div>
+    </form>
   </section>
 </div>
 

@@ -200,19 +200,11 @@ other clinical revision clears prior in-tab turns with a visible notice. The
 server rejects stale history with `409`, so an old answer cannot be resent into a
 new-record conversation.
 
-Treatment categories appear only when classification is bound to the current
-clinical revision. If classification fails or raw treatments change, Patient
-shows **Classification outdated — showing raw treatment entries** and every
-agent receives the raw list. Refresh the assessment to classify again; treatment
-data is never omitted.
-Treatment remove/complete actions use stable mapped component identities. For a
-composite raw entry such as `lanreotide plus everolimus`, removing/completing one
-row preserves the other component. Concurrent reorder/change returns `409`
-instead of mutating the shifted row.
-Transition prose such as `switched from lanreotide to everolimus` is editable
-only when both sides can be mapped exclusively. Any unidentified drug,
-procedure, or residual therapy phrase keeps classification outdated and the raw
-entry visible rather than allowing a partial destructive edit.
+Document intake may still produce legacy raw treatment rows and machine-
+generated classifications for compatibility and model context. Those values
+remain separate from the caregiver treatment workflow described below: they do
+not create a course, seed a form, authorize a status, or become a discrepancy
+citation.
 
 Alert lifetime follows its declared dependency. Ingestion-failure and
 trial-status alerts are durable until resolved. Feed-source alerts deactivate
@@ -571,6 +563,77 @@ This is static information, not a symptom assessment, triage decision,
 treatment recommendation, or monitoring promise. Legacy observations remain
 available to the existing model context; caregiver-maintained episodes remain
 excluded from all model prompts.
+
+## 5b. Record and reconcile treatment information
+
+**Today → Treatment records** shows at most the first three Current or Planned
+caregiver records in exact server order. It states the exact current/planned
+totals and omitted count, plus exact Past, document-mention, earlier-app,
+generated-classification, and open-difference counts. **Review all treatment
+information** opens the complete **Patient → Treatments** workspace. Today and
+Patient use the same accepted projection; neither uses `/api/status` treatment
+data.
+
+Patient separates four kinds of information:
+
+1. **Treatment records** contains every caregiver-maintained Current, Planned,
+   and Past course in server order. Record or edit only explicit wording,
+   optional exact fields, partial/unknown dates, and optional earlier-component
+   associations. Blank dates stay blank; the browser does not default today,
+   parse timezones, sort, match medications, copy document/generated text, or
+   infer chronology.
+2. **Differences to review** contains explicit caregiver-recorded comparisons.
+   Record A is one document mention. Record B is either a distinct document
+   mention or one caregiver course. The browser does not preselect, detect,
+   highlight, rank, or decide which side is correct. Immutable A/B snapshots
+   remain separate from each side's current state. An older
+   `legacy_incomplete` item shows its one real side and an unavailable second
+   citation; it is read-only.
+3. **Document mentions** contains every source receipt occurrence, duplicate,
+   and exact raw value in server order. These rows are not caregiver lifecycle
+   records. Source/evidence links are authenticated opaque routes.
+4. **Earlier app records** keeps raw rows, stable components, and
+   machine-generated compatibility context separate and read-only.
+   Machine-generated context is not a treatment record and neither legacy nor
+   generated data can appear in lifecycle, discrepancy, outcome, or follow-up
+   authority controls.
+
+Current lifecycle buttons are exactly those returned by the server. Do not
+interpret their presence as treatment advice. A new Past record or a transition
+to Past requires a neutral recorded outcome offered by the server. **Did not
+start** and **Plan cancelled before starting** do not imply exposure.
+**Other recorded outcome** requires exact bounded caregiver detail.
+**Earlier record; ending detail not recorded** is display-only legacy authority.
+Past is terminal. **Create linked new record** appears only when the server
+authorizes restart; it creates a blank new Current or Planned course and leaves
+the prior course unchanged.
+
+Treating-team outcomes are always labelled
+`Caregiver-entered · attributed to clinician · unverified`. A caregiver-course
+correction submits only explicit changed fields atomically with the outcome and
+cannot submit a no-op. Reopen keeps prior outcomes. Recurrence uses the server-
+owned prior A/B authority without replacement. Follow-up management is one
+atomic variant: link one current eligible action, create-and-link one manual
+action, or unlink the displayed action. It never performs a preliminary action
+create or changes either lifecycle.
+
+Every save is confirmed only after the complete authoritative projection
+reloads and matches the returned revisions and public result. If submission
+transport is uncertain, **Retry submission** resends the exact same bytes;
+editing or closing removes that authority. After any valid mutation response,
+only **Retry refresh** can be used. A conflict discards old tokens and
+selections, reloads, and requires explicit review; safe caregiver add/difference
+wording may be restored, but source, component, action, target, and citation
+choices must be selected again. Rejected submitted fields keep the current
+projection and draft. A malformed or hard treatment read clears treatment
+content; authorization loss clears all patient PHI. Normal refresh does not
+move focus.
+
+The fixed statement remains visible in every state:
+
+> NET/Care records what you enter but does not verify treatment details or
+> advise starting, stopping, or changing treatment. Confirm treatment decisions
+> with the treating team.
 
 ## 5c. See newly discovered research
 

@@ -1793,24 +1793,24 @@ def test_latest_research_update_labels_only_exact_batch_records():
     assert "/api/changes" not in APP_JS
 
 
-def test_stale_treatment_classification_visibly_falls_back_to_raw_entries():
+def test_treatment_ui_has_no_status_fallback_or_legacy_mutation_authority():
     sidebar = _function_source("renderSidebar", "renderAlerts")
-    assert "d.treatments_fallback?.length" in sidebar
-    assert "d.treatments_classification_current === false" in sidebar
-    assert "Classification outdated — showing raw treatment entries." in sidebar
+    assert "treatments_fallback" not in sidebar
+    assert "treatments_classified" not in sidebar
+    assert "current_treatments" not in sidebar
+    assert "tx-list" not in APP_JS
 
 
-def test_treatment_actions_use_stable_id_token_and_profile_revision():
-    sidebar = _function_source("renderSidebar", "renderAlerts")
-    assert "data-treatment-id" in sidebar
-    assert "data-edit-token" in sidebar
-    assert "editTreatment(this,'complete')" in sidebar
-    assert "editTreatment(this,'remove')" in sidebar
-    editor = _function_source("editTreatment", "generateSummary")
-    assert "/api/treatments/${encodeURIComponent(treatmentId)}" in editor
-    assert "expected_token: expectedToken" in editor
-    assert "expected_profile_revision: latestProfileRevision" in editor
-    assert "/api/treatments/update" not in editor
+def test_treatment_actions_use_only_reconciliation_projection_authority():
+    assert "/api/patient/treatment-reconciliation" in APP_JS
+    assert "/api/treatment-reconciliation/courses" in APP_JS
+    assert "/api/treatment-reconciliation/discrepancies" in APP_JS
+    assert "/api/treatments/" not in APP_JS
+    assert "/api/treatments/update" not in APP_JS
+    assert "expected_profile_revision: treatmentProjection.profile_revision" in APP_JS
+    assert "expected_workflow_revision: treatmentProjection.workflow_revision" in APP_JS
+    assert "expected_projection_token: treatmentProjection.projection_token" in APP_JS
+    assert "body: intent.bodyText" in APP_JS
 
 
 def test_latest_research_update_refreshes_after_missed_job_transitions():

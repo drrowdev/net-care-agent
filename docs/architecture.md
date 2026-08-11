@@ -328,12 +328,49 @@ complete private source/receipt/import/document/evidence/history authority,
 course/action/discrepancy/outcome state, unknown extras, and both revisions, so
 either side rotating invalidates current authority without rewriting snapshots.
 The exact static safety copy is `NET/Care records what you enter but does not verify treatment details or advise starting, stopping, or changing treatment. Confirm treatment decisions with the treating team.` It is nonconditional,
-non-PHI, and non-prescriptive. Treatment UI remains deferred.
+non-PHI, and non-prescriptive.
 The projector is side-effect-free and the new course/discrepancy/confirmation
 state does not enter chat, orchestrator, executive summary, questions, deep
-sweep, or other model input in this backend-only PR.
+sweep, or other model input.
 
-One responsive client authority model renders current episodes on Today and
+The SPA treats this endpoint as the sole treatment authority. One accepted
+projection, response owner, revision pair, loader, and mutation controller
+render a bounded Today summary and the complete Patient workspace; no
+`/api/status` treatment row can render, edit, transition, or remove a record.
+Today keeps the first three current/planned courses in server order and states
+the exact shown, total, omitted, past, source, legacy, generated, and open-
+difference counts. Patient has separate Treatment records, Differences to
+review, Document mentions, and Earlier app records panels. Generated
+classification is persistently identified as compatibility context rather than
+a treatment record, and legacy components become course authority only through
+an explicit caregiver association labelled unverified.
+
+Before any treatment DOM replacement, the client validates the complete
+projection, exact safety bytes, bounds, IDs/tokens, raw shapes, source links,
+terminal fields, published lifecycle/restart authority, both discrepancy
+citations, outcomes, recurrence graph, and action ownership. It preserves
+server order, duplicates, raw strings, and null/empty/missing distinctions and
+keeps tokens, snapshots, refs, drafts, and serialized retry bytes only in owned
+JavaScript memory. Strict literal same-origin opaque source/evidence routes are
+the only rendered links.
+
+All controls come from current published eligibility. A mutation uses one owner,
+a fresh mutation ID, both revisions, projection/target/citation/action tokens,
+and one canonical serialized body. A transport-ambiguous submission alone may
+be retried with identical bytes. `409` destroys replay and server-derived
+selection, preserves only safe caregiver draft fields, and reloads for explicit
+review. A valid targeted response is provisional: both surfaces become
+read-only until a complete replacement matches returned revisions and semantic
+course/discrepancy/outcome/link state; legitimate token rotation is ignored for
+that semantic comparison. Mismatch permits refresh only, never resubmission.
+Mutation field `400/422` keeps the still-current projection and draft, while a
+hard/malformed projection clears treatment PHI. Auth invokes central PHI
+eviction. Endpoint-specific epochs and abort ownership reject late effects;
+normal refresh does not steal focus, and desktop/phone use contained table
+overflow, stacked citation panels, keyboard tabs, visible focus, and 44-pixel
+controls.
+
+For symptoms, one responsive client authority model renders current episodes on Today and
 the complete current/resolved/source-observation workflow on Patient. It
 validates the full projection, safety copy, lifecycle/link graph, tokens, and
 strict same-origin opaque source/evidence routes before replacing any state or

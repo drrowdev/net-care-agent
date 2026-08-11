@@ -44,6 +44,26 @@
   let pendingSymptomIntent = null;
   let pendingSymptomCompletion = null;
   let symptomDrafts = new Map();
+  let treatmentProjection = null;
+  let treatmentResponseOwner = null;
+  let treatmentProjectionState = 'idle';
+  let treatmentNetworkAmbiguous = false;
+  let treatmentLoadEpoch = 0;
+  let treatmentSelectionEpoch = 0;
+  let treatmentDialogEpoch = 0;
+  let treatmentMutationEpoch = 0;
+  let treatmentRequestController = null;
+  let treatmentMutationController = null;
+  let treatmentActiveTab = 'records';
+  let treatmentDialogOpen = false;
+  let treatmentDialogMode = null;
+  let treatmentSelection = null;
+  let treatmentMutationOwner = null;
+  let treatmentMutationPending = false;
+  let activeTreatmentIntent = null;
+  let pendingTreatmentRetry = null;
+  let pendingTreatmentCompletion = null;
+  let treatmentDraft = null;
   let biomarkerProjection = null;
   let biomarkerResponseOwner = null;
   let selectedBiomarkerAnalyteId = null;
@@ -318,6 +338,14 @@
       typeof symptomRequestController !== 'undefined'
       && symptomRequestController !== null
     );
+    const treatmentWasLoaded = (
+      typeof treatmentProjection !== 'undefined'
+      && treatmentProjection !== null
+    );
+    const treatmentRequestWasActive = (
+      typeof treatmentRequestController !== 'undefined'
+      && treatmentRequestController !== null
+    );
     phiEpoch += 1;
     if (typeof markBiomarkerProjectionStale === 'function') {
       markBiomarkerProjectionStale(
@@ -352,6 +380,25 @@
           preserveMutation: options.preserveSymptomMutation === true,
         },
       );
+    }
+    if (
+      (treatmentWasLoaded || treatmentRequestWasActive)
+      && typeof markTreatmentProjectionStale === 'function'
+    ) {
+      markTreatmentProjectionStale(
+        'The patient record changed. Treatment information is read-only until the authoritative record reloads.',
+        {
+          abortRequest: options.preserveTreatmentRequest !== true,
+          ownerPhiEpoch: phiEpoch,
+          preserveMutation: options.preserveTreatmentMutation === true,
+        },
+      );
+      if (
+        options.preserveTreatmentRequest !== true
+        && typeof ensureTreatmentReconciliation === 'function'
+      ) {
+        Promise.resolve().then(() => ensureTreatmentReconciliation());
+      }
     }
     taskSelectionEpoch += 1;
     if (
@@ -464,6 +511,11 @@
         preserveImagingRequest: options.imagingProjection === true,
         preserveSymptomRequest: options.symptomProjection === true,
         preserveSymptomMutation: options.symptomMutation === true,
+        preserveTreatmentRequest: (
+          options.treatmentProjection === true
+          || options.treatmentMutation === true
+        ),
+        preserveTreatmentMutation: options.treatmentMutation === true,
         deferConvergence: options.alertResolution === true,
         preserveVisitRecapExportOwner: options.preserveVisitRecapExportOwner === true,
       });
@@ -568,6 +620,32 @@
         );
         if (typeof ensureSymptomEpisodes === 'function') {
           Promise.resolve().then(() => ensureSymptomEpisodes());
+        }
+      }
+      const treatmentNeedsWorkflowRefresh = (
+        options.treatmentProjection !== true
+        && options.treatmentMutation !== true
+        && !profileAdvanced
+        && (
+          (
+            typeof treatmentProjection !== 'undefined'
+            && treatmentProjection !== null
+          )
+          || (
+            typeof treatmentRequestController !== 'undefined'
+            && treatmentRequestController !== null
+          )
+        )
+      );
+      if (
+        treatmentNeedsWorkflowRefresh
+        && typeof markTreatmentProjectionStale === 'function'
+      ) {
+        markTreatmentProjectionStale(
+          'The patient workflow changed. Treatment information is read-only until the authoritative record reloads.',
+        );
+        if (typeof ensureTreatmentReconciliation === 'function') {
+          Promise.resolve().then(() => ensureTreatmentReconciliation());
         }
       }
       if (
@@ -1196,6 +1274,16 @@
     ) {
       refreshes.push(ensureSymptomEpisodes());
     }
+    if (
+      treatmentNetworkAmbiguous
+      || (
+        options.onlineRecovery !== true
+        && ['today', 'patient'].includes(activeView)
+        && !treatmentProjection
+      )
+    ) {
+      refreshes.push(ensureTreatmentReconciliation());
+    }
     if (appointmentDialogOpen && activeAppointmentTab === 'recap') {
       refreshes.push(loadVisitRecap());
     }
@@ -1223,11 +1311,12 @@
       loadVisits();
       loadFollowUps();
     } else if (name === 'patient') {
-      loadStatus();
+      loadStatus().finally(() => ensureTreatmentReconciliation());
       loadPatientEvidence();
       loadBiomarkerSeries();
       ensureImagingSeries();
       ensureSymptomEpisodes();
+      ensureTreatmentReconciliation();
     } else if (name === 'activity') {
       loadTasks();
     } else if (name === 'today') {
@@ -1249,7 +1338,14 @@
   function refreshAfterVisibilityRestore() {
     if (document.hidden) return;
     const refreshes = [loadTasks(), loadStatus()];
-    if (activeView === 'today') refreshes.push(loadSummary(), loadFollowUps(), ensureSymptomEpisodes());
+    if (activeView === 'today') {
+      refreshes.push(
+        loadSummary(),
+        loadFollowUps(),
+        ensureSymptomEpisodes(),
+        ensureTreatmentReconciliation(),
+      );
+    }
     if (activeView === 'questions' || appointmentDialogOpen) {
       refreshes.push(loadVisits(), loadFollowUps(), loadQuestions());
     }
@@ -1259,6 +1355,7 @@
         loadPatientEvidence(),
         ensureImagingSeries(),
         ensureSymptomEpisodes(),
+        ensureTreatmentReconciliation(),
       );
     }
     if (appointmentDialogOpen && activeAppointmentTab === 'recap') {
@@ -2912,7 +3009,6 @@
   function renderStatusFailure() {
     const patient = document.getElementById('patient-dx');
     const patientMeta = document.getElementById('patient-meta');
-    const treatments = document.getElementById('tx-list');
     const alerts = document.getElementById('alerts-list');
     redactGeneratedQuestionChoices();
     latestResearchUpdate = null;
@@ -2920,7 +3016,6 @@
     clearFreshnessProjection();
     if (patient) patient.textContent = 'Patient profile unavailable';
     if (patientMeta) patientMeta.innerHTML = '';
-    if (treatments) treatments.innerHTML = loadFailureMarkup('Treatments', 'loadStatus()');
     if (alerts) alerts.innerHTML = loadFailureMarkup('Alerts', 'loadStatus()');
   }
 
@@ -2942,6 +3037,15 @@
         state: 'error',
         statusLabel: 'Patient data unavailable',
         message: 'Symptom data was cleared because current authority is unavailable.',
+        retry: false,
+        fullEviction: true,
+      });
+    }
+    if (typeof clearTreatmentProjection === 'function') {
+      clearTreatmentProjection({
+        state: 'error',
+        statusLabel: 'Patient data unavailable',
+        message: 'Treatment data was cleared because current authority is unavailable.',
         retry: false,
         fullEviction: true,
       });
@@ -3029,7 +3133,6 @@
     const patient = document.getElementById('patient-dx');
     if (patient) patient.textContent = 'Patient data unavailable';
     clear('patient-meta');
-    clear('tx-list');
     clear('alerts-list');
     clear('source-history');
     clear('q-list');
@@ -3359,86 +3462,6 @@
         <button class="meta-val clickable" onclick="openModal('papers')">${escHtml((d.stats && d.stats.literature_watched != null) ? d.stats.literature_watched : 0)}${newPapers ? ` <span class="meta-new-count">${escHtml(newPapers)} new</span>` : ''}</button>
       </div>
     `;
-
-    // Treatments — categorized
-    const txs = d.treatments_classified || [];
-    const active    = txs.filter(t => t.category === 'active');
-    const planned   = txs.filter(t => t.category === 'planned');
-    const completed = txs.filter(t => t.category === 'completed');
-
-    // Sort by date within each category
-    const sortByDate = (arr, desc = false) => [...arr].sort((a, b) => {
-      if (!a.date && !b.date) return 0;
-      if (!a.date) return 1;
-      if (!b.date) return -1;
-      return desc ? b.date.localeCompare(a.date) : a.date.localeCompare(b.date);
-    });
-
-    const sortedActive    = sortByDate(active, false);
-    const sortedPlanned   = sortByDate(planned, false);
-    const sortedCompleted = sortByDate(completed, true);
-
-    // Fallback to raw list if not yet classified
-    const rawTxs = (d.treatments_fallback?.length
-      ? d.treatments_fallback
-      : (p.current_treatments || []));
-
-    const txRow = (t) => {
-      const dotColor = t.category === 'active' ? 'var(--accent)'
-                     : t.category === 'planned' ? 'var(--amber)' : 'var(--text2)';
-      const textStyle = t.category === 'completed' ? ' style="color:var(--text2)"' : '';
-      const completeBtn = t.category !== 'completed'
-        ? `<button class="tx-action-btn complete" data-treatment-id="${escHtml(t.id)}" data-edit-token="${escHtml(t.edit_token)}" aria-label="Mark ${escHtml(t.label || t.text)} as completed" title="Mark as completed" onclick="editTreatment(this,'complete')">✓</button>` : '';
-      return `
-        <div class="tx-item">
-          <div class="tx-dot" style="background:${dotColor}"></div>
-          <div class="tx-item-text">
-            <span${textStyle}>${escHtml(t.label || t.text)}</span>
-            ${t.date ? `<span class="tx-date">${escHtml(fmtDate(t.date))}</span>` : ''}
-          </div>
-          <div class="tx-actions">
-            ${completeBtn}
-            <button class="tx-action-btn remove" data-treatment-id="${escHtml(t.id)}" data-edit-token="${escHtml(t.edit_token)}" aria-label="Remove ${escHtml(t.label || t.text)}" title="Remove" onclick="editTreatment(this,'remove')">✕</button>
-          </div>
-        </div>`;
-    };
-
-    if (txs.length === 0 && rawTxs.length === 0) {
-      document.getElementById('tx-list').innerHTML =
-        '<div class="empty-state">No treatments recorded</div>';
-    } else if (txs.length === 0) {
-      document.getElementById('tx-list').innerHTML =
-        `${d.treatments_classification_current === false ? '<div class="classification-stale-notice">Classification outdated — showing raw treatment entries.</div>' : ''}
-        ${rawTxs.map(t => `<div class="tx-item"><div class="tx-dot"></div>${escHtml(t)}</div>`).join('')}`;
-    } else {
-      let txHtml = '';
-
-      if (sortedActive.length) {
-        txHtml += `<div class="tx-category-head">Active</div>`;
-        txHtml += sortedActive.map(t => txRow(t)).join('');
-      }
-
-      if (sortedPlanned.length) {
-        txHtml += `<div class="tx-category-head">Planned</div>`;
-        txHtml += sortedPlanned.map(t => txRow(t)).join('');
-      }
-
-      if (sortedCompleted.length) {
-        const compId = 'tx-completed-list';
-        const isOpen = document.getElementById(compId) ?
-          !document.getElementById(compId).classList.contains('hidden') : false;
-        txHtml += `
-          <div class="tx-category-head tx-category-toggle" onclick="toggleCompleted()">
-            Completed
-            <span id="tx-completed-caret" style="float:right;font-size:10px">${isOpen ? '▲' : '▼'}</span>
-          </div>
-          <div id="${compId}" class="${isOpen ? '' : 'hidden'}">
-            ${sortedCompleted.map(t => txRow(t)).join('')}
-          </div>`;
-      }
-
-      document.getElementById('tx-list').innerHTML = txHtml;
-    }
 
     const alerts = Array.isArray(d.alerts) ? d.alerts : [];
     alertsById = new Map(
@@ -4412,37 +4435,6 @@
     if (toggle) {
       toggle.setAttribute('aria-expanded', String(summaryOpen));
       toggle.title = summaryOpen ? 'Collapse assessment' : 'Expand assessment';
-    }
-  }
-
-  function toggleCompleted() {
-    const list = document.getElementById('tx-completed-list');
-    const caret = document.getElementById('tx-completed-caret');
-    if (!list) return;
-    list.classList.toggle('hidden');
-    if (caret) caret.textContent = list.classList.contains('hidden') ? '▼' : '▲';
-  }
-
-  async function editTreatment(button, action) {
-    const treatmentId = button?.dataset.treatmentId;
-    const expectedToken = button?.dataset.editToken;
-    if (!treatmentId || !expectedToken || latestProfileRevision == null) return;
-    const request = capturePatientRequest();
-    try {
-      const result = await readJsonResponse(await fetch(`/api/treatments/${encodeURIComponent(treatmentId)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action,
-          expected_token: expectedToken,
-          expected_profile_revision: latestProfileRevision,
-        }),
-      }));
-      if (!authorizePatientResponse(request, result).accepted) return;
-      await loadStatus();
-    } catch (error) {
-      if (!patientRequestIsCurrent(request)) return;
-      reportLoadError('action', error);
     }
   }
 
@@ -7963,6 +7955,10 @@
   document.addEventListener('keydown', (e) => {
     if (trapDialogFocus(e)) return;
     if (e.key !== 'Escape') return;
+    if (treatmentDialogOpen) {
+      closeTreatmentDialog();
+      return;
+    }
     if (symptomDialogOpen) {
       closeSymptomDialog();
       return;
@@ -11538,8 +11534,2995 @@
     }
   }
 
+  // ── Treatment reconciliation ────────────────────────────────────────────
+  const TREATMENT_SAFETY_GUIDANCE = 'NET/Care records what you enter but does not verify treatment details or advise starting, stopping, or changing treatment. Confirm treatment decisions with the treating team.';
+  const TREATMENT_CONFIRMATION_LABEL = 'Caregiver-entered · attributed to clinician · unverified';
+  const TREATMENT_TODAY_LIMIT = 3;
+  const TREATMENT_MAX_AUTHORITY_BYTES = 6000000;
+  const TREATMENT_COURSE_FIELDS = [
+    'treatment_text', 'treatment_type_text', 'dose_text', 'route_text',
+    'frequency_text', 'cycle_text', 'schedule_text', 'formulation_text',
+    'indication_text', 'notes', 'start_date', 'stop_date', 'planned_date',
+  ];
+  const TREATMENT_OPTIONAL_TEXT_FIELDS = new Set([
+    'treatment_type_text', 'dose_text', 'route_text', 'frequency_text',
+    'cycle_text', 'schedule_text', 'formulation_text', 'indication_text', 'notes',
+  ]);
+  const TREATMENT_TEXT_LIMITS = {
+    treatment_text: 1000,
+    treatment_type_text: 500,
+    dose_text: 500,
+    route_text: 500,
+    frequency_text: 500,
+    cycle_text: 500,
+    schedule_text: 1000,
+    formulation_text: 500,
+    indication_text: 1000,
+    notes: 10000,
+    terminal_detail: 1000,
+  };
+  const TREATMENT_STATUS_LABELS = {
+    current: 'Current record',
+    planned: 'Planned record',
+    past: 'Past record',
+  };
+  const TREATMENT_TERMINAL_LABELS = {
+    ended: 'Ended after it had started',
+    not_started: 'Did not start',
+    cancelled: 'Plan cancelled before starting',
+    other: 'Other recorded outcome',
+    legacy_unspecified: 'Earlier record; ending detail not recorded',
+  };
+  const TREATMENT_RESTART_REASONS = {
+    course_not_terminal: 'This record is not past.',
+    terminal_qualifier_not_restartable: 'This earlier record was not recorded as having started.',
+    no_prior_current_authority: 'The earlier workflow does not establish a prior current record.',
+    eligible_prior_current: 'The server permits a new record linked to this past record.',
+  };
+
+  function treatmentElement(tag, className = '', text = null) {
+    const element = document.createElement(tag);
+    if (className) element.className = className;
+    if (text !== null) element.textContent = text;
+    return element;
+  }
+
+  function treatmentHasExactKeys(value, required, optional = []) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const allowed = new Set([...required, ...optional]);
+    const keys = Object.keys(value);
+    return required.every(key => Object.prototype.hasOwnProperty.call(value, key))
+      && keys.every(key => allowed.has(key));
+  }
+
+  function treatmentBoundedString(value, maximum, nullable = false) {
+    return (nullable && value === null)
+      || (typeof value === 'string' && value.length <= maximum);
+  }
+
+  function treatmentSafeNested(value) {
+    const stack = [{ value, depth: 0 }];
+    let nodes = 0;
+    while (stack.length) {
+      const item = stack.pop();
+      nodes += 1;
+      if (nodes > 75000 || item.depth > 12) return false;
+      if (typeof item.value === 'string') {
+        if (item.value.length > 100000) return false;
+      } else if (Array.isArray(item.value)) {
+        if (item.value.length > 10000) return false;
+        item.value.forEach(value => stack.push({ value, depth: item.depth + 1 }));
+      } else if (item.value && typeof item.value === 'object') {
+        const keys = Object.keys(item.value);
+        if (keys.length > 2000) return false;
+        keys.forEach(key => {
+          stack.push({ value: key, depth: item.depth + 1 });
+          stack.push({ value: item.value[key], depth: item.depth + 1 });
+        });
+      } else if (
+        item.value !== null
+        && !['boolean', 'number'].includes(typeof item.value)
+      ) return false;
+      if (typeof item.value === 'number' && !Number.isFinite(item.value)) return false;
+    }
+    return true;
+  }
+
+  function treatmentDatePrecision(value) {
+    if (value === null) return 'unknown';
+    if (typeof value !== 'string') return null;
+    const match = value.match(/^(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?$/);
+    if (!match) return null;
+    const year = Number(match[1]);
+    if (year < 1 || year > 9999) return null;
+    if (match[2] === undefined) return 'year';
+    const month = Number(match[2]);
+    if (month < 1 || month > 12) return null;
+    if (match[3] === undefined) return 'month';
+    const day = Number(match[3]);
+    const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    const maximum = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+    return day >= 1 && day <= maximum ? 'day' : null;
+  }
+
+  function treatmentDateInputIsValid(value) {
+    return value === '' || treatmentDatePrecision(value) !== null;
+  }
+
+  function safeTreatmentSourceUrl(value, expectedRef, kind) {
+    if (typeof value !== 'string' || typeof expectedRef !== 'string') return '';
+    const expected = `/api/patient/treatment-reconciliation/source-facts/${expectedRef}/${kind}`;
+    if (value !== expected) return '';
+    if (!/^\/api\/patient\/treatment-reconciliation\/source-facts\/txref_[0-9a-f]{64}\/(?:source|evidence)$/.test(value)) {
+      return '';
+    }
+    try {
+      const base = document.baseURI || window.location.href;
+      const url = new URL(value, base);
+      const origin = new URL(base).origin;
+      return (
+        url.origin === origin
+        && url.username === ''
+        && url.password === ''
+        && url.search === ''
+        && url.hash === ''
+        && url.pathname === value
+        && `${url.pathname}${url.search}${url.hash}` === value
+      ) ? value : '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function treatmentSourceFactIsValid(source) {
+    if (!treatmentHasExactKeys(source, [
+      'ref', 'token', 'observed_text', 'record_value', 'operation',
+      'review_state', 'receipt_state', 'provenance',
+    ])) return false;
+    if (
+      !/^txref_[0-9a-f]{64}$/.test(source.ref)
+      || !treatmentBoundedString(source.token, 200)
+      || !source.token
+      || typeof source.observed_text !== 'string'
+      || !treatmentSafeNested(source.record_value)
+      || typeof source.operation !== 'string'
+      || typeof source.review_state !== 'string'
+      || typeof source.receipt_state !== 'string'
+      || !treatmentHasExactKeys(source.provenance, [
+        'status', 'label', 'source_url', 'evidence_url',
+      ])
+      || !['source_verified', 'source_unverified'].includes(source.provenance.status)
+      || !['Exact source', 'No exact source'].includes(source.provenance.label)
+      || safeTreatmentSourceUrl(source.provenance.source_url, source.ref, 'source') !== source.provenance.source_url
+    ) return false;
+    if (source.provenance.status === 'source_verified') {
+      return safeTreatmentSourceUrl(
+        source.provenance.evidence_url,
+        source.ref,
+        'evidence',
+      ) === source.provenance.evidence_url;
+    }
+    return source.provenance.evidence_url === null;
+  }
+
+  function treatmentActionIsValid(action) {
+    return treatmentHasExactKeys(action, ['id', 'token', 'text', 'status', 'owner', 'due_date'])
+      && treatmentBoundedString(action.id, 200)
+      && Boolean(action.id)
+      && treatmentBoundedString(action.token, 200)
+      && Boolean(action.token)
+      && treatmentBoundedString(action.text, 1000)
+      && ['open', 'in_progress', 'completed', 'cancelled'].includes(action.status)
+      && treatmentBoundedString(action.owner, 100, true)
+      && treatmentBoundedString(action.due_date, 32, true);
+  }
+
+  function treatmentCourseIsValid(course, componentIds, options = {}) {
+    const fields = [
+      'id', 'status', ...TREATMENT_COURSE_FIELDS.slice(0, 10),
+      'legacy_component_ids',
+      'start_date', 'start_date_precision', 'start_date_kind',
+      'stop_date', 'stop_date_precision', 'stop_date_kind',
+      'planned_date', 'planned_date_precision', 'planned_date_kind',
+      'terminal_qualifier', 'terminal_detail', 'previous_course_id',
+      'created_at', 'updated_at', 'token', 'lifecycle', 'provenance',
+    ];
+    const legacySnapshotFields = fields.filter(
+      key => !['terminal_qualifier', 'terminal_detail', 'lifecycle'].includes(key),
+    );
+    const keysValid = options.snapshot
+      ? (
+        treatmentHasExactKeys(course, fields)
+        || treatmentHasExactKeys(course, legacySnapshotFields)
+      )
+      : treatmentHasExactKeys(course, fields);
+    if (
+      !keysValid
+      || !/^txc_[0-9a-f]{32}$/.test(course.id)
+      || !['current', 'past', 'planned'].includes(course.status)
+      || !treatmentBoundedString(course.token, 200)
+      || !course.token
+      || !treatmentBoundedString(course.treatment_text, 1000)
+      || !course.treatment_text
+    ) return false;
+    for (const field of TREATMENT_OPTIONAL_TEXT_FIELDS) {
+      if (!treatmentBoundedString(course[field], TREATMENT_TEXT_LIMITS[field], true)) return false;
+    }
+    if (
+      !Array.isArray(course.legacy_component_ids)
+      || new Set(course.legacy_component_ids).size !== course.legacy_component_ids.length
+      || !course.legacy_component_ids.every(id => (
+        typeof id === 'string' && (options.snapshot || componentIds.has(id))
+      ))
+      || !treatmentBoundedString(course.previous_course_id, 200, true)
+      || !treatmentBoundedString(course.created_at, 64)
+      || !treatmentBoundedString(course.updated_at, 64)
+      || !treatmentHasExactKeys(course.provenance, ['status', 'label'])
+      || course.provenance.status !== 'caregiver_entered_unverified'
+      || course.provenance.label !== 'Caregiver-entered · unverified'
+    ) return false;
+    for (const prefix of ['start', 'stop', 'planned']) {
+      const value = course[`${prefix}_date`];
+      const precision = treatmentDatePrecision(value);
+      if (
+        precision === null
+        || course[`${prefix}_date_precision`] !== precision
+        || course[`${prefix}_date_kind`] !== (value === null ? 'unknown' : 'caregiver_entered')
+      ) return false;
+    }
+    if (Object.prototype.hasOwnProperty.call(course, 'terminal_qualifier')) {
+      if (course.status !== 'past') {
+        if (course.terminal_qualifier !== null || course.terminal_detail !== null) return false;
+      } else if (!Object.keys(TREATMENT_TERMINAL_LABELS).includes(course.terminal_qualifier)) {
+        return false;
+      } else if (course.terminal_qualifier === 'other') {
+        if (
+          !treatmentBoundedString(course.terminal_detail, 1000)
+          || !course.terminal_detail.trim()
+        ) return false;
+      } else if (course.terminal_detail !== null) return false;
+    }
+    if (!Object.prototype.hasOwnProperty.call(course, 'lifecycle')) return options.snapshot === true;
+    if (!treatmentHasExactKeys(course.lifecycle, ['allowed_transitions', 'restart'])) return false;
+    if (
+      !Array.isArray(course.lifecycle.allowed_transitions)
+      || course.lifecycle.allowed_transitions.length > 2
+      || !course.lifecycle.allowed_transitions.every(transition => (
+        treatmentHasExactKeys(transition, ['status', 'terminal_qualifiers'])
+        && ['current', 'past'].includes(transition.status)
+        && Array.isArray(transition.terminal_qualifiers)
+        && transition.terminal_qualifiers.length <= 4
+        && new Set(transition.terminal_qualifiers).size === transition.terminal_qualifiers.length
+        && transition.terminal_qualifiers.every(value => (
+          ['ended', 'not_started', 'cancelled', 'other'].includes(value)
+        ))
+      ))
+      || new Set(course.lifecycle.allowed_transitions.map(item => item.status)).size
+        !== course.lifecycle.allowed_transitions.length
+    ) return false;
+    if (
+      !treatmentHasExactKeys(course.lifecycle.restart, ['eligible', 'reason'])
+      || typeof course.lifecycle.restart.eligible !== 'boolean'
+      || !Object.prototype.hasOwnProperty.call(
+        TREATMENT_RESTART_REASONS,
+        course.lifecycle.restart.reason,
+      )
+    ) return false;
+    return true;
+  }
+
+  function treatmentLegacyRowIsValid(row, seenComponents, seenGenerated) {
+    if (!treatmentHasExactKeys(row, [
+      'id', 'token', 'raw_text', 'source_order', 'components',
+      'generated_classification', 'authority_label',
+    ])) return false;
+    if (
+      !treatmentBoundedString(row.id, 200)
+      || !row.id
+      || !treatmentBoundedString(row.token, 200)
+      || !row.token
+      || typeof row.raw_text !== 'string'
+      || !Number.isSafeInteger(row.source_order)
+      || row.source_order < 0
+      || !Array.isArray(row.components)
+      || !Array.isArray(row.generated_classification)
+      || row.authority_label !== 'Legacy/generated · not caregiver lifecycle authority'
+    ) return false;
+    for (const component of row.components) {
+      if (
+        !treatmentHasExactKeys(component, ['id', 'text', 'component_order'])
+        || !treatmentBoundedString(component.id, 200)
+        || !component.id
+        || seenComponents.has(component.id)
+        || typeof component.text !== 'string'
+        || !Number.isSafeInteger(component.component_order)
+        || component.component_order < 0
+      ) return false;
+      seenComponents.add(component.id);
+    }
+    for (const generated of row.generated_classification) {
+      if (
+        !treatmentHasExactKeys(generated, [
+          'id', 'text', 'label', 'category', 'date', 'source_treatment_ids',
+        ])
+        || !treatmentBoundedString(generated.id, 200)
+        || !generated.id
+        || seenGenerated.has(generated.id)
+        || typeof generated.text !== 'string'
+        || !treatmentBoundedString(generated.label, 1000, true)
+        || !treatmentBoundedString(generated.category, 500, true)
+        || !treatmentBoundedString(generated.date, 64, true)
+        || !Array.isArray(generated.source_treatment_ids)
+        || !generated.source_treatment_ids.every(id => typeof id === 'string')
+      ) return false;
+      seenGenerated.add(generated.id);
+    }
+    return true;
+  }
+
+  function treatmentConfirmationIsValid(confirmation) {
+    return treatmentHasExactKeys(confirmation, [
+      'outcome', 'note', 'clinician_text', 'context_text', 'date',
+      'date_precision', 'date_kind', 'recorded_at', 'provenance_label',
+    ])
+      && ['confirmed_as_recorded', 'caregiver_record_corrected',
+        'source_clarification_needed', 'no_change_documented'].includes(confirmation.outcome)
+      && treatmentBoundedString(confirmation.note, 10000)
+      && Boolean(confirmation.note)
+      && treatmentBoundedString(confirmation.clinician_text, 500, true)
+      && treatmentBoundedString(confirmation.context_text, 2000, true)
+      && treatmentBoundedString(confirmation.date, 32, true)
+      && treatmentDatePrecision(confirmation.date) === confirmation.date_precision
+      && confirmation.date_kind === (confirmation.date === null ? 'unknown' : 'caregiver_entered')
+      && treatmentBoundedString(confirmation.recorded_at, 64)
+      && confirmation.provenance_label === TREATMENT_CONFIRMATION_LABEL;
+  }
+
+  function treatmentDiscrepancyIsValid(discrepancy, sources, courses, actions) {
+    if (!treatmentHasExactKeys(discrepancy, [
+      'id', 'token', 'status', 'category', 'comparison_text', 'citation_kind',
+      'citation_authority', 'eligibility', 'citations', 'course_id', 'source_fact',
+      'comparison_source_fact', 'course_snapshot', 'recurs_from_id',
+      'confirmations', 'follow_up', 'provenance', 'created_at', 'updated_at',
+      'resolved_at',
+    ])) return false;
+    if (
+      !/^txd_[0-9a-f]{32}$/.test(discrepancy.id)
+      || !treatmentBoundedString(discrepancy.token, 200)
+      || !discrepancy.token
+      || !['open', 'resolved'].includes(discrepancy.status)
+      || !['name_or_type', 'status', 'dose_or_schedule', 'date',
+        'source_wording', 'other'].includes(discrepancy.category)
+      || !treatmentBoundedString(discrepancy.comparison_text, 10000)
+      || !discrepancy.comparison_text
+      || !['source_vs_source', 'source_vs_course', 'legacy_incomplete'].includes(discrepancy.citation_kind)
+      || !treatmentHasExactKeys(discrepancy.citation_authority, ['state', 'reason'])
+      || !treatmentHasExactKeys(discrepancy.eligibility, ['resolve', 'reopen', 'recur'])
+      || !Object.values(discrepancy.eligibility).every(value => typeof value === 'boolean')
+      || !treatmentHasExactKeys(discrepancy.citations, ['source_a', 'source_b', 'course_b'])
+      || !treatmentHasExactKeys(discrepancy.citations.source_a, ['snapshot', 'current'])
+      || !Array.isArray(discrepancy.confirmations)
+      || !discrepancy.confirmations.every(treatmentConfirmationIsValid)
+      || !treatmentHasExactKeys(discrepancy.provenance, ['status', 'label'])
+      || discrepancy.provenance.status !== 'caregiver_entered_unverified'
+      || discrepancy.provenance.label !== 'Caregiver-entered · unverified'
+      || !treatmentBoundedString(discrepancy.created_at, 64)
+      || !treatmentBoundedString(discrepancy.updated_at, 64)
+      || !treatmentBoundedString(discrepancy.resolved_at, 64, true)
+      || !treatmentBoundedString(discrepancy.recurs_from_id, 200, true)
+      || (discrepancy.follow_up !== null && !treatmentActionIsValid(discrepancy.follow_up))
+    ) return false;
+    const sourceA = discrepancy.citations.source_a;
+    if (
+      !treatmentSourceFactIsValid(sourceA.snapshot)
+      || !treatmentSourceFactIsValid(sourceA.current)
+      || !sources.has(sourceA.current.ref)
+      || sources.get(sourceA.current.ref).token !== sourceA.current.token
+      || sourceA.snapshot.ref !== sourceA.current.ref
+      || JSON.stringify(discrepancy.source_fact) !== JSON.stringify(sourceA.snapshot)
+    ) return false;
+    const complete = discrepancy.citation_kind !== 'legacy_incomplete';
+    if (
+      discrepancy.citation_authority.state !== (complete ? 'complete' : 'legacy_incomplete')
+      || discrepancy.citation_authority.reason !== (complete ? null : 'missing_second_citation')
+      || discrepancy.eligibility.resolve !== (complete && discrepancy.status === 'open')
+      || discrepancy.eligibility.reopen !== (complete && discrepancy.status === 'resolved')
+      || discrepancy.eligibility.recur !== (complete && discrepancy.status === 'resolved')
+      || (discrepancy.status === 'open') !== (discrepancy.resolved_at === null)
+    ) return false;
+    if (discrepancy.citation_kind === 'source_vs_source') {
+      const side = discrepancy.citations.source_b;
+      return Boolean(
+        side
+        && discrepancy.citations.course_b === null
+        && discrepancy.course_id === null
+        && discrepancy.course_snapshot === null
+        && treatmentHasExactKeys(side, ['snapshot', 'current'])
+        && treatmentSourceFactIsValid(side.snapshot)
+        && treatmentSourceFactIsValid(side.current)
+        && side.current.ref !== sourceA.current.ref
+        && sources.get(side.current.ref)?.token === side.current.token
+        && side.snapshot.ref === side.current.ref
+        && JSON.stringify(discrepancy.comparison_source_fact) === JSON.stringify(side.snapshot)
+      );
+    }
+    if (discrepancy.citation_kind === 'source_vs_course') {
+      const side = discrepancy.citations.course_b;
+      const componentIds = new Set([
+        ...(side?.snapshot?.legacy_component_ids || []),
+        ...(side?.current?.legacy_component_ids || []),
+      ]);
+      return Boolean(
+        side
+        && discrepancy.citations.source_b === null
+        && discrepancy.comparison_source_fact === null
+        && typeof discrepancy.course_id === 'string'
+        && treatmentHasExactKeys(side, ['snapshot', 'current'])
+        && treatmentCourseIsValid(side.snapshot, componentIds, { snapshot: true })
+        && treatmentCourseIsValid(side.current, componentIds)
+        && side.snapshot.id === discrepancy.course_id
+        && side.current.id === discrepancy.course_id
+        && courses.get(side.current.id)?.token === side.current.token
+        && JSON.stringify(discrepancy.course_snapshot) === JSON.stringify(side.snapshot)
+      );
+    }
+    return discrepancy.citations.source_b === null
+      && discrepancy.citations.course_b === null
+      && discrepancy.course_id === null
+      && discrepancy.comparison_source_fact === null
+      && discrepancy.course_snapshot === null
+      && !Object.values(discrepancy.eligibility).some(Boolean);
+  }
+
+  function treatmentProjectionPayloadIsValid(data) {
+    if (
+      !treatmentHasExactKeys(data, [
+        'profile_revision', 'workflow_revision', 'projection_token',
+        'source_fact_count', 'legacy_treatment_count', 'course_count',
+        'discrepancy_count', 'source_facts', 'legacy_treatments', 'courses',
+        'discrepancies', 'eligible_actions', 'safety_guidance',
+      ])
+      || !Number.isSafeInteger(data.profile_revision)
+      || data.profile_revision < 0
+      || !Number.isSafeInteger(data.workflow_revision)
+      || data.workflow_revision < 0
+      || !treatmentBoundedString(data.projection_token, 200)
+      || !data.projection_token
+      || !Number.isSafeInteger(data.source_fact_count)
+      || data.source_fact_count < 0
+      || data.source_fact_count > 2000
+      || !Number.isSafeInteger(data.legacy_treatment_count)
+      || data.legacy_treatment_count < 0
+      || data.legacy_treatment_count > 2000
+      || !Number.isSafeInteger(data.course_count)
+      || data.course_count < 0
+      || data.course_count > 1000
+      || !Number.isSafeInteger(data.discrepancy_count)
+      || data.discrepancy_count < 0
+      || data.discrepancy_count > 2000
+      || !Array.isArray(data.source_facts)
+      || data.source_facts.length !== data.source_fact_count
+      || !Array.isArray(data.legacy_treatments)
+      || data.legacy_treatments.length !== data.legacy_treatment_count
+      || !Array.isArray(data.courses)
+      || data.courses.length !== data.course_count
+      || !Array.isArray(data.discrepancies)
+      || data.discrepancies.length !== data.discrepancy_count
+      || !Array.isArray(data.eligible_actions)
+      || data.eligible_actions.length > 500
+      || !treatmentHasExactKeys(data.safety_guidance, ['kind', 'text'])
+      || data.safety_guidance.kind !== 'fixed_non_prescriptive'
+      || data.safety_guidance.text !== TREATMENT_SAFETY_GUIDANCE
+      || !treatmentSafeNested(data)
+    ) return false;
+    try {
+      if (new TextEncoder().encode(JSON.stringify(data)).length > TREATMENT_MAX_AUTHORITY_BYTES) {
+        return false;
+      }
+    } catch (_) {
+      return false;
+    }
+    const sources = new Map();
+    const sourceTokens = new Set();
+    for (const source of data.source_facts) {
+      if (
+        !treatmentSourceFactIsValid(source)
+        || sources.has(source.ref)
+        || sourceTokens.has(source.token)
+      ) return false;
+      sources.set(source.ref, source);
+      sourceTokens.add(source.token);
+    }
+    const componentIds = new Set();
+    const generatedIds = new Set();
+    const legacyIds = new Set();
+    const legacyTokens = new Set();
+    let generatedCount = 0;
+    for (const row of data.legacy_treatments) {
+      if (
+        !treatmentLegacyRowIsValid(row, componentIds, generatedIds)
+        || legacyIds.has(row.id)
+        || legacyTokens.has(row.token)
+      ) return false;
+      legacyIds.add(row.id);
+      legacyTokens.add(row.token);
+      generatedCount += row.generated_classification.length;
+      if (generatedCount > 2000 || componentIds.size > 4000) return false;
+    }
+    const courses = new Map();
+    const courseTokens = new Set();
+    for (const course of data.courses) {
+      if (
+        !treatmentCourseIsValid(course, componentIds)
+        || courses.has(course.id)
+        || courseTokens.has(course.token)
+      ) return false;
+      courses.set(course.id, course);
+      courseTokens.add(course.token);
+    }
+    for (const course of data.courses) {
+      if (
+        course.previous_course_id !== null
+        && (!courses.has(course.previous_course_id) || course.previous_course_id === course.id)
+      ) return false;
+      const seen = new Set([course.id]);
+      let prior = course.previous_course_id;
+      while (prior !== null) {
+        if (seen.has(prior)) return false;
+        seen.add(prior);
+        prior = courses.get(prior)?.previous_course_id ?? null;
+      }
+    }
+    const actions = new Map();
+    const actionTokens = new Set();
+    for (const action of data.eligible_actions) {
+      if (
+        !treatmentActionIsValid(action)
+        || !['open', 'in_progress'].includes(action.status)
+        || actions.has(action.id)
+        || actionTokens.has(action.token)
+      ) return false;
+      actions.set(action.id, action);
+      actionTokens.add(action.token);
+    }
+    const discrepancies = new Map();
+    const discrepancyTokens = new Set();
+    for (const discrepancy of data.discrepancies) {
+      if (
+        !treatmentDiscrepancyIsValid(discrepancy, sources, courses, actions)
+        || discrepancies.has(discrepancy.id)
+        || discrepancyTokens.has(discrepancy.token)
+      ) return false;
+      if (discrepancy.follow_up) {
+        if (
+          actions.has(discrepancy.follow_up.id)
+          || actionTokens.has(discrepancy.follow_up.token)
+        ) return false;
+        actions.set(discrepancy.follow_up.id, discrepancy.follow_up);
+        actionTokens.add(discrepancy.follow_up.token);
+      }
+      discrepancies.set(discrepancy.id, discrepancy);
+      discrepancyTokens.add(discrepancy.token);
+    }
+    for (const discrepancy of data.discrepancies) {
+      if (
+        discrepancy.recurs_from_id !== null
+        && (!discrepancies.has(discrepancy.recurs_from_id)
+          || discrepancy.recurs_from_id === discrepancy.id)
+      ) return false;
+      const seen = new Set([discrepancy.id]);
+      let prior = discrepancy.recurs_from_id;
+      while (prior !== null) {
+        if (seen.has(prior)) return false;
+        seen.add(prior);
+        prior = discrepancies.get(prior)?.recurs_from_id ?? null;
+      }
+    }
+    return true;
+  }
+
+  function newTreatmentResponseOwner(projection, ownerPhiEpoch = phiEpoch) {
+    return {
+      requestPhiEpoch: ownerPhiEpoch,
+      loadEpoch: treatmentLoadEpoch,
+      profileRevision: projection.profile_revision,
+      workflowRevision: projection.workflow_revision,
+      projectionToken: projection.projection_token,
+      sourceTokens: new Map(projection.source_facts.map(item => [item.ref, item.token])),
+      legacyTokens: new Map(projection.legacy_treatments.map(item => [item.id, item.token])),
+      courseTokens: new Map(projection.courses.map(item => [item.id, item.token])),
+      discrepancyTokens: new Map(projection.discrepancies.map(item => [item.id, item.token])),
+      actionTokens: new Map(projection.eligible_actions.map(item => [item.id, item.token])),
+    };
+  }
+
+  function treatmentResponseOwnerIsCurrent(owner = treatmentResponseOwner) {
+    if (
+      !owner
+      || owner !== treatmentResponseOwner
+      || owner.requestPhiEpoch !== phiEpoch
+      || owner.loadEpoch !== treatmentLoadEpoch
+      || !treatmentProjection
+      || owner.projectionToken !== treatmentProjection.projection_token
+      || owner.profileRevision !== treatmentProjection.profile_revision
+      || owner.workflowRevision !== treatmentProjection.workflow_revision
+      || owner.sourceTokens.size !== treatmentProjection.source_facts.length
+      || owner.legacyTokens.size !== treatmentProjection.legacy_treatments.length
+      || owner.courseTokens.size !== treatmentProjection.courses.length
+      || owner.discrepancyTokens.size !== treatmentProjection.discrepancies.length
+      || owner.actionTokens.size !== treatmentProjection.eligible_actions.length
+      || treatmentProjection.source_facts.some(item => owner.sourceTokens.get(item.ref) !== item.token)
+      || treatmentProjection.legacy_treatments.some(item => owner.legacyTokens.get(item.id) !== item.token)
+      || treatmentProjection.courses.some(item => owner.courseTokens.get(item.id) !== item.token)
+      || treatmentProjection.discrepancies.some(item => owner.discrepancyTokens.get(item.id) !== item.token)
+      || treatmentProjection.eligible_actions.some(item => owner.actionTokens.get(item.id) !== item.token)
+    ) return false;
+    if (treatmentProjectionState === 'stale') return true;
+    const profile = normalizedRevision(latestProfileRevision);
+    const workflow = normalizedRevision(workflowRevision);
+    return (!Number.isSafeInteger(profile) || profile === owner.profileRevision)
+      && (!Number.isSafeInteger(workflow) || workflow === owner.workflowRevision);
+  }
+
+  function treatmentScalarNode(value, present = true) {
+    if (!present) return treatmentElement('span', 'treatment-missing', 'Missing field');
+    if (value === null) return treatmentElement('span', 'treatment-missing', 'Null');
+    if (value === '') return treatmentElement('span', 'treatment-empty', 'Empty string ("")');
+    if (typeof value === 'string') {
+      if (value.length <= 160) return treatmentElement('span', 'treatment-exact-value', value);
+      const details = treatmentElement('details', 'treatment-exact-details');
+      details.append(
+        treatmentElement('summary', '', `Show exact text (${value.length} characters)`),
+        treatmentElement('pre', 'treatment-exact-value', value),
+      );
+      return details;
+    }
+    if (typeof value === 'boolean') {
+      return treatmentElement('span', 'treatment-exact-value', `Boolean: ${value}`);
+    }
+    if (typeof value === 'number') {
+      return treatmentElement('span', 'treatment-exact-value', `Number: ${String(value)}`);
+    }
+    const serialized = JSON.stringify(value, null, 2);
+    const details = treatmentElement('details', 'treatment-exact-details');
+    details.append(
+      treatmentElement('summary', '', Array.isArray(value) ? 'Show exact array' : 'Show exact object'),
+      treatmentElement('pre', 'treatment-exact-value', serialized),
+    );
+    return details;
+  }
+
+  function treatmentAppendFact(parent, label, object, key, presentation = null) {
+    const row = treatmentElement('div', 'treatment-fact');
+    row.append(treatmentElement('dt', '', label));
+    const value = treatmentElement('dd');
+    const present = Object.prototype.hasOwnProperty.call(object, key);
+    value.append(presentation
+      ? treatmentScalarNode(presentation(object[key], object), present)
+      : treatmentScalarNode(object[key], present));
+    row.append(value);
+    parent.append(row);
+  }
+
+  function treatmentDatePresentation(value, course, prefix) {
+    return `${value === null ? 'Null' : value} · ${course[`${prefix}_date_precision`]} precision · ${
+      course[`${prefix}_date_kind`] === 'caregiver_entered'
+        ? 'Caregiver-entered'
+        : 'Authority unknown'
+    }`;
+  }
+
+  function treatmentCourseById(id) {
+    return treatmentProjection?.courses.find(item => item.id === id) || null;
+  }
+
+  function treatmentDiscrepancyById(id) {
+    return treatmentProjection?.discrepancies.find(item => item.id === id) || null;
+  }
+
+  function treatmentCourseCard(course, compact = false) {
+    const card = treatmentElement('article', `treatment-course-card ${course.status}${compact ? ' compact' : ''}`);
+    const heading = treatmentElement('div', 'treatment-card-heading');
+    heading.append(
+      treatmentElement('span', `treatment-lifecycle ${course.status}`, TREATMENT_STATUS_LABELS[course.status]),
+      treatmentElement('span', 'treatment-provenance', course.provenance.label),
+    );
+    card.append(heading, treatmentElement('h3', '', course.treatment_text));
+    const facts = treatmentElement('dl', 'treatment-facts');
+    treatmentAppendFact(facts, 'Type wording', course, 'treatment_type_text');
+    treatmentAppendFact(facts, 'Dose wording', course, 'dose_text');
+    treatmentAppendFact(facts, 'Schedule wording', course, 'schedule_text');
+    if (!compact) {
+      treatmentAppendFact(facts, 'Route wording', course, 'route_text');
+      treatmentAppendFact(facts, 'Frequency wording', course, 'frequency_text');
+      treatmentAppendFact(facts, 'Cycle wording', course, 'cycle_text');
+      treatmentAppendFact(facts, 'Formulation wording', course, 'formulation_text');
+      treatmentAppendFact(facts, 'Indication wording', course, 'indication_text');
+      treatmentAppendFact(facts, 'Notes', course, 'notes');
+      treatmentAppendFact(facts, 'Start date', course, 'start_date', (value, row) => treatmentDatePresentation(value, row, 'start'));
+      treatmentAppendFact(facts, 'Stop date', course, 'stop_date', (value, row) => treatmentDatePresentation(value, row, 'stop'));
+      treatmentAppendFact(facts, 'Planned date', course, 'planned_date', (value, row) => treatmentDatePresentation(value, row, 'planned'));
+      treatmentAppendFact(
+        facts,
+        'Associated earlier components',
+        { value: course.legacy_component_ids.length
+          ? `${course.legacy_component_ids.length} caregiver-associated · unverified`
+          : null },
+        'value',
+      );
+      if (course.status === 'past') {
+        treatmentAppendFact(
+          facts,
+          'Recorded terminal outcome',
+          { value: TREATMENT_TERMINAL_LABELS[course.terminal_qualifier] },
+          'value',
+        );
+        treatmentAppendFact(facts, 'Other recorded detail', course, 'terminal_detail');
+      }
+      if (course.previous_course_id !== null) {
+        treatmentAppendFact(
+          facts,
+          'Linked previous record',
+          { value: 'This record was created from server-authorized restart authority.' },
+          'value',
+        );
+      }
+    }
+    card.append(facts);
+    if (!compact) {
+      const actions = treatmentElement('div', 'treatment-card-actions');
+      const editable = treatmentProjectionState === 'current' && treatmentResponseOwnerIsCurrent();
+      const edit = treatmentElement('button', 'button secondary', 'Edit recorded details');
+      edit.type = 'button';
+      edit.disabled = !editable;
+      edit.addEventListener('click', () => openTreatmentCourseDialog('edit', edit, course.id));
+      actions.append(edit);
+      course.lifecycle.allowed_transitions.forEach(transition => {
+        const button = treatmentElement(
+          'button',
+          'button secondary',
+          transition.status === 'current' ? 'Record as current' : 'Record terminal outcome',
+        );
+        button.type = 'button';
+        button.disabled = !editable;
+        button.addEventListener('click', () => openTreatmentTransitionDialog(
+          button,
+          course.id,
+          transition.status,
+        ));
+        actions.append(button);
+      });
+      if (course.lifecycle.restart.eligible) {
+        const restart = treatmentElement('button', 'button secondary', 'Create linked new record');
+        restart.type = 'button';
+        restart.disabled = !editable;
+        restart.addEventListener('click', () => openTreatmentCourseDialog('restart', restart, course.id));
+        actions.append(restart);
+      } else {
+        actions.append(treatmentElement(
+          'p',
+          'treatment-ineligible-reason',
+          TREATMENT_RESTART_REASONS[course.lifecycle.restart.reason],
+        ));
+      }
+      card.append(actions);
+    }
+    return card;
+  }
+
+  function treatmentSourceLinks(source) {
+    const links = treatmentElement('div', 'treatment-source-actions');
+    const sourceUrl = safeTreatmentSourceUrl(source.provenance.source_url, source.ref, 'source');
+    const evidenceUrl = source.provenance.evidence_url === null
+      ? ''
+      : safeTreatmentSourceUrl(source.provenance.evidence_url, source.ref, 'evidence');
+    if (evidenceUrl) {
+      const link = treatmentElement('a', '', 'Open exact evidence');
+      link.href = evidenceUrl;
+      link.target = '_blank';
+      link.rel = 'noopener';
+      links.append(link);
+    }
+    if (sourceUrl) {
+      const link = treatmentElement('a', '', 'Open source');
+      link.href = sourceUrl;
+      link.target = '_blank';
+      link.rel = 'noopener';
+      links.append(link);
+    }
+    return links;
+  }
+
+  function treatmentSourceRow(source) {
+    const row = treatmentElement('tr');
+    const observed = treatmentElement('td');
+    observed.append(treatmentScalarNode(source.observed_text));
+    const value = treatmentElement('td');
+    value.append(treatmentScalarNode(source.record_value));
+    const state = treatmentElement(
+      'td',
+      '',
+      `${source.receipt_state} · ${source.review_state} · ${source.operation}`,
+    );
+    const provenance = treatmentElement('td');
+    provenance.append(
+      treatmentElement('strong', '', source.provenance.label),
+      treatmentSourceLinks(source),
+    );
+    row.append(observed, value, state, provenance);
+    return row;
+  }
+
+  function treatmentLegacyCard(row) {
+    const card = treatmentElement('article', 'treatment-legacy-card');
+    card.append(
+      treatmentElement('p', 'treatment-authority-label', 'Earlier app record · read-only · not source-verified'),
+      treatmentElement('h3', '', row.raw_text),
+    );
+    const components = treatmentElement('section', 'treatment-legacy-section');
+    components.append(treatmentElement('h4', '', 'Stable earlier components'));
+    if (row.components.length) {
+      const list = treatmentElement('ol');
+      row.components.forEach(component => {
+        const item = treatmentElement('li');
+        item.append(
+          treatmentScalarNode(component.text),
+          treatmentElement('span', 'treatment-component-label', 'Earlier app component · not source-verified'),
+        );
+        list.append(item);
+      });
+      components.append(list);
+    } else {
+      components.append(treatmentElement('p', 'treatment-missing', 'No components recorded.'));
+    }
+    const generated = treatmentElement('section', 'treatment-generated-section');
+    generated.append(treatmentElement(
+      'h4',
+      '',
+      'Machine-generated compatibility context · not a treatment record',
+    ));
+    if (row.generated_classification.length) {
+      const list = treatmentElement('ol');
+      row.generated_classification.forEach(item => {
+        const entry = treatmentElement('li');
+        const facts = treatmentElement('dl', 'treatment-facts');
+        treatmentAppendFact(facts, 'Generated text', item, 'text');
+        treatmentAppendFact(facts, 'Generated label', item, 'label');
+        treatmentAppendFact(facts, 'Generated category', item, 'category');
+        treatmentAppendFact(facts, 'Generated date', item, 'date');
+        entry.append(facts);
+        list.append(entry);
+      });
+      generated.append(list);
+    } else {
+      generated.append(treatmentElement('p', 'treatment-missing', 'No generated classification recorded.'));
+    }
+    card.append(components, generated);
+    return card;
+  }
+
+  function treatmentCitationPanel(label, side, kind) {
+    const panel = treatmentElement('section', 'treatment-citation-panel');
+    panel.append(treatmentElement('h4', '', label));
+    const snapshot = treatmentElement('section', 'treatment-citation-snapshot');
+    snapshot.append(treatmentElement('h5', '', 'Immutable snapshot when recorded'));
+    const current = treatmentElement('section', 'treatment-citation-current');
+    current.append(treatmentElement('h5', '', 'Current side state'));
+    if (kind === 'source') {
+      const snapshotFacts = treatmentElement('dl', 'treatment-facts');
+      treatmentAppendFact(snapshotFacts, 'Observed wording', side.snapshot, 'observed_text');
+      treatmentAppendFact(snapshotFacts, 'Recorded value', side.snapshot, 'record_value');
+      snapshot.append(snapshotFacts);
+      const currentFacts = treatmentElement('dl', 'treatment-facts');
+      treatmentAppendFact(currentFacts, 'Observed wording', side.current, 'observed_text');
+      treatmentAppendFact(currentFacts, 'Recorded value', side.current, 'record_value');
+      current.append(currentFacts);
+    } else {
+      snapshot.append(treatmentCourseCard(side.snapshot, true));
+      current.append(treatmentCourseCard(side.current, true));
+    }
+    panel.append(snapshot, current);
+    return panel;
+  }
+
+  function treatmentDiscrepancyCard(discrepancy) {
+    const card = treatmentElement('article', `treatment-discrepancy-card ${discrepancy.status}`);
+    const heading = treatmentElement('div', 'treatment-card-heading');
+    heading.append(
+      treatmentElement('span', `treatment-lifecycle ${discrepancy.status}`, discrepancy.status === 'open' ? 'Open difference' : 'Resolved difference'),
+      treatmentElement('span', 'treatment-provenance', discrepancy.provenance.label),
+    );
+    card.append(
+      heading,
+      treatmentElement('h3', '', discrepancy.category.replace(/_/g, ' ')),
+      treatmentScalarNode(discrepancy.comparison_text),
+    );
+    const citations = treatmentElement('div', 'treatment-citation-grid');
+    citations.append(treatmentCitationPanel('Record A', discrepancy.citations.source_a, 'source'));
+    if (discrepancy.citations.source_b) {
+      citations.append(treatmentCitationPanel('Record B', discrepancy.citations.source_b, 'source'));
+    } else if (discrepancy.citations.course_b) {
+      citations.append(treatmentCitationPanel('Record B', discrepancy.citations.course_b, 'course'));
+    } else {
+      const unavailable = treatmentElement('section', 'treatment-citation-panel unavailable');
+      unavailable.append(
+        treatmentElement('h4', '', 'Record B'),
+        treatmentElement('p', '', 'Second citation unavailable · earlier incomplete workflow authority · read-only'),
+      );
+      citations.append(unavailable);
+    }
+    card.append(citations);
+    if (discrepancy.confirmations.length) {
+      const outcomes = treatmentElement('section', 'treatment-outcomes');
+      outcomes.append(treatmentElement('h4', '', 'Recorded treating-team outcomes'));
+      discrepancy.confirmations.forEach(confirmation => {
+        const outcome = treatmentElement('article', 'treatment-outcome');
+        outcome.append(
+          treatmentElement('p', 'treatment-confirmation-label', TREATMENT_CONFIRMATION_LABEL),
+          treatmentElement('strong', '', confirmation.outcome.replace(/_/g, ' ')),
+        );
+        const facts = treatmentElement('dl', 'treatment-facts');
+        treatmentAppendFact(facts, 'Caregiver note', confirmation, 'note');
+        treatmentAppendFact(facts, 'Clinician attribution', confirmation, 'clinician_text');
+        treatmentAppendFact(facts, 'Context', confirmation, 'context_text');
+        treatmentAppendFact(facts, 'Date', confirmation, 'date');
+        outcome.append(facts);
+        outcomes.append(outcome);
+      });
+      card.append(outcomes);
+    }
+    const followUp = treatmentElement('section', 'treatment-linked-follow-up');
+    followUp.append(treatmentElement('h4', '', 'Atomic follow-up link'));
+    if (discrepancy.follow_up) {
+      followUp.append(
+        treatmentElement('p', '', discrepancy.follow_up.text),
+        treatmentElement('p', '', `${discrepancy.follow_up.status} · owner ${discrepancy.follow_up.owner ?? 'Null'} · due ${discrepancy.follow_up.due_date ?? 'Null'}`),
+      );
+    } else {
+      followUp.append(treatmentElement('p', 'treatment-missing', 'No follow-up linked.'));
+    }
+    card.append(followUp);
+    const actions = treatmentElement('div', 'treatment-card-actions');
+    const mutable = treatmentProjectionState === 'current' && treatmentResponseOwnerIsCurrent();
+    if (discrepancy.eligibility.resolve) {
+      const resolve = treatmentElement('button', 'button secondary', 'Record treating-team outcome');
+      resolve.type = 'button';
+      resolve.disabled = !mutable;
+      resolve.addEventListener('click', () => openTreatmentDiscrepancyDialog('resolve', resolve, discrepancy.id));
+      actions.append(resolve);
+    }
+    if (discrepancy.eligibility.reopen) {
+      const reopen = treatmentElement('button', 'button secondary', 'Reopen difference');
+      reopen.type = 'button';
+      reopen.disabled = !mutable;
+      reopen.addEventListener('click', () => openTreatmentDiscrepancyDialog('reopen', reopen, discrepancy.id));
+      actions.append(reopen);
+    }
+    if (discrepancy.eligibility.recur) {
+      const recur = treatmentElement('button', 'button secondary', 'Record recurrence');
+      recur.type = 'button';
+      recur.disabled = !mutable;
+      recur.addEventListener('click', () => openTreatmentDiscrepancyDialog('recur', recur, discrepancy.id));
+      actions.append(recur);
+    }
+    if (discrepancy.citation_authority.state === 'complete') {
+      const linked = treatmentElement(
+        'button',
+        'button secondary',
+        discrepancy.follow_up ? 'Review linked follow-up' : 'Manage follow-up',
+      );
+      linked.type = 'button';
+      linked.disabled = !mutable;
+      linked.addEventListener('click', () => openTreatmentDiscrepancyDialog('follow-up', linked, discrepancy.id));
+      actions.append(linked);
+    }
+    card.append(actions);
+    return card;
+  }
+
+  function setTreatmentFreshness(state, text) {
+    ['today-treatment-freshness', 'patient-treatment-freshness'].forEach(id => {
+      const node = document.getElementById(id);
+      if (!node) return;
+      node.className = `treatment-freshness ${safeClassToken(state, 'error')}`;
+      node.textContent = text;
+    });
+  }
+
+  function setTreatmentStatus(message, state = '', retry = false) {
+    ['today-treatment-status', 'patient-treatment-status'].forEach(id => {
+      const node = document.getElementById(id);
+      if (!node) return;
+      node.className = `treatment-status${state ? ` ${safeClassToken(state)}` : ''}`;
+      node.textContent = message || '';
+    });
+    ['today-treatment-retry', 'treatment-retry'].forEach(id => {
+      const retryNode = document.getElementById(id);
+      if (retryNode) retryNode.hidden = !retry;
+    });
+    ['today-treatment-retry-refresh', 'treatment-refresh-button'].forEach(id => {
+      const refresh = document.getElementById(id);
+      if (refresh) refresh.disabled = treatmentRequestController !== null;
+    });
+  }
+
+  function updateTreatmentControls() {
+    const mutable = treatmentProjectionState === 'current'
+      && treatmentResponseOwnerIsCurrent()
+      && !treatmentMutationPending
+      && pendingTreatmentCompletion === null;
+    ['today-treatment-add', 'patient-treatment-add', 'treatment-difference-add'].forEach(id => {
+      const control = document.getElementById(id);
+      if (control) control.disabled = !mutable;
+    });
+    document.querySelectorAll(
+      '#treatment-workspace .treatment-card-actions button, #treatment-dialog input, '
+      + '#treatment-dialog textarea, #treatment-dialog select, #treatment-dialog button',
+    ).forEach(control => {
+      if (['treatment-retry-submit', 'treatment-retry-verification'].includes(control.id)) return;
+      if (treatmentMutationPending) {
+        if (!Object.prototype.hasOwnProperty.call(control.dataset, 'treatmentWasDisabled')) {
+          control.dataset.treatmentWasDisabled = String(control.disabled);
+        }
+        control.disabled = true;
+      } else if (Object.prototype.hasOwnProperty.call(control.dataset, 'treatmentWasDisabled')) {
+        control.disabled = control.dataset.treatmentWasDisabled === 'true';
+        delete control.dataset.treatmentWasDisabled;
+      }
+    });
+    if (!treatmentMutationPending) updateTreatmentFormValidity();
+  }
+
+  function renderTreatmentProjection(owner = treatmentResponseOwner) {
+    if (!treatmentResponseOwnerIsCurrent(owner)) return false;
+    const active = treatmentProjection.courses.filter(
+      course => course.status === 'current' || course.status === 'planned',
+    );
+    const currentCount = treatmentProjection.courses.filter(course => course.status === 'current').length;
+    const plannedCount = treatmentProjection.courses.filter(course => course.status === 'planned').length;
+    const pastCount = treatmentProjection.courses.filter(course => course.status === 'past').length;
+    const openDifferences = treatmentProjection.discrepancies.filter(item => item.status === 'open').length;
+    const generatedCount = treatmentProjection.legacy_treatments.reduce(
+      (total, row) => total + row.generated_classification.length,
+      0,
+    );
+    const shown = active.slice(0, TREATMENT_TODAY_LIMIT);
+    const omitted = active.length - shown.length;
+    const totals = document.getElementById('today-treatment-totals');
+    if (totals) {
+      totals.textContent = `Showing ${shown.length} of ${active.length} current/planned records in server order (${currentCount} current, ${plannedCount} planned; ${omitted} omitted here). Patient also contains ${pastCount} past records, ${treatmentProjection.source_fact_count} document mentions, ${treatmentProjection.legacy_treatment_count} earlier app records, ${generatedCount} generated classifications, and ${openDifferences} open differences.`;
+    }
+    const today = document.getElementById('today-treatment-list');
+    if (today) {
+      today.replaceChildren(...(
+        shown.length
+          ? shown.map(course => treatmentCourseCard(course, true))
+          : [treatmentElement('div', 'empty-state', 'No current or planned caregiver treatment records are recorded.')]
+      ));
+    }
+    const records = document.getElementById('patient-treatment-list');
+    if (records) {
+      records.replaceChildren(...(
+        treatmentProjection.courses.length
+          ? treatmentProjection.courses.map(course => treatmentCourseCard(course))
+          : [treatmentElement('div', 'empty-state', 'No caregiver treatment records are recorded.')]
+      ));
+    }
+    const discrepancies = document.getElementById('treatment-discrepancy-list');
+    if (discrepancies) {
+      discrepancies.replaceChildren(...(
+        treatmentProjection.discrepancies.length
+          ? treatmentProjection.discrepancies.map(treatmentDiscrepancyCard)
+          : [treatmentElement('div', 'empty-state', 'No differences are recorded.')]
+      ));
+    }
+    const sourceBody = document.getElementById('treatment-source-table-body');
+    if (sourceBody) {
+      if (treatmentProjection.source_facts.length) {
+        sourceBody.replaceChildren(...treatmentProjection.source_facts.map(treatmentSourceRow));
+      } else {
+        const row = treatmentElement('tr');
+        const cell = treatmentElement('td', 'empty-state', 'No document treatment mentions are recorded.');
+        cell.colSpan = 4;
+        row.append(cell);
+        sourceBody.replaceChildren(row);
+      }
+    }
+    const legacy = document.getElementById('treatment-legacy-list');
+    if (legacy) {
+      legacy.replaceChildren(...(
+        treatmentProjection.legacy_treatments.length
+          ? treatmentProjection.legacy_treatments.map(treatmentLegacyCard)
+          : [treatmentElement('div', 'empty-state', 'No earlier app treatment records are recorded.')]
+      ));
+    }
+    const counts = {
+      records: treatmentProjection.course_count,
+      differences: treatmentProjection.discrepancy_count,
+      sources: treatmentProjection.source_fact_count,
+      earlier: treatmentProjection.legacy_treatment_count,
+    };
+    Object.entries(counts).forEach(([name, count]) => {
+      const node = document.getElementById(`treatment-count-${name}`);
+      if (node) node.textContent = String(count);
+    });
+    setTreatmentFreshness(
+      treatmentProjectionState === 'stale' ? 'stale' : 'current',
+      treatmentProjectionState === 'stale' ? 'Read-only snapshot' : 'Current',
+    );
+    setTreatmentStatus(
+      treatmentProjectionState === 'stale'
+        ? 'Stale snapshot · read-only until the authoritative treatment record reloads.'
+        : 'Authoritative treatment reconciliation loaded.',
+      treatmentProjectionState === 'stale' ? 'stale' : 'current',
+      treatmentProjectionState === 'stale',
+    );
+    updateTreatmentControls();
+    return true;
+  }
+
+  function renderTreatmentUnavailable(message, state, statusLabel, retry = true) {
+    const today = document.getElementById('today-treatment-list');
+    if (today) today.replaceChildren(treatmentElement('div', 'empty-state', message));
+    const totals = document.getElementById('today-treatment-totals');
+    if (totals) totals.textContent = 'Treatment totals are unavailable.';
+    const records = document.getElementById('patient-treatment-list');
+    if (records) records.replaceChildren(treatmentElement('div', 'empty-state', message));
+    const differences = document.getElementById('treatment-discrepancy-list');
+    if (differences) differences.replaceChildren(treatmentElement('div', 'empty-state', message));
+    const sources = document.getElementById('treatment-source-table-body');
+    if (sources) {
+      const row = treatmentElement('tr');
+      const cell = treatmentElement('td', 'empty-state', message);
+      cell.colSpan = 4;
+      row.append(cell);
+      sources.replaceChildren(row);
+    }
+    const legacy = document.getElementById('treatment-legacy-list');
+    if (legacy) legacy.replaceChildren(treatmentElement('div', 'empty-state', message));
+    ['records', 'differences', 'sources', 'earlier'].forEach(name => {
+      const node = document.getElementById(`treatment-count-${name}`);
+      if (node) node.textContent = '0';
+    });
+    setTreatmentFreshness(state, statusLabel);
+    setTreatmentStatus(message, state, retry);
+    updateTreatmentControls();
+  }
+
+  function treatmentOwnsFocus() {
+    const workspace = document.getElementById('treatment-workspace');
+    const today = document.getElementById('treatment-today-card');
+    const dialog = document.getElementById('treatment-dialog');
+    return Boolean(
+      workspace?.contains(document.activeElement)
+      || today?.contains(document.activeElement)
+      || dialog?.contains(document.activeElement)
+    );
+  }
+
+  function abortTreatmentRequest() {
+    const controller = treatmentRequestController;
+    treatmentRequestController = null;
+    if (controller && !controller.signal.aborted) controller.abort();
+  }
+
+  function abortTreatmentMutation() {
+    const controller = treatmentMutationController;
+    treatmentMutationController = null;
+    if (controller && !controller.signal.aborted) controller.abort();
+  }
+
+  function clearTreatmentRetry() {
+    if (pendingTreatmentRetry) pendingTreatmentRetry.bodyText = '';
+    if (activeTreatmentIntent && activeTreatmentIntent !== pendingTreatmentRetry) {
+      activeTreatmentIntent.bodyText = '';
+    }
+    pendingTreatmentRetry = null;
+    const retry = document.getElementById('treatment-retry-submit');
+    if (retry) retry.hidden = true;
+  }
+
+  function setTreatmentVerificationRetry(visible) {
+    const retry = document.getElementById('treatment-retry-verification');
+    if (retry) retry.hidden = !visible;
+  }
+
+  function scrubTreatmentDialog(options = {}) {
+    const dialog = document.getElementById('treatment-dialog');
+    const wasActive = treatmentDialogOpen || activeDialogSurface === dialog;
+    treatmentDialogOpen = false;
+    treatmentDialogMode = null;
+    treatmentSelection = null;
+    treatmentDraft = null;
+    treatmentSelectionEpoch += 1;
+    treatmentDialogEpoch += 1;
+    clearTreatmentRetry();
+    setTreatmentVerificationRetry(false);
+    const body = document.getElementById('treatment-dialog-body');
+    if (body) body.replaceChildren();
+    ['treatment-form-error', 'treatment-dialog-status'].forEach(id => {
+      const node = document.getElementById(id);
+      if (node) node.textContent = '';
+    });
+    const overlay = document.getElementById('treatment-dialog-overlay');
+    overlay?.classList.remove('open');
+    overlay?.setAttribute('aria-hidden', 'true');
+    if (overlay) overlay.inert = true;
+    if (dialog) dialog.inert = true;
+    if (wasActive) {
+      if (dialog?.contains(document.activeElement)) document.activeElement.blur();
+      if (activeDialogSurface === dialog) deactivateDialog(dialog, false);
+      lastDialogTrigger = null;
+      if (options.moveFocus !== false) document.getElementById(`nav-${activeView}`)?.focus();
+    }
+  }
+
+  function clearTreatmentProjection(options = {}) {
+    const relocateFocus = treatmentOwnsFocus();
+    treatmentLoadEpoch += 1;
+    treatmentMutationEpoch += 1;
+    abortTreatmentRequest();
+    abortTreatmentMutation();
+    treatmentMutationOwner = null;
+    treatmentMutationPending = false;
+    pendingTreatmentCompletion = null;
+    activeTreatmentIntent = null;
+    scrubTreatmentDialog({ moveFocus: false });
+    if (relocateFocus) document.getElementById(`nav-${activeView}`)?.focus();
+    treatmentProjection = null;
+    treatmentResponseOwner = null;
+    treatmentNetworkAmbiguous = false;
+    treatmentProjectionState = options.state || 'error';
+    renderTreatmentUnavailable(
+      options.message || 'Treatment information could not be loaded.',
+      treatmentProjectionState,
+      options.statusLabel || 'Unavailable',
+      options.retry !== false,
+    );
+  }
+
+  function markTreatmentProjectionStale(message, options = {}) {
+    if (treatmentDialogOpen && options.preserveMutation !== true) {
+      captureTreatmentDraft({ forReplacement: true });
+      const safeDraft = treatmentDraft;
+      scrubTreatmentDialog();
+      treatmentDraft = safeDraft;
+    }
+    clearTreatmentRetry();
+    if (options.abortRequest !== false) {
+      treatmentLoadEpoch += 1;
+      abortTreatmentRequest();
+    }
+    if (options.preserveMutation !== true) abortTreatmentMutation();
+    treatmentProjectionState = 'stale';
+    if (!treatmentProjection) {
+      renderTreatmentUnavailable(
+        message || 'Treatment information is unavailable until an authoritative reload succeeds.',
+        'stale',
+        'Not current',
+        true,
+      );
+      return;
+    }
+    treatmentResponseOwner = newTreatmentResponseOwner(
+      treatmentProjection,
+      options.ownerPhiEpoch ?? phiEpoch,
+    );
+    renderTreatmentProjection(treatmentResponseOwner);
+    setTreatmentStatus(
+      message || 'Stale snapshot · read-only until the authoritative treatment record reloads.',
+      'stale',
+      true,
+    );
+  }
+
+  function renderTreatmentLoading() {
+    if (treatmentProjection) {
+      if (treatmentDialogOpen && !treatmentMutationPending) {
+        captureTreatmentDraft({ forReplacement: true });
+        const safeDraft = treatmentDraft;
+        scrubTreatmentDialog();
+        treatmentDraft = safeDraft;
+      }
+      treatmentProjectionState = 'stale';
+      setTreatmentFreshness('loading', 'Checking…');
+      setTreatmentStatus(
+        'Checking the authoritative treatment record. The displayed snapshot is read-only.',
+        'loading',
+        false,
+      );
+      updateTreatmentControls();
+      return;
+    }
+    treatmentProjectionState = 'loading';
+    renderTreatmentUnavailable(
+      'Loading the complete authoritative treatment record…',
+      'loading',
+      'Loading…',
+      false,
+    );
+  }
+
+  function treatmentTransportRequestIsCurrent(request, acceptedPhiEpoch = null) {
+    return Boolean(
+      request
+      && request.controller === treatmentRequestController
+      && !request.controller.signal.aborted
+      && request.loadEpoch === treatmentLoadEpoch
+      && (acceptedPhiEpoch ?? request.requestPhiEpoch) === phiEpoch
+    );
+  }
+
+  function treatmentAuthorityMatchesKnown() {
+    if (!treatmentProjection || !treatmentResponseOwnerIsCurrent()) return false;
+    const profile = normalizedRevision(latestProfileRevision);
+    const workflow = normalizedRevision(workflowRevision);
+    return (!Number.isSafeInteger(profile) || treatmentProjection.profile_revision === profile)
+      && (!Number.isSafeInteger(workflow) || treatmentProjection.workflow_revision === workflow);
+  }
+
+  function ensureTreatmentReconciliation(options = {}) {
+    const current = treatmentProjection
+      && ['current', 'empty'].includes(treatmentProjectionState)
+      && !treatmentNetworkAmbiguous
+      && treatmentAuthorityMatchesKnown();
+    if (!options.force && current) return Promise.resolve(treatmentProjection);
+    if (!options.force && treatmentRequestController) return Promise.resolve(null);
+    return loadTreatmentReconciliation(options);
+  }
+
+  function treatmentCompletionMatchesProjection(completion) {
+    if (
+      !completion
+      || !treatmentProjection
+      || completion.profileRevision !== treatmentProjection.profile_revision
+      || completion.workflowRevision !== treatmentProjection.workflow_revision
+    ) return false;
+    const semantic = value => {
+      if (Array.isArray(value)) return value.map(semantic);
+      if (!value || typeof value !== 'object') return value;
+      const result = {};
+      Object.keys(value).filter(key => key !== 'token').forEach(key => {
+        result[key] = semantic(value[key]);
+      });
+      return result;
+    };
+    if (completion.course) {
+      const course = treatmentCourseById(completion.course.id);
+      if (!course || JSON.stringify(semantic(course)) !== JSON.stringify(semantic(completion.course))) {
+        return false;
+      }
+      if (completion.operation === 'restart') {
+        if (
+          course.id === completion.previousCourseId
+          || course.previous_course_id !== completion.previousCourseId
+          || !treatmentCourseById(completion.previousCourseId)
+        ) return false;
+      }
+    }
+    if (completion.discrepancy) {
+      const discrepancy = treatmentDiscrepancyById(completion.discrepancy.id);
+      if (
+        !discrepancy
+        || JSON.stringify(semantic(discrepancy)) !== JSON.stringify(semantic(completion.discrepancy))
+      ) return false;
+    }
+    if (completion.followUp) {
+      const discrepancy = treatmentDiscrepancyById(completion.discrepancy.id);
+      if (
+        discrepancy?.follow_up?.id !== completion.followUp.id
+        || JSON.stringify(semantic(discrepancy.follow_up)) !== JSON.stringify(semantic(completion.followUp))
+      ) return false;
+    }
+    if (completion.expectUnlinked) {
+      const discrepancy = treatmentDiscrepancyById(completion.discrepancy.id);
+      if (discrepancy?.follow_up !== null) return false;
+    }
+    return true;
+  }
+
+  async function loadTreatmentReconciliation(options = {}) {
+    if (!options.force && treatmentRequestController) return null;
+    const preserveMutation = options.preserveMutation === true
+      || pendingTreatmentCompletion !== null;
+    const previous = treatmentRequestController;
+    const controller = new AbortController();
+    const request = {
+      ...capturePatientRequest(),
+      loadEpoch: ++treatmentLoadEpoch,
+      controller,
+    };
+    treatmentRequestController = controller;
+    if (previous && !previous.signal.aborted) previous.abort();
+    setTreatmentVerificationRetry(false);
+    renderTreatmentLoading();
+    try {
+      const response = await fetch('/api/patient/treatment-reconciliation', {
+        headers: { Accept: 'application/json' },
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+      const current = () => treatmentTransportRequestIsCurrent(request, request.acceptedPhiEpoch);
+      if (!current()) return null;
+      const data = await readJsonResponse(response, () => false);
+      if (!current()) return null;
+      if (!treatmentProjectionPayloadIsValid(data)) {
+        const invalid = new Error('Treatment information could not be verified safely.');
+        invalid.status = 422;
+        throw invalid;
+      }
+      const knownProfile = normalizedRevision(latestProfileRevision);
+      const knownWorkflow = normalizedRevision(workflowRevision);
+      if (
+        (Number.isSafeInteger(knownProfile) && data.profile_revision < knownProfile)
+        || (Number.isSafeInteger(knownWorkflow) && data.workflow_revision < knownWorkflow)
+      ) {
+        markTreatmentProjectionStale(
+          'A newer patient or workflow revision is available. Treatment information remains read-only while reloading.',
+          { abortRequest: false, preserveMutation },
+        );
+        return null;
+      }
+      const authority = authorizePatientResponse(request, data, {
+        workflow: 'projection',
+        treatmentProjection: true,
+        treatmentMutation: preserveMutation,
+      });
+      if (!authority.accepted) return null;
+      request.acceptedPhiEpoch = authority.requestPhiEpoch;
+      if (!current()) return null;
+      const completion = pendingTreatmentCompletion;
+      treatmentProjection = data;
+      treatmentNetworkAmbiguous = false;
+      treatmentProjectionState = (
+        data.courses.length
+        || data.source_facts.length
+        || data.legacy_treatments.length
+        || data.discrepancies.length
+      ) ? 'current' : 'empty';
+      treatmentResponseOwner = newTreatmentResponseOwner(data, request.acceptedPhiEpoch);
+      if (!current() || !renderTreatmentProjection(treatmentResponseOwner)) return null;
+      if (completion) {
+        if (treatmentCompletionMatchesProjection(completion)) {
+          finalizeTreatmentMutation(completion);
+        } else {
+          pendingTreatmentCompletion = null;
+          treatmentProjectionState = 'stale';
+          scrubTreatmentDialog();
+          renderTreatmentProjection(treatmentResponseOwner);
+          setTreatmentStatus(
+            'The saved response did not match the authoritative replacement. Treatment information remains read-only; retry refresh only.',
+            'stale',
+            true,
+          );
+          releaseTreatmentMutation(completion.intent);
+        }
+      } else if (treatmentDialogOpen) {
+        scrubTreatmentDialog({ moveFocus: false });
+        setTreatmentStatus(
+          'The authoritative treatment record changed. Reopen the form and explicitly reselect server-owned records.',
+          'current',
+          false,
+        );
+      }
+      reportLoadSuccess('treatment-reconciliation');
+      return data;
+    } catch (error) {
+      const accepted = request.acceptedPhiEpoch ?? null;
+      if (error?.name === 'AbortError' || !treatmentTransportRequestIsCurrent(request, accepted)) {
+        return null;
+      }
+      if (error?.status === 401 || error?.status === 403) {
+        const safeError = new Error('Treatment authorization is unavailable.');
+        safeError.status = error.status;
+        evictClientPhi(safeError);
+        return null;
+      }
+      if (error instanceof TypeError) {
+        treatmentNetworkAmbiguous = true;
+        markTreatmentProjectionStale(
+          treatmentProjection
+            ? 'Treatment transport is uncertain. The last accepted snapshot is stale and read-only.'
+            : 'The treatment endpoint could not be reached and no prior snapshot is available.',
+          { abortRequest: false, preserveMutation },
+        );
+        if (pendingTreatmentCompletion) {
+          setTreatmentDialogStatus(
+            'The save response was valid, but verification refresh is uncertain. Retry refresh only; the mutation will not be submitted again.',
+            'offline',
+          );
+          setTreatmentVerificationRetry(true);
+        }
+        reportLoadError('treatment-reconciliation', error);
+        return null;
+      }
+      clearTreatmentProjection({
+        state: 'corrupt',
+        statusLabel: 'Record unavailable',
+        message: 'Treatment information was cleared because the authoritative projection could not be verified safely.',
+        retry: true,
+      });
+      reportLoadError('treatment-reconciliation', error);
+      return null;
+    } finally {
+      if (treatmentRequestController === controller) {
+        treatmentRequestController = null;
+        ['today-treatment-retry-refresh', 'treatment-refresh-button'].forEach(id => {
+          const refresh = document.getElementById(id);
+          if (refresh) refresh.disabled = false;
+        });
+      }
+    }
+  }
+
+  function selectTreatmentTab(name, options = {}) {
+    if (!['records', 'differences', 'sources', 'earlier'].includes(name)) return;
+    if (name !== treatmentActiveTab) {
+      treatmentActiveTab = name;
+      treatmentSelectionEpoch += 1;
+      clearTreatmentRetry();
+      if (treatmentDialogOpen) closeTreatmentDialog(false, true, false);
+    }
+    ['records', 'differences', 'sources', 'earlier'].forEach(tabName => {
+      const selected = tabName === name;
+      const tab = document.getElementById(`treatment-tab-${tabName}`);
+      const panel = document.getElementById(`treatment-panel-${tabName}`);
+      if (tab) {
+        tab.classList.toggle('active', selected);
+        tab.setAttribute('aria-selected', String(selected));
+        tab.tabIndex = selected ? 0 : -1;
+      }
+      if (panel) panel.hidden = !selected;
+    });
+    if (options.focus) document.getElementById(`treatment-tab-${name}`)?.focus();
+  }
+
+  function handleTreatmentTabKeydown(event) {
+    const names = ['records', 'differences', 'sources', 'earlier'];
+    const index = names.indexOf(treatmentActiveTab);
+    let next = null;
+    if (event.key === 'ArrowRight') next = names[(index + 1) % names.length];
+    if (event.key === 'ArrowLeft') next = names[(index - 1 + names.length) % names.length];
+    if (event.key === 'Home') next = names[0];
+    if (event.key === 'End') next = names[names.length - 1];
+    if (!next) return;
+    event.preventDefault();
+    selectTreatmentTab(next, { focus: true });
+  }
+
+  function openPatientTreatments() {
+    switchView('patient', document.getElementById('nav-patient'));
+    selectTreatmentTab('records');
+    document.getElementById('treatments-heading')?.focus();
+  }
+
+  function treatmentFieldLabel(label, control, helper = '') {
+    const wrapper = treatmentElement('label', 'treatment-field');
+    wrapper.append(treatmentElement('span', '', label), control);
+    if (helper) wrapper.append(treatmentElement('small', '', helper));
+    return wrapper;
+  }
+
+  function treatmentTextControl(field, value = '') {
+    const maximum = TREATMENT_TEXT_LIMITS[field];
+    const multiline = ['treatment_text', 'schedule_text', 'indication_text', 'notes'].includes(field);
+    const control = treatmentElement(multiline ? 'textarea' : 'input');
+    control.id = `treatment-field-${field.replaceAll('_', '-')}`;
+    control.name = field;
+    control.maxLength = maximum;
+    control.value = value ?? '';
+    control.dataset.caregiverField = 'true';
+    if (multiline) control.rows = field === 'notes' ? 4 : 2;
+    return control;
+  }
+
+  function treatmentOptionalField(label, field, value) {
+    const wrapper = treatmentElement('div', 'treatment-optional-field');
+    const control = treatmentTextControl(field, value);
+    wrapper.append(treatmentFieldLabel(label, control));
+    const emptyLabel = treatmentElement('label', 'treatment-empty-toggle');
+    const empty = treatmentElement('input');
+    empty.type = 'checkbox';
+    empty.id = `treatment-empty-${field.replaceAll('_', '-')}`;
+    empty.checked = value === '';
+    empty.dataset.caregiverField = 'true';
+    empty.addEventListener('change', () => {
+      if (empty.checked) control.value = '';
+      updateTreatmentFormValidity();
+    });
+    control.addEventListener('input', () => {
+      if (control.value !== '') empty.checked = false;
+    });
+    emptyLabel.append(empty, treatmentElement('span', '', 'Record an exact empty string instead of Null'));
+    wrapper.append(emptyLabel);
+    return wrapper;
+  }
+
+  function treatmentCourseForm(course = null, options = {}) {
+    const fragment = document.createDocumentFragment();
+    const grid = treatmentElement('div', 'treatment-form-grid');
+    if (options.includeStatus) {
+      const status = treatmentElement('select');
+      status.id = 'treatment-field-status';
+      status.name = 'status';
+      status.dataset.caregiverField = 'true';
+      const blank = treatmentElement('option', '', 'Choose a record status');
+      blank.value = '';
+      status.append(blank);
+      (options.restart ? ['current', 'planned'] : ['current', 'planned', 'past']).forEach(value => {
+        const option = treatmentElement('option', '', TREATMENT_STATUS_LABELS[value]);
+        option.value = value;
+        status.append(option);
+      });
+      status.value = options.draft?.status || '';
+      status.addEventListener('change', () => {
+        const qualifier = document.getElementById('treatment-field-terminal-qualifier');
+        const detail = document.getElementById('treatment-field-terminal-detail');
+        if (qualifier) qualifier.value = '';
+        if (detail) detail.value = '';
+        renderTreatmentTerminalFields();
+        updateTreatmentFormValidity();
+      });
+      grid.append(treatmentFieldLabel(
+        options.restart ? 'New linked record status' : 'Record status',
+        status,
+        options.restart
+          ? 'A new record is created; the prior past record is not changed.'
+          : 'This is caregiver-entered workflow status, not treatment advice.',
+      ));
+    }
+    const labels = {
+      treatment_text: 'Treatment wording',
+      treatment_type_text: 'Treatment type wording',
+      dose_text: 'Dose wording',
+      route_text: 'Route wording',
+      frequency_text: 'Frequency wording',
+      cycle_text: 'Cycle wording',
+      schedule_text: 'Schedule wording',
+      formulation_text: 'Formulation wording',
+      indication_text: 'Indication wording',
+      notes: 'Notes',
+    };
+    const draft = options.draft || {};
+    const required = treatmentTextControl(
+      'treatment_text',
+      Object.prototype.hasOwnProperty.call(draft, 'treatment_text')
+        ? draft.treatment_text
+        : (course?.treatment_text ?? ''),
+    );
+    grid.append(treatmentFieldLabel(
+      labels.treatment_text,
+      required,
+      'Required exact caregiver wording. Nothing is copied from document mentions or generated context.',
+    ));
+    for (const field of TREATMENT_OPTIONAL_TEXT_FIELDS) {
+      const value = Object.prototype.hasOwnProperty.call(draft, field)
+        ? draft[field]
+        : (course?.[field] ?? null);
+      grid.append(treatmentOptionalField(labels[field], field, value));
+    }
+    for (const prefix of ['start', 'stop', 'planned']) {
+      const field = `${prefix}_date`;
+      const input = treatmentElement('input');
+      input.id = `treatment-field-${field.replaceAll('_', '-')}`;
+      input.name = field;
+      input.maxLength = 10;
+      input.inputMode = 'numeric';
+      input.placeholder = 'YYYY, YYYY-MM, or YYYY-MM-DD';
+      input.value = Object.prototype.hasOwnProperty.call(draft, field)
+        ? draft[field]
+        : (course?.[field] ?? '');
+      input.dataset.caregiverField = 'true';
+      grid.append(treatmentFieldLabel(
+        `${prefix[0].toUpperCase()}${prefix.slice(1)} date`,
+        input,
+        'Exact partial date; no date is inferred or defaulted.',
+      ));
+    }
+    fragment.append(grid);
+    const componentFieldset = treatmentElement('fieldset', 'treatment-component-fieldset');
+    componentFieldset.append(
+      treatmentElement('legend', '', 'Associate earlier app components (optional)'),
+      treatmentElement(
+        'p',
+        'helper-text',
+        'Caregiver-associated · unverified. Association does not mean equivalence or source verification.',
+      ),
+    );
+    const componentOptions = [];
+    treatmentProjection.legacy_treatments.forEach(row => {
+      row.components.forEach(component => componentOptions.push(component));
+    });
+    treatmentSelection.componentOptions = componentOptions;
+    if (componentOptions.length) {
+      const list = treatmentElement('div', 'treatment-component-options');
+      componentOptions.forEach((component, index) => {
+        const label = treatmentElement('label');
+        const input = treatmentElement('input');
+        input.type = 'checkbox';
+        input.name = 'treatment-component-choice';
+        input.value = String(index);
+        input.checked = options.restart
+          ? false
+          : Boolean(course?.legacy_component_ids.includes(component.id));
+        label.append(
+          input,
+          treatmentElement('span', '', component.text),
+          treatmentElement('small', '', 'Caregiver-associated · unverified'),
+        );
+        list.append(label);
+      });
+      componentFieldset.append(list);
+    } else {
+      componentFieldset.append(treatmentElement('p', 'treatment-missing', 'No earlier components are available.'));
+    }
+    fragment.append(componentFieldset);
+    if (options.includeStatus && !options.restart) {
+      const terminal = treatmentElement('fieldset', 'treatment-terminal-fieldset');
+      terminal.id = 'treatment-terminal-fields';
+      terminal.append(treatmentElement('legend', '', 'Neutral terminal outcome'));
+      const qualifier = treatmentElement('select');
+      qualifier.id = 'treatment-field-terminal-qualifier';
+      qualifier.name = 'terminal_qualifier';
+      qualifier.dataset.caregiverField = 'true';
+      const blank = treatmentElement('option', '', 'Choose an outcome');
+      blank.value = '';
+      qualifier.append(blank);
+      ['ended', 'not_started', 'cancelled', 'other'].forEach(value => {
+        const option = treatmentElement('option', '', TREATMENT_TERMINAL_LABELS[value]);
+        option.value = value;
+        qualifier.append(option);
+      });
+      qualifier.addEventListener('change', () => {
+        const detail = document.getElementById('treatment-terminal-detail-wrap');
+        if (detail) detail.hidden = qualifier.value !== 'other';
+        if (qualifier.value !== 'other') {
+          const input = document.getElementById('treatment-field-terminal-detail');
+          if (input) input.value = '';
+        }
+        updateTreatmentFormValidity();
+      });
+      terminal.append(treatmentFieldLabel('Recorded terminal outcome', qualifier));
+      const detail = treatmentTextControl('terminal_detail', '');
+      const detailWrap = treatmentFieldLabel(
+        'Other recorded outcome detail',
+        detail,
+        'Required only for Other recorded outcome; the wording is not interpreted.',
+      );
+      detailWrap.id = 'treatment-terminal-detail-wrap';
+      detailWrap.hidden = true;
+      terminal.append(detailWrap);
+      fragment.append(terminal);
+    }
+    return fragment;
+  }
+
+  function renderTreatmentTerminalFields() {
+    const fieldset = document.getElementById('treatment-terminal-fields');
+    if (!fieldset) return;
+    fieldset.hidden = document.getElementById('treatment-field-status')?.value !== 'past';
+  }
+
+  function treatmentCategorySelect() {
+    const select = treatmentElement('select');
+    select.id = 'treatment-field-category';
+    select.dataset.caregiverField = 'true';
+    const blank = treatmentElement('option', '', 'Choose a neutral category');
+    blank.value = '';
+    select.append(blank);
+    [
+      ['name_or_type', 'Name or type wording'],
+      ['status', 'Recorded status'],
+      ['dose_or_schedule', 'Dose or schedule wording'],
+      ['date', 'Recorded date'],
+      ['source_wording', 'Source wording'],
+      ['other', 'Other recorded difference'],
+    ].forEach(([value, text]) => {
+      const option = treatmentElement('option', '', text);
+      option.value = value;
+      select.append(option);
+    });
+    return select;
+  }
+
+  function treatmentDifferenceForm() {
+    const fragment = document.createDocumentFragment();
+    fragment.append(treatmentElement(
+      'p',
+      'treatment-authority-note',
+      'Choose two records explicitly. NET/Care does not compare, rank, or decide which wording is correct.',
+    ));
+    const sourceA = treatmentElement('select');
+    sourceA.id = 'treatment-source-a';
+    const blankA = treatmentElement('option', '', 'Choose document Record A');
+    blankA.value = '';
+    sourceA.append(blankA);
+    treatmentProjection.source_facts.forEach((source, index) => {
+      const option = treatmentElement('option', '', source.observed_text);
+      option.value = String(index);
+      sourceA.append(option);
+    });
+    fragment.append(treatmentFieldLabel('Record A · document mention', sourceA));
+    const variant = treatmentElement('fieldset', 'treatment-choice-fieldset');
+    variant.append(treatmentElement('legend', '', 'Record B authority'));
+    [
+      ['source', 'Another document mention'],
+      ['course', 'A caregiver treatment record'],
+    ].forEach(([value, text]) => {
+      const label = treatmentElement('label');
+      const input = treatmentElement('input');
+      input.type = 'radio';
+      input.name = 'treatment-difference-variant';
+      input.value = value;
+      input.addEventListener('change', renderTreatmentDifferenceVariant);
+      label.append(input, treatmentElement('span', '', text));
+      variant.append(label);
+    });
+    fragment.append(variant);
+    const sourcePanel = treatmentElement('div');
+    sourcePanel.id = 'treatment-source-b-panel';
+    sourcePanel.hidden = true;
+    const sourceB = treatmentElement('select');
+    sourceB.id = 'treatment-source-b';
+    const blankB = treatmentElement('option', '', 'Choose distinct document Record B');
+    blankB.value = '';
+    sourceB.append(blankB);
+    treatmentProjection.source_facts.forEach((source, index) => {
+      const option = treatmentElement('option', '', source.observed_text);
+      option.value = String(index);
+      sourceB.append(option);
+    });
+    sourcePanel.append(treatmentFieldLabel('Record B · document mention', sourceB));
+    const coursePanel = treatmentElement('div');
+    coursePanel.id = 'treatment-course-b-panel';
+    coursePanel.hidden = true;
+    const courseB = treatmentElement('select');
+    courseB.id = 'treatment-course-b';
+    const blankCourse = treatmentElement('option', '', 'Choose caregiver Record B');
+    blankCourse.value = '';
+    courseB.append(blankCourse);
+    treatmentProjection.courses.forEach((course, index) => {
+      const option = treatmentElement('option', '', `${TREATMENT_STATUS_LABELS[course.status]} · ${course.treatment_text}`);
+      option.value = String(index);
+      courseB.append(option);
+    });
+    coursePanel.append(treatmentFieldLabel('Record B · caregiver treatment record', courseB));
+    fragment.append(sourcePanel, coursePanel);
+    const category = treatmentCategorySelect();
+    const comparison = treatmentTextControl('notes', '');
+    comparison.id = 'treatment-field-comparison';
+    comparison.maxLength = 10000;
+    fragment.append(
+      treatmentFieldLabel('Neutral difference category', category),
+      treatmentFieldLabel(
+        'Caregiver comparison wording',
+        comparison,
+        'Record the difference without deciding chronology, preference, causality, or correctness.',
+      ),
+    );
+    return fragment;
+  }
+
+  function renderTreatmentDifferenceVariant() {
+    const variant = document.querySelector(
+      'input[name="treatment-difference-variant"]:checked',
+    )?.value || '';
+    const source = document.getElementById('treatment-source-b-panel');
+    const course = document.getElementById('treatment-course-b-panel');
+    if (source) source.hidden = variant !== 'source';
+    if (course) course.hidden = variant !== 'course';
+    updateTreatmentFormValidity();
+  }
+
+  function treatmentResolveForm(discrepancy) {
+    const fragment = document.createDocumentFragment();
+    fragment.append(treatmentElement('p', 'treatment-confirmation-label', TREATMENT_CONFIRMATION_LABEL));
+    const outcome = treatmentElement('select');
+    outcome.id = 'treatment-field-outcome';
+    outcome.dataset.caregiverField = 'true';
+    const blank = treatmentElement('option', '', 'Choose the recorded outcome');
+    blank.value = '';
+    outcome.append(blank);
+    [
+      ['confirmed_as_recorded', 'Treating-team outcome recorded as confirmed'],
+      ['caregiver_record_corrected', 'Caregiver treatment record corrected'],
+      ['source_clarification_needed', 'Source clarification still needed'],
+      ['no_change_documented', 'No change documented'],
+    ].forEach(([value, text]) => {
+      if (value === 'caregiver_record_corrected' && !discrepancy.citations.course_b) return;
+      const option = treatmentElement('option', '', text);
+      option.value = value;
+      outcome.append(option);
+    });
+    outcome.addEventListener('change', () => {
+      const patch = document.getElementById('treatment-course-patch');
+      if (patch) patch.hidden = outcome.value !== 'caregiver_record_corrected';
+      updateTreatmentFormValidity();
+    });
+    const note = treatmentTextControl('notes', '');
+    note.id = 'treatment-field-resolution-note';
+    note.maxLength = 10000;
+    const clinician = treatmentTextControl('treatment_type_text', '');
+    clinician.id = 'treatment-field-clinician';
+    const context = treatmentTextControl('schedule_text', '');
+    context.id = 'treatment-field-context';
+    context.maxLength = 2000;
+    const date = treatmentElement('input');
+    date.id = 'treatment-field-resolution-date';
+    date.maxLength = 10;
+    date.placeholder = 'YYYY, YYYY-MM, or YYYY-MM-DD';
+    date.dataset.caregiverField = 'true';
+    fragment.append(
+      treatmentFieldLabel('Outcome', outcome),
+      treatmentFieldLabel('Caregiver note', note),
+      treatmentFieldLabel('Clinician attribution wording (optional)', clinician),
+      treatmentFieldLabel('Context wording (optional)', context),
+      treatmentFieldLabel('Recorded date (optional)', date),
+    );
+    if (discrepancy.citations.course_b) {
+      const patch = treatmentElement('section', 'treatment-course-patch');
+      patch.id = 'treatment-course-patch';
+      patch.hidden = true;
+      patch.append(
+        treatmentElement('h3', '', 'Atomic caregiver record correction'),
+        treatmentElement(
+          'p',
+          'helper-text',
+          'Only explicit changed fields are submitted with this outcome. Source wording is never copied.',
+        ),
+        treatmentCourseForm(discrepancy.citations.course_b.current),
+      );
+      fragment.append(patch);
+    }
+    return fragment;
+  }
+
+  function treatmentRecurrenceForm() {
+    const fragment = document.createDocumentFragment();
+    fragment.append(
+      treatmentElement(
+        'p',
+        'treatment-authority-note',
+        'Record a recurrence using the server-owned prior citation authority. The cited sides cannot be replaced here.',
+      ),
+      treatmentFieldLabel('Neutral difference category', treatmentCategorySelect()),
+    );
+    const comparison = treatmentTextControl('notes', '');
+    comparison.id = 'treatment-field-comparison';
+    comparison.maxLength = 10000;
+    fragment.append(treatmentFieldLabel('New caregiver comparison wording', comparison));
+    return fragment;
+  }
+
+  function treatmentFollowUpForm(discrepancy) {
+    const fragment = document.createDocumentFragment();
+    if (discrepancy.follow_up) {
+      fragment.append(
+        treatmentElement('p', '', 'This operation only unlinks the displayed follow-up. It does not alter the follow-up record.'),
+      );
+      const confirm = treatmentElement('label', 'treatment-confirm-row');
+      const checkbox = treatmentElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.id = 'treatment-confirm-unlink';
+      checkbox.dataset.caregiverField = 'true';
+      confirm.append(checkbox, treatmentElement('span', '', 'Unlink this follow-up'));
+      fragment.append(confirm);
+      return fragment;
+    }
+    const modes = treatmentElement('fieldset', 'treatment-choice-fieldset');
+    modes.append(treatmentElement('legend', '', 'Choose one atomic follow-up variant'));
+    [
+      ['existing', 'Link one currently eligible existing follow-up'],
+      ['inline', 'Create and link one manual follow-up'],
+    ].forEach(([value, text]) => {
+      const label = treatmentElement('label');
+      const input = treatmentElement('input');
+      input.type = 'radio';
+      input.name = 'treatment-follow-up-mode';
+      input.value = value;
+      input.addEventListener('change', renderTreatmentFollowUpVariant);
+      label.append(input, treatmentElement('span', '', text));
+      modes.append(label);
+    });
+    fragment.append(modes);
+    const existingPanel = treatmentElement('div');
+    existingPanel.id = 'treatment-follow-up-existing-panel';
+    existingPanel.hidden = true;
+    const existing = treatmentElement('select');
+    existing.id = 'treatment-follow-up-existing';
+    const blank = treatmentElement('option', '', 'Choose an eligible follow-up');
+    blank.value = '';
+    existing.append(blank);
+    treatmentProjection.eligible_actions.forEach((action, index) => {
+      const option = treatmentElement('option', '', action.text);
+      option.value = String(index);
+      existing.append(option);
+    });
+    existingPanel.append(treatmentFieldLabel('Existing follow-up', existing));
+    const inlinePanel = treatmentElement('div');
+    inlinePanel.id = 'treatment-follow-up-inline-panel';
+    inlinePanel.hidden = true;
+    const text = treatmentElement('textarea');
+    text.id = 'treatment-follow-up-text';
+    text.maxLength = 1000;
+    text.rows = 3;
+    text.dataset.caregiverField = 'true';
+    const owner = treatmentElement('input');
+    owner.id = 'treatment-follow-up-owner';
+    owner.maxLength = 100;
+    owner.dataset.caregiverField = 'true';
+    const due = treatmentElement('input');
+    due.id = 'treatment-follow-up-due';
+    due.maxLength = 10;
+    due.placeholder = 'YYYY, YYYY-MM, or YYYY-MM-DD';
+    due.dataset.caregiverField = 'true';
+    inlinePanel.append(
+      treatmentFieldLabel('Manual follow-up text', text),
+      treatmentFieldLabel('Owner (optional)', owner),
+      treatmentFieldLabel('Due date (optional)', due),
+    );
+    fragment.append(existingPanel, inlinePanel);
+    return fragment;
+  }
+
+  function renderTreatmentFollowUpVariant() {
+    const mode = document.querySelector('input[name="treatment-follow-up-mode"]:checked')?.value || '';
+    const existing = document.getElementById('treatment-follow-up-existing-panel');
+    const inline = document.getElementById('treatment-follow-up-inline-panel');
+    if (existing) existing.hidden = mode !== 'existing';
+    if (inline) inline.hidden = mode !== 'inline';
+    updateTreatmentFormValidity();
+  }
+
+  function captureTreatmentDraft(options = {}) {
+    if (!treatmentDialogOpen) return null;
+    if (options.forReplacement && !['add', 'difference'].includes(treatmentDialogMode)) {
+      treatmentDraft = null;
+      return null;
+    }
+    const values = {};
+    document.querySelectorAll('#treatment-dialog [data-caregiver-field="true"]').forEach(control => {
+      if (!control.name && !control.id) return;
+      const key = control.name || control.id;
+      values[key] = control.type === 'checkbox' ? control.checked : control.value;
+    });
+    treatmentDraft = {
+      mode: treatmentDialogMode,
+      values,
+    };
+    return treatmentDraft;
+  }
+
+  function restoreTreatmentDraft(draft) {
+    if (!draft?.values) return;
+    Object.entries(draft.values).forEach(([key, value]) => {
+      const control = document.querySelector(
+        `#treatment-dialog [name="${CSS.escape(key)}"], #${CSS.escape(key)}`,
+      );
+      if (!control || control.name?.startsWith('treatment-component-choice')) return;
+      if (control.type === 'checkbox') control.checked = value === true;
+      else control.value = String(value ?? '');
+    });
+    renderTreatmentTerminalFields();
+    const qualifier = document.getElementById('treatment-field-terminal-qualifier');
+    const detail = document.getElementById('treatment-terminal-detail-wrap');
+    if (detail) detail.hidden = qualifier?.value !== 'other';
+  }
+
+  function setTreatmentDialogStatus(message, state = '') {
+    const node = document.getElementById('treatment-dialog-status');
+    if (!node) return;
+    node.className = `treatment-dialog-status${state ? ` ${safeClassToken(state)}` : ''}`;
+    node.textContent = message || '';
+  }
+
+  function openTreatmentDialog(mode, trigger, selection = {}) {
+    if (
+      treatmentProjectionState !== 'current'
+      || !treatmentResponseOwnerIsCurrent()
+      || treatmentMutationPending
+      || pendingTreatmentCompletion
+    ) {
+      setTreatmentStatus('Reload the current treatment record before making changes.', 'stale', true);
+      return;
+    }
+    const preservedDraft = treatmentDraft?.mode === mode ? treatmentDraft : null;
+    clearTreatmentRetry();
+    treatmentSelectionEpoch += 1;
+    treatmentDialogEpoch += 1;
+    treatmentDialogMode = mode;
+    treatmentDialogOpen = true;
+    treatmentSelection = { ...selection, componentOptions: [] };
+    treatmentDraft = null;
+    const body = document.getElementById('treatment-dialog-body');
+    body.replaceChildren();
+    const title = document.getElementById('treatment-dialog-title');
+    const eyebrow = document.getElementById('treatment-dialog-eyebrow');
+    const submit = document.getElementById('treatment-submit-button');
+    eyebrow.textContent = mode === 'resolve'
+      ? TREATMENT_CONFIRMATION_LABEL
+      : 'Caregiver-maintained · unverified';
+    const course = selection.courseId ? treatmentCourseById(selection.courseId) : null;
+    const discrepancy = selection.discrepancyId
+      ? treatmentDiscrepancyById(selection.discrepancyId)
+      : null;
+    if (selection.courseId && !course) return scrubTreatmentDialog();
+    if (selection.discrepancyId && !discrepancy) return scrubTreatmentDialog();
+    if (mode === 'add') {
+      title.textContent = 'Record treatment';
+      submit.textContent = 'Save treatment record';
+      body.append(treatmentCourseForm(null, { includeStatus: true }));
+      renderTreatmentTerminalFields();
+    } else if (mode === 'edit') {
+      title.textContent = 'Edit recorded treatment details';
+      submit.textContent = 'Save explicit changes';
+      body.append(treatmentCourseForm(course));
+    } else if (mode === 'restart') {
+      title.textContent = 'Create linked new treatment record';
+      submit.textContent = 'Create new linked record';
+      body.append(treatmentCourseForm(null, { includeStatus: true, restart: true }));
+    } else if (mode === 'transition') {
+      title.textContent = selection.targetStatus === 'past'
+        ? 'Record terminal outcome'
+        : 'Record as current';
+      submit.textContent = 'Save status change';
+      body.append(treatmentElement(
+        'p',
+        'treatment-authority-note',
+        `Server-authorized transition from ${course.status} to ${selection.targetStatus}.`,
+      ));
+      if (selection.qualifiers.length) {
+        const qualifier = treatmentElement('select');
+        qualifier.id = 'treatment-field-terminal-qualifier';
+        qualifier.dataset.caregiverField = 'true';
+        const blank = treatmentElement('option', '', 'Choose an outcome');
+        blank.value = '';
+        qualifier.append(blank);
+        selection.qualifiers.forEach(value => {
+          const option = treatmentElement('option', '', TREATMENT_TERMINAL_LABELS[value]);
+          option.value = value;
+          qualifier.append(option);
+        });
+        qualifier.addEventListener('change', () => {
+          const detail = document.getElementById('treatment-terminal-detail-wrap');
+          if (detail) detail.hidden = qualifier.value !== 'other';
+          const detailInput = document.getElementById('treatment-field-terminal-detail');
+          if (qualifier.value !== 'other' && detailInput) detailInput.value = '';
+          updateTreatmentFormValidity();
+        });
+        body.append(treatmentFieldLabel('Recorded terminal outcome', qualifier));
+        const detail = treatmentTextControl('terminal_detail', '');
+        const wrap = treatmentFieldLabel('Other recorded outcome detail', detail);
+        wrap.id = 'treatment-terminal-detail-wrap';
+        wrap.hidden = true;
+        body.append(wrap);
+      }
+    } else if (mode === 'difference') {
+      title.textContent = 'Record a difference to review';
+      submit.textContent = 'Save difference';
+      body.append(treatmentDifferenceForm());
+    } else if (mode === 'resolve') {
+      title.textContent = 'Record treating-team outcome';
+      submit.textContent = 'Save outcome atomically';
+      body.append(treatmentResolveForm(discrepancy));
+    } else if (mode === 'reopen') {
+      title.textContent = 'Reopen recorded difference';
+      submit.textContent = 'Reopen difference';
+      body.append(treatmentElement(
+        'p',
+        'treatment-authority-note',
+        'The prior treating-team outcomes remain visible and are not changed by reopening.',
+      ));
+    } else if (mode === 'recur') {
+      title.textContent = 'Record recurring difference';
+      submit.textContent = 'Save recurrence';
+      body.append(treatmentRecurrenceForm());
+    } else if (mode === 'follow-up') {
+      title.textContent = discrepancy.follow_up ? 'Unlink follow-up' : 'Link a follow-up';
+      submit.textContent = discrepancy.follow_up ? 'Unlink follow-up' : 'Save atomic follow-up';
+      body.append(treatmentFollowUpForm(discrepancy));
+    } else {
+      return scrubTreatmentDialog();
+    }
+    restoreTreatmentDraft(preservedDraft);
+    setFormError('treatment-form-error', '');
+    setTreatmentDialogStatus('');
+    const overlay = document.getElementById('treatment-dialog-overlay');
+    const dialog = document.getElementById('treatment-dialog');
+    overlay.inert = false;
+    overlay.classList.add('open');
+    overlay.setAttribute('aria-hidden', 'false');
+    dialog.inert = false;
+    activateDialog(dialog, trigger);
+    document.getElementById('treatment-form')?.addEventListener(
+      'input',
+      invalidateTreatmentRetryOnDraftChange,
+      { once: true },
+    );
+    updateTreatmentFormValidity();
+  }
+
+  function openTreatmentAddDialog(trigger) {
+    openTreatmentDialog('add', trigger);
+  }
+
+  function openTreatmentCourseDialog(mode, trigger, courseId) {
+    const course = treatmentCourseById(courseId);
+    if (!course) return;
+    if (mode === 'restart' && course.lifecycle.restart.eligible !== true) return;
+    openTreatmentDialog(mode, trigger, { courseId, courseToken: course.token });
+  }
+
+  function openTreatmentTransitionDialog(trigger, courseId, targetStatus) {
+    const course = treatmentCourseById(courseId);
+    const transition = course?.lifecycle.allowed_transitions.find(
+      item => item.status === targetStatus,
+    );
+    if (!course || !transition) return;
+    openTreatmentDialog('transition', trigger, {
+      courseId,
+      courseToken: course.token,
+      targetStatus,
+      qualifiers: [...transition.terminal_qualifiers],
+    });
+  }
+
+  function openTreatmentDifferenceDialog(trigger) {
+    openTreatmentDialog('difference', trigger);
+  }
+
+  function openTreatmentDiscrepancyDialog(mode, trigger, discrepancyId) {
+    const discrepancy = treatmentDiscrepancyById(discrepancyId);
+    if (!discrepancy) return;
+    if (mode === 'resolve' && !discrepancy.eligibility.resolve) return;
+    if (mode === 'reopen' && !discrepancy.eligibility.reopen) return;
+    if (mode === 'recur' && !discrepancy.eligibility.recur) return;
+    if (mode === 'follow-up' && discrepancy.citation_authority.state !== 'complete') return;
+    openTreatmentDialog(mode, trigger, {
+      discrepancyId,
+      discrepancyToken: discrepancy.token,
+    });
+  }
+
+  function closeTreatmentDialog(preserveDraft = true, force = false, restoreFocus = true) {
+    if (!treatmentDialogOpen) return;
+    if (treatmentMutationPending && !force) {
+      setTreatmentDialogStatus('Saving is still in progress. Wait for the result before closing.', 'saving');
+      return;
+    }
+    if (preserveDraft) captureTreatmentDraft();
+    treatmentDialogOpen = false;
+    treatmentDialogMode = null;
+    treatmentSelection = null;
+    treatmentDraft = null;
+    treatmentSelectionEpoch += 1;
+    treatmentDialogEpoch += 1;
+    clearTreatmentRetry();
+    setTreatmentVerificationRetry(false);
+    const body = document.getElementById('treatment-dialog-body');
+    if (body) body.replaceChildren();
+    const overlay = document.getElementById('treatment-dialog-overlay');
+    const dialog = document.getElementById('treatment-dialog');
+    overlay?.classList.remove('open');
+    overlay?.setAttribute('aria-hidden', 'true');
+    if (overlay) overlay.inert = true;
+    if (dialog) dialog.inert = true;
+    deactivateDialog(dialog, restoreFocus);
+  }
+
+  function closeTreatmentDialogFromBackdrop(event) {
+    if (event?.target === document.getElementById('treatment-dialog-overlay')) {
+      closeTreatmentDialog();
+    }
+  }
+
+  function invalidateTreatmentRetryOnDraftChange() {
+    if (pendingTreatmentRetry) {
+      clearTreatmentRetry();
+      setTreatmentDialogStatus(
+        'The draft changed. Submit a new request after reviewing current treatment authority.',
+        'conflict',
+      );
+    }
+    captureTreatmentDraft();
+    updateTreatmentFormValidity();
+    if (treatmentDialogOpen) {
+      document.getElementById('treatment-form')?.addEventListener(
+        'input',
+        invalidateTreatmentRetryOnDraftChange,
+        { once: true },
+      );
+    }
+  }
+
+  function updateTreatmentFormValidity() {
+    const submit = document.getElementById('treatment-submit-button');
+    if (!submit || !treatmentDialogOpen) return;
+    let valid = treatmentProjectionState === 'current'
+      && treatmentResponseOwnerIsCurrent()
+      && !treatmentMutationPending;
+    if (['add', 'edit', 'restart'].includes(treatmentDialogMode)) {
+      valid = valid
+        && Boolean(document.getElementById('treatment-field-treatment-text')?.value)
+        && ['start', 'stop', 'planned'].every(prefix => treatmentDateInputIsValid(
+          document.getElementById(`treatment-field-${prefix}-date`)?.value || '',
+        ));
+      if (['add', 'restart'].includes(treatmentDialogMode)) {
+        valid = valid && Boolean(document.getElementById('treatment-field-status')?.value);
+      }
+      if (
+        treatmentDialogMode === 'add'
+        && document.getElementById('treatment-field-status')?.value === 'past'
+      ) {
+        const qualifier = document.getElementById('treatment-field-terminal-qualifier')?.value;
+        valid = valid && ['ended', 'not_started', 'cancelled', 'other'].includes(qualifier);
+        if (qualifier === 'other') {
+          valid = valid && Boolean(
+            document.getElementById('treatment-field-terminal-detail')?.value.trim(),
+          );
+        }
+      }
+    } else if (treatmentDialogMode === 'transition') {
+      if (treatmentSelection.qualifiers.length) {
+        const qualifier = document.getElementById('treatment-field-terminal-qualifier')?.value;
+        valid = valid && treatmentSelection.qualifiers.includes(qualifier);
+        if (qualifier === 'other') {
+          valid = valid && Boolean(
+            document.getElementById('treatment-field-terminal-detail')?.value.trim(),
+          );
+        }
+      }
+    } else if (treatmentDialogMode === 'difference') {
+      const a = document.getElementById('treatment-source-a')?.value ?? '';
+      const variant = document.querySelector(
+        'input[name="treatment-difference-variant"]:checked',
+      )?.value || '';
+      const b = variant === 'source'
+        ? (document.getElementById('treatment-source-b')?.value ?? '')
+        : (document.getElementById('treatment-course-b')?.value ?? '');
+      valid = valid
+        && a !== ''
+        && b !== ''
+        && !(variant === 'source' && a === b)
+        && Boolean(document.getElementById('treatment-field-category')?.value)
+        && Boolean(document.getElementById('treatment-field-comparison')?.value);
+    } else if (treatmentDialogMode === 'resolve') {
+      const outcome = document.getElementById('treatment-field-outcome')?.value;
+      valid = valid
+        && Boolean(outcome)
+        && Boolean(document.getElementById('treatment-field-resolution-note')?.value)
+        && treatmentDateInputIsValid(
+          document.getElementById('treatment-field-resolution-date')?.value || '',
+        );
+      if (outcome === 'caregiver_record_corrected') {
+        try {
+          valid = valid && Object.keys(treatmentCoursePatch()).length > 0;
+        } catch (_) {
+          valid = false;
+        }
+      }
+    } else if (treatmentDialogMode === 'recur') {
+      valid = valid
+        && Boolean(document.getElementById('treatment-field-category')?.value)
+        && Boolean(document.getElementById('treatment-field-comparison')?.value);
+    } else if (treatmentDialogMode === 'follow-up') {
+      const discrepancy = treatmentDiscrepancyById(treatmentSelection.discrepancyId);
+      if (discrepancy?.follow_up) {
+        valid = valid && document.getElementById('treatment-confirm-unlink')?.checked === true;
+      } else {
+        const mode = document.querySelector('input[name="treatment-follow-up-mode"]:checked')?.value;
+        valid = valid && (
+          (mode === 'existing' && document.getElementById('treatment-follow-up-existing')?.value !== '')
+          || (
+            mode === 'inline'
+            && Boolean(document.getElementById('treatment-follow-up-text')?.value.trim())
+            && treatmentDateInputIsValid(
+              document.getElementById('treatment-follow-up-due')?.value || '',
+            )
+          )
+        );
+      }
+    }
+    submit.disabled = !valid;
+  }
+
+  function treatmentOptionalInputValue(field) {
+    const value = document.getElementById(`treatment-field-${field.replaceAll('_', '-')}`)?.value ?? '';
+    const exactEmpty = document.getElementById(`treatment-empty-${field.replaceAll('_', '-')}`)?.checked === true;
+    if (value === '') return exactEmpty ? '' : null;
+    return value;
+  }
+
+  function treatmentSelectedComponentIds() {
+    const options = treatmentSelection?.componentOptions || [];
+    return [...document.querySelectorAll(
+      '#treatment-dialog input[name="treatment-component-choice"]:checked',
+    )].map(input => options[Number(input.value)]?.id).filter(Boolean);
+  }
+
+  function treatmentCourseValues() {
+    const body = {
+      treatment_text: document.getElementById('treatment-field-treatment-text')?.value ?? '',
+      treatment_type_text: treatmentOptionalInputValue('treatment_type_text'),
+      dose_text: treatmentOptionalInputValue('dose_text'),
+      route_text: treatmentOptionalInputValue('route_text'),
+      frequency_text: treatmentOptionalInputValue('frequency_text'),
+      cycle_text: treatmentOptionalInputValue('cycle_text'),
+      schedule_text: treatmentOptionalInputValue('schedule_text'),
+      formulation_text: treatmentOptionalInputValue('formulation_text'),
+      indication_text: treatmentOptionalInputValue('indication_text'),
+      notes: treatmentOptionalInputValue('notes'),
+      start_date: document.getElementById('treatment-field-start-date')?.value || null,
+      stop_date: document.getElementById('treatment-field-stop-date')?.value || null,
+      planned_date: document.getElementById('treatment-field-planned-date')?.value || null,
+      legacy_component_ids: treatmentSelectedComponentIds(),
+    };
+    if (!body.treatment_text) throw new Error('Enter exact treatment wording.');
+    for (const prefix of ['start', 'stop', 'planned']) {
+      const value = body[`${prefix}_date`] || '';
+      if (!treatmentDateInputIsValid(value)) {
+        throw new Error(`Use YYYY, YYYY-MM, or YYYY-MM-DD for the ${prefix} date.`);
+      }
+    }
+    return body;
+  }
+
+  function treatmentCoursePatch() {
+    const discrepancy = treatmentDiscrepancyById(treatmentSelection?.discrepancyId);
+    const course = discrepancy?.citations.course_b?.current;
+    if (!course) throw new Error('The cited caregiver treatment record is unavailable.');
+    const values = treatmentCourseValues();
+    const patch = {};
+    TREATMENT_COURSE_FIELDS.forEach(field => {
+      if (values[field] !== course[field]) patch[field] = values[field];
+    });
+    if (JSON.stringify(values.legacy_component_ids) !== JSON.stringify(course.legacy_component_ids)) {
+      patch.legacy_component_ids = values.legacy_component_ids;
+    }
+    return patch;
+  }
+
+  function treatmentMutationMeta() {
+    if (!treatmentProjection || !treatmentResponseOwnerIsCurrent()) {
+      throw new Error('Reload the authoritative treatment record before saving.');
+    }
+    return {
+      expected_profile_revision: treatmentProjection.profile_revision,
+      expected_workflow_revision: treatmentProjection.workflow_revision,
+      expected_projection_token: treatmentProjection.projection_token,
+    };
+  }
+
+  function treatmentBodyForDialog() {
+    const meta = treatmentMutationMeta();
+    if (treatmentDialogMode === 'add') {
+      const values = treatmentCourseValues();
+      const status = document.getElementById('treatment-field-status')?.value;
+      const body = { ...meta, status, ...values };
+      if (status === 'past') {
+        const qualifier = document.getElementById('treatment-field-terminal-qualifier')?.value;
+        body.terminal_qualifier = qualifier;
+        body.terminal_detail = qualifier === 'other'
+          ? document.getElementById('treatment-field-terminal-detail')?.value
+          : null;
+      } else {
+        body.terminal_qualifier = null;
+        body.terminal_detail = null;
+      }
+      return {
+        method: 'POST',
+        url: '/api/treatment-reconciliation/courses',
+        body,
+        operation: 'add',
+      };
+    }
+    if (treatmentDialogMode === 'edit') {
+      return {
+        method: 'PATCH',
+        url: `/api/treatment-reconciliation/courses/${encodeURIComponent(treatmentSelection.courseId)}`,
+        body: {
+          ...meta,
+          expected_course_token: treatmentSelection.courseToken,
+          ...treatmentCourseValues(),
+        },
+        operation: 'edit',
+      };
+    }
+    if (treatmentDialogMode === 'restart') {
+      return {
+        method: 'POST',
+        url: `/api/treatment-reconciliation/courses/${encodeURIComponent(treatmentSelection.courseId)}/restart`,
+        body: {
+          ...meta,
+          expected_course_token: treatmentSelection.courseToken,
+          status: document.getElementById('treatment-field-status')?.value,
+          ...treatmentCourseValues(),
+        },
+        operation: 'restart',
+      };
+    }
+    if (treatmentDialogMode === 'transition') {
+      const body = {
+        ...meta,
+        expected_course_token: treatmentSelection.courseToken,
+        status: treatmentSelection.targetStatus,
+        terminal_qualifier: null,
+        terminal_detail: null,
+      };
+      if (treatmentSelection.qualifiers.length) {
+        const qualifier = document.getElementById('treatment-field-terminal-qualifier')?.value;
+        if (!treatmentSelection.qualifiers.includes(qualifier)) {
+          throw new Error('Choose one server-authorized terminal outcome.');
+        }
+        body.terminal_qualifier = qualifier;
+        body.terminal_detail = qualifier === 'other'
+          ? document.getElementById('treatment-field-terminal-detail')?.value
+          : null;
+      }
+      return {
+        method: 'POST',
+        url: `/api/treatment-reconciliation/courses/${encodeURIComponent(treatmentSelection.courseId)}/transition`,
+        body,
+        operation: 'transition',
+      };
+    }
+    if (treatmentDialogMode === 'difference') {
+      const sourceIndex = Number(document.getElementById('treatment-source-a')?.value);
+      const source = treatmentProjection.source_facts[sourceIndex];
+      const variant = document.querySelector(
+        'input[name="treatment-difference-variant"]:checked',
+      )?.value;
+      if (!source) throw new Error('Explicitly choose document Record A.');
+      const body = {
+        ...meta,
+        category: document.getElementById('treatment-field-category')?.value,
+        comparison_text: document.getElementById('treatment-field-comparison')?.value ?? '',
+        source_fact_ref: source.ref,
+        expected_source_fact_token: source.token,
+      };
+      if (variant === 'source') {
+        const comparison = treatmentProjection.source_facts[
+          Number(document.getElementById('treatment-source-b')?.value)
+        ];
+        if (!comparison || comparison.ref === source.ref) {
+          throw new Error('Explicitly choose a distinct document Record B.');
+        }
+        body.comparison_source_fact_ref = comparison.ref;
+        body.expected_comparison_source_fact_token = comparison.token;
+      } else if (variant === 'course') {
+        const course = treatmentProjection.courses[
+          Number(document.getElementById('treatment-course-b')?.value)
+        ];
+        if (!course) throw new Error('Explicitly choose a caregiver treatment Record B.');
+        body.course_id = course.id;
+        body.expected_course_token = course.token;
+      } else {
+        throw new Error('Choose one Record B authority.');
+      }
+      return {
+        method: 'POST',
+        url: '/api/treatment-reconciliation/discrepancies',
+        body,
+        operation: 'difference',
+      };
+    }
+    const discrepancy = treatmentDiscrepancyById(treatmentSelection.discrepancyId);
+    if (!discrepancy || discrepancy.token !== treatmentSelection.discrepancyToken) {
+      throw new Error('The selected difference changed. Reload before saving.');
+    }
+    if (treatmentDialogMode === 'resolve') {
+      const outcome = document.getElementById('treatment-field-outcome')?.value;
+      const body = {
+        ...meta,
+        expected_discrepancy_token: discrepancy.token,
+        outcome,
+        note: document.getElementById('treatment-field-resolution-note')?.value ?? '',
+        clinician_text: treatmentOptionalControlValue('treatment-field-clinician'),
+        context_text: treatmentOptionalControlValue('treatment-field-context'),
+        date: document.getElementById('treatment-field-resolution-date')?.value || null,
+      };
+      if (outcome === 'caregiver_record_corrected') {
+        const patch = treatmentCoursePatch();
+        if (!Object.keys(patch).length) {
+          throw new Error('Make at least one explicit caregiver record correction.');
+        }
+        body.course_patch = patch;
+        body.expected_course_token = discrepancy.citations.course_b.current.token;
+      }
+      return {
+        method: 'POST',
+        url: `/api/treatment-reconciliation/discrepancies/${encodeURIComponent(discrepancy.id)}/resolve`,
+        body,
+        operation: 'resolve',
+      };
+    }
+    if (treatmentDialogMode === 'reopen') {
+      return {
+        method: 'POST',
+        url: `/api/treatment-reconciliation/discrepancies/${encodeURIComponent(discrepancy.id)}/reopen`,
+        body: { ...meta, expected_discrepancy_token: discrepancy.token },
+        operation: 'reopen',
+      };
+    }
+    if (treatmentDialogMode === 'recur') {
+      return {
+        method: 'POST',
+        url: '/api/treatment-reconciliation/discrepancies',
+        body: {
+          ...meta,
+          category: document.getElementById('treatment-field-category')?.value,
+          comparison_text: document.getElementById('treatment-field-comparison')?.value ?? '',
+          recurs_from_id: discrepancy.id,
+          expected_recurs_from_token: discrepancy.token,
+        },
+        operation: 'recur',
+      };
+    }
+    if (treatmentDialogMode === 'follow-up') {
+      const body = { ...meta, expected_discrepancy_token: discrepancy.token };
+      if (discrepancy.follow_up) {
+        if (document.getElementById('treatment-confirm-unlink')?.checked !== true) {
+          throw new Error('Confirm unlinking the displayed follow-up.');
+        }
+        body.caregiver_action_id = null;
+        body.expected_action_token = discrepancy.follow_up.token;
+      } else {
+        const mode = document.querySelector(
+          'input[name="treatment-follow-up-mode"]:checked',
+        )?.value;
+        if (mode === 'existing') {
+          const action = treatmentProjection.eligible_actions[
+            Number(document.getElementById('treatment-follow-up-existing')?.value)
+          ];
+          if (!action) throw new Error('Choose a currently eligible follow-up.');
+          body.caregiver_action_id = action.id;
+          body.expected_action_token = action.token;
+        } else if (mode === 'inline') {
+          const text = document.getElementById('treatment-follow-up-text')?.value ?? '';
+          const dueDate = document.getElementById('treatment-follow-up-due')?.value || null;
+          if (!text.trim()) throw new Error('Enter manual follow-up text.');
+          if (dueDate !== null && !treatmentDateInputIsValid(dueDate)) {
+            throw new Error('Use YYYY, YYYY-MM, or YYYY-MM-DD for the follow-up due date.');
+          }
+          body.follow_up = {
+            text,
+            owner: treatmentOptionalControlValue('treatment-follow-up-owner'),
+            due_date: dueDate,
+          };
+        } else {
+          throw new Error('Choose one atomic follow-up variant.');
+        }
+      }
+      return {
+        method: 'PATCH',
+        url: `/api/treatment-reconciliation/discrepancies/${encodeURIComponent(discrepancy.id)}/follow-up`,
+        body,
+        operation: discrepancy.follow_up ? 'unlink' : 'follow-up',
+      };
+    }
+    throw new Error('Unsupported treatment operation.');
+  }
+
+  function treatmentOptionalControlValue(id) {
+    const value = document.getElementById(id)?.value ?? '';
+    return value === '' ? null : value;
+  }
+
+  function treatmentMutationPayloadIsValid(data, intent) {
+    const optional = ['idempotent_replay'];
+    if (
+      !data
+      || typeof data !== 'object'
+      || Array.isArray(data)
+      || !Number.isSafeInteger(data.profile_revision)
+      || data.profile_revision < 0
+      || !Number.isSafeInteger(data.workflow_revision)
+      || data.workflow_revision < 0
+      || (
+        Object.prototype.hasOwnProperty.call(data, 'idempotent_replay')
+        && data.idempotent_replay !== true
+      )
+    ) return false;
+    const componentIds = new Set(
+      treatmentProjection?.legacy_treatments.flatMap(row => row.components.map(item => item.id)) || [],
+    );
+    if (['add', 'edit', 'restart', 'transition'].includes(intent.operation)) {
+      return treatmentHasExactKeys(
+        data,
+        ['course', 'workflow_revision', 'profile_revision'],
+        optional,
+      ) && treatmentCourseIsValid(data.course, componentIds);
+    }
+    if (!treatmentHasExactKeys(
+      data,
+      ['discrepancy', 'course', 'follow_up', 'workflow_revision', 'profile_revision'],
+      optional,
+    )) return false;
+    if (data.course !== null && !treatmentCourseIsValid(data.course, componentIds)) return false;
+    if (data.follow_up !== null && !treatmentActionIsValid(data.follow_up)) return false;
+    const citationSources = [
+      data.discrepancy?.citations?.source_a?.current,
+      data.discrepancy?.citations?.source_b?.current,
+    ].filter(Boolean);
+    const sources = new Map(citationSources.map(item => [item.ref, item]));
+    const citationCourses = [
+      data.discrepancy?.citations?.course_b?.current,
+      data.course,
+    ].filter(Boolean);
+    const courses = new Map(citationCourses.map(item => [item.id, item]));
+    const actions = new Map(data.follow_up ? [[data.follow_up.id, data.follow_up]] : []);
+    return treatmentDiscrepancyIsValid(data.discrepancy, sources, courses, actions)
+      && (
+        data.follow_up === null
+          ? data.discrepancy.follow_up === null
+          : data.discrepancy.follow_up?.id === data.follow_up.id
+      );
+  }
+
+  function beginTreatmentMutation() {
+    if (
+      treatmentMutationPending
+      || pendingTreatmentCompletion
+      || treatmentProjectionState !== 'current'
+      || !treatmentResponseOwnerIsCurrent()
+    ) return null;
+    const owner = {};
+    treatmentMutationOwner = owner;
+    treatmentMutationPending = true;
+    treatmentMutationEpoch += 1;
+    const previous = treatmentMutationController;
+    treatmentMutationController = new AbortController();
+    if (previous && !previous.signal.aborted) previous.abort();
+    updateTreatmentControls();
+    return owner;
+  }
+
+  function treatmentIntentOwnsMutation(intent, acceptedPhiEpoch = null) {
+    return Boolean(
+      intent
+      && treatmentMutationPending
+      && treatmentMutationOwner === intent.mutationOwner
+      && treatmentMutationController === intent.controller
+      && !intent.controller.signal.aborted
+      && intent.mutationEpoch === treatmentMutationEpoch
+      && (acceptedPhiEpoch ?? intent.acceptedPhiEpoch ?? intent.requestPhiEpoch) === phiEpoch
+      && intent.selectionEpoch === treatmentSelectionEpoch
+      && intent.dialogEpoch === treatmentDialogEpoch
+    );
+  }
+
+  function releaseTreatmentMutation(intent) {
+    if (!intent || treatmentMutationOwner !== intent.mutationOwner) return false;
+    treatmentMutationPending = false;
+    treatmentMutationOwner = null;
+    if (treatmentMutationController === intent.controller) treatmentMutationController = null;
+    if (activeTreatmentIntent === intent) activeTreatmentIntent = null;
+    updateTreatmentControls();
+    return true;
+  }
+
+  function createTreatmentIntent(specification, mutationOwner) {
+    const canonicalBody = { mutation_id: newMutationId(), ...specification.body };
+    return {
+      method: specification.method,
+      url: specification.url,
+      operation: specification.operation,
+      bodyText: JSON.stringify(canonicalBody),
+      mutationOwner,
+      controller: treatmentMutationController,
+      mutationEpoch: treatmentMutationEpoch,
+      requestPhiEpoch: phiEpoch,
+      selectionEpoch: treatmentSelectionEpoch,
+      dialogEpoch: treatmentDialogEpoch,
+      courseId: treatmentSelection?.courseId || null,
+      discrepancyId: treatmentSelection?.discrepancyId || null,
+      previousCourseId: specification.operation === 'restart'
+        ? treatmentSelection?.courseId
+        : null,
+    };
+  }
+
+  function treatmentCompletionFromResponse(data, intent) {
+    return {
+      intent,
+      operation: intent.operation,
+      profileRevision: data.profile_revision,
+      workflowRevision: data.workflow_revision,
+      course: data.course || null,
+      discrepancy: data.discrepancy || null,
+      followUp: data.follow_up || null,
+      expectUnlinked: intent.operation === 'unlink',
+      previousCourseId: intent.previousCourseId,
+    };
+  }
+
+  function finalizeTreatmentMutation(completion) {
+    if (!treatmentIntentOwnsMutation(completion.intent)) return false;
+    pendingTreatmentCompletion = null;
+    clearTreatmentRetry();
+    closeTreatmentDialog(false, true, false);
+    releaseTreatmentMutation(completion.intent);
+    setTreatmentStatus('Treatment reconciliation saved and verified.', 'current', false);
+    reportLoadSuccess('treatment-mutation');
+    const target = document.getElementById(
+      activeView === 'patient' ? 'treatments-heading' : 'today-treatment-heading',
+    );
+    target?.focus();
+    return true;
+  }
+
+  async function handleTreatmentConflict(intent) {
+    if (!treatmentIntentOwnsMutation(intent)) return;
+    captureTreatmentDraft({ forReplacement: true });
+    clearTreatmentRetry();
+    const safeDraft = treatmentDraft;
+    treatmentProjection = null;
+    treatmentResponseOwner = null;
+    treatmentProjectionState = 'stale';
+    scrubTreatmentDialog();
+    treatmentDraft = safeDraft;
+    renderTreatmentUnavailable(
+      'Treatment authority changed. Reloading the complete record; review the preserved caregiver draft and reselect all server-owned records.',
+      'stale',
+      'Reloading…',
+      false,
+    );
+    releaseTreatmentMutation(intent);
+    await loadTreatmentReconciliation({ force: true });
+  }
+
+  async function consumeTreatmentMutationResponse(data, intent) {
+    if (!treatmentIntentOwnsMutation(intent, intent.requestPhiEpoch)) return false;
+    if (!treatmentMutationPayloadIsValid(data, intent)) {
+      clearTreatmentProjection({
+        state: 'corrupt',
+        statusLabel: 'Record unavailable',
+        message: 'Treatment information was cleared because a mutation response could not be verified safely.',
+        retry: true,
+      });
+      return false;
+    }
+    clearTreatmentRetry();
+    const authority = authorizePatientResponse(intent, data, {
+      workflow: 'targeted',
+      treatmentMutation: true,
+    });
+    if (!authority.accepted) return false;
+    intent.acceptedPhiEpoch = authority.requestPhiEpoch;
+    if (!treatmentIntentOwnsMutation(intent)) return false;
+    pendingTreatmentCompletion = treatmentCompletionFromResponse(data, intent);
+    markTreatmentProjectionStale(
+      'Saved response received. Reloading the complete authoritative treatment record before confirming.',
+      {
+        preserveMutation: true,
+        ownerPhiEpoch: authority.requestPhiEpoch,
+      },
+    );
+    await loadTreatmentReconciliation({ force: true, preserveMutation: true });
+    return pendingTreatmentCompletion === null;
+  }
+
+  async function performTreatmentIntent(intent, explicitRetry = false) {
+    if (!treatmentIntentOwnsMutation(intent)) return null;
+    activeTreatmentIntent = intent;
+    setTreatmentDialogStatus(
+      explicitRetry ? 'Retrying the exact unchanged request…' : 'Saving…',
+      'saving',
+    );
+    try {
+      const response = await fetch(intent.url, {
+        method: intent.method,
+        headers: { 'Content-Type': 'application/json' },
+        body: intent.bodyText,
+        signal: intent.controller.signal,
+      });
+      if (!treatmentIntentOwnsMutation(intent)) return null;
+      const data = await readJsonResponse(response, () => false);
+      if (!treatmentIntentOwnsMutation(intent)) return null;
+      await consumeTreatmentMutationResponse(data, intent);
+      return data;
+    } catch (error) {
+      if (error?.name === 'AbortError' || !treatmentIntentOwnsMutation(intent)) return null;
+      if (error?.status === 401 || error?.status === 403) {
+        const safeError = new Error('Treatment authorization is unavailable.');
+        safeError.status = error.status;
+        evictClientPhi(safeError);
+        return null;
+      }
+      if (error?.status === 409) {
+        await handleTreatmentConflict(intent);
+        return null;
+      }
+      if (error instanceof TypeError) {
+        pendingTreatmentRetry = intent;
+        treatmentNetworkAmbiguous = true;
+        treatmentProjectionState = 'stale';
+        renderTreatmentProjection(treatmentResponseOwner);
+        setTreatmentDialogStatus(
+          'Submission status is unknown. The exact request can be retried unchanged; editing or closing destroys that retry.',
+          'offline',
+        );
+        const retry = document.getElementById('treatment-retry-submit');
+        if (retry) retry.hidden = false;
+        setTreatmentStatus(
+          'Treatment submission transport is uncertain. The last accepted projection is stale and read-only.',
+          'stale',
+          false,
+        );
+        return null;
+      }
+      if ([400, 422].includes(error?.status)) {
+        captureTreatmentDraft();
+        setTreatmentDialogStatus(
+          'The submitted fields were not accepted. Review the caregiver-entered draft; the current treatment record remains authoritative.',
+          'error',
+        );
+        setFormError('treatment-form-error', 'Review the supported fields and mechanical limits.');
+        reportLoadError('treatment-mutation', error);
+        return null;
+      }
+      setTreatmentDialogStatus(
+        'The request was not saved. The current treatment record remains unchanged.',
+        'error',
+      );
+      reportLoadError('treatment-mutation', error);
+      return null;
+    } finally {
+      if (!pendingTreatmentRetry && !pendingTreatmentCompletion) releaseTreatmentMutation(intent);
+    }
+  }
+
+  async function submitTreatmentDialog(event) {
+    event?.preventDefault();
+    const mutationOwner = beginTreatmentMutation();
+    if (!mutationOwner) return null;
+    let intent;
+    try {
+      const specification = treatmentBodyForDialog();
+      intent = createTreatmentIntent(specification, mutationOwner);
+      setFormError('treatment-form-error', '');
+      return performTreatmentIntent(intent);
+    } catch (error) {
+      setFormError('treatment-form-error', error.message || 'Review the treatment fields.');
+      releaseTreatmentMutation(intent || {
+        mutationOwner,
+        controller: treatmentMutationController,
+      });
+      return null;
+    }
+  }
+
+  async function retryTreatmentSubmission() {
+    const intent = pendingTreatmentRetry;
+    if (!intent || !intent.bodyText) return;
+    if (
+      !treatmentDialogOpen
+      || intent.selectionEpoch !== treatmentSelectionEpoch
+      || intent.dialogEpoch !== treatmentDialogEpoch
+    ) {
+      clearTreatmentRetry();
+      setTreatmentStatus(
+        'Submission retry authority expired. Review the current record and submit a new request.',
+        'stale',
+        true,
+      );
+      return;
+    }
+    const owner = {};
+    treatmentMutationOwner = owner;
+    treatmentMutationPending = true;
+    treatmentMutationEpoch += 1;
+    treatmentMutationController = new AbortController();
+    intent.mutationOwner = owner;
+    intent.mutationEpoch = treatmentMutationEpoch;
+    intent.controller = treatmentMutationController;
+    intent.requestPhiEpoch = phiEpoch;
+    intent.acceptedPhiEpoch = null;
+    await performTreatmentIntent(intent, true);
+  }
+
   // ── Init ────────────────────────────────────────────────────────────────
-  loadStatus();
+  loadStatus().finally(() => ensureTreatmentReconciliation());
   loadTasks();
   loadSummary();
   loadQuestions();

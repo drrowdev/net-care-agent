@@ -232,7 +232,8 @@ valid without rewriting; an older one-sided record remains visible as bounded
 `legacy_incomplete` authority and cannot be resolved, reopened, or recurred.
 Generated classification and legacy raw/component rows remain compatibility
 data, not citable source occurrences. The fixed projection copy is: `NET/Care records what you enter but does not verify treatment details or advise starting, stopping, or changing treatment. Confirm treatment decisions with the treating team.` The new state remains excluded from model prompts, and the
-treatment UI is deferred to a later shared Patient/Today slice.
+shared Today/Patient treatment workspace uses this projection as its sole SPA
+authority; `/api/status` treatment fields remain backend compatibility only.
 Schema v13 adds explicit terminal authority for past caregiver courses. New past
 creation requires `ended`, `not_started`, `cancelled`, or `other`; `other`
 requires bounded exact caregiver detail, while every other qualifier rejects
@@ -449,6 +450,7 @@ The most common loops:
 | Review current priorities | **Today** | Shows assessment freshness, the key concern, and task-oriented next actions before supporting detail |
 | Track durable caregiver follow-through | **Today** → **Follow-through** | Create safe caregiver tasks, accept only current generated actions, filter active/completed/cancelled history, edit owner/due date, and record typed completion or cancellation outcomes with explicit provenance; offline snapshots stay visible but read-only, and one mutation owns all related controls until authoritative reload finishes |
 | Record or review symptom episodes | **Today** → **Current symptom episodes** or **Patient** → **Symptoms** | Record durable caregiver-entered current episodes; Patient adds explicit fact editing, resolution, resolved review, read-only source observations, and atomic existing/manual follow-up linkage. The exact safety statement remains visible and the app makes no urgency, diagnosis, treatment, chronology, or monitoring inference |
+| Reconcile treatment records | **Today** → **Treatment records** or **Patient** → **Treatments** | Today shows the first three current/planned records in server order with exact totals and omissions. Patient keeps caregiver courses, differences, document mentions, and earlier/generated compatibility context separate; lifecycle, restart, discrepancy, outcome, recurrence, and atomic follow-up controls appear only from current server authority |
 | See newly discovered research | **Today** → **Latest research additions** | Shows the exact net-new trials and papers from the latest digest or document analysis; opening either list highlights those records |
 | Add a clinical document | Header → **Add document** → paste text or upload file | Queued on the independent feed executor; PDF parsing is child-only, then intake → orchestrator → exec summary |
 | Reconcile or correct an import | **Activity** → select that feed job | Shows only that document's additions, old → new changes, conflicts, and evidence; correct/remove a value or safely undo the document's direct structured changes |

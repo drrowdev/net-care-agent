@@ -36,7 +36,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 12
+CURRENT_SCHEMA_VERSION: int = 13
 
 # Append-only ordered registry of migrations.  Never reorder entries.
 _REGISTRY: list[dict[str, Any]] = []
@@ -577,6 +577,22 @@ def _m0012_add_treatment_reconciliation_authority(data: dict) -> dict:
     if data.get("treatment_discrepancies") is None:
         data["treatment_discrepancies"] = []
     data["schema_version"] = 12
+    return data
+
+
+@_migration("0013_add_treatment_terminal_authority", to_version=13)
+def _m0013_add_treatment_terminal_authority(data: dict) -> dict:
+    """v12 -> v13: mark only pre-extension past courses without inference."""
+    courses = data.get("treatment_courses")
+    if isinstance(courses, list):
+        for course in courses:
+            if (
+                isinstance(course, dict)
+                and course.get("status") == "past"
+                and "terminal_qualifier" not in course
+            ):
+                course["terminal_qualifier"] = "legacy_unspecified"
+    data["schema_version"] = 13
     return data
 
 

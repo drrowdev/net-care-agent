@@ -24,6 +24,22 @@ MAX_SOURCE_TEXT_BYTES = 2_000_000
 MAX_TOTAL_SOURCE_TEXT_BYTES = 50_000_000
 
 TREATMENT_COURSE_STATUSES = {"current", "past", "planned"}
+TREATMENT_TERMINAL_QUALIFIERS = {
+    "ended",
+    "not_started",
+    "cancelled",
+    "other",
+    "legacy_unspecified",
+}
+TREATMENT_CLIENT_TERMINAL_QUALIFIERS = {
+    "ended",
+    "not_started",
+    "cancelled",
+    "other",
+}
+_DIRECT_PAST_QUALIFIERS = ("ended", "not_started", "cancelled", "other")
+_CURRENT_TO_PAST_QUALIFIERS = ("ended", "other")
+_PLANNED_TO_PAST_QUALIFIERS = ("not_started", "cancelled", "other")
 TREATMENT_DISCREPANCY_STATUSES = {"open", "resolved"}
 TREATMENT_DISCREPANCY_CITATION_KINDS = {"source_vs_source", "source_vs_course"}
 TREATMENT_DISCREPANCY_CATEGORIES = {
@@ -62,6 +78,7 @@ _COURSE_TEXT_LIMITS = {
     "start_date": 32,
     "stop_date": 32,
     "planned_date": 32,
+    "terminal_detail": 1_000,
     "previous_course_id": 200,
     "created_at": 64,
     "updated_at": 64,
@@ -119,6 +136,8 @@ _COURSE_PUBLIC_FIELDS = {
     "planned_date",
     "planned_date_precision",
     "planned_date_kind",
+    "terminal_qualifier",
+    "terminal_detail",
     "previous_course_id",
     "created_at",
     "updated_at",
@@ -221,6 +240,40 @@ def treatment_confirmation_provenance() -> dict[str, str]:
         "attributed_to": "clinician",
         "source_verification": "unverified",
     }
+
+
+def validate_treatment_terminal_authority(
+    status: object,
+    qualifier: object,
+    detail: object,
+    *,
+    prior_status: str | None = None,
+) -> tuple[str | None, str | None]:
+    """Validate exact client-entered terminal authority without inference."""
+    if status != "past":
+        if qualifier is not None or detail is not None:
+            raise ValueError("Current and planned courses cannot have terminal authority.")
+        return None, None
+    if prior_status == "current":
+        allowed = _CURRENT_TO_PAST_QUALIFIERS
+    elif prior_status == "planned":
+        allowed = _PLANNED_TO_PAST_QUALIFIERS
+    else:
+        allowed = _DIRECT_PAST_QUALIFIERS
+    if qualifier not in allowed:
+        allowed_text = ", ".join(allowed)
+        raise ValueError(f"terminal_qualifier must be one of: {allowed_text}.")
+    if qualifier == "other":
+        if not isinstance(detail, str) or not detail.strip():
+            raise ValueError("terminal_detail is required when terminal_qualifier is other.")
+        if len(detail) > _COURSE_TEXT_LIMITS["terminal_detail"]:
+            raise ValueError("terminal_detail is too long.")
+        if any(ord(char) < 32 and char not in "\n\t" for char in detail):
+            raise ValueError("terminal_detail contains unsupported control characters.")
+        return qualifier, detail
+    if detail is not None:
+        raise ValueError("terminal_detail is only allowed when terminal_qualifier is other.")
+    return qualifier, None
 
 
 def _validate_nested(value: Any) -> None:
@@ -334,8 +387,14 @@ def _validate_source_fact_snapshot(snapshot: dict, expected_ref: str) -> None:
 def _validate_course_snapshot(snapshot: dict, expected_id: str) -> None:
     for field in _COURSE_TEXT_LIMITS:
         _bounded_text(snapshot, field, _COURSE_TEXT_LIMITS)
+    public_fields = set(snapshot)
+    legacy_fields = (_COURSE_PUBLIC_FIELDS - {"terminal_qualifier", "terminal_detail"}) | {
+        "token",
+        "provenance",
+    }
+    current_fields = _COURSE_PUBLIC_FIELDS | {"token", "provenance", "lifecycle"}
     if (
-        set(snapshot) != (_COURSE_PUBLIC_FIELDS | {"token", "provenance"})
+        frozenset(public_fields) not in {frozenset(legacy_fields), frozenset(current_fields)}
         or snapshot.get("id") != expected_id
         or not snapshot["id"].startswith("txc_")
         or len(snapshot["id"]) != 36
@@ -357,6 +416,17 @@ def _validate_course_snapshot(snapshot: dict, expected_id: str) -> None:
             "treatment_projection_invalid",
             "Treatment discrepancy course snapshot is inconsistent.",
         )
+    if public_fields == current_fields:
+        qualifier = snapshot.get("terminal_qualifier")
+        detail = snapshot.get("terminal_detail")
+        lifecycle = snapshot.get("lifecycle")
+        if not _terminal_authority_is_valid(
+            snapshot.get("status"), qualifier, detail
+        ) or not _public_lifecycle_is_valid(snapshot.get("status"), qualifier, lifecycle):
+            raise TreatmentProjectionError(
+                "treatment_projection_invalid",
+                "Treatment discrepancy course snapshot is inconsistent.",
+            )
     for prefix in _DATE_PREFIXES:
         value = snapshot.get(f"{prefix}_date")
         precision = derive_date_precision(value)
@@ -698,6 +768,112 @@ def _linked_action_public(action: dict) -> dict:
     }
 
 
+def _terminal_authority_is_valid(status: object, qualifier: object, detail: object) -> bool:
+    if status != "past":
+        return qualifier is None and detail is None
+    if not isinstance(qualifier, str) or qualifier not in TREATMENT_TERMINAL_QUALIFIERS:
+        return False
+    if qualifier == "other":
+        return (
+            isinstance(detail, str)
+            and bool(detail.strip())
+            and len(detail) <= _COURSE_TEXT_LIMITS["terminal_detail"]
+            and not any(ord(char) < 32 and char not in "\n\t" for char in detail)
+        )
+    return detail is None
+
+
+def _course_was_current(course: dict) -> bool:
+    for event in course.get("history", []):
+        changes = event.get("changes") if isinstance(event, dict) else None
+        status_change = changes.get("status") if isinstance(changes, dict) else None
+        if isinstance(status_change, dict) and (
+            status_change.get("before") == "current" or status_change.get("after") == "current"
+        ):
+            return True
+    return False
+
+
+def _course_lifecycle(course: dict) -> dict:
+    status = course.get("status")
+    qualifier = course.get("terminal_qualifier")
+    if status == "planned":
+        transitions = [
+            {"status": "current", "terminal_qualifiers": []},
+            {
+                "status": "past",
+                "terminal_qualifiers": list(_PLANNED_TO_PAST_QUALIFIERS),
+            },
+        ]
+    elif status == "current":
+        transitions = [
+            {
+                "status": "past",
+                "terminal_qualifiers": list(_CURRENT_TO_PAST_QUALIFIERS),
+            }
+        ]
+    else:
+        transitions = []
+    if status != "past":
+        restart = {"eligible": False, "reason": "course_not_terminal"}
+    elif qualifier in {"not_started", "cancelled"}:
+        restart = {
+            "eligible": False,
+            "reason": "terminal_qualifier_not_restartable",
+        }
+    elif not _course_was_current(course):
+        restart = {
+            "eligible": False,
+            "reason": "no_prior_current_authority",
+        }
+    else:
+        restart = {"eligible": True, "reason": "eligible_prior_current"}
+    return {"allowed_transitions": transitions, "restart": restart}
+
+
+def _public_lifecycle_is_valid(status: object, qualifier: object, lifecycle: object) -> bool:
+    if not isinstance(lifecycle, dict) or set(lifecycle) != {
+        "allowed_transitions",
+        "restart",
+    }:
+        return False
+    transitions = lifecycle.get("allowed_transitions")
+    restart = lifecycle.get("restart")
+    if not isinstance(transitions, list) or not isinstance(restart, dict):
+        return False
+    expected_transitions = {
+        "planned": [
+            {"status": "current", "terminal_qualifiers": []},
+            {
+                "status": "past",
+                "terminal_qualifiers": list(_PLANNED_TO_PAST_QUALIFIERS),
+            },
+        ],
+        "current": [
+            {
+                "status": "past",
+                "terminal_qualifiers": list(_CURRENT_TO_PAST_QUALIFIERS),
+            }
+        ],
+        "past": [],
+    }
+    if transitions != expected_transitions.get(status):
+        return False
+    if set(restart) != {"eligible", "reason"} or not isinstance(restart.get("eligible"), bool):
+        return False
+    if status != "past":
+        return restart == {"eligible": False, "reason": "course_not_terminal"}
+    if isinstance(qualifier, str) and qualifier in {"not_started", "cancelled"}:
+        return restart == {
+            "eligible": False,
+            "reason": "terminal_qualifier_not_restartable",
+        }
+    return restart in (
+        {"eligible": False, "reason": "no_prior_current_authority"},
+        {"eligible": True, "reason": "eligible_prior_current"},
+    )
+
+
 def _validate_course(course: dict, component_ids: set[str], courses_by_id: dict[str, dict]) -> None:
     for field in _COURSE_TEXT_LIMITS:
         _bounded_text(course, field, _COURSE_TEXT_LIMITS)
@@ -718,6 +894,15 @@ def _validate_course(course: dict, component_ids: set[str], courses_by_id: dict[
         raise TreatmentProjectionError(
             "treatment_projection_invalid",
             "Treatment course authority is inconsistent.",
+        )
+    if not _terminal_authority_is_valid(
+        course.get("status"),
+        course.get("terminal_qualifier"),
+        course.get("terminal_detail"),
+    ):
+        raise TreatmentProjectionError(
+            "treatment_projection_invalid",
+            "Treatment course terminal authority is inconsistent.",
         )
     previous = course.get("previous_course_id")
     if previous is not None and (previous == course["id"] or previous not in courses_by_id):
@@ -747,9 +932,15 @@ def _validate_course(course: dict, component_ids: set[str], courses_by_id: dict[
 
 
 def _course_public(course: dict, revisions: dict[str, int]) -> dict:
-    authority = {"course": _token_value(course), "revisions": revisions}
+    lifecycle = _course_lifecycle(course)
+    authority = {
+        "course": _token_value(course),
+        "lifecycle": lifecycle,
+        "revisions": revisions,
+    }
     result = {key: copy.deepcopy(course.get(key)) for key in _COURSE_PUBLIC_FIELDS}
     result["token"] = _digest("txcourse", authority)
+    result["lifecycle"] = lifecycle
     result["provenance"] = {
         "status": "caregiver_entered_unverified",
         "label": "Caregiver-entered · unverified",

@@ -205,16 +205,26 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
   raw component/generated classification mappings, caregiver-maintained
   `treatment_courses[]`, and caregiver-created `treatment_discrepancies[]` are
   separate authorities. Schema v12 migration initializes only missing/null
-  reconciliation collections and never promotes, normalizes, merges,
+  reconciliation collections. Schema v13 marks only pre-extension past courses
+  lacking terminal authority as `legacy_unspecified`; both migrations never
+  promote, normalize, merge,
   deduplicates, reorders, relabels, or deletes legacy facts, duplicates, IDs,
   mappings, evidence, receipt history, or unknown extras.
-- Course current/past/planned status and start/stop/planned dates are explicit
+- Course current/past/planned status, terminal qualifier, and
+  start/stop/planned dates are explicit
   caregiver workflow authority, not inferred clinical truth. Dates retain only
   entered day/month/year precision; document/import/visit/current dates never
-  substitute. Planned may transition to current/past and current to past. Past
-  is terminal; restart is a new explicit current/planned course ID linked to the
-  prior course. No date, source, action, visit, decision, clock, or model
-  transition is permitted.
+  substitute. New past creation requires exact non-legacy
+  `ended|not_started|cancelled|other`; `other` requires nonempty bounded exact
+  detail and all other qualifiers reject detail. Current/planned have no
+  terminal authority. Current may transition to past only as `ended|other`;
+  planned may transition to current or past as
+  `not_started|cancelled|other`. Past is terminal. Public lifecycle authority
+  returns exact allowed transitions plus restart eligibility/reason. Restart
+  creates a new current/planned ID only when private server history proves the
+  terminal course was previously current; planned-never-started, cancelled, and
+  direct past records are ineligible. No date, source, action, visit, decision,
+  clock, or model transition or qualifier inference is permitted.
 - Treatment names/types, dose, route, frequency, cycle, schedule, formulation,
   indication, and notes remain exact text. Only explicitly selected stable
   legacy component IDs may link; no fuzzy, substring, brand/generic, regimen,
@@ -244,7 +254,8 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
 - `GET /api/patient/treatment-reconciliation` is a deterministic authenticated/
   no-store complete bounded projection. Both revisions and opaque tokens bind
   full raw/classified/component/source/document/import/receipt/evidence/course/
-  discrepancy/history/action authority for both citation sides. Immutable
+  terminal/lifecycle/discrepancy/history/action authority for both citation
+  sides. Immutable
   snapshots and current lifecycle state are separate; changing either side
   rotates current tokens without snapshot rewrite. Public output exposes no paths,
   offsets, quotes, raw source/import/job/receipt/change IDs, or client-
@@ -257,7 +268,9 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
   a stable target, full canonical request, and scoped mutation ID under
   `serialized_mutation`. It appends audit and saves once. Exact replay returns
   the immutable original response without another action, event, revision, or
-  save; conflicts and save failure commit nothing. Course/discrepancy clinical
+  save; conflicts, invalid terminal authority, stale authority, and save failure
+  commit nothing. Pre-extension replay snapshots remain exact and valid without
+  inventing client-entered terminal authority. Course/discrepancy clinical
   changes advance both revisions; reopen and follow-up link/unlink/create-link
   advance workflow only. An action links to at most one symptom episode or
   treatment discrepancy and lifecycle never cascades.

@@ -9,6 +9,17 @@ incremented when something user-visible or operationally meaningful changes.
 ## [Unreleased]
 
 ### Added
+- **Explicit treatment terminal authority.** Schema v13 gives every past
+  caregiver course a mechanical `ended`, `not_started`, `cancelled`, `other`, or
+  server-only `legacy_unspecified` qualifier. Exact bounded detail is required
+  only for `other`; no clinical reason is inferred. Current/planned-to-past
+  matrices, projected allowed transitions, and server-owned restart
+  eligibility/reasons prevent the UI from guessing lifecycle meaning. Restart
+  requires private history proving prior-current authority and is unavailable
+  for planned-never-started, cancelled, or direct past records. Migration marks
+  only missing legacy past authority, tokens bind terminal/lifecycle inputs,
+  discrepancy snapshots remain immutable, and pre-extension replay remains
+  exact. Treatment UI remains deferred.
 - **Two-sided treatment discrepancy authority.** New discrepancies now cite
   exactly one source occurrence plus either a distinct source occurrence or an
   exact caregiver course, persist immutable snapshots of both sides, declare a

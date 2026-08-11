@@ -168,6 +168,9 @@ DecisionStatus = Literal["active", "superseded", "retracted", "needs_confirmatio
 OutcomeKind = Literal["administrative", "caregiver_reported", "clinician_attributed"]
 TreatmentCourseStatus = Literal["current", "past", "planned"]
 TreatmentCourseDateKind = Literal["caregiver_entered", "unknown"]
+TreatmentTerminalQualifier = Literal[
+    "ended", "not_started", "cancelled", "other", "legacy_unspecified"
+]
 TreatmentDiscrepancyCategory = Literal[
     "name_or_type",
     "status",
@@ -613,6 +616,8 @@ class TreatmentCourse(_Lenient):
     planned_date: str | None = None
     planned_date_precision: BiomarkerDatePrecision = "unknown"
     planned_date_kind: TreatmentCourseDateKind = "unknown"
+    terminal_qualifier: TreatmentTerminalQualifier | None = None
+    terminal_detail: str | None = None
     previous_course_id: str | None = None
     provenance: TreatmentCourseProvenance = Field(default_factory=TreatmentCourseProvenance)
     created_at: str
@@ -799,7 +804,7 @@ class PatientProfile(_Lenient):
     """The complete patient profile. Lives at ${DATA_DIR}/patient_profile.json."""
 
     schema_version: int = Field(
-        default=12,
+        default=13,
         description="Profile schema version. Incremented when a structural migration runs.",
     )
     profile_revision: int = 0

@@ -263,13 +263,28 @@ discrepancies. Schema v12 migration adds only empty `treatment_courses[]` and
 `treatment_discrepancies[]`; it never promotes or rewrites existing treatment,
 component, classification, source, receipt, evidence, duplicate, order, or
 unknown-field authority.
+Schema v13 adds one mechanical migration: a pre-extension past course lacking
+terminal authority receives `terminal_qualifier=legacy_unspecified`. It changes
+no status, date, text, ID, order, discrepancy, source/generated/receipt/action
+record, history, replay snapshot, or unknown extra. Current/planned courses
+receive no terminal authority, and rerunning migration is a no-op.
 
 Courses store exact caregiver text and explicit current/past/planned workflow
 state. Dates preserve only explicitly entered YYYY, YYYY-MM, or YYYY-MM-DD
-precision. Planned may transition to current or past and current to past; past
-is terminal. Restart creates a new explicitly populated current/planned course
-linked by `previous_course_id`, never reopening the old record. No source fact,
-date, action, visit, decision, clock, or model changes lifecycle.
+precision. New past creation requires exact `ended`, `not_started`, `cancelled`,
+or `other` authority. `other` requires nonempty bounded exact caregiver detail;
+other qualifiers reject detail. Current/planned courses have no terminal
+authority. Current may transition to past only as `ended|other`; planned may
+transition to current or past as `not_started|cancelled|other`. Past is
+terminal. The projection returns exact allowed next transitions and qualifier
+values plus a bounded server-owned restart eligibility/reason. Restart creates
+a new explicitly populated current/planned course linked by
+`previous_course_id`, never reopening the old record, only when private history
+proves the terminal course was previously current. Planned-never-started,
+cancelled, direct legacy past, and direct new past courses are ineligible unless
+the preserved legacy history itself proves prior-current authority. No source
+fact, date, action, visit, decision, clock, or model changes lifecycle or fills
+terminal authority.
 
 Discrepancies are created only by a caregiver request against one opaque source
 fact plus exactly one mechanically distinct second authority: another distinct
@@ -295,8 +310,12 @@ projection token, applicable row/source/action tokens, and a scoped mutation
 ID. They run under `serialized_mutation`, append request-hash audit, capture a
 safe replay response, and save once. Clinical course/discrepancy changes advance
 both revisions; reopen and follow-up link/unlink/create-link advance workflow
-only. An action can link to at most one symptom episode or treatment
-discrepancy, and neither lifecycle cascades.
+only. Terminal fields, projected eligibility, and its private history inputs
+bind course, discrepancy-current-side, and projection tokens; changing terminal
+authority rotates current citation authority without rewriting immutable cited
+snapshots. Pre-extension replay snapshots validate and return exactly as stored,
+without a fabricated qualifier. An action can link to at most one symptom
+episode or treatment discrepancy, and neither lifecycle cascades.
 
 Opaque source/evidence routes resolve receipt/change identity server-side and
 validate each referenced artifact once per projection. Public JSON contains no

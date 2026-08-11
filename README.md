@@ -131,7 +131,7 @@ All patient state lives in a single JSON file at `${DATA_DIR}/patient_profile.js
 
 ```
 {
-  "schema_version": 12,
+  "schema_version": 13,
   "profile_revision": 42,
   "workflow_revision": 17,
   "profile_updated_at": "2026-07-10T16:51:49",
@@ -143,7 +143,7 @@ All patient state lives in a single JSON file at `${DATA_DIR}/patient_profile.js
   "symptoms":    [ {id, date, date_precision, date_kind, source_document_date, symptom, severity, source_document_id, evidence_status}, ... ],
   "symptom_episodes": [ {id, status, symptom_text, severity_level, severity_detail, reported_subject, onset_date, resolved_date, provenance, caregiver_action_id, history}, ... ],
   "treatments_classified": [ {id, text, label, category, date, source_treatment_ids}, ... ],
-  "treatment_courses": [ {id, status, treatment_text, dose_text, schedule_text, start_date, stop_date, planned_date, previous_course_id, provenance, history}, ... ],
+  "treatment_courses": [ {id, status, terminal_qualifier, terminal_detail, treatment_text, dose_text, schedule_text, start_date, stop_date, planned_date, previous_course_id, provenance, history}, ... ],
   "treatment_discrepancies": [ {id, status, category, comparison_text, citation_kind, source_fact_ref, comparison_source_fact_ref, course_id, source_fact_snapshot, comparison_source_fact_snapshot, course_snapshot, confirmations, caregiver_action_id, provenance, history}, ... ],
   "documents":   [ {date, type, summary, key_findings, source_document_id, raw_text}, ... ],
   "source_documents": [ {id, ingested_at, source: {path, sha256, length}, text: {...}}, ... ],
@@ -233,6 +233,16 @@ valid without rewriting; an older one-sided record remains visible as bounded
 Generated classification and legacy raw/component rows remain compatibility
 data, not citable source occurrences. The fixed projection copy is: `NET/Care records what you enter but does not verify treatment details or advise starting, stopping, or changing treatment. Confirm treatment decisions with the treating team.` The new state remains excluded from model prompts, and the
 treatment UI is deferred to a later shared Patient/Today slice.
+Schema v13 adds explicit terminal authority for past caregiver courses. New past
+creation requires `ended`, `not_started`, `cancelled`, or `other`; `other`
+requires bounded exact caregiver detail, while every other qualifier rejects
+detail. Current and planned courses have neither field. Existing past courses
+without this authority migrate mechanically to `legacy_unspecified`, without
+changing any status, date, text, history, replay snapshot, source, discrepancy,
+order, ID, or unknown field. The projection publishes exact allowed transitions
+and a server-derived restart eligibility/reason. Restart remains available only
+when private server history proves the terminal course was previously current;
+planned-never-started, cancelled, and direct past records are ineligible.
 
 A daily backup is written to `${DATA_DIR}/backups/profile_YYYYMMDD.json`
 (retention: 30 days).

@@ -14,8 +14,24 @@ REPO = Path(__file__).resolve().parent.parent
 
 def test_invariants_doc_exists_and_lists_contracts():
     doc = (REPO / "INVARIANTS.md").read_text(encoding="utf-8")
-    for token in ("overall_status", "prrt_status", "gunicorn worker", "deep_sweep"):
+    for token in (
+        "overall_status",
+        "prrt_status",
+        "gunicorn worker",
+        "deep_sweep",
+        "research_record_id",
+        "research_considerations[]",
+        "latest_research_update",
+        "Caregiver-entered · attributed to trial site · unverified",
+    ):
         assert token in doc, f"INVARIANTS.md missing {token!r}"
+
+
+def test_research_model_context_isolation_is_explicit():
+    profile_source = (REPO / "agent" / "profile.py").read_text(encoding="utf-8")
+    summary_source = (REPO / "agent" / "exec_summary.py").read_text(encoding="utf-8")
+    assert "excluded_research_action_ids_for_model" in profile_source
+    assert 'key != "research_record_id"' in summary_source
 
 
 def test_deep_sweep_never_saves_profile():

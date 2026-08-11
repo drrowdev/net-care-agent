@@ -6,6 +6,7 @@ import datetime
 import re
 
 from ..provenance import new_record_id
+from ..research_disposition import new_research_record_id
 from ..schema import now_stamp
 from .biomarkers import analyze_biomarker_trends
 from .clinical_trials import search_clinical_trials
@@ -437,6 +438,7 @@ def execute_tool(
                 continue
             profile.setdefault("literature_watched", []).append(
                 {
+                    "research_record_id": new_research_record_id("paper"),
                     "pmid": article["pmid"],
                     "title": article.get("title", ""),
                     "authors": article.get("authors", ""),
@@ -475,6 +477,7 @@ def execute_tool(
                 continue
             profile.setdefault("trials_tracked", []).append(
                 {
+                    "research_record_id": new_research_record_id("trial"),
                     "nct_id": trial["nct_id"],
                     "title": trial.get("title", ""),
                     "status": trial.get("status", ""),

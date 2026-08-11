@@ -97,6 +97,7 @@ DEFAULT_PROFILE: dict = {
     "feedback": [],
     "caregiver_actions": [],
     "visits": [],
+    "research_considerations": [],
     "latest_research_update": None,
     "treatments_classification_revision": None,
     "treatments_classification_job_id": None,
@@ -857,7 +858,12 @@ def get_patient_summary(profile: dict) -> str:
                         "text": decision.get("text") or "",
                     }
                 )
+    from .research_disposition import excluded_research_action_ids_for_model
+
+    excluded_action_ids = excluded_research_action_ids_for_model(profile)
     for action in profile.get("caregiver_actions", []):
+        if isinstance(action, dict) and action.get("id") in excluded_action_ids:
+            continue
         outcome = action.get("outcome") if isinstance(action, dict) else None
         if not isinstance(outcome, dict) or outcome.get("kind") not in {
             "caregiver_reported",

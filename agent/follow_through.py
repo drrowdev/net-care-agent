@@ -18,7 +18,13 @@ ACTION_STATUSES = {"open", "in_progress", "completed", "cancelled"}
 VISIT_STATUSES = {"planned", "in_progress", "completed", "cancelled"}
 DECISION_STATUSES = {"active", "superseded", "retracted", "needs_confirmation"}
 OUTCOME_KINDS = {"administrative", "caregiver_reported", "clinician_attributed"}
-ORIGIN_KINDS = {"manual", "executive_summary_action", "alert", "visit_decision"}
+ORIGIN_KINDS = {
+    "manual",
+    "executive_summary_action",
+    "alert",
+    "visit_decision",
+    "research_consideration",
+}
 RECAP_MAX_ITEMS = 200
 RECAP_CLINICIAN_PROVENANCE = "Caregiver-entered · attributed to clinician · unverified"
 RECAP_CAREGIVER_PROVENANCE = "Caregiver-entered · caregiver reported · unverified"
@@ -325,6 +331,47 @@ def request_hash(payload: dict) -> str:
     return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 
 
+def action_owner_refs(profile: dict, action_id: str) -> tuple[str, ...]:
+    """Return every durable owner of an action across workflow domains."""
+
+    refs: list[str] = []
+    action = next(
+        (
+            item
+            for item in profile.get("caregiver_actions", [])
+            if isinstance(item, dict) and item.get("id") == action_id
+        ),
+        None,
+    )
+    if isinstance(action, dict):
+        for field, prefix in (
+            ("visit_id", "visit"),
+            ("decision_id", "visit_decision"),
+            ("alert_id", "alert"),
+        ):
+            owner_id = action.get(field)
+            if isinstance(owner_id, str) and owner_id:
+                refs.append(f"{prefix}:{owner_id}")
+        origin = action.get("origin_snapshot")
+        if isinstance(origin, dict) and origin.get("kind") in {
+            "alert",
+            "visit_decision",
+            "research_consideration",
+        }:
+            source_id = origin.get("source_id")
+            if isinstance(source_id, str) and source_id:
+                refs.append(f"{origin['kind']}:{source_id}")
+    for collection, prefix in (
+        ("symptom_episodes", "symptom_episode"),
+        ("treatment_discrepancies", "treatment_discrepancy"),
+        ("research_considerations", "research_consideration"),
+    ):
+        for record in profile.get(collection, []):
+            if isinstance(record, dict) and record.get("caregiver_action_id") == action_id:
+                refs.append(f"{prefix}:{record.get('id')}")
+    return tuple(sorted(set(refs)))
+
+
 def iter_audit_events(profile: dict):
     for collection in (
         "caregiver_actions",
@@ -333,6 +380,7 @@ def iter_audit_events(profile: dict):
         "symptom_episodes",
         "treatment_courses",
         "treatment_discrepancies",
+        "research_considerations",
     ):
         for record in profile.get(collection, []) or []:
             if not isinstance(record, dict):
@@ -395,6 +443,18 @@ def _safe_result_snapshot(
             and record.get("id") == expected_id
             and set(snapshot) == {"item", "workflow_revision", "profile_revision"}
             and valid_item(snapshot.get("item"), CaregiverAction, expected_id)
+        )
+    if endpoint in {
+        "POST /api/research-considerations",
+        "POST /api/research-considerations/<id>/events",
+        "POST /api/research-considerations/<id>/close",
+        "POST /api/research-considerations/<id>/resume",
+        "PATCH /api/research-considerations/<id>/follow-up",
+    }:
+        from .research_disposition import research_replay_response_is_safe
+
+        return collection == "research_considerations" and research_replay_response_is_safe(
+            snapshot, str(record.get("id") or "")
         )
     if endpoint == "POST /api/visits":
         return (

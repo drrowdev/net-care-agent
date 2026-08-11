@@ -654,6 +654,31 @@ to discuss**, not a best match. The treating team and trial site confirm
 candidacy/eligibility. Missing DOTATATE/receptor imaging is shown as a data gap
 and is not automatically promoted above documented clinical priorities.
 
+### Backend research shortlist authority (UI deferred)
+
+Schema v14 provides authenticated API authority for a future shared Today/
+Research shortlist workflow. The caregiver SPA does not expose it in this
+release. API clients can read `GET /api/patient/research-workspace`, then use the
+server-published eligibility and exact tokens to shortlist one exact occurrence,
+record an attributed unverified note/next step/communication, explicitly close
+or resume consideration, and atomically link or create one caregiver follow-up.
+
+This workflow never determines relevance, eligibility, enrollment, availability,
+or treatment suitability. Closing is only a caregiver organization choice.
+Treating-team and trial-site wording is caregiver-entered, attributed, and
+unverified. Source refresh/removal and action completion never change lifecycle.
+The immutable capture remains separate from current external facts,
+machine-generated compatibility context, and discovery provenance.
+
+The **New** labels described above remain only exact latest-batch NCT/PMID
+membership. Shortlisting, opening, noting, closing, resuming, and linking do not
+mark research read, reviewed, acknowledged, old, or new. No reminders,
+monitoring, contact automation, or background site communication is added.
+
+> NET/Care records research you choose to follow but does not determine
+> relevance, eligibility, enrollment, or treatment suitability. Confirm clinical
+> questions with the treating team and trial details with the study site.
+
 ## 6. Chat with the record
 
 Header → **✦ Ask Claude**. Free-form conversation grounded in the

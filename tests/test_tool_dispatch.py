@@ -513,6 +513,11 @@ def test_search_pubmed_filters_irrelevant_and_dedupes(agent, empty_profile, fixt
     saved_pmids = {p["pmid"] for p in empty_profile["literature_watched"]}
     # Two NET-relevant papers saved, the glioblastoma paper filtered out.
     assert saved_pmids == {"40000001", "40000002"}
+    assert all(
+        paper["research_record_id"].startswith("research_paper_")
+        for paper in empty_profile["literature_watched"]
+    )
+    assert len({paper["research_record_id"] for paper in empty_profile["literature_watched"]}) == 2
 
     # Re-running with same fixtures should NOT add duplicates.
     responses.add(
@@ -556,6 +561,7 @@ def test_search_clinical_trials_filters_unrelated(agent, empty_profile, fixtures
     assert nct_ids == {"NCT09000001"}
 
     saved = empty_profile["trials_tracked"][0]
+    assert saved["research_record_id"].startswith("research_trial_")
     assert "Germany" in saved["countries"]
     assert saved["status"] == "RECRUITING"
     assert saved["phase"] == "PHASE1 / PHASE2"

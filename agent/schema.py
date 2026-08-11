@@ -42,6 +42,7 @@ _COLLECTION_KEYS: tuple[str, ...] = (
     "feedback",
     "caregiver_actions",
     "visits",
+    "research_considerations",
 )
 
 
@@ -318,6 +319,9 @@ class Document(_Lenient):
 
 
 class TrialTracked(_Lenient):
+    research_record_id: str | None = Field(
+        None, description="Stable opaque identity for this exact stored occurrence"
+    )
     nct_id: str | None = Field(None, description="ClinicalTrials.gov ID, primary key")
     title: str | None = None
     status: str | None = None
@@ -331,6 +335,9 @@ class TrialTracked(_Lenient):
 
 
 class LiteratureWatched(_Lenient):
+    research_record_id: str | None = Field(
+        None, description="Stable opaque identity for this exact stored occurrence"
+    )
     pmid: str | None = Field(None, description="PubMed ID, primary key")
     title: str | None = None
     authors: str | None = None
@@ -674,7 +681,13 @@ class TreatmentDiscrepancy(_Lenient):
 class ActionOriginSnapshot(_Lenient):
     """Immutable source snapshot captured when a caregiver accepts an action."""
 
-    kind: Literal["manual", "executive_summary_action", "alert", "visit_decision"]
+    kind: Literal[
+        "manual",
+        "executive_summary_action",
+        "alert",
+        "visit_decision",
+        "research_consideration",
+    ]
     source_id: str | None = None
     source_job_id: str | None = None
     source_profile_revision: int | None = None
@@ -799,12 +812,60 @@ class ResearchUpdate(_Lenient):
     )
 
 
+class ResearchSnapshot(_Lenient):
+    """Allowlisted immutable authority captured when an exact occurrence is shortlisted."""
+
+    item_type: Literal["trial", "paper"]
+    research_record_id: str
+    source_key: str
+    external_facts: dict[str, Any] = Field(default_factory=dict)
+    generated_context: dict[str, Any] = Field(default_factory=dict)
+    discovery_provenance: dict[str, Any] = Field(default_factory=dict)
+
+
+class ResearchEvent(_Lenient):
+    """Append-only caregiver-entered research workflow event."""
+
+    id: str
+    event_type: Literal[
+        "caregiver_note",
+        "next_step_recorded",
+        "treating_team_communication",
+        "trial_site_communication",
+    ]
+    note: str
+    who: str | None = None
+    context: str | None = None
+    occurred_on: str | None = None
+    occurred_on_precision: BiomarkerDatePrecision = "unknown"
+    provenance: dict[str, str] = Field(default_factory=dict)
+    recorded_at: str
+
+
+class ResearchConsideration(_Lenient):
+    """Durable caregiver workflow for one exact stored research occurrence."""
+
+    id: str
+    item_type: Literal["trial", "paper"]
+    research_record_id: str
+    source_key: str
+    status: Literal["open", "closed"] = "open"
+    snapshot: ResearchSnapshot
+    source_profile_revision: int
+    caregiver_action_id: str | None = None
+    events: list[ResearchEvent] = Field(default_factory=list)
+    created_at: str
+    updated_at: str
+    closed_at: str | None = None
+    history: list[WorkflowAuditEvent] = Field(default_factory=list)
+
+
 # ── top-level model ───────────────────────────────────────────────────────────
 class PatientProfile(_Lenient):
     """The complete patient profile. Lives at ${DATA_DIR}/patient_profile.json."""
 
     schema_version: int = Field(
-        default=13,
+        default=14,
         description="Profile schema version. Incremented when a structural migration runs.",
     )
     profile_revision: int = 0
@@ -836,6 +897,7 @@ class PatientProfile(_Lenient):
     feedback: list[Feedback] = Field(default_factory=list)
     caregiver_actions: list[CaregiverAction] = Field(default_factory=list)
     visits: list[Visit] = Field(default_factory=list)
+    research_considerations: list[ResearchConsideration] = Field(default_factory=list)
     executive_summary: ExecutiveSummary | None = None
     latest_research_update: ResearchUpdate | None = None
 
@@ -923,6 +985,9 @@ def render_schema_markdown() -> str:
         ("workflow_history[]", WorkflowAuditEvent),
         ("executive_summary", ExecutiveSummary),
         ("latest_research_update", ResearchUpdate),
+        ("research_considerations[]", ResearchConsideration),
+        ("research_considerations[].snapshot", ResearchSnapshot),
+        ("research_considerations[].events[]", ResearchEvent),
     ]
     for label, cls in submodels:
         lines = [f"## `{label}`\n"]
@@ -949,6 +1014,14 @@ def render_schema_markdown() -> str:
         "- `document_imports[]` is append-only audit provenance. Corrections and "
         "undo update active clinical state and append history events; they never "
         "delete immutable `source_documents[]` artifacts.\n"
+        "- Schema v14 adds private stable `research_record_id` occurrence identity "
+        "without rewriting external NCT/PMID authority or duplicate rows. "
+        "`research_considerations[]` is separate caregiver workflow authority; its "
+        "allowlisted snapshot is immutable and source refresh/removal never rewrites "
+        "or deletes it.\n"
+        "- Research lifecycle and communication events are workflow-only, explicitly "
+        "caregiver-entered and unverified, and excluded from model contexts. Exact "
+        "latest-batch membership remains external-ID based and separate.\n"
     )
     return "\n".join(sections)
 

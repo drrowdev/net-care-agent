@@ -131,7 +131,7 @@ All patient state lives in a single JSON file at `${DATA_DIR}/patient_profile.js
 
 ```
 {
-  "schema_version": 13,
+  "schema_version": 14,
   "profile_revision": 42,
   "workflow_revision": 17,
   "profile_updated_at": "2026-07-10T16:51:49",
@@ -148,8 +148,9 @@ All patient state lives in a single JSON file at `${DATA_DIR}/patient_profile.js
   "documents":   [ {date, type, summary, key_findings, source_document_id, raw_text}, ... ],
   "source_documents": [ {id, ingested_at, source: {path, sha256, length}, text: {...}}, ... ],
   "document_imports": [ {job_id, source_document_id, status, receipt_revision, changes: [...]}, ... ],
-  "trials":      [ {nct_id, title, status, ...}, ... ],
-  "papers":      [ {pmid, title, journal, date}, ... ],
+  "trials_tracked": [ {research_record_id, nct_id, title, status, ...}, ... ],
+  "literature_watched": [ {research_record_id, pmid, title, journal, date}, ... ],
+  "research_considerations": [ {id, item_type, research_record_id, source_key, status, snapshot, events, caregiver_action_id, history}, ... ],
   "alerts":      [ {id, priority, action, resolved, resolution, source_document_id, source_dependency_active}, ... ],
   "judgments":   [ {category, text, scope, status, review_after, valid_until, supersedes}, ... ],
   "questions":   [ {id, text, category, priority, asked, generation_job_id, stale}, ... ],
@@ -183,7 +184,9 @@ only the workflow revision. Caregiver-captured clinician answers, decisions,
 clinical outcomes, and alert resolution advance both revisions and stale
 dependent generated context. Caregiver-entered symptom episode create/edit/
 resolve mutations also advance both revisions; pure existing-action link/unlink
-is workflow-only.
+is workflow-only. Research shortlist, event, lifecycle, and follow-up mutations
+are always workflow-only, including caregiver-entered clinician/site-attributed
+unverified notes.
 Schema v3 also carries generation identity for AI questions. Legacy generated
 questions without that identity migrate to explicit stale history rather than
 appearing current.
@@ -293,6 +296,7 @@ state and withholds the prior clinical content.
 │   ├── config.py         # paths + per-agent ANTHROPIC_MODEL_* env overrides
 │   ├── llm.py            # Anthropic client + JSON-fence stripper
 │   ├── profile.py        # load/save (atomic) + DEFAULT_PROFILE + summary
+│   ├── research_disposition.py # stable research identity + bounded shortlist API authority
 │   ├── io.py             # atomic_write_text helper
 │   ├── backups.py        # daily snapshot + 30-day retention
 │   ├── logging_config.py # text/JSON log formatter
@@ -458,6 +462,7 @@ The most common loops:
 | Review or compare imaging reports | **Patient** → **Imaging** | Review every authoritative record in server order, including duplicates and uncertain dates; select exactly two current records and confirm the pair to see attributed raw report facts side by side without an app-authored clinical conclusion |
 | Review document/source history | **Patient** → **Documents and sources** | Opens immutable source text and retained import receipts without exposing storage paths |
 | Run a research-only sweep | **Activity** → **Run digest** | Orchestrator runs without new input; new trials/papers added |
+| Use the research shortlist API | Caregiver UI intentionally deferred | Backend-only v14 foundation preserves exact research occurrences, immutable source/generated/discovery snapshots, neutral open/closed history, attributed notes, and atomic follow-up links without changing latest-batch `New research` behavior |
 | Record an oncologist's judgment | **Questions** → **Clinical notes** | Becomes a hard constraint for future runs |
 | Resolve an alert with its outcome | **Patient** → **Active alerts** → **Resolve alert** | Review the current alert, optionally record an administrative, caregiver-reported, or clinician-attributed unverified outcome, and either create/link a caregiver follow-up or link a current visit and eligible decision; stable ID/token/revision checks, one intent owner, exact ambiguous retry, conflict reload, and stale read-only offline projections prevent the wrong alert or link from being saved |
 | Generate appointment questions | **Questions** → **Generate questions** | Async result is polled, then the question list is rendered |

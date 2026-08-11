@@ -186,7 +186,7 @@ def test_v13_migration_marks_only_missing_past_authority_losslessly_and_idempote
     first = copy.deepcopy(result)
     second = apply_migrations(result)
 
-    assert result["schema_version"] == 13
+    assert result["schema_version"] == 14
     assert result["treatment_courses"][0]["terminal_qualifier"] == "legacy_unspecified"
     assert "terminal_detail" not in result["treatment_courses"][0]
     assert "terminal_qualifier" not in result["treatment_courses"][1]

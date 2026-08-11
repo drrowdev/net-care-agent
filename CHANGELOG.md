@@ -9,6 +9,16 @@ incremented when something user-visible or operationally meaningful changes.
 ## [Unreleased]
 
 ### Added
+- **Backend research shortlist and disposition authority.** Schema v14 preserves
+  every existing trial/paper row while assigning stable exact-occurrence
+  identities where missing. An authenticated no-store bounded workspace and
+  replay/CAS-safe workflow APIs add explicit shortlist capture, immutable
+  allowlisted external/generated/discovery snapshots, neutral open/closed
+  history, caregiver/clinician/trial-site attributed unverified events, canonical
+  PubMed/ClinicalTrials.gov links, and atomic exclusive caregiver-action linkage.
+  All mutations are workflow-only; source refresh/removal, exact latest-batch
+  membership, existing discovery behavior, and model prompts remain isolated.
+  The caregiver SPA is intentionally deferred to a separate change.
 - **Shared Today/Patient treatment reconciliation workflow.** Today shows a
   bounded first set of current/planned caregiver records in server order with
   exact totals and omissions; Patient provides complete separate Treatment

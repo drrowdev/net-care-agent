@@ -201,6 +201,65 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
   recommendation is permitted. Episodes never enter chat, orchestrator,
   questions, or executive-summary prompts; legacy `symptoms[]` behavior stays
   compatible.
+- Schema v14 gives every trial and paper occurrence a private stable
+  `research_record_id` without normalizing, merging, deduplicating, reordering,
+  relabeling, scoring, or deleting any legacy row, duplicate, external ID,
+  wording, history, stored URL, or unknown extra. Existing nonempty IDs survive
+  verbatim even when malformed or duplicated; profile load remains available,
+  while the bounded workspace fails closed on ambiguous occurrence authority.
+  Missing legacy IDs derive deterministically from item type, strongest source
+  authority, the complete semantic row, and an occurrence within an identical
+  duplicate multiset. Newly discovered rows receive fresh opaque IDs before
+  persistence, and refresh preserves them.
+- `latest_research_update` remains exact external NCT/PMID batch membership only.
+  Research views, shortlist creation, lifecycle changes, events, and action links
+  never mutate it and never create unread, review, acknowledgement, aging, or
+  opening state.
+- `research_considerations[]` is explicit caregiver workflow authority separate
+  from external facts, machine-generated compatibility context, discovery
+  provenance, and latest-batch membership. One deterministic consideration may
+  exist for one exact occurrence. Its allowlisted snapshot is immutable; current
+  exact-occurrence presence and external/generated/discovery equality are
+  projected separately. Refresh, removal, same-external-ID replacement, import
+  reconciliation, and delete/re-add never rewrite, delete, close, or rebind the
+  saved workflow.
+- Research lifecycle is only `open|closed`; close and resume are explicit,
+  append-only workflow events and imply no relevance, suitability, eligibility,
+  enrollment, availability, obsolescence, or clinical decision. Shared events
+  are caregiver note, next step, and treating-team communication; only trials
+  permit trial-site communication. Entered year/month/day precision is preserved
+  exactly. Attribution is fixed as `Caregiver-entered · unverified`,
+  `Caregiver-entered · attributed to clinician · unverified`, or
+  `Caregiver-entered · attributed to trial site · unverified`.
+- `GET /api/patient/research-workspace` is authenticated, no-store,
+  side-effect-free on current schema, complete, and bounded. Tokens bind every
+  full private row, consideration/history/event/action, relevant import
+  authority, and exact latest batch. Public snapshots contain only allowlisted
+  external facts, generated context, discovery provenance, and occurrence/source
+  identity. Navigation links are generated only from exact uppercase
+  `NCT########` or canonical numeric PMID. Corruption, ambiguity, inconsistency,
+  or overflow is one short non-PHI `422`, never partial/truncated output.
+- Every research mutation requires both revisions, complete projection and exact
+  target tokens, canonical request replay, scoped mutation ID, serialized
+  validation before allocation, append-only audit, and one atomic save. Success
+  advances only `workflow_revision`, including clinician/site-attributed
+  unverified notes. Replay returns the immutable original IDs/revisions and
+  creates no second event/action/history/save.
+- A caregiver action has at most one durable owner across visit, decision, alert,
+  symptom episode, treatment discrepancy, and research consideration. Existing
+  persisted links remain readable, but new linking uses the shared symmetric
+  owner check. Research inline actions retain immutable
+  `research_consideration` origin even after unlink. They never enter model
+  context; generic actions are excluded while research-linked and regain prior
+  behavior after unlink. Action and consideration lifecycle never cascade.
+- Internal research IDs and all shortlist/disposition snapshots, events, notes,
+  links, and histories are excluded from chat, orchestrator, questions,
+  executive summary, deep sweep, and generic model serialization. Existing
+  model-visible source research content stays unchanged. The fixed workspace
+  safety copy is: `NET/Care records research you choose to follow but does not
+  determine relevance, eligibility, enrollment, or treatment suitability.
+  Confirm clinical questions with the treating team and trial details with the
+  study site.`
 - Treatment receipt occurrences, legacy `patient.current_treatments[]` plus
   raw component/generated classification mappings, caregiver-maintained
   `treatment_courses[]`, and caregiver-created `treatment_discrepancies[]` are

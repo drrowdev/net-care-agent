@@ -37,8 +37,10 @@ research loads clear only Research/Today research authority, while ambiguous
 transport retains the last verified workspace visibly stale and read-only.
 Authorization failure additionally clears open reports/receipts, chat turns and
 revision, summary feedback, all research rows/snapshots/events/dialog drafts and
-retry bytes, and clinical text still in the feed dialog. A missing selected
-activity is treated the same way.
+retry bytes, and clinical text or selected file bytes still in the feed dialog.
+In-flight document, digest, and deep-sweep submissions are aborted and cannot
+activate Activity from a late response; activity polling stops until current
+authority starts it again. A missing selected activity is treated the same way.
 
 ## Review biomarker history
 

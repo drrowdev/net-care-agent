@@ -52,19 +52,49 @@ def _create_course(client, *, mutation_id="course-create-001", **overrides):
     return response, request
 
 
-def _ingest_treatment(agent, profile, *, job_id="treatment-feed-001"):
-    text = "Clinic note: Start lanreotide 120mg q4w."
+def _ingest_treatment(
+    agent,
+    profile,
+    *,
+    job_id="treatment-feed-001",
+    treatment_change="Start lanreotide 120mg q4w",
+):
+    text = f"Clinic note: {treatment_change}."
     payload = {
         "document_type": "doctor_note",
         "date": "2026-08-02",
         "summary": "Treatment discussion.",
-        "treatment_changes": ["Start lanreotide 120mg q4w"],
+        "treatment_changes": [treatment_change],
         "evidence": [
             {
                 "field": "treatment_changes",
                 "item_index": 0,
-                "source_quote": "Start lanreotide 120mg q4w",
+                "source_quote": treatment_change,
             }
+        ],
+    }
+    before = copy.deepcopy(profile)
+    with patch_llm(agent, lambda **_: llm_text(json.dumps(payload))):
+        updated, extracted = agent.run_intake(text, profile)
+    agent.build_import_record(before, updated, extracted, job_id=job_id, text=text)
+    return updated
+
+
+def _ingest_two_treatments(agent, profile, *, job_id="treatment-feed-pair"):
+    text = "Clinic note: Start lanreotide 120mg q4w. Continue lanreotide 90mg q4w."
+    changes = ["Start lanreotide 120mg q4w", "Continue lanreotide 90mg q4w"]
+    payload = {
+        "document_type": "doctor_note",
+        "date": "2026-08-02",
+        "summary": "Treatment discussion.",
+        "treatment_changes": changes,
+        "evidence": [
+            {
+                "field": "treatment_changes",
+                "item_index": index,
+                "source_quote": value,
+            }
+            for index, value in enumerate(changes)
         ],
     }
     before = copy.deepcopy(profile)
@@ -87,6 +117,27 @@ def _create_discrepancy(client, course, *, mutation_id="discrepancy-create-001")
         "expected_course_token": next(
             item["token"] for item in projection["courses"] if item["id"] == course["id"]
         ),
+    }
+    return client.post("/api/treatment-reconciliation/discrepancies", json=request), request
+
+
+def _create_source_discrepancy(
+    client,
+    *,
+    mutation_id="source-discrepancy-create-001",
+    source_indexes=(0, 1),
+):
+    projection = _projection(client)
+    source_a = projection["source_facts"][source_indexes[0]]
+    source_b = projection["source_facts"][source_indexes[1]]
+    request = {
+        **_meta(projection, mutation_id),
+        "category": "source_wording",
+        "comparison_text": "Two source occurrences contain different exact wording.",
+        "source_fact_ref": source_a["ref"],
+        "expected_source_fact_token": source_a["token"],
+        "comparison_source_fact_ref": source_b["ref"],
+        "expected_comparison_source_fact_token": source_b["token"],
     }
     return client.post("/api/treatment-reconciliation/discrepancies", json=request), request
 
@@ -137,6 +188,22 @@ def test_projection_preserves_source_occurrence_and_hides_internal_coordinates(
         agent.treatment_source_fact_text(profile, source["ref"], evidence_only=True)
         == "Start lanreotide 120mg q4w"
     )
+
+
+def test_treatment_safety_copy_is_exact_static_contract(agent, empty_profile):
+    expected = (
+        "NET/Care records what you enter but does not verify treatment details or advise "
+        "starting, stopping, or changing treatment. Confirm treatment decisions with the "
+        "treating team."
+    )
+
+    projection = agent.project_treatment_reconciliation(empty_profile)
+
+    assert agent.TREATMENT_SAFETY_GUIDANCE == expected
+    assert projection["safety_guidance"] == {
+        "kind": "fixed_non_prescriptive",
+        "text": expected,
+    }
 
 
 def test_legacy_projection_preserves_duplicate_order_and_stable_component_mapping(
@@ -271,6 +338,11 @@ def test_discrepancy_confirmation_is_neutral_attributed_and_preserved_on_reopen(
     created_response, _ = _create_discrepancy(client, course)
     assert created_response.status_code == 201
     discrepancy = created_response.get_json()["discrepancy"]
+    assert discrepancy["citation_kind"] == "source_vs_course"
+    assert discrepancy["citation_authority"] == {"state": "complete", "reason": None}
+    assert discrepancy["citations"]["source_a"]["snapshot"] == discrepancy["source_fact"]
+    assert discrepancy["citations"]["course_b"]["snapshot"] == discrepancy["course_snapshot"]
+    assert discrepancy["citations"]["source_b"] is None
     projection = _projection(client)
     resolved = client.post(
         f"/api/treatment-reconciliation/discrepancies/{discrepancy['id']}/resolve",
@@ -305,6 +377,598 @@ def test_discrepancy_confirmation_is_neutral_attributed_and_preserved_on_reopen(
     assert reopened_row["status"] == "open"
     assert reopened_row["confirmations"] == resolved_row["confirmations"]
     assert reopened.get_json()["profile_revision"] == resolved.get_json()["profile_revision"]
+
+
+def test_source_vs_source_creation_preserves_identical_distinct_occurrences(
+    app_client, agent, empty_profile
+):
+    _, client = app_client
+    profile = _ingest_treatment(agent, empty_profile, job_id="duplicate-source-a")
+    profile = _ingest_treatment(agent, profile, job_id="duplicate-source-b")
+    agent.save_profile(profile, clinical_change=False)
+
+    projection = _projection(client)
+    assert len(projection["source_facts"]) == 2
+    assert (
+        projection["source_facts"][0]["observed_text"]
+        == (projection["source_facts"][1]["observed_text"])
+    )
+    assert projection["source_facts"][0]["ref"] != projection["source_facts"][1]["ref"]
+
+    response, _ = _create_source_discrepancy(client)
+    row = response.get_json()["discrepancy"]
+
+    assert response.status_code == 201
+    assert row["citation_kind"] == "source_vs_source"
+    assert row["course_id"] is None
+    assert row["course_snapshot"] is None
+    assert row["citations"]["course_b"] is None
+    assert (
+        row["citations"]["source_a"]["snapshot"]["ref"]
+        != (row["citations"]["source_b"]["snapshot"]["ref"])
+    )
+    assert (
+        row["citations"]["source_a"]["current"]["observed_text"]
+        == (row["citations"]["source_b"]["current"]["observed_text"])
+    )
+
+
+def test_existing_source_vs_course_record_remains_lossless_without_new_fields(
+    app_client, agent, empty_profile
+):
+    _, client = app_client
+    profile = _ingest_treatment(agent, empty_profile)
+    agent.save_profile(profile, clinical_change=False)
+    course = _create_course(client)[0].get_json()["course"]
+    created = _create_discrepancy(client, course)[0].get_json()["discrepancy"]
+    persisted = agent.load_profile()
+    record = persisted["treatment_discrepancies"][0]
+    record.pop("citation_kind")
+    record.pop("comparison_source_fact_ref")
+    record.pop("comparison_source_fact_snapshot")
+    preserved = copy.deepcopy(record)
+
+    projected = agent.project_treatment_reconciliation(persisted)["discrepancies"][0]
+
+    assert record == preserved
+    assert projected["citation_kind"] == "source_vs_course"
+    assert projected["citation_authority"] == {"state": "complete", "reason": None}
+    assert projected["source_fact"] == created["source_fact"]
+    assert projected["course_snapshot"] == created["course_snapshot"]
+
+
+def test_discrepancy_create_rejects_incomplete_mixed_stale_and_noncitable_authority(
+    app_client, agent, empty_profile, monkeypatch
+):
+    _, client = app_client
+    profile = _ingest_two_treatments(agent, empty_profile)
+    agent.save_profile(profile, clinical_change=False)
+    course = _create_course(client)[0].get_json()["course"]
+    projection = _projection(client)
+    source_a, source_b = projection["source_facts"]
+    base = {
+        **_meta(projection, "placeholder-mutation"),
+        "category": "other",
+        "comparison_text": "Neutral exact comparison.",
+    }
+    source_a_pair = {
+        "source_fact_ref": source_a["ref"],
+        "expected_source_fact_token": source_a["token"],
+    }
+    source_b_pair = {
+        "comparison_source_fact_ref": source_b["ref"],
+        "expected_comparison_source_fact_token": source_b["token"],
+    }
+    course_pair = {
+        "course_id": course["id"],
+        "expected_course_token": course["token"],
+    }
+    legacy = projection["legacy_treatments"][0]
+    invalid_requests = [
+        {},
+        source_a_pair,
+        {**source_a_pair, **source_b_pair, **course_pair},
+        {
+            **source_a_pair,
+            "comparison_source_fact_ref": source_a["ref"],
+            "expected_comparison_source_fact_token": source_a["token"],
+        },
+        {
+            **source_a_pair,
+            "comparison_source_fact_ref": source_b["ref"],
+            "expected_comparison_source_fact_token": "stale",
+        },
+        {
+            **source_a_pair,
+            "comparison_source_fact_ref": "txref_dangling",
+            "expected_comparison_source_fact_token": source_b["token"],
+        },
+        {
+            "source_fact_ref": legacy["id"],
+            "expected_source_fact_token": legacy["token"],
+            **course_pair,
+        },
+        {
+            "source_fact_ref": "txclass_generated_compatibility_only",
+            "expected_source_fact_token": legacy["token"],
+            **course_pair,
+        },
+        {**source_a_pair, **source_b_pair, "source_fact_snapshot": source_a},
+    ]
+    allocations = 0
+
+    def count_allocation():
+        nonlocal allocations
+        allocations += 1
+        return "txd_" + ("0" * 32)
+
+    monkeypatch.setattr(agent, "new_treatment_discrepancy_id", count_allocation)
+    before = copy.deepcopy(agent.load_profile())
+    for index, invalid in enumerate(invalid_requests):
+        response = client.post(
+            "/api/treatment-reconciliation/discrepancies",
+            json={
+                **base,
+                "mutation_id": f"invalid-discrepancy-{index:02d}",
+                **invalid,
+            },
+        )
+        assert response.status_code in {400, 404, 409}
+
+    after = agent.load_profile()
+    assert allocations == 0
+    assert after["treatment_discrepancies"] == before["treatment_discrepancies"]
+    assert after["profile_revision"] == before["profile_revision"]
+    assert after["workflow_revision"] == before["workflow_revision"]
+
+
+def test_source_vs_source_tokens_bind_each_current_authority_without_snapshot_rewrite(
+    app_client, agent, empty_profile
+):
+    _, client = app_client
+    profile = _ingest_treatment(agent, empty_profile, job_id="source-token-a")
+    profile = _ingest_treatment(
+        agent,
+        profile,
+        job_id="source-token-b",
+        treatment_change="Start everolimus 10mg daily",
+    )
+    agent.save_profile(profile, clinical_change=False)
+    created, request = _create_source_discrepancy(client)
+    created_row = created.get_json()["discrepancy"]
+    original_snapshots = copy.deepcopy(created_row["citations"])
+    original_token = created_row["token"]
+
+    corrected = agent.load_profile()
+    receipt_a = agent.public_receipt(corrected, "source-token-a")
+    change_a = next(item for item in receipt_a["changes"] if item["category"] == "treatments")
+    agent.correct_change(
+        corrected,
+        "source-token-a",
+        change_a["id"],
+        receipt_revision=receipt_a["receipt_revision"],
+        target_token=change_a["target_token"],
+        replacement="Corrected source A current wording",
+    )
+    after_a = agent.project_treatment_reconciliation(corrected)["discrepancies"][0]
+    assert after_a["token"] != original_token
+    assert (
+        after_a["citations"]["source_a"]["snapshot"] == original_snapshots["source_a"]["snapshot"]
+    )
+    assert (
+        after_a["citations"]["source_b"]["snapshot"] == original_snapshots["source_b"]["snapshot"]
+    )
+
+    receipt_b = agent.public_receipt(corrected, "source-token-b")
+    change_b = next(item for item in receipt_b["changes"] if item["category"] == "treatments")
+    agent.correct_change(
+        corrected,
+        "source-token-b",
+        change_b["id"],
+        receipt_revision=receipt_b["receipt_revision"],
+        target_token=change_b["target_token"],
+        replacement="Corrected source B current wording",
+    )
+    after_b = agent.project_treatment_reconciliation(corrected)["discrepancies"][0]
+    assert after_b["token"] != after_a["token"]
+    assert (
+        after_b["citations"]["source_a"]["snapshot"] == original_snapshots["source_a"]["snapshot"]
+    )
+    assert (
+        after_b["citations"]["source_b"]["snapshot"] == original_snapshots["source_b"]["snapshot"]
+    )
+
+    agent.save_profile(corrected, clinical_change=True)
+    replay = client.post("/api/treatment-reconciliation/discrepancies", json=request)
+    assert replay.status_code == 200
+    assert replay.get_json()["idempotent_replay"] is True
+    assert replay.get_json()["discrepancy"] == created_row
+
+
+def test_source_removal_and_undo_rotate_current_state_without_snapshot_rewrite(
+    app_client, agent, empty_profile
+):
+    _, client = app_client
+    profile = _ingest_treatment(agent, empty_profile, job_id="source-lifecycle-a")
+    profile = _ingest_treatment(
+        agent,
+        profile,
+        job_id="source-lifecycle-b",
+        treatment_change="Start everolimus 10mg daily",
+    )
+    agent.save_profile(profile, clinical_change=False)
+    created = _create_source_discrepancy(client)[0].get_json()["discrepancy"]
+    snapshots = copy.deepcopy(created["citations"])
+    persisted = agent.load_profile()
+
+    removed = copy.deepcopy(persisted)
+    receipt = agent.public_receipt(removed, "source-lifecycle-b")
+    change = next(item for item in receipt["changes"] if item["category"] == "treatments")
+    agent.remove_change(
+        removed,
+        "source-lifecycle-b",
+        change["id"],
+        receipt_revision=receipt["receipt_revision"],
+        target_token=change["target_token"],
+    )
+    removed_row = agent.project_treatment_reconciliation(removed)["discrepancies"][0]
+    removed_side = next(
+        removed_row["citations"][key]
+        for key in ("source_a", "source_b")
+        if "everolimus" in removed_row["citations"][key]["current"]["observed_text"]
+    )
+    assert removed_side["current"]["review_state"] == "removed"
+    assert removed_row["citations"]["source_a"]["snapshot"] == snapshots["source_a"]["snapshot"]
+    assert removed_row["citations"]["source_b"]["snapshot"] == snapshots["source_b"]["snapshot"]
+
+    undone = copy.deepcopy(persisted)
+    receipt = agent.public_receipt(undone, "source-lifecycle-a")
+    agent.undo_import(
+        undone,
+        "source-lifecycle-a",
+        receipt_revision=receipt["receipt_revision"],
+        undo_token=receipt["undo_token"],
+    )
+    undone_row = agent.project_treatment_reconciliation(undone)["discrepancies"][0]
+    undone_side = next(
+        undone_row["citations"][key]
+        for key in ("source_a", "source_b")
+        if "lanreotide" in undone_row["citations"][key]["current"]["observed_text"]
+    )
+    assert undone_side["current"]["receipt_state"] == "undone"
+    assert undone_row["citations"]["source_a"]["snapshot"] == snapshots["source_a"]["snapshot"]
+    assert undone_row["citations"]["source_b"]["snapshot"] == snapshots["source_b"]["snapshot"]
+
+
+def test_shared_source_artifact_is_validated_once_for_two_citations(
+    agent, empty_profile, monkeypatch
+):
+    import agent.treatment_reconciliation as reconciliation
+
+    profile = _ingest_two_treatments(agent, empty_profile)
+    calls = 0
+    original = reconciliation.validate_source_artifact
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(reconciliation, "validate_source_artifact", counted)
+    projection = reconciliation.project_treatment_reconciliation(profile)
+
+    assert len(projection["source_facts"]) == 2
+    assert calls == 1
+
+
+def test_source_vs_source_recurrence_reopen_and_replay_preserve_server_owned_citations(
+    app_client, agent, empty_profile
+):
+    _, client = app_client
+    profile = _ingest_two_treatments(agent, empty_profile)
+    agent.save_profile(profile, clinical_change=False)
+    created = _create_source_discrepancy(client)[0].get_json()["discrepancy"]
+    projection = _projection(client)
+    resolve_request = {
+        **_meta(projection, "source-source-resolve"),
+        "expected_discrepancy_token": created["token"],
+        "outcome": "source_clarification_needed",
+        "note": "Treating-team clarification was recorded without changing either citation.",
+    }
+    resolved_response = client.post(
+        f"/api/treatment-reconciliation/discrepancies/{created['id']}/resolve",
+        json=resolve_request,
+    )
+    resolved = resolved_response.get_json()["discrepancy"]
+    assert resolved_response.status_code == 200
+    assert resolved["confirmations"][0]["outcome"] == "source_clarification_needed"
+
+    projection = _projection(client)
+    recurrence_request = {
+        **_meta(projection, "source-source-recurrence"),
+        "category": "source_wording",
+        "comparison_text": "The same two source authorities require another neutral review.",
+        "recurs_from_id": resolved["id"],
+        "expected_recurs_from_token": resolved["token"],
+    }
+    recurrence_response = client.post(
+        "/api/treatment-reconciliation/discrepancies",
+        json=recurrence_request,
+    )
+    replay = client.post(
+        "/api/treatment-reconciliation/discrepancies",
+        json=recurrence_request,
+    )
+    recurrence = recurrence_response.get_json()["discrepancy"]
+
+    assert recurrence_response.status_code == 201
+    assert replay.status_code == 200
+    assert replay.get_json()["idempotent_replay"] is True
+    assert recurrence["citation_kind"] == "source_vs_source"
+    assert recurrence["recurs_from_id"] == created["id"]
+    assert (
+        recurrence["citations"]["source_a"]["snapshot"]
+        == (created["citations"]["source_a"]["snapshot"])
+    )
+    assert (
+        recurrence["citations"]["source_b"]["snapshot"]
+        == (created["citations"]["source_b"]["snapshot"])
+    )
+
+    projection = _projection(client)
+    substituted = client.post(
+        "/api/treatment-reconciliation/discrepancies",
+        json={
+            **_meta(projection, "source-source-recurrence-substitute"),
+            "category": "source_wording",
+            "comparison_text": "Attempted client substitution.",
+            "recurs_from_id": resolved["id"],
+            "expected_recurs_from_token": next(
+                item["token"]
+                for item in projection["discrepancies"]
+                if item["id"] == resolved["id"]
+            ),
+            "source_fact_ref": projection["source_facts"][1]["ref"],
+            "expected_source_fact_token": projection["source_facts"][1]["token"],
+            "comparison_source_fact_ref": projection["source_facts"][0]["ref"],
+            "expected_comparison_source_fact_token": projection["source_facts"][0]["token"],
+        },
+    )
+    assert substituted.status_code == 400
+
+    projection = _projection(client)
+    current_resolved = next(
+        item for item in projection["discrepancies"] if item["id"] == resolved["id"]
+    )
+    reopened_response = client.post(
+        f"/api/treatment-reconciliation/discrepancies/{resolved['id']}/reopen",
+        json={
+            **_meta(projection, "source-source-reopen"),
+            "expected_discrepancy_token": current_resolved["token"],
+        },
+    )
+    reopened = reopened_response.get_json()["discrepancy"]
+    assert reopened_response.status_code == 200
+    assert reopened["confirmations"] == resolved["confirmations"]
+    assert (
+        reopened["citations"]["source_a"]["snapshot"]
+        == (current_resolved["citations"]["source_a"]["snapshot"])
+    )
+    assert (
+        reopened["citations"]["source_b"]["snapshot"]
+        == (current_resolved["citations"]["source_b"]["snapshot"])
+    )
+
+
+def test_legacy_one_sided_discrepancy_is_visible_incomplete_and_lifecycle_read_only(
+    app_client, agent, empty_profile
+):
+    _, client = app_client
+    profile = _ingest_treatment(agent, empty_profile)
+    agent.save_profile(profile, clinical_change=False)
+    course = _create_course(client)[0].get_json()["course"]
+    created = _create_discrepancy(client, course)[0].get_json()["discrepancy"]
+
+    legacy = agent.load_profile()
+    record = legacy["treatment_discrepancies"][0]
+    record.pop("citation_kind", None)
+    record["course_id"] = None
+    record["course_snapshot"] = None
+    record.pop("comparison_source_fact_ref", None)
+    record.pop("comparison_source_fact_snapshot", None)
+    agent.save_profile(legacy, clinical_change=False)
+    projection = _projection(client)
+    row = projection["discrepancies"][0]
+
+    assert row["citation_kind"] == "legacy_incomplete"
+    assert row["citation_authority"] == {
+        "state": "legacy_incomplete",
+        "reason": "missing_second_citation",
+    }
+    assert row["eligibility"] == {"resolve": False, "reopen": False, "recur": False}
+    assert row["citations"]["source_a"]["snapshot"] == created["source_fact"]
+    assert row["citations"]["source_b"] is None
+    assert row["citations"]["course_b"] is None
+
+    before = copy.deepcopy(agent.load_profile())
+    resolve = client.post(
+        f"/api/treatment-reconciliation/discrepancies/{row['id']}/resolve",
+        json={
+            **_meta(projection, "legacy-incomplete-resolve"),
+            "expected_discrepancy_token": row["token"],
+            "outcome": "no_change_documented",
+            "note": "Must remain read-only.",
+        },
+    )
+    assert resolve.status_code == 409
+    assert agent.load_profile() == before
+
+    resolved_legacy = agent.load_profile()
+    resolved_record = resolved_legacy["treatment_discrepancies"][0]
+    resolved_record["status"] = "resolved"
+    resolved_record["resolved_at"] = "2026-08-10T10:00:00"
+    resolved_record["updated_at"] = "2026-08-10T10:00:00"
+    agent.save_profile(resolved_legacy, clinical_change=False)
+    projection = _projection(client)
+    row = projection["discrepancies"][0]
+    before = copy.deepcopy(agent.load_profile())
+
+    reopen = client.post(
+        f"/api/treatment-reconciliation/discrepancies/{row['id']}/reopen",
+        json={
+            **_meta(projection, "legacy-incomplete-reopen"),
+            "expected_discrepancy_token": row["token"],
+        },
+    )
+    recur = client.post(
+        "/api/treatment-reconciliation/discrepancies",
+        json={
+            **_meta(projection, "legacy-incomplete-recur"),
+            "category": "other",
+            "comparison_text": "Must not invent a citation.",
+            "recurs_from_id": row["id"],
+            "expected_recurs_from_token": row["token"],
+        },
+    )
+
+    assert reopen.status_code == 409
+    assert recur.status_code == 409
+    assert agent.load_profile() == before
+
+
+def test_discrepancy_projection_fails_whole_response_for_cycles_and_oversized_private_snapshot(
+    agent, empty_profile
+):
+    profile = _ingest_two_treatments(agent, empty_profile)
+    projection = agent.project_treatment_reconciliation(profile)
+    timestamp = "2026-08-10T10:00:00"
+
+    def record(record_id, source_a, source_b, *, recurs_from_id=None):
+        return {
+            "id": record_id,
+            "status": "open",
+            "category": "other",
+            "comparison_text": "Neutral comparison.",
+            "citation_kind": "source_vs_source",
+            "course_id": None,
+            "source_fact_ref": source_a["ref"],
+            "source_fact_snapshot": copy.deepcopy(source_a),
+            "comparison_source_fact_ref": source_b["ref"],
+            "comparison_source_fact_snapshot": copy.deepcopy(source_b),
+            "course_snapshot": None,
+            "recurs_from_id": recurs_from_id,
+            "confirmations": [],
+            "caregiver_action_id": None,
+            "provenance": agent.treatment_course_provenance(),
+            "created_at": timestamp,
+            "updated_at": timestamp,
+            "resolved_at": None,
+            "history": [],
+        }
+
+    first_id = agent.new_treatment_discrepancy_id()
+    second_id = agent.new_treatment_discrepancy_id()
+    first = record(
+        first_id,
+        projection["source_facts"][0],
+        projection["source_facts"][1],
+        recurs_from_id=second_id,
+    )
+    second = record(
+        second_id,
+        projection["source_facts"][1],
+        projection["source_facts"][0],
+        recurs_from_id=first_id,
+    )
+    profile["treatment_discrepancies"] = [first, second]
+    with pytest.raises(agent.TreatmentProjectionError, match="recurrence"):
+        agent.project_treatment_reconciliation(profile)
+
+    first["recurs_from_id"] = None
+    second["recurs_from_id"] = first_id
+    with pytest.raises(agent.TreatmentProjectionError, match="recurrence"):
+        agent.project_treatment_reconciliation(profile)
+
+    for field in (
+        "source_fact_ref",
+        "source_fact_snapshot",
+        "comparison_source_fact_ref",
+        "comparison_source_fact_snapshot",
+        "course_id",
+        "course_snapshot",
+    ):
+        second[field] = copy.deepcopy(first.get(field))
+    first["source_fact_snapshot"]["unknown_private"] = "x" * 100_001
+    with pytest.raises(agent.TreatmentProjectionError, match="limits"):
+        agent.project_treatment_reconciliation(profile)
+
+    first["source_fact_snapshot"].pop("unknown_private")
+    first["source_fact_snapshot"]["path"] = "private/source/path"
+    second["source_fact_snapshot"] = copy.deepcopy(first["source_fact_snapshot"])
+    with pytest.raises(agent.TreatmentProjectionError, match="snapshot"):
+        agent.project_treatment_reconciliation(profile)
+
+
+def test_treatment_replay_rejects_tampered_private_result_snapshot(
+    app_client, agent, empty_profile
+):
+    _, client = app_client
+    profile = _ingest_two_treatments(agent, empty_profile)
+    agent.save_profile(profile, clinical_change=False)
+    response, request = _create_source_discrepancy(client)
+    assert response.status_code == 201
+
+    tampered = agent.load_profile()
+    event = tampered["treatment_discrepancies"][0]["history"][0]
+    event["result_snapshot"]["discrepancy"]["source_fact"]["path"] = "private/source/path"
+    event["result_hash"] = agent.request_hash(event["result_snapshot"])
+    agent.save_profile(tampered, clinical_change=False)
+
+    replay = client.post("/api/treatment-reconciliation/discrepancies", json=request)
+
+    assert replay.status_code == 409
+    assert replay.get_json()["code"] == "treatment_conflict"
+    assert "private/source/path" not in json.dumps(replay.get_json())
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "mismatched_current_ref",
+        "contradictory_authority",
+        "contradictory_eligibility",
+    ],
+)
+def test_treatment_replay_rejects_contradictory_citation_authority(
+    app_client, agent, empty_profile, tamper
+):
+    _, client = app_client
+    profile = _ingest_two_treatments(agent, empty_profile)
+    agent.save_profile(profile, clinical_change=False)
+    response, request = _create_source_discrepancy(client)
+    assert response.status_code == 201
+
+    tampered = agent.load_profile()
+    event = tampered["treatment_discrepancies"][0]["history"][0]
+    public = event["result_snapshot"]["discrepancy"]
+    if tamper == "mismatched_current_ref":
+        public["citations"]["source_a"]["current"] = copy.deepcopy(
+            public["citations"]["source_b"]["current"]
+        )
+    elif tamper == "contradictory_authority":
+        public["citation_authority"] = {
+            "state": "legacy_incomplete",
+            "reason": "missing_second_citation",
+        }
+    else:
+        public["eligibility"] = {"resolve": False, "reopen": True, "recur": True}
+    event["result_hash"] = agent.request_hash(event["result_snapshot"])
+    agent.save_profile(tampered, clinical_change=False)
+
+    replay = client.post("/api/treatment-reconciliation/discrepancies", json=request)
+
+    assert replay.status_code == 409
+    assert replay.get_json()["code"] == "treatment_conflict"
 
 
 def test_record_correction_requires_explicit_atomic_course_patch(app_client, agent, empty_profile):
@@ -456,6 +1120,89 @@ def test_projection_fails_closed_for_duplicate_identity_and_inconsistent_dates(
         agent.project_treatment_reconciliation(empty_profile)
 
 
+def test_projection_fails_closed_for_malformed_containers_and_private_current_value(
+    agent, empty_profile
+):
+    malformed = copy.deepcopy(empty_profile)
+    malformed["patient"] = None
+    with pytest.raises(agent.TreatmentProjectionError, match="Legacy treatment authority"):
+        agent.project_treatment_reconciliation(malformed)
+
+    malformed = copy.deepcopy(empty_profile)
+    malformed["source_documents"] = [None]
+    with pytest.raises(agent.TreatmentProjectionError, match="source authority"):
+        agent.project_treatment_reconciliation(malformed)
+
+    malformed = _ingest_treatment(agent, copy.deepcopy(empty_profile))
+    malformed["source_documents"][0]["text"] = "not metadata"
+    with pytest.raises(agent.TreatmentProjectionError, match="source authority"):
+        agent.project_treatment_reconciliation(malformed)
+
+    private = _ingest_treatment(agent, copy.deepcopy(empty_profile))
+    treatment_change = next(
+        item
+        for item in private["document_imports"][0]["changes"]
+        if item["category"] == "treatments"
+    )
+    treatment_change["effective_value"] = {"path": "private/source/path"}
+    with pytest.raises(agent.TreatmentProjectionError, match="snapshot"):
+        agent.project_treatment_reconciliation(private)
+
+    legacy = copy.deepcopy(empty_profile)
+    legacy["patient"]["current_treatments"] = ["one", "two"]
+    agent.sync_treatment_records(legacy)
+    legacy["patient"]["current_treatment_records"][1]["component_order"] = "invalid"
+    with pytest.raises(agent.TreatmentProjectionError, match="component authority"):
+        agent.project_treatment_reconciliation(legacy)
+
+    legacy = copy.deepcopy(empty_profile)
+    legacy["patient"]["current_treatments"] = ["one"]
+    agent.sync_treatment_records(legacy)
+    component_id = legacy["patient"]["current_treatment_records"][0]["id"]
+    legacy["treatments_classified"] = [
+        {
+            "id": "generated",
+            "text": {"path": "private/source/path"},
+            "label": "Compatibility",
+            "category": "active",
+            "date": None,
+            "source_treatment_ids": [component_id],
+        }
+    ]
+    with pytest.raises(agent.TreatmentProjectionError, match="compatibility authority"):
+        agent.project_treatment_reconciliation(legacy)
+
+
+def test_course_snapshot_and_replay_enforce_live_field_contract(app_client, agent, empty_profile):
+    _, client = app_client
+    profile = _ingest_treatment(agent, empty_profile)
+    agent.save_profile(profile, clinical_change=False)
+    course_response, course_request = _create_course(client)
+    course = course_response.get_json()["course"]
+    discrepancy = _create_discrepancy(client, course)[0].get_json()["discrepancy"]
+
+    malformed = agent.load_profile()
+    malformed["treatment_discrepancies"][0]["course_snapshot"]["dose_text"] = [
+        "not",
+        "text",
+    ]
+    with pytest.raises(agent.TreatmentProjectionError, match="authority"):
+        agent.project_treatment_reconciliation(malformed)
+
+    replay_tamper = agent.load_profile()
+    course_event = replay_tamper["treatment_courses"][0]["history"][0]
+    course_event["result_snapshot"]["course"]["dose_text"] = "x" * 501
+    course_event["result_snapshot"]["course"]["planned_date_precision"] = "day"
+    course_event["result_hash"] = agent.request_hash(course_event["result_snapshot"])
+    agent.save_profile(replay_tamper, clinical_change=False)
+
+    replay = client.post("/api/treatment-reconciliation/courses", json=course_request)
+
+    assert discrepancy["citation_kind"] == "source_vs_course"
+    assert replay.status_code == 409
+    assert replay.get_json()["code"] == "treatment_conflict"
+
+
 def test_save_failure_does_not_persist_partial_treatment_course(
     app_client, agent, empty_profile, monkeypatch
 ):
@@ -479,6 +1226,38 @@ def test_save_failure_does_not_persist_partial_treatment_course(
     monkeypatch.undo()
 
     assert agent.load_profile()["treatment_courses"] == []
+
+
+def test_save_failure_does_not_persist_partial_two_source_discrepancy(
+    app_client, agent, empty_profile, monkeypatch
+):
+    _, client = app_client
+    profile = _ingest_two_treatments(agent, empty_profile)
+    agent.save_profile(profile, clinical_change=False)
+    projection = _projection(client)
+    source_a, source_b = projection["source_facts"]
+    request = {
+        **_meta(projection, "source-discrepancy-save-failure"),
+        "category": "other",
+        "comparison_text": "Must not persist.",
+        "source_fact_ref": source_a["ref"],
+        "expected_source_fact_token": source_a["token"],
+        "comparison_source_fact_ref": source_b["ref"],
+        "expected_comparison_source_fact_token": source_b["token"],
+    }
+
+    def fail_save(*args, **kwargs):
+        raise OSError("simulated discrepancy save failure")
+
+    monkeypatch.setattr(agent, "save_profile", fail_save)
+    with pytest.raises(OSError, match="simulated discrepancy save failure"):
+        client.post("/api/treatment-reconciliation/discrepancies", json=request)
+    monkeypatch.undo()
+
+    saved = agent.load_profile()
+    assert saved["treatment_discrepancies"] == []
+    assert saved["profile_revision"] == projection["profile_revision"]
+    assert saved["workflow_revision"] == projection["workflow_revision"]
 
 
 def test_reconciliation_state_is_excluded_from_existing_model_contexts(agent, empty_profile):

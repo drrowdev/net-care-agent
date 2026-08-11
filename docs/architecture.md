@@ -272,12 +272,23 @@ linked by `previous_course_id`, never reopening the old record. No source fact,
 date, action, visit, decision, clock, or model changes lifecycle.
 
 Discrepancies are created only by a caregiver request against one opaque source
-fact and optional exact course token. Neutral outcomes retain the immutable
-source/course snapshots and exact note with the fixed label
+fact plus exactly one mechanically distinct second authority: another distinct
+opaque source occurrence or one exact caregiver course. The public
+`citation_kind` is explicitly `source_vs_source` or `source_vs_course`; neutral
+source A/B names carry no chronology, preference, correctness, or clinical
+meaning. Generated classification and legacy raw/component rows are never
+citable. Neutral outcomes retain both immutable cited snapshots and the exact
+note with the fixed label
 `Caregiver-entered · attributed to clinician · unverified`. Only
 `caregiver_record_corrected` may include an explicit course patch, atomically in
 the same save. Resolution never erases facts or history; reopen is workflow-only
-and recurrence creates a new linked discrepancy.
+and recurrence creates a new linked discrepancy whose citation kind, references,
+and snapshots are copied server-side from the resolved prior record. Clients
+cannot substitute a recurrence citation. Older complete source/course records
+remain lossless and valid without rewriting. Older one-sided records are
+projected as `legacy_incomplete` with reason `missing_second_citation` and
+explicit false resolve/reopen/recur eligibility; those operations fail closed
+and never invent a second side.
 
 All course/discrepancy mutations require both expected revisions, the complete
 projection token, applicable row/source/action tokens, and a scoped mutation
@@ -292,6 +303,13 @@ validate each referenced artifact once per projection. Public JSON contains no
 path, source/import/job/receipt/change ID, quote, or offset. Corrupt,
 inconsistent, duplicate-ID, tampered, or oversized authority fails the complete
 read with a bounded `422`; incomplete/manual/unverified facts remain visible.
+Each discrepancy exposes immutable snapshots separately from both citations'
+current lifecycle state. Discrepancy and projection tokens bind both sides'
+complete private source/receipt/import/document/evidence/history authority,
+course/action/discrepancy/outcome state, unknown extras, and both revisions, so
+either side rotating invalidates current authority without rewriting snapshots.
+The exact static safety copy is `NET/Care records what you enter but does not verify treatment details or advise starting, stopping, or changing treatment. Confirm treatment decisions with the treating team.` It is nonconditional,
+non-PHI, and non-prescriptive. Treatment UI remains deferred.
 The projector is side-effect-free and the new course/discrepancy/confirmation
 state does not enter chat, orchestrator, executive summary, questions, deep
 sweep, or other model input in this backend-only PR.
@@ -577,7 +595,7 @@ only with exact `APP_ORIGIN` or canonical HTTPS `WEBSITE_HOSTNAME`.
 | Anthropic API outage | Each agent has a JSON-decode fallback that returns "insufficient_data" rather than 500 |
 | Irrelevant literature pollution | `agent.tools._is_relevant` rule-based filter before persistence |
 | Treatment duplicates | `agent.intake._treatment_similarity` synonym dedup (Somatuline = lanreotide) |
-| Treatment source correction invalidates a cited comparison | The discrepancy keeps its immutable cited snapshot while the projection token also binds current receipt/source authority; correction/removal/undo rotates tokens but never deletes courses, discrepancies, confirmations, or links |
+| Treatment source correction invalidates a cited comparison | The discrepancy keeps both immutable cited snapshots while its token binds each current source/course side and full private lifecycle authority; correction/removal/undo on either side rotates tokens but never deletes or rewrites courses, discrepancies, confirmations, or links |
 | Partial treatment workflow write or duplicate retry | Serialized full-authority validation, both revisions, scoped mutation ID, canonical request hash, append-only audit, one atomic save, and validated immutable replay response |
 | Oncologist disagreement with AI | `clinical_judgments` injected verbatim into orchestrator + exec summary system prompts as hard constraints |
 | Unsupported extraction evidence | Intake validates normalized model quotes against immutable source text, then stores the exact source span or explicit `missing`/`invalid` status |

@@ -649,9 +649,12 @@ class TreatmentDiscrepancy(_Lenient):
     status: TreatmentDiscrepancyStatus = "open"
     category: TreatmentDiscrepancyCategory
     comparison_text: str
+    citation_kind: Literal["source_vs_source", "source_vs_course"] | None = None
     course_id: str | None = None
     source_fact_ref: str
     source_fact_snapshot: dict[str, Any]
+    comparison_source_fact_ref: str | None = None
+    comparison_source_fact_snapshot: dict[str, Any] | None = None
     course_snapshot: dict[str, Any] | None = None
     recurs_from_id: str | None = None
     confirmations: list[TreatmentConfirmation] = Field(default_factory=list)

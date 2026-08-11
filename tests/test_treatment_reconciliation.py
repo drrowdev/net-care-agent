@@ -142,29 +142,62 @@ def _create_source_discrepancy(
     return client.post("/api/treatment-reconciliation/discrepancies", json=request), request
 
 
-def test_v12_migration_adds_only_empty_reconciliation_authority():
+def test_v13_migration_marks_only_missing_past_authority_losslessly_and_idempotently():
     from agent.migrations import apply_migrations
 
     legacy = {
-        "schema_version": 11,
+        "schema_version": 12,
         "patient": {
             "current_treatments": ["same", "same"],
             "current_treatment_records": [{"id": "keep", "unknown": {"x": 1}}],
         },
         "treatments_classified": [{"id": "generated", "text": "same", "extra": True}],
         "document_imports": [{"id": "receipt", "changes": [], "unknown": ["keep"]}],
+        "treatment_courses": [
+            {
+                "id": "past",
+                "status": "past",
+                "start_date": "2020",
+                "stop_date": "2021-02",
+                "history": [{"operation": "legacy", "unknown": [1, 2]}],
+                "unknown_course": {"keep": True},
+            },
+            {
+                "id": "current",
+                "status": "current",
+                "history": [],
+                "unknown_course": ["keep"],
+            },
+            {
+                "id": "planned",
+                "status": "planned",
+                "history": [],
+                "unknown_course": None,
+            },
+        ],
+        "treatment_discrepancies": [
+            {"id": "discrepancy", "source_fact_snapshot": {"unknown": "keep"}}
+        ],
         "unknown_top": {"keep": None},
     }
     preserved = copy.deepcopy(legacy)
 
     result = apply_migrations(legacy)
+    first = copy.deepcopy(result)
+    second = apply_migrations(result)
 
-    assert result["schema_version"] == 12
-    assert result["treatment_courses"] == []
-    assert result["treatment_discrepancies"] == []
+    assert result["schema_version"] == 13
+    assert result["treatment_courses"][0]["terminal_qualifier"] == "legacy_unspecified"
+    assert "terminal_detail" not in result["treatment_courses"][0]
+    assert "terminal_qualifier" not in result["treatment_courses"][1]
+    assert "terminal_qualifier" not in result["treatment_courses"][2]
+    assert second == first
     for key, value in preserved.items():
-        if key != "schema_version":
+        if key not in {"schema_version", "treatment_courses"}:
             assert result[key] == value
+    migrated_courses = copy.deepcopy(result["treatment_courses"])
+    migrated_courses[0].pop("terminal_qualifier")
+    assert migrated_courses == preserved["treatment_courses"]
 
 
 def test_projection_preserves_source_occurrence_and_hides_internal_coordinates(
@@ -266,12 +299,136 @@ def test_course_create_preserves_exact_text_dates_and_replays(app_client, agent,
     assert len(saved["treatment_courses"][0]["history"]) == 1
 
 
+def test_past_create_requires_exact_nonlegacy_terminal_authority_before_allocation(
+    app_client, agent, empty_profile, monkeypatch
+):
+    _, client = app_client
+    agent.save_profile(empty_profile, clinical_change=False)
+    projection = _projection(client)
+    before = copy.deepcopy(agent.load_profile())
+    allocations = 0
+
+    def count_allocation():
+        nonlocal allocations
+        allocations += 1
+        return "txc_" + ("0" * 32)
+
+    monkeypatch.setattr(agent, "new_treatment_course_id", count_allocation)
+    invalid = [
+        {},
+        {"terminal_qualifier": "legacy_unspecified"},
+        {"terminal_qualifier": "completed"},
+        {"terminal_qualifier": "other"},
+        {"terminal_qualifier": "other", "terminal_detail": " "},
+        {"terminal_qualifier": "other", "terminal_detail": "x" * 1001},
+        {"terminal_qualifier": "ended", "terminal_detail": "contradiction"},
+    ]
+    for index, authority in enumerate(invalid):
+        response = client.post(
+            "/api/treatment-reconciliation/courses",
+            json={
+                **_meta(projection, f"invalid-past-create-{index}"),
+                "status": "past",
+                "treatment_text": "Exact caregiver wording",
+                **authority,
+            },
+        )
+        assert response.status_code == 400
+    for status in ("current", "planned"):
+        response = client.post(
+            "/api/treatment-reconciliation/courses",
+            json={
+                **_meta(projection, f"invalid-{status}-terminal"),
+                "status": status,
+                "treatment_text": "Exact caregiver wording",
+                "terminal_qualifier": "ended",
+            },
+        )
+        assert response.status_code == 400
+
+    assert allocations == 0
+    assert agent.load_profile() == before
+
+    valid = client.post(
+        "/api/treatment-reconciliation/courses",
+        json={
+            **_meta(projection, "valid-other-past-create"),
+            "status": "past",
+            "treatment_text": "Exact caregiver wording",
+            "terminal_qualifier": "other",
+            "terminal_detail": "  Exact caregiver terminal detail  ",
+        },
+    )
+    assert valid.status_code == 201
+    assert allocations == 1
+    assert valid.get_json()["course"]["terminal_detail"] == ("  Exact caregiver terminal detail  ")
+
+
+@pytest.mark.parametrize(
+    ("start_status", "qualifier", "detail", "expected_status"),
+    [
+        ("current", "ended", None, 200),
+        ("current", "other", "  Exact current detail  ", 200),
+        ("current", "not_started", None, 400),
+        ("current", "cancelled", None, 400),
+        ("planned", "not_started", None, 200),
+        ("planned", "cancelled", None, 200),
+        ("planned", "other", "  Exact planned detail  ", 200),
+        ("planned", "ended", None, 400),
+    ],
+)
+def test_transition_matrix_and_other_detail_are_server_authoritative(
+    app_client,
+    agent,
+    empty_profile,
+    start_status,
+    qualifier,
+    detail,
+    expected_status,
+):
+    _, client = app_client
+    agent.save_profile(empty_profile, clinical_change=False)
+    created = _create_course(
+        client,
+        status=start_status,
+        planned_date=None,
+    )[0].get_json()["course"]
+    projection = _projection(client)
+    before = copy.deepcopy(agent.load_profile())
+    response = client.post(
+        f"/api/treatment-reconciliation/courses/{created['id']}/transition",
+        json={
+            **_meta(projection, f"{start_status}-to-past-{qualifier}"),
+            "expected_course_token": created["token"],
+            "status": "past",
+            "terminal_qualifier": qualifier,
+            "terminal_detail": detail,
+        },
+    )
+
+    assert response.status_code == expected_status
+    if expected_status == 200:
+        course = response.get_json()["course"]
+        assert course["terminal_qualifier"] == qualifier
+        assert course["terminal_detail"] == detail
+        assert course["start_date"] is None
+        assert course["stop_date"] is None
+        assert course["planned_date"] is None
+        assert response.get_json()["profile_revision"] == 2
+        assert response.get_json()["workflow_revision"] == 2
+        event = agent.load_profile()["treatment_courses"][0]["history"][-1]
+        assert event["changes"]["terminal_qualifier"]["after"] == qualifier
+        assert event["changes"]["terminal_detail"]["after"] == detail
+    else:
+        assert agent.load_profile() == before
+
+
 def test_course_transition_is_explicit_and_restart_creates_new_episode(
     app_client, agent, empty_profile
 ):
     _, client = app_client
     agent.save_profile(empty_profile, clinical_change=False)
-    created = _create_course(client)[0].get_json()["course"]
+    created = _create_course(client, status="current", planned_date=None)[0].get_json()["course"]
     projection = _projection(client)
     transition = client.post(
         f"/api/treatment-reconciliation/courses/{created['id']}/transition",
@@ -279,6 +436,7 @@ def test_course_transition_is_explicit_and_restart_creates_new_episode(
             **_meta(projection, "course-to-past-001"),
             "expected_course_token": created["token"],
             "status": "past",
+            "terminal_qualifier": "ended",
         },
     )
     assert transition.status_code == 200
@@ -306,10 +464,194 @@ def test_course_transition_is_explicit_and_restart_creates_new_episode(
     assert saved["treatment_courses"][1]["status"] == "current"
 
 
+def test_projection_publishes_exact_lifecycle_and_restart_authority(
+    app_client, agent, empty_profile
+):
+    _, client = app_client
+    agent.save_profile(empty_profile, clinical_change=False)
+    planned = _create_course(client, mutation_id="planned-lifecycle")[0].get_json()["course"]
+    assert planned["terminal_qualifier"] is None
+    assert planned["terminal_detail"] is None
+    assert planned["lifecycle"] == {
+        "allowed_transitions": [
+            {"status": "current", "terminal_qualifiers": []},
+            {
+                "status": "past",
+                "terminal_qualifiers": ["not_started", "cancelled", "other"],
+            },
+        ],
+        "restart": {"eligible": False, "reason": "course_not_terminal"},
+    }
+    projection = _projection(client)
+    cancelled_response = client.post(
+        f"/api/treatment-reconciliation/courses/{planned['id']}/transition",
+        json={
+            **_meta(projection, "planned-cancelled"),
+            "expected_course_token": next(
+                item["token"] for item in projection["courses"] if item["id"] == planned["id"]
+            ),
+            "status": "past",
+            "terminal_qualifier": "cancelled",
+        },
+    )
+    cancelled = cancelled_response.get_json()["course"]
+    assert cancelled["lifecycle"] == {
+        "allowed_transitions": [],
+        "restart": {
+            "eligible": False,
+            "reason": "terminal_qualifier_not_restartable",
+        },
+    }
+    projection = _projection(client)
+    rejected_restart = client.post(
+        f"/api/treatment-reconciliation/courses/{planned['id']}/restart",
+        json={
+            **_meta(projection, "cancelled-restart-rejected"),
+            "expected_course_token": cancelled["token"],
+            "status": "current",
+            "treatment_text": "Must not be created",
+        },
+    )
+    assert rejected_restart.status_code == 409
+
+    current = _create_course(
+        client,
+        mutation_id="current-lifecycle",
+        status="current",
+        planned_date=None,
+    )[0].get_json()["course"]
+    assert current["lifecycle"]["allowed_transitions"] == [
+        {"status": "past", "terminal_qualifiers": ["ended", "other"]}
+    ]
+    projection = _projection(client)
+    ended = client.post(
+        f"/api/treatment-reconciliation/courses/{current['id']}/transition",
+        json={
+            **_meta(projection, "current-ended"),
+            "expected_course_token": current["token"],
+            "status": "past",
+            "terminal_qualifier": "ended",
+        },
+    ).get_json()["course"]
+    assert ended["lifecycle"] == {
+        "allowed_transitions": [],
+        "restart": {"eligible": True, "reason": "eligible_prior_current"},
+    }
+
+    direct = _create_course(
+        client,
+        mutation_id="direct-ended",
+        status="past",
+        terminal_qualifier="ended",
+        planned_date=None,
+    )[0].get_json()["course"]
+    assert direct["lifecycle"]["restart"] == {
+        "eligible": False,
+        "reason": "no_prior_current_authority",
+    }
+
+
+def test_legacy_unspecified_restart_eligibility_uses_private_prior_current_history(
+    agent, empty_profile
+):
+    from agent.migrations import apply_migrations
+
+    timestamp = "2026-08-10T10:00:00"
+
+    def legacy_course(*, course_id, history):
+        return {
+            "id": course_id,
+            "status": "past",
+            "treatment_text": "Exact legacy wording",
+            "legacy_component_ids": [],
+            "start_date": None,
+            "start_date_precision": "unknown",
+            "start_date_kind": "unknown",
+            "stop_date": None,
+            "stop_date_precision": "unknown",
+            "stop_date_kind": "unknown",
+            "planned_date": None,
+            "planned_date_precision": "unknown",
+            "planned_date_kind": "unknown",
+            "previous_course_id": None,
+            "provenance": agent.treatment_course_provenance(),
+            "created_at": timestamp,
+            "updated_at": timestamp,
+            "history": history,
+        }
+
+    prior_current = legacy_course(
+        course_id=agent.new_treatment_course_id(),
+        history=[
+            {"changes": {"status": {"before": None, "after": "current"}}},
+            {"changes": {"status": {"before": "current", "after": "past"}}},
+        ],
+    )
+    direct_past = legacy_course(
+        course_id=agent.new_treatment_course_id(),
+        history=[{"changes": {"status": {"before": None, "after": "past"}}}],
+    )
+    profile = copy.deepcopy(empty_profile)
+    profile["schema_version"] = 12
+    profile["treatment_courses"] = [prior_current, direct_past]
+    migrated = apply_migrations(profile)
+    projection = agent.project_treatment_reconciliation(migrated)
+
+    assert [item["terminal_qualifier"] for item in projection["courses"]] == [
+        "legacy_unspecified",
+        "legacy_unspecified",
+    ]
+    assert projection["courses"][0]["lifecycle"]["restart"] == {
+        "eligible": True,
+        "reason": "eligible_prior_current",
+    }
+    assert projection["courses"][1]["lifecycle"]["restart"] == {
+        "eligible": False,
+        "reason": "no_prior_current_authority",
+    }
+
+    cyclic = copy.deepcopy(migrated)
+    cyclic["treatment_courses"][0]["previous_course_id"] = direct_past["id"]
+    cyclic["treatment_courses"][1]["previous_course_id"] = prior_current["id"]
+    with pytest.raises(agent.TreatmentProjectionError, match="lifecycle"):
+        agent.project_treatment_reconciliation(cyclic)
+
+
+def test_edit_cannot_change_status_or_terminal_authority(app_client, agent, empty_profile):
+    _, client = app_client
+    agent.save_profile(empty_profile, clinical_change=False)
+    course = _create_course(client)[0].get_json()["course"]
+    projection = _projection(client)
+    before = copy.deepcopy(agent.load_profile())
+
+    for index, patch in enumerate(
+        (
+            {"status": "past"},
+            {"terminal_qualifier": "cancelled"},
+            {"terminal_detail": "Not editable"},
+        )
+    ):
+        response = client.patch(
+            f"/api/treatment-reconciliation/courses/{course['id']}",
+            json={
+                **_meta(projection, f"immutable-terminal-edit-{index}"),
+                "expected_course_token": course["token"],
+                **patch,
+            },
+        )
+        assert response.status_code == 400
+    assert agent.load_profile() == before
+
+
 def test_past_course_is_terminal_and_dates_are_never_inferred(app_client, agent, empty_profile):
     _, client = app_client
     agent.save_profile(empty_profile, clinical_change=False)
-    created = _create_course(client, status="past", planned_date=None)[0].get_json()["course"]
+    created = _create_course(
+        client,
+        status="past",
+        terminal_qualifier="ended",
+        planned_date=None,
+    )[0].get_json()["course"]
     projection = _projection(client)
     response = client.post(
         f"/api/treatment-reconciliation/courses/{created['id']}/transition",
@@ -583,6 +925,65 @@ def test_source_vs_source_tokens_bind_each_current_authority_without_snapshot_re
     assert replay.status_code == 200
     assert replay.get_json()["idempotent_replay"] is True
     assert replay.get_json()["discrepancy"] == created_row
+
+
+def test_terminal_transition_rotates_course_discrepancy_and_projection_tokens_without_snapshot_rewrite(
+    app_client, agent, empty_profile
+):
+    _, client = app_client
+    profile = _ingest_treatment(agent, empty_profile)
+    agent.save_profile(profile, clinical_change=False)
+    course = _create_course(
+        client,
+        status="current",
+        planned_date=None,
+    )[0].get_json()["course"]
+    discrepancy = _create_discrepancy(client, course)[0].get_json()["discrepancy"]
+    original_snapshot = copy.deepcopy(discrepancy["course_snapshot"])
+    original_course_token = course["token"]
+    original_discrepancy_token = discrepancy["token"]
+    projection = _projection(client)
+    original_projection_token = projection["projection_token"]
+    request = {
+        **_meta(projection, "terminal-token-rotation"),
+        "expected_course_token": next(
+            item["token"] for item in projection["courses"] if item["id"] == course["id"]
+        ),
+        "status": "past",
+        "terminal_qualifier": "other",
+        "terminal_detail": "  Exact terminal authority  ",
+    }
+
+    transitioned_response = client.post(
+        f"/api/treatment-reconciliation/courses/{course['id']}/transition",
+        json=request,
+    )
+    transitioned_body = transitioned_response.get_json()
+    projected = _projection(client)
+    current_discrepancy = projected["discrepancies"][0]
+
+    assert transitioned_response.status_code == 200
+    assert transitioned_body["course"]["token"] != original_course_token
+    assert projected["projection_token"] != original_projection_token
+    assert current_discrepancy["token"] != original_discrepancy_token
+    assert current_discrepancy["course_snapshot"] == original_snapshot
+    assert current_discrepancy["citations"]["course_b"]["snapshot"] == original_snapshot
+    assert current_discrepancy["citations"]["course_b"]["current"]["terminal_qualifier"] == (
+        "other"
+    )
+    assert current_discrepancy["citations"]["course_b"]["current"]["terminal_detail"] == (
+        "  Exact terminal authority  "
+    )
+
+    _create_course(client, mutation_id="unrelated-after-terminal")
+    replay = client.post(
+        f"/api/treatment-reconciliation/courses/{course['id']}/transition",
+        json=request,
+    )
+    replay_body = replay.get_json()
+    assert replay.status_code == 200
+    assert replay_body.pop("idempotent_replay") is True
+    assert replay_body == transitioned_body
 
 
 def test_source_removal_and_undo_rotate_current_state_without_snapshot_rewrite(
@@ -1203,6 +1604,164 @@ def test_course_snapshot_and_replay_enforce_live_field_contract(app_client, agen
     assert replay.get_json()["code"] == "treatment_conflict"
 
 
+def test_pre_extension_course_replay_snapshot_remains_exact_and_safe(
+    app_client, agent, empty_profile
+):
+    _, client = app_client
+    agent.save_profile(empty_profile, clinical_change=False)
+    created_response, request = _create_course(client)
+    created = created_response.get_json()["course"]
+    legacy = agent.load_profile()
+    event = legacy["treatment_courses"][0]["history"][0]
+    legacy_snapshot = event["result_snapshot"]["course"]
+    legacy_snapshot.pop("terminal_qualifier")
+    legacy_snapshot.pop("terminal_detail")
+    legacy_snapshot.pop("lifecycle")
+    exact_legacy_snapshot = copy.deepcopy(event["result_snapshot"])
+    event["result_hash"] = agent.request_hash(event["result_snapshot"])
+    agent.save_profile(legacy, clinical_change=False)
+
+    replay = client.post("/api/treatment-reconciliation/courses", json=request)
+
+    assert created["terminal_qualifier"] is None
+    assert replay.status_code == 200
+    body = replay.get_json()
+    assert body.pop("idempotent_replay") is True
+    assert body == exact_legacy_snapshot
+    assert "terminal_qualifier" not in body["course"]
+    assert "lifecycle" not in body["course"]
+
+
+def test_terminal_mutations_use_one_save_and_failed_transition_rolls_back(
+    app_client, agent, empty_profile, monkeypatch
+):
+    _, client = app_client
+    agent.save_profile(empty_profile, clinical_change=False)
+    original_save = agent.save_profile
+    saves = 0
+
+    def counting_save(*args, **kwargs):
+        nonlocal saves
+        saves += 1
+        return original_save(*args, **kwargs)
+
+    monkeypatch.setattr(agent, "save_profile", counting_save)
+    created_response, _ = _create_course(
+        client,
+        status="current",
+        planned_date=None,
+    )
+    created = created_response.get_json()["course"]
+    assert created_response.status_code == 201
+    assert saves == 1
+
+    projection = _projection(client)
+    transitioned = client.post(
+        f"/api/treatment-reconciliation/courses/{created['id']}/transition",
+        json={
+            **_meta(projection, "counted-terminal-transition"),
+            "expected_course_token": created["token"],
+            "status": "past",
+            "terminal_qualifier": "ended",
+        },
+    )
+    assert transitioned.status_code == 200
+    assert saves == 2
+    assert transitioned.get_json()["profile_revision"] == 2
+    assert transitioned.get_json()["workflow_revision"] == 2
+
+    failed_course = _create_course(
+        client,
+        mutation_id="failed-transition-course-create",
+        status="current",
+        planned_date=None,
+    )[0].get_json()["course"]
+    assert saves == 3
+    projection = _projection(client)
+    before = copy.deepcopy(agent.load_profile())
+
+    def fail_save(*args, **kwargs):
+        raise OSError("simulated terminal transition save failure")
+
+    monkeypatch.setattr(agent, "save_profile", fail_save)
+    with pytest.raises(OSError, match="simulated terminal transition save failure"):
+        client.post(
+            f"/api/treatment-reconciliation/courses/{failed_course['id']}/transition",
+            json={
+                **_meta(projection, "terminal-transition-save-failure"),
+                "expected_course_token": failed_course["token"],
+                "status": "past",
+                "terminal_qualifier": "ended",
+            },
+        )
+    monkeypatch.setattr(agent, "save_profile", original_save)
+
+    assert agent.load_profile() == before
+
+
+def test_terminal_overflow_fails_whole_projection_without_side_effects(
+    app_client, agent, empty_profile
+):
+    _, client = app_client
+    agent.save_profile(empty_profile, clinical_change=False)
+    _create_course(
+        client,
+        status="past",
+        terminal_qualifier="other",
+        terminal_detail="x" * 1000,
+        planned_date=None,
+    )
+    malformed = agent.load_profile()
+    malformed["treatment_courses"][0]["terminal_detail"] = "x" * 1001
+    agent.save_profile(malformed, clinical_change=False)
+    before = copy.deepcopy(agent.load_profile())
+
+    response = client.get("/api/patient/treatment-reconciliation")
+
+    assert response.status_code == 422
+    assert response.get_json()["code"] == "treatment_projection_too_large"
+    assert agent.load_profile() == before
+
+
+@pytest.mark.parametrize(
+    ("qualifier", "detail"),
+    [
+        (["ended"], None),
+        ({"value": "ended"}, None),
+        ("other", "unsafe\x00detail"),
+    ],
+)
+def test_malformed_terminal_authority_fails_whole_projection_with_bounded_422(
+    app_client,
+    agent,
+    empty_profile,
+    qualifier,
+    detail,
+):
+    _, client = app_client
+    agent.save_profile(empty_profile, clinical_change=False)
+    _create_course(
+        client,
+        status="past",
+        terminal_qualifier="ended",
+        planned_date=None,
+    )
+    malformed = agent.load_profile()
+    malformed["treatment_courses"][0]["terminal_qualifier"] = qualifier
+    malformed["treatment_courses"][0]["terminal_detail"] = detail
+    agent.save_profile(malformed, clinical_change=False)
+    before = copy.deepcopy(agent.load_profile())
+
+    response = client.get("/api/patient/treatment-reconciliation")
+
+    assert response.status_code == 422
+    assert response.get_json() == {
+        "error": "Treatment course terminal authority is inconsistent.",
+        "code": "treatment_projection_invalid",
+    }
+    assert agent.load_profile() == before
+
+
 def test_save_failure_does_not_persist_partial_treatment_course(
     app_client, agent, empty_profile, monkeypatch
 ):
@@ -1273,3 +1832,39 @@ def test_reconciliation_state_is_excluded_from_existing_model_contexts(agent, em
     assert discrepancy_secret not in summary
     assert course_secret not in chat
     assert discrepancy_secret not in chat
+
+
+def test_terminal_authority_is_excluded_from_status_and_existing_model_contexts(
+    app_client, agent, empty_profile
+):
+    _, client = app_client
+    terminal_secret = "TERMINAL-AUTHORITY-WORKFLOW-ONLY-UNIQUE"
+    empty_profile["treatment_courses"] = [
+        {
+            "id": agent.new_treatment_course_id(),
+            "status": "past",
+            "treatment_text": "Workflow-only course",
+            "legacy_component_ids": [],
+            "start_date": None,
+            "start_date_precision": "unknown",
+            "start_date_kind": "unknown",
+            "stop_date": None,
+            "stop_date_precision": "unknown",
+            "stop_date_kind": "unknown",
+            "planned_date": None,
+            "planned_date_precision": "unknown",
+            "planned_date_kind": "unknown",
+            "terminal_qualifier": "other",
+            "terminal_detail": terminal_secret,
+            "previous_course_id": None,
+            "provenance": agent.treatment_course_provenance(),
+            "created_at": "2026-08-10T10:00:00",
+            "updated_at": "2026-08-10T10:00:00",
+            "history": [],
+        }
+    ]
+    agent.save_profile(empty_profile, clinical_change=False)
+
+    assert terminal_secret not in agent.get_patient_summary(agent.load_profile())
+    assert terminal_secret not in agent.build_chat_system(agent.load_profile())
+    assert terminal_secret not in json.dumps(client.get("/api/status").get_json())

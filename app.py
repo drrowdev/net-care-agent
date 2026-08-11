@@ -1426,6 +1426,7 @@ _TREATMENT_TEXT_LIMITS = {
     "clinician_text": 500,
     "context_text": 2000,
 }
+_TREATMENT_TERMINAL_FIELDS = {"terminal_qualifier", "terminal_detail"}
 
 
 class _TreatmentConflictError(ValueError):
@@ -5074,7 +5075,10 @@ def api_create_treatment_course():
         data = _workflow_request()
         _reject_unsupported_fields(
             data,
-            _TREATMENT_META_FIELDS | _TREATMENT_COURSE_FIELDS | {"status"},
+            _TREATMENT_META_FIELDS
+            | _TREATMENT_COURSE_FIELDS
+            | _TREATMENT_TERMINAL_FIELDS
+            | {"status"},
             "Unsupported treatment course field.",
         )
         mutation_id = agent.validate_mutation_id(data.get("mutation_id"))
@@ -5099,11 +5103,18 @@ def api_create_treatment_course():
             projection = _treatment_projection(profile)
             _require_treatment_revisions(profile, data)
             _require_treatment_projection_token(projection, data)
+            terminal_qualifier, terminal_detail = agent.validate_treatment_terminal_authority(
+                status,
+                data.get("terminal_qualifier"),
+                data.get("terminal_detail"),
+            )
             timestamp = now_stamp()
             course = {
                 "id": agent.new_treatment_course_id(),
                 "status": status,
                 **_course_content(data, projection),
+                "terminal_qualifier": terminal_qualifier,
+                "terminal_detail": terminal_detail,
                 "previous_course_id": None,
                 "provenance": agent.treatment_course_provenance(),
                 "created_at": timestamp,
@@ -5119,7 +5130,17 @@ def api_create_treatment_course():
                 mutation_id=mutation_id,
                 payload=data,
                 before_token=None,
-                changes={"status": {"before": None, "after": status}},
+                changes={
+                    "status": {"before": None, "after": status},
+                    "terminal_qualifier": {
+                        "before": None,
+                        "after": terminal_qualifier,
+                    },
+                    "terminal_detail": {
+                        "before": None,
+                        "after": terminal_detail,
+                    },
+                },
             )
             result = _save_workflow_mutation(
                 profile,
@@ -5215,7 +5236,9 @@ def api_transition_treatment_course(course_id):
         data = _workflow_request()
         _reject_unsupported_fields(
             data,
-            _TREATMENT_META_FIELDS | {"expected_course_token", "status"},
+            _TREATMENT_META_FIELDS
+            | _TREATMENT_TERMINAL_FIELDS
+            | {"expected_course_token", "status"},
             "Unsupported treatment transition field.",
         )
         mutation_id = agent.validate_mutation_id(data.get("mutation_id"))
@@ -5248,8 +5271,16 @@ def api_transition_treatment_course(course_id):
             if new_status not in allowed.get(course.get("status"), set()):
                 raise _TreatmentConflictError("That treatment course transition is not allowed.")
             before_status = course["status"]
+            terminal_qualifier, terminal_detail = agent.validate_treatment_terminal_authority(
+                new_status,
+                data.get("terminal_qualifier"),
+                data.get("terminal_detail"),
+                prior_status=before_status,
+            )
             before_token = agent.semantic_token(course)
             course["status"] = new_status
+            course["terminal_qualifier"] = terminal_qualifier
+            course["terminal_detail"] = terminal_detail
             course["updated_at"] = now_stamp()
             event = agent.append_history(
                 course,
@@ -5259,7 +5290,17 @@ def api_transition_treatment_course(course_id):
                 mutation_id=mutation_id,
                 payload=data,
                 before_token=before_token,
-                changes={"status": {"before": before_status, "after": new_status}},
+                changes={
+                    "status": {"before": before_status, "after": new_status},
+                    "terminal_qualifier": {
+                        "before": None,
+                        "after": terminal_qualifier,
+                    },
+                    "terminal_detail": {
+                        "before": None,
+                        "after": terminal_detail,
+                    },
+                },
             )
             result = _save_workflow_mutation(
                 profile,
@@ -5310,14 +5351,15 @@ def api_restart_treatment_course(course_id):
             prior_public = _treatment_row(
                 projection, "courses", course_id, data.get("expected_course_token")
             )
-            prior = _course_record(profile, course_id)
-            if prior.get("status") != "past":
-                raise _TreatmentConflictError("Only a past treatment course can be restarted.")
+            if not prior_public["lifecycle"]["restart"]["eligible"]:
+                raise _TreatmentConflictError("That treatment course is not eligible to restart.")
             timestamp = now_stamp()
             course = {
                 "id": agent.new_treatment_course_id(),
                 "status": status,
                 **_course_content(data, projection),
+                "terminal_qualifier": None,
+                "terminal_detail": None,
                 "previous_course_id": course_id,
                 "provenance": agent.treatment_course_provenance(),
                 "created_at": timestamp,

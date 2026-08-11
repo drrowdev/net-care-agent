@@ -151,6 +151,7 @@ from .tools import (
 )
 from .treatment_reconciliation import (
     MAX_TREATMENT_ACTIONS,
+    TREATMENT_CLIENT_TERMINAL_QUALIFIERS,
     TREATMENT_CONFIRMATION_LABEL,
     TREATMENT_CONFIRMATION_OUTCOMES,
     TREATMENT_COURSE_STATUSES,
@@ -165,6 +166,7 @@ from .treatment_reconciliation import (
     treatment_confirmation_provenance,
     treatment_course_provenance,
     treatment_source_fact_text,
+    validate_treatment_terminal_authority,
 )
 from .trials_poll import poll_tracked_trials
 from .verify import verification_note, verify_references
@@ -227,6 +229,7 @@ __all__ = [
     "MAX_TREATMENT_ACTIONS",
     "TREATMENT_CONFIRMATION_LABEL",
     "TREATMENT_CONFIRMATION_OUTCOMES",
+    "TREATMENT_CLIENT_TERMINAL_QUALIFIERS",
     "TREATMENT_COURSE_STATUSES",
     "TREATMENT_DISCREPANCY_CITATION_KINDS",
     "TREATMENT_DISCREPANCY_CATEGORIES",
@@ -239,6 +242,7 @@ __all__ = [
     "treatment_confirmation_provenance",
     "treatment_course_provenance",
     "treatment_source_fact_text",
+    "validate_treatment_terminal_authority",
     "ACTION_STATUSES",
     "VISIT_STATUSES",
     "DECISION_STATUSES",

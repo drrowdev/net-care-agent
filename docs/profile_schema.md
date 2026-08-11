@@ -298,10 +298,20 @@ legacy component, and generated classification authority.
 | `start_date`, `stop_date`, `planned_date` | `str \| None` | Explicit YYYY, YYYY-MM, or YYYY-MM-DD text |
 | `*_date_precision` | `'day' \| 'month' \| 'year' \| 'unknown'` | Entered precision |
 | `*_date_kind` | `'caregiver_entered' \| 'unknown'` | Never inferred from document or clock |
+| `terminal_qualifier` | `'ended' \| 'not_started' \| 'cancelled' \| 'other' \| 'legacy_unspecified' \| None` | Required for past courses; `legacy_unspecified` is server-only migration authority |
+| `terminal_detail` | `str \| None` | Required bounded exact caregiver wording only for `other`; rejected otherwise |
 | `previous_course_id` | `str \| None` | Prior course when an episode is explicitly restarted |
 | `provenance` | `TreatmentCourseProvenance` | Caregiver-entered, unverified trust boundary |
 | `created_at`, `updated_at` | `str` | Audit timestamps |
 | `history` | `list[WorkflowAuditEvent]` | Append-only mutation audit |
+
+The public course projection also returns `lifecycle.allowed_transitions[]`
+with exact allowed terminal qualifier values and
+`lifecycle.restart.{eligible,reason}`. These are server-owned mechanical
+projection fields, not persisted profile schema, and expose no private history.
+Current/planned courses have null terminal fields. Existing past courses that
+predate schema v13 and lack terminal authority project visibly as
+`legacy_unspecified`; this marker does not claim what happened.
 
 ## `treatment_discrepancies[]`
 

@@ -106,11 +106,9 @@ _CONFIRMATION_TEXT_LIMITS = {
     "date": 32,
     "recorded_at": 64,
 }
-_UNLINKED_GENERATED_FIELDS = frozenset({"text", "label", "category", "date"})
 _UNLINKED_GENERATED_TEXT_LIMITS = {
     "text": 10_000,
     "label": 1_000,
-    "category": 500,
     "date": 64,
 }
 _DATE_PREFIXES = ("start", "stop", "planned")
@@ -696,73 +694,72 @@ def _legacy_projection(
     mapped_classified = []
     unlinked_classified = []
     unlinked_occurrences: dict[str, int] = {}
+    live_component_ids = set(component_ids)
     for classified_order, row in enumerate(classified):
-        row_keys = set(row)
-        normalized_unlinked = (
-            row_keys == _UNLINKED_GENERATED_FIELDS | {"id", "source_treatment_ids"}
-            and row.get("id") is None
-            and row.get("source_treatment_ids") == []
-        )
-        if row_keys == _UNLINKED_GENERATED_FIELDS or normalized_unlinked:
-            for field, limit in _UNLINKED_GENERATED_TEXT_LIMITS.items():
-                value = row.get(field)
-                if field == "date" and value is None:
-                    continue
-                if not isinstance(value, str):
-                    raise TreatmentProjectionError(
-                        "treatment_projection_invalid",
-                        "Generated treatment compatibility authority is inconsistent.",
-                    )
-                if len(value) > limit:
-                    raise TreatmentProjectionError(
-                        "treatment_projection_too_large",
-                        "Treatment data exceeds the supported projection limits.",
-                    )
-            if row["category"] not in {"active", "planned", "completed"}:
-                raise TreatmentProjectionError(
-                    "treatment_projection_invalid",
-                    "Generated treatment compatibility authority is inconsistent.",
-                )
-            safe_row = {
-                key: copy.deepcopy(row[key]) for key in ("text", "label", "category", "date")
-            }
-            identity_base = _canonical(safe_row)
-            occurrence = unlinked_occurrences.get(identity_base, 0)
-            unlinked_occurrences[identity_base] = occurrence + 1
-            authority = {
-                "stored_row": safe_row,
-                "occurrence": occurrence,
-                "classified_order": classified_order,
-                "revisions": revisions,
-            }
-            unlinked_classified.append(
-                {
-                    "id": _digest(
-                        "txunlinked",
-                        {"stored_row": safe_row, "occurrence": occurrence},
-                        24,
-                    ),
-                    "token": _digest("txunlinkedrow", authority),
-                    **safe_row,
-                    "authority_label": TREATMENT_UNLINKED_GENERATED_AUTHORITY_LABEL,
-                }
-            )
-            continue
+        _validate_nested(row)
+        internal_id = row.get("id")
+        source_treatment_ids = row.get("source_treatment_ids", [])
         if (
-            not isinstance(row.get("id"), str)
-            or not row["id"]
+            (internal_id is not None and (not isinstance(internal_id, str) or not internal_id))
             or not isinstance(row.get("text"), str)
             or (row.get("label") is not None and not isinstance(row.get("label"), str))
             or (row.get("category") is not None and not isinstance(row.get("category"), str))
             or (row.get("date") is not None and not isinstance(row.get("date"), str))
-            or not isinstance(row.get("source_treatment_ids"), list)
-            or any(not isinstance(item, str) for item in row.get("source_treatment_ids", []))
+            or not isinstance(source_treatment_ids, list)
+            or any(not isinstance(item, str) for item in source_treatment_ids)
         ):
             raise TreatmentProjectionError(
                 "treatment_projection_invalid",
                 "Generated treatment compatibility authority is inconsistent.",
             )
-        mapped_classified.append(row)
+        for field, limit in _UNLINKED_GENERATED_TEXT_LIMITS.items():
+            value = row.get(field)
+            if field != "text" and value is None:
+                continue
+            if len(value) > limit:
+                raise TreatmentProjectionError(
+                    "treatment_projection_too_large",
+                    "Treatment data exceeds the supported projection limits.",
+                )
+        category = row.get("category")
+        if category is not None and category not in {"active", "planned", "completed"}:
+            raise TreatmentProjectionError(
+                "treatment_projection_invalid",
+                "Generated treatment compatibility authority is inconsistent.",
+            )
+        if any(item in live_component_ids for item in source_treatment_ids):
+            if internal_id is None or "source_treatment_ids" not in row:
+                raise TreatmentProjectionError(
+                    "treatment_projection_invalid",
+                    "Generated treatment compatibility authority is inconsistent.",
+                )
+            mapped_classified.append(row)
+            continue
+        safe_row = {
+            key: copy.deepcopy(row.get(key)) for key in ("text", "label", "category", "date")
+        }
+        identity_base = _canonical({"stored_row": safe_row, "stored_id": internal_id})
+        occurrence = unlinked_occurrences.get(identity_base, 0)
+        unlinked_occurrences[identity_base] = occurrence + 1
+        identity = {
+            "stored_row": safe_row,
+            "stored_id": internal_id,
+            "occurrence": occurrence,
+        }
+        authority = {
+            **identity,
+            "stored_authority": copy.deepcopy(row),
+            "classified_order": classified_order,
+            "revisions": revisions,
+        }
+        unlinked_classified.append(
+            {
+                "id": _digest("txunlinked", identity, 24),
+                "token": _digest("txunlinkedrow", authority),
+                **safe_row,
+                "authority_label": TREATMENT_UNLINKED_GENERATED_AUTHORITY_LABEL,
+            }
+        )
     result = []
     for source_order, raw_text in enumerate(raw_rows):
         mapped = [row for row in components if row.get("source_order") == source_order]
@@ -827,8 +824,10 @@ def _legacy_projection(
         row["id"] for row in mapped_classified if isinstance(row.get("id"), str) and row.get("id")
     }
     unlinked_ids = {row["id"] for row in unlinked_classified}
-    if (mapped_classification_ids | set(component_ids)) & unlinked_ids or len(unlinked_ids) != len(
-        unlinked_classified
+    if (
+        len(mapped_classification_ids) != len(mapped_classified)
+        or (mapped_classification_ids | set(component_ids)) & unlinked_ids
+        or len(unlinked_ids) != len(unlinked_classified)
     ):
         raise TreatmentProjectionError(
             "treatment_projection_invalid",
@@ -1486,11 +1485,22 @@ def _build_projection(
     ]
     public_source = [item["public"] for item in projected_source]
     legacy, unlinked_generated_context = _legacy_projection(profile, revisions)
+    mapped_generated_by_id: dict[str, dict] = {}
+    for legacy_row in legacy:
+        for generated in legacy_row["generated_classification"]:
+            generated_id = generated["id"]
+            existing = mapped_generated_by_id.get(generated_id)
+            if existing is not None and _canonical(existing) != _canonical(generated):
+                raise TreatmentProjectionError(
+                    "treatment_projection_invalid",
+                    "Generated treatment compatibility identity is inconsistent.",
+                )
+            mapped_generated_by_id[generated_id] = generated
     public_ids = [
         *(item["ref"] for item in public_source),
         *(item["id"] for item in legacy),
         *(component["id"] for item in legacy for component in item["components"]),
-        *(generated["id"] for item in legacy for generated in item["generated_classification"]),
+        *mapped_generated_by_id,
         *(item["id"] for item in unlinked_generated_context),
         *(item["id"] for item in public_courses),
         *(item["id"] for item in public_discrepancies),

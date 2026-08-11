@@ -342,6 +342,165 @@ def test_pre_v6_generated_context_is_separate_complete_and_occurrence_stable(age
         agent.project_treatment_reconciliation(action_collision)
 
 
+def test_unresolved_generated_rows_preserve_nullable_fields_ids_and_occurrences(
+    app_client, agent, empty_profile
+):
+    _, client = app_client
+    empty_profile["patient"]["current_treatments"] = ["Synthetic live component"]
+    agent.sync_treatment_records(empty_profile)
+    live_component_id = empty_profile["patient"]["current_treatment_records"][0]["id"]
+    duplicate = {
+        "id": "txclass_duplicate",
+        "text": "Synthetic duplicate context",
+        "label": None,
+        "category": None,
+        "date": None,
+        "source_treatment_ids": ["tx_gone"],
+        "unknown_private": {"bind_token_only": True},
+        "result_hash": "synthetic-private-hash",
+    }
+    empty_profile["treatments_classified"] = [
+        {"text": "Synthetic normalized context", "category": "active"},
+        {
+            "id": "txclass_empty",
+            "text": "Synthetic empty mapping",
+            "label": None,
+            "category": None,
+            "date": None,
+            "source_treatment_ids": [],
+        },
+        {
+            "id": "txclass_dangling",
+            "text": "Synthetic dangling mapping",
+            "label": "Synthetic dangling label",
+            "category": "planned",
+            "date": None,
+            "source_treatment_ids": ["tx_gone"],
+        },
+        {
+            "id": "txclass_partial",
+            "text": "Synthetic partial mapping",
+            "label": None,
+            "category": "active",
+            "date": None,
+            "source_treatment_ids": [live_component_id, "tx_gone"],
+        },
+        duplicate,
+        copy.deepcopy(duplicate),
+    ]
+    from agent.schema import normalize_profile
+
+    normalized = normalize_profile(empty_profile)
+    projection = agent.project_treatment_reconciliation(normalized)
+    rows = projection["unlinked_generated_context"]
+
+    assert projection["unlinked_generated_context_count"] == 5
+    assert [row["text"] for row in rows] == [
+        "Synthetic normalized context",
+        "Synthetic empty mapping",
+        "Synthetic dangling mapping",
+        "Synthetic duplicate context",
+        "Synthetic duplicate context",
+    ]
+    assert rows[0]["label"] is None
+    assert rows[1]["category"] is None
+    assert rows[3]["id"] != rows[4]["id"]
+    assert rows[3]["token"] != rows[4]["token"]
+    assert "unknown_private" not in json.dumps(rows)
+    assert projection["legacy_treatments"][0]["generated_classification"] == [
+        normalized["treatments_classified"][3]
+    ]
+    assert "txclass_partial" not in {row["id"] for row in rows}
+
+    changed_private = copy.deepcopy(normalized)
+    changed_private["treatments_classified"][4]["unknown_private"]["bind_token_only"] = False
+    changed_projection = agent.project_treatment_reconciliation(changed_private)
+    assert changed_projection["unlinked_generated_context"][3]["id"] == rows[3]["id"]
+    assert changed_projection["unlinked_generated_context"][3]["token"] != rows[3]["token"]
+
+    changed_hash = copy.deepcopy(normalized)
+    changed_hash["treatments_classified"][4]["result_hash"] = "synthetic-private-hash-changed"
+    changed_hash_projection = agent.project_treatment_reconciliation(changed_hash)
+    assert changed_hash_projection["unlinked_generated_context"][3]["id"] == rows[3]["id"]
+    assert changed_hash_projection["unlinked_generated_context"][3]["token"] != rows[3]["token"]
+
+    changed_id = copy.deepcopy(normalized)
+    changed_id["treatments_classified"][1]["id"] = "txclass_empty_changed"
+    changed_id_projection = agent.project_treatment_reconciliation(changed_id)
+    assert changed_id_projection["unlinked_generated_context"][1]["id"] != rows[1]["id"]
+
+    agent.save_profile(normalized, clinical_change=False)
+    response = client.get("/api/patient/treatment-reconciliation")
+
+    assert response.status_code == 200
+    assert response.get_json()["unlinked_generated_context"] == rows
+
+
+def test_mapped_generated_row_spanning_live_components_remains_nested_once_per_raw(
+    agent, empty_profile
+):
+    empty_profile["patient"]["current_treatments"] = [
+        "Synthetic repeated treatment",
+        "Synthetic repeated treatment",
+    ]
+    agent.sync_treatment_records(empty_profile)
+    component_ids = [row["id"] for row in empty_profile["patient"]["current_treatment_records"]]
+    mapped = {
+        "id": "txclass_spanning",
+        "text": "Synthetic mapped context",
+        "label": None,
+        "category": "active",
+        "date": None,
+        "source_treatment_ids": component_ids,
+    }
+    empty_profile["treatments_classified"] = [mapped]
+
+    projection = agent.project_treatment_reconciliation(empty_profile)
+
+    assert projection["unlinked_generated_context"] == []
+    assert [row["generated_classification"] for row in projection["legacy_treatments"]] == [
+        [mapped],
+        [mapped],
+    ]
+
+    duplicate_identity = copy.deepcopy(empty_profile)
+    duplicate_identity["treatments_classified"] = [mapped, copy.deepcopy(mapped)]
+    with pytest.raises(agent.TreatmentProjectionError, match="compatibility identity"):
+        agent.project_treatment_reconciliation(duplicate_identity)
+
+
+@pytest.mark.parametrize(
+    "field,value,code",
+    [
+        ("category", "unsafe", "treatment_projection_invalid"),
+        ("text", "x" * 10_001, "treatment_projection_too_large"),
+        ("label", "x" * 1_001, "treatment_projection_too_large"),
+        ("date", "x" * 65, "treatment_projection_too_large"),
+    ],
+)
+def test_mapped_generated_rows_enforce_same_safe_field_contract(
+    agent, empty_profile, field, value, code
+):
+    empty_profile["patient"]["current_treatments"] = ["Synthetic mapped treatment"]
+    agent.sync_treatment_records(empty_profile)
+    component_id = empty_profile["patient"]["current_treatment_records"][0]["id"]
+    row = {
+        "id": "txclass_mapped",
+        "text": "Synthetic mapped context",
+        "label": None,
+        "category": None,
+        "date": None,
+        "source_treatment_ids": [component_id],
+    }
+    row[field] = value
+    empty_profile["treatments_classified"] = [row]
+
+    with pytest.raises(agent.TreatmentProjectionError) as exc:
+        agent.project_treatment_reconciliation(empty_profile)
+
+    assert exc.value.code == code
+
+
 @pytest.mark.parametrize(
     "row",
     [
@@ -358,11 +517,12 @@ def test_pre_v6_generated_context_is_separate_complete_and_occurrence_stable(age
             "date": "2020",
         },
         {
+            "id": "txclass_dangling",
             "text": "Synthetic",
-            "label": "Synthetic",
-            "category": "active",
-            "date": "2020",
-            "unknown": "not allowlisted",
+            "label": [],
+            "category": None,
+            "date": None,
+            "source_treatment_ids": ["tx_gone"],
         },
     ],
 )

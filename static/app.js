@@ -13426,22 +13426,35 @@
       ) return false;
       seenComponents.add(component.id);
     }
+    const rowComponentIds = new Set(row.components.map(component => component.id));
+    const rowGeneratedIds = new Set();
     for (const generated of row.generated_classification) {
+      let serialized;
+      try {
+        serialized = JSON.stringify(generated);
+      } catch (_) {
+        return false;
+      }
       if (
         !treatmentHasExactKeys(generated, [
           'id', 'text', 'label', 'category', 'date', 'source_treatment_ids',
         ])
         || !treatmentBoundedString(generated.id, 200)
         || !generated.id
-        || seenGenerated.has(generated.id)
-        || typeof generated.text !== 'string'
+        || rowGeneratedIds.has(generated.id)
+        || seenComponents.has(generated.id)
+        || !treatmentBoundedString(generated.text, 10000)
         || !treatmentBoundedString(generated.label, 1000, true)
-        || !treatmentBoundedString(generated.category, 500, true)
+        || (generated.category !== null
+          && !['active', 'planned', 'completed'].includes(generated.category))
         || !treatmentBoundedString(generated.date, 64, true)
         || !Array.isArray(generated.source_treatment_ids)
         || !generated.source_treatment_ids.every(id => typeof id === 'string')
+        || !generated.source_treatment_ids.some(id => rowComponentIds.has(id))
+        || (seenGenerated.has(generated.id) && seenGenerated.get(generated.id) !== serialized)
       ) return false;
-      seenGenerated.add(generated.id);
+      rowGeneratedIds.add(generated.id);
+      seenGenerated.set(generated.id, serialized);
     }
     return true;
   }
@@ -13454,8 +13467,8 @@
       && treatmentBoundedString(row.token, 200)
       && Boolean(row.token)
       && treatmentBoundedString(row.text, 10000)
-      && treatmentBoundedString(row.label, 1000)
-      && ['active', 'planned', 'completed'].includes(row.category)
+      && treatmentBoundedString(row.label, 1000, true)
+      && (row.category === null || ['active', 'planned', 'completed'].includes(row.category))
       && treatmentBoundedString(row.date, 64, true)
       && row.authority_label === TREATMENT_UNLINKED_GENERATED_AUTHORITY_LABEL;
   }
@@ -13643,17 +13656,19 @@
       allIds.add(source.ref);
     }
     const componentIds = new Set();
-    const generatedIds = new Set();
+    const generatedIds = new Map();
     const legacyIds = new Set();
     const legacyTokens = new Set();
     const allTokens = new Set(sourceTokens);
-    let generatedCount = 0;
     for (const row of data.legacy_treatments) {
+      const priorGeneratedIds = new Set(generatedIds.keys());
       if (!treatmentLegacyRowIsValid(row, componentIds, generatedIds)) return false;
       const rowIds = [
         row.id,
         ...row.components.map(item => item.id),
-        ...row.generated_classification.map(item => item.id),
+        ...row.generated_classification
+          .map(item => item.id)
+          .filter(id => !priorGeneratedIds.has(id)),
       ];
       if (
         legacyIds.has(row.id)
@@ -13665,8 +13680,32 @@
       legacyIds.add(row.id);
       legacyTokens.add(row.token);
       allTokens.add(row.token);
-      generatedCount += row.generated_classification.length;
-      if (generatedCount > 2000 || componentIds.size > 4000) return false;
+      if (componentIds.size > 4000) return false;
+    }
+    const componentOwners = new Map();
+    const generatedPlacements = new Map();
+    const generatedRows = new Map();
+    for (const row of data.legacy_treatments) {
+      row.components.forEach(component => componentOwners.set(component.id, row.id));
+      row.generated_classification.forEach(generated => {
+        generatedRows.set(generated.id, generated);
+        if (!generatedPlacements.has(generated.id)) {
+          generatedPlacements.set(generated.id, new Set());
+        }
+        generatedPlacements.get(generated.id).add(row.id);
+      });
+    }
+    for (const [generatedId, generated] of generatedRows) {
+      const expectedPlacements = new Set(
+        generated.source_treatment_ids
+          .map(id => componentOwners.get(id))
+          .filter(Boolean),
+      );
+      const actualPlacements = generatedPlacements.get(generatedId);
+      if (
+        expectedPlacements.size !== actualPlacements.size
+        || [...expectedPlacements].some(id => !actualPlacements.has(id))
+      ) return false;
     }
     const unlinkedIds = new Set();
     const unlinkedTokens = new Set();
@@ -13686,7 +13725,7 @@
       allIds.add(row.id);
       allTokens.add(row.token);
     }
-    if (generatedCount + data.unlinked_generated_context.length > 2000) return false;
+    if (generatedRows.size + data.unlinked_generated_context.length > 2000) return false;
     const courses = new Map();
     const courseTokens = new Set();
     for (const course of data.courses) {
@@ -13863,6 +13902,10 @@
       : treatmentScalarNode(object[key], present));
     row.append(value);
     parent.append(row);
+  }
+
+  function treatmentOptionalContext(value) {
+    return value === null ? 'Not recorded' : value;
   }
 
   function treatmentDatePresentation(value, course, prefix) {
@@ -14048,9 +14091,9 @@
         const entry = treatmentElement('li');
         const facts = treatmentElement('dl', 'treatment-facts');
         treatmentAppendFact(facts, 'Generated text', item, 'text');
-        treatmentAppendFact(facts, 'Generated label', item, 'label');
-        treatmentAppendFact(facts, 'Generated category', item, 'category');
-        treatmentAppendFact(facts, 'Generated date', item, 'date');
+        treatmentAppendFact(facts, 'Generated label', item, 'label', treatmentOptionalContext);
+        treatmentAppendFact(facts, 'Generated category', item, 'category', treatmentOptionalContext);
+        treatmentAppendFact(facts, 'Generated date', item, 'date', treatmentOptionalContext);
         entry.append(facts);
         list.append(entry);
       });
@@ -14086,9 +14129,9 @@
       const entry = treatmentElement('li', 'treatment-unlinked-generated-card');
       const facts = treatmentElement('dl', 'treatment-facts');
       treatmentAppendFact(facts, 'Generated text', item, 'text');
-      treatmentAppendFact(facts, 'Generated label', item, 'label');
-      treatmentAppendFact(facts, 'Generated category', item, 'category');
-      treatmentAppendFact(facts, 'Generated date', item, 'date');
+      treatmentAppendFact(facts, 'Generated label', item, 'label', treatmentOptionalContext);
+      treatmentAppendFact(facts, 'Generated category', item, 'category', treatmentOptionalContext);
+      treatmentAppendFact(facts, 'Generated date', item, 'date', treatmentOptionalContext);
       entry.append(
         treatmentElement('p', 'treatment-authority-label', item.authority_label),
         facts,

@@ -294,8 +294,8 @@ opaque source occurrence or one exact caregiver course. The public
 `citation_kind` is explicitly `source_vs_source` or `source_vs_course`; neutral
 source A/B names carry no chronology, preference, correctness, or clinical
 meaning. Generated classification and legacy raw/component rows are never
-citable. Well-formed pre-v6 rows with exact string `text`, `label`, and
-`category`, plus the persisted date string or null, but no ID/source mapping
+citable. Well-formed pre-v6 rows with exact string `text`, nullable stored
+`label`, `category`, and `date`, and no source IDs resolving to a live component
 are copied only into
 `unlinked_generated_context[]`, with an exact count, deterministic
 occurrence-aware ID/token, complete allowlisted row plus revision binding, and

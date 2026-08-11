@@ -49,6 +49,9 @@
     <button class="view-nav-button" id="nav-patient" onclick="switchView('patient', this)">
       <span class="nav-icon" aria-hidden="true">♡</span><span>Patient</span>
     </button>
+    <button class="view-nav-button" id="nav-research" onclick="switchView('research', this)">
+      <span class="nav-icon" aria-hidden="true">⌕</span><span>Research</span>
+    </button>
     <button class="view-nav-button" id="nav-questions" onclick="switchView('questions', this)">
       <span class="nav-icon" aria-hidden="true">?</span><span>Questions</span>
       <span class="nav-count" id="q-count-badge">0</span>
@@ -78,15 +81,33 @@
         </div>
       </section>
 
-      <section id="research-update-card" class="research-update-card" aria-live="polite" hidden>
-        <span class="research-update-icon" aria-hidden="true">✦</span>
-        <div>
-          <strong id="research-update-title">Latest research additions</strong>
-          <p id="research-update-detail"></p>
+      <section id="research-today-card" class="content-card research-today-card" aria-labelledby="today-research-heading">
+        <div class="card-header compact split-header">
+          <div>
+            <p class="eyebrow">Exact current research workflow</p>
+            <h2 id="today-research-heading" tabindex="-1">Research</h2>
+          </div>
+          <span class="research-freshness loading" id="today-research-freshness">Not loaded</span>
         </div>
-        <div class="research-update-actions">
-          <button class="research-update-button" id="research-update-trials" onclick="openModal('trials')">New trials</button>
-          <button class="research-update-button" id="research-update-papers" onclick="openModal('papers')">New papers</button>
+        <p class="research-safety-guidance">NET/Care records research you choose to follow but does not determine relevance, eligibility, enrollment, or treatment suitability. Confirm clinical questions with the treating team and trial details with the study site.</p>
+        <div class="research-status loading" id="today-research-status" role="status" aria-live="polite">Loading the authoritative research workspace…</div>
+        <section class="research-today-group" aria-labelledby="today-latest-research-heading">
+          <h3 id="today-latest-research-heading">New research</h3>
+          <p class="research-totals" id="today-latest-research-totals">No latest-batch totals are available yet.</p>
+          <div class="research-compact-list" id="today-latest-research-list">
+            <div class="loading-state">Loading exact latest-batch occurrences…</div>
+          </div>
+        </section>
+        <section class="research-today-group" aria-labelledby="today-open-considerations-heading">
+          <h3 id="today-open-considerations-heading">Open considerations</h3>
+          <p class="research-totals" id="today-open-consideration-totals">No consideration totals are available yet.</p>
+          <div class="research-compact-list" id="today-open-consideration-list">
+            <div class="loading-state">Loading open caregiver considerations…</div>
+          </div>
+        </section>
+        <div class="research-today-actions">
+          <button class="button secondary" type="button" onclick="openResearchWorkspace()">Review complete research workspace</button>
+          <button class="button secondary" id="today-research-retry-refresh" type="button" onclick="loadResearchWorkspace({ force: true })" hidden>Retry refresh</button>
         </div>
       </section>
 
@@ -445,6 +466,49 @@
       </div>
     </section>
 
+    <section class="app-view" id="view-research" aria-labelledby="research-heading" hidden>
+      <div class="page-heading">
+        <div>
+          <p class="eyebrow">Complete exact-occurrence workspace</p>
+          <h1 id="research-heading">Research</h1>
+          <p>Review current external research and the caregiver workflow without clinical ranking or eligibility inference.</p>
+        </div>
+        <button class="button secondary" id="research-refresh-button" type="button" onclick="loadResearchWorkspace({ force: true })">Refresh</button>
+      </div>
+
+      <section class="content-card research-workspace" id="research-workspace" aria-labelledby="research-workspace-heading">
+        <div class="card-header compact split-header">
+          <div>
+            <p class="eyebrow">External facts, generated context, provenance, and caregiver workflow stay separate</p>
+            <h2 id="research-workspace-heading" tabindex="-1">Research workspace</h2>
+          </div>
+          <span class="research-freshness loading" id="research-freshness">Not loaded</span>
+        </div>
+        <p class="research-safety-guidance">NET/Care records research you choose to follow but does not determine relevance, eligibility, enrollment, or treatment suitability. Confirm clinical questions with the treating team and trial details with the study site.</p>
+        <div class="research-status loading" id="research-status" role="status" aria-live="polite">Loading the authoritative research workspace…</div>
+        <div class="research-tabs" role="tablist" aria-label="Research workspace sections" onkeydown="handleResearchTabKeydown(event)">
+          <button class="research-tab active" id="research-tab-current" role="tab" aria-selected="true" aria-controls="research-panel-current" tabindex="0" onclick="selectResearchTab('current')">Current research <span id="research-count-current">0</span></button>
+          <button class="research-tab" id="research-tab-considerations" role="tab" aria-selected="false" aria-controls="research-panel-considerations" tabindex="-1" onclick="selectResearchTab('considerations')">Considerations <span id="research-count-considerations">0</span></button>
+        </div>
+        <section class="research-panel" id="research-panel-current" role="tabpanel" aria-labelledby="research-tab-current">
+          <p class="research-authority-note">Every current occurrence appears once in exact server order, including duplicate external identifiers.</p>
+          <div class="research-occurrence-list" id="research-occurrence-list">
+            <div class="loading-state">Loading all current research occurrences…</div>
+          </div>
+        </section>
+        <section class="research-panel" id="research-panel-considerations" role="tabpanel" aria-labelledby="research-tab-considerations" hidden>
+          <p class="research-authority-note">Open and closed are caregiver organization states only. They do not determine relevance, eligibility, availability, enrollment, or treatment suitability.</p>
+          <div class="research-consideration-list" id="research-consideration-list">
+            <div class="loading-state">Loading all caregiver considerations…</div>
+          </div>
+        </section>
+        <div class="research-retry" id="research-retry" hidden>
+          <span id="research-retry-message">The authoritative research workspace needs to be refreshed.</span>
+          <button class="button secondary" id="research-retry-refresh" type="button" onclick="loadResearchWorkspace({ force: true })">Retry refresh</button>
+        </div>
+      </section>
+    </section>
+
     <section class="app-view" id="view-questions" aria-labelledby="questions-heading" hidden>
       <div class="page-heading">
         <div>
@@ -532,6 +596,94 @@
       </section>
     </section>
   </main>
+</div>
+
+<div class="follow-up-overlay research-dialog-overlay" id="research-dialog-overlay" aria-hidden="true" onclick="closeResearchDialogFromBackdrop(event)" inert>
+  <section class="follow-up-dialog research-dialog" id="research-dialog" role="dialog" aria-modal="true" aria-labelledby="research-dialog-title" tabindex="-1" inert>
+    <header class="dialog-header">
+      <div>
+        <p class="eyebrow">Caregiver research workflow</p>
+        <h2 id="research-dialog-title">Research action</h2>
+      </div>
+      <button class="icon-button" id="research-dialog-close" type="button" onclick="closeResearchDialog()" aria-label="Close research dialog">×</button>
+    </header>
+    <p class="research-safety-guidance dialog-guidance">NET/Care records research you choose to follow but does not determine relevance, eligibility, enrollment, or treatment suitability. Confirm clinical questions with the treating team and trial details with the study site.</p>
+    <div id="research-dialog-status" class="follow-up-dialog-status" role="status" aria-live="polite"></div>
+    <div class="follow-up-dialog-body">
+      <section class="research-dialog-context" id="research-dialog-context" aria-labelledby="research-dialog-context-heading">
+        <h3 id="research-dialog-context-heading">Selected research occurrence</h3>
+        <p>Select a current authoritative research row.</p>
+      </section>
+
+      <form id="research-shortlist-form" class="follow-up-form" onsubmit="event.preventDefault();submitResearchShortlist()" hidden>
+        <p>Save one immutable snapshot of this exact current occurrence for caregiver consideration.</p>
+        <p class="capture-provenance">Saving does not determine relevance, eligibility, enrollment, availability, suitability, or recommendation.</p>
+        <p class="form-error" id="research-shortlist-error" role="alert" aria-live="polite"></p>
+        <div class="follow-up-dialog-actions">
+          <button class="button primary" id="research-shortlist-submit" type="submit">Save for consideration</button>
+          <button class="button secondary" type="button" onclick="closeResearchDialog()">Cancel</button>
+        </div>
+      </form>
+
+      <form id="research-event-form" class="follow-up-form" onsubmit="event.preventDefault();submitResearchEvent()" hidden>
+        <label><span>Event type</span><select id="research-event-type" onchange="changeResearchEventType()"></select></label>
+        <p class="capture-provenance" id="research-event-attribution">Choose an allowed event type.</p>
+        <label><span>Note</span><textarea id="research-event-note" maxlength="20000" rows="4" autocomplete="off" autocapitalize="sentences" spellcheck="false"></textarea></label>
+        <div class="research-form-grid">
+          <label><span>Who (optional)</span><input id="research-event-who" maxlength="500" autocomplete="off" spellcheck="false"></label>
+          <label><span>Context (optional)</span><input id="research-event-context" maxlength="2000" autocomplete="off" spellcheck="false"></label>
+        </div>
+        <label><span>Date (optional)</span><input id="research-event-date" maxlength="10" inputmode="numeric" placeholder="YYYY, YYYY-MM, or YYYY-MM-DD" autocomplete="off" spellcheck="false" aria-describedby="research-event-date-help"></label>
+        <p class="helper-text" id="research-event-date-help">Partial dates are stored exactly as entered. NET/Care does not default, parse, reorder, or interpret them.</p>
+        <p class="form-error" id="research-event-error" role="alert" aria-live="polite"></p>
+        <div class="follow-up-dialog-actions">
+          <button class="button primary" id="research-event-submit" type="submit" disabled>Record event</button>
+          <button class="button secondary" type="button" onclick="closeResearchDialog()">Cancel</button>
+        </div>
+      </form>
+
+      <form id="research-lifecycle-form" class="follow-up-form" onsubmit="event.preventDefault();submitResearchLifecycle()" hidden>
+        <p id="research-lifecycle-copy"></p>
+        <p class="capture-provenance">This changes caregiver workflow organization only. It does not change the source research, events, follow-up, or latest-batch membership.</p>
+        <p class="form-error" id="research-lifecycle-error" role="alert" aria-live="polite"></p>
+        <div class="follow-up-dialog-actions">
+          <button class="button primary" id="research-lifecycle-submit" type="submit">Confirm</button>
+          <button class="button secondary" type="button" onclick="closeResearchDialog()">Cancel</button>
+        </div>
+      </form>
+
+      <form id="research-follow-up-form" class="follow-up-form" onsubmit="event.preventDefault();submitResearchFollowUp()" hidden>
+        <fieldset class="research-follow-up-fieldset" id="research-follow-up-modes">
+          <legend>Follow-up operation</legend>
+        </fieldset>
+        <section class="research-follow-up-panel" id="research-follow-up-existing-panel" hidden>
+          <label><span>Eligible current action</span><select id="research-follow-up-existing-action"></select></label>
+        </section>
+        <section class="research-follow-up-panel" id="research-follow-up-inline-panel" hidden>
+          <label><span>What needs follow-through?</span><textarea id="research-follow-up-text" maxlength="1000" rows="3" autocomplete="off" autocapitalize="sentences" spellcheck="false"></textarea></label>
+          <p class="helper-text">Start with blank caregiver wording. Use contact, ask, discuss, or confirm wording with the treating team.</p>
+          <div class="research-form-grid">
+            <label><span>Owner (optional)</span><input id="research-follow-up-owner" maxlength="100" autocomplete="off" spellcheck="false"></label>
+            <label><span>Due date (optional)</span><input id="research-follow-up-due" type="date" autocomplete="off"></label>
+          </div>
+        </section>
+        <section class="research-follow-up-panel" id="research-follow-up-unlink-panel" hidden>
+          <p id="research-follow-up-linked-copy"></p>
+          <p class="helper-text">Unlinking does not change the consideration or follow-up lifecycle.</p>
+        </section>
+        <p class="form-error" id="research-follow-up-error" role="alert" aria-live="polite"></p>
+        <div class="follow-up-dialog-actions">
+          <button class="button primary" id="research-follow-up-submit" type="submit" disabled>Save follow-up link</button>
+          <button class="button secondary" type="button" onclick="closeResearchDialog()">Cancel</button>
+        </div>
+      </form>
+    </div>
+    <div class="research-dialog-retry" id="research-dialog-retry" hidden>
+      <span id="research-dialog-retry-message">The request status needs review.</span>
+      <button class="button secondary" id="research-retry-submission" type="button" onclick="retryResearchSubmission()" hidden>Retry submission</button>
+      <button class="button secondary" id="research-retry-verification" type="button" onclick="retryResearchRefresh()" hidden>Retry refresh</button>
+    </div>
+  </section>
 </div>
 
 <div class="follow-up-overlay symptom-dialog-overlay" id="symptom-dialog-overlay" aria-hidden="true" onclick="closeSymptomDialogFromBackdrop(event)" inert>
@@ -941,13 +1093,6 @@
 <div class="panel collapsed" id="report-panel" role="dialog" aria-modal="true" aria-labelledby="report-title" aria-hidden="true" tabindex="-1">
   <div class="panel-head"><div><p class="eyebrow">Activity report</p><h2 id="report-title">Analysis</h2></div><div class="dialog-actions"><button class="button secondary panel-copy-btn" id="copy-btn" onclick="copyReport()">Copy</button><button class="icon-button" onclick="closePanel()" aria-label="Close report">×</button></div></div>
   <div class="panel-body" id="panel-body"><div class="report-empty"><div class="report-empty-icon">◈</div><div class="report-empty-text">Select an activity item to view its report.</div></div></div>
-</div>
-
-<div class="modal-overlay" id="modal-overlay" onclick="closeModal(event)" aria-hidden="true">
-  <section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" tabindex="-1">
-    <div class="modal-head"><h2 class="modal-title" id="modal-title">Tracked items</h2><button class="icon-button" onclick="closeModal()" aria-label="Close tracked items">×</button></div>
-    <div class="modal-body" id="modal-body"><div class="loading-state">Loading…</div></div>
-  </section>
 </div>
 
 <aside id="chat-panel" class="chat-panel" role="dialog" aria-modal="true" aria-labelledby="chat-title" aria-hidden="true" tabindex="-1">

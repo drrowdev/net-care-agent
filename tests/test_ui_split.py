@@ -62,10 +62,12 @@ def test_primary_states_and_dialogs_are_accessible():
         assert f'aria-labelledby="appointment-tab-{name}"' in HTML
 
 
-def test_generic_review_flow_is_replaced_by_latest_research_additions():
-    assert 'id="research-update-card"' in HTML
-    assert "onclick=\"openModal('trials')\"" in HTML
-    assert "onclick=\"openModal('papers')\"" in HTML
+def test_research_uses_shared_today_and_complete_workspace():
+    assert 'id="research-today-card"' in HTML
+    assert 'id="view-research"' in HTML
+    assert 'id="research-panel-current"' in HTML
+    assert 'id="research-panel-considerations"' in HTML
+    assert "openModal(" not in HTML
     assert "changes-overlay" not in HTML
     assert "Mark reviewed" not in HTML
 

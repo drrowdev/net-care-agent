@@ -594,11 +594,11 @@ silently attached to a nearby source.
 
 Web and CLI research runs share one canonical NCT/PMID diff. Each digest stores
 the exact additions in `latest_research_update`; a feed run replaces that
-snapshot only when it adds research. `GET /api/status` rejects malformed IDs,
-filters the stored IDs against records that still exist, and returns counts plus
-identifiers. The SPA refreshes that status on **Today**, after visibility
-restoration, and while relevant work is active, then labels the matching tracked
-trials and papers **New**. The retired
+snapshot only when it adds research. `GET /api/status` retains compatibility
+counts/identifiers, but the SPA does not use them for research display or
+workflow state. The shared Today/Research UI uses only per-occurrence
+`latest_batch_member` from `GET /api/patient/research-workspace`; no browser
+NCT/PMID set, unread state, sort, or acknowledgement exists. The retired
 `/api/changes` routes return an inert zero-count payload temporarily so cached
 pre-release tabs stop showing the removed review control without writing state.
 
@@ -629,8 +629,22 @@ The shortlist/disposition collection, internal occurrence IDs, event text, and
 research-linked actions are excluded from all model inputs. Research-created
 actions retain immutable origin and remain excluded after unlink; a generic
 action is excluded only while linked. This preserves existing discovery queries,
-ranking, summaries, and model-visible source research content. The caregiver SPA
-for this authority is intentionally deferred.
+ranking, summaries, and model-visible source research content.
+
+The SPA accepts one atomically validated research projection for both surfaces.
+Today renders bounded first sets with exact totals/omissions; Research renders
+every occurrence and consideration in server order. External facts, generated
+compatibility context, discovery provenance, immutable snapshots, current
+section equality, events/history, and caregiver workflow occupy separate DOM
+regions. Exact server eligibility alone creates controls. Opaque IDs/tokens,
+selected authority, drafts, and retry bytes remain in owned JavaScript memory.
+One GET controller and one mutation owner reject late/lower/wrong-owner effects.
+Mutation success stays provisional and read-only until a complete replacement
+matches returned revisions and expected semantic identities. Only ambiguous
+submission retains byte-identical **Retry submission**; accepted submission can
+retain only **Retry refresh**. Research transport ambiguity keeps the last
+verified workspace stale/read-only, hard research corruption clears only this
+surface, and authorization loss uses central full-PHI eviction.
 
 Action dismissal posts the assessment revision and expected action text to
 `POST /api/summary/dismiss-action/<idx>`. Flask returns `409` without mutating
@@ -658,7 +672,7 @@ only with exact `APP_ORIGIN` or canonical HTTPS `WEBSITE_HOSTNAME`.
 | Decision | Why |
 |---|---|
 | JSON file, not Postgres | Single patient, single writer; auditable diffs; trivial backup. |
-| Vanilla SPA, not React | Caregiver runs the UI on a phone occasionally — zero build pipeline beats lighter frameworks. The split SPA uses one responsive Today/Patient/Questions/Activity shell on every screen size. `static/index.html` owns semantic markup and dialogs, `static/app.js` owns API state/rendering, symptom/imaging/biomarker projection and mutation authority, receipt reconciliation, appointment and alert-resolution owners/epochs/drafts, focus/inert behavior, and load states, and `static/styles.css` provides the desktop rail, locally scrollable authority tables, overflow-safe dialogs, full-height phone sheets, and fixed phone navigation. |
+| Vanilla SPA, not React | Caregiver runs the UI on a phone occasionally — zero build pipeline beats lighter frameworks. The split SPA uses one responsive Today/Patient/Research/Questions/Activity shell on every screen size. `static/index.html` owns semantic markup and dialogs, `static/app.js` owns API state/rendering, research/symptom/treatment/imaging/biomarker projection and mutation authority, receipt reconciliation, appointment and alert-resolution owners/epochs/drafts, focus/inert behavior, and load states, and `static/styles.css` provides the desktop rail, locally scrollable authority tables, overflow-safe dialogs, full-height phone sheets, and fixed phone navigation. |
 | Flask + gunicorn, not FastAPI/Containers | App Service runs Python natively; no Docker needed; rapid `az webapp deploy` cycle. |
 | No MSAL | Single user. App Service Easy Auth gates hosted APIs except health/liveness. Local API bypass is explicit (`ALLOW_LOCAL_AUTH_BYPASS=1`), never implicit. |
 | Separate treatment reconciliation authority | Source observations and legacy model classification cannot safely establish longitudinal current/past/planned truth. Explicit caregiver courses and discrepancies preserve source history while stable tokens, replay/CAS, and one-save audit make later shared Patient/Today UI work possible without browser inference. |

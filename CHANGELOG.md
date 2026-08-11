@@ -9,6 +9,19 @@ incremented when something user-visible or operationally meaningful changes.
 ## [Unreleased]
 
 ### Added
+- **Shared Today/Research shortlist and disposition workflow.** One atomically
+  validated `research-workspace` projection now drives a bounded Today summary
+  with exact totals/omissions and a complete Research view preserving every
+  occurrence, duplicate, consideration, event, and history item in server order.
+  External facts, machine-generated compatibility context, discovery provenance,
+  immutable snapshots, section-specific current state, and caregiver workflow
+  remain separate. Exact server eligibility controls shortlist, attributed
+  unverified events, neutral close/resume, and atomic follow-up link/create/unlink.
+  Strict canonical links, passive latest-batch membership without unread state,
+  CAS/replay ownership, provisional full-reload completion, submission-versus-
+  refresh retry, endpoint-specific stale retention, PHI clearing, keyboard/focus
+  behavior, and 1280/360 overflow safety replace status-derived caches and legacy
+  trial/paper dialogs without changing backend compatibility APIs.
 - **Backend research shortlist and disposition authority.** Schema v14 preserves
   every existing trial/paper row while assigning stable exact-occurrence
   identities where missing. An authenticated no-store bounded workspace and
@@ -18,7 +31,6 @@ incremented when something user-visible or operationally meaningful changes.
   PubMed/ClinicalTrials.gov links, and atomic exclusive caregiver-action linkage.
   All mutations are workflow-only; source refresh/removal, exact latest-batch
   membership, existing discovery behavior, and model prompts remain isolated.
-  The caregiver SPA is intentionally deferred to a separate change.
 - **Shared Today/Patient treatment reconciliation workflow.** Today shows a
   bounded first set of current/planned caregiver records in server order with
   exact totals and omissions; Patient provides complete separate Treatment

@@ -742,6 +742,7 @@ def _build_projection(
     observations = profile.get("symptoms")
     episodes = profile.get("symptom_episodes")
     actions_list = profile.get("caregiver_actions")
+    treatment_discrepancies = profile.get("treatment_discrepancies", [])
     source_documents = profile.get("source_documents")
     documents_list = profile.get("documents")
     imports_list = profile.get("document_imports")
@@ -752,6 +753,8 @@ def _build_projection(
         or any(not isinstance(row, dict) for row in episodes)
         or not isinstance(actions_list, list)
         or any(not isinstance(row, dict) for row in actions_list)
+        or not isinstance(treatment_discrepancies, list)
+        or any(not isinstance(row, dict) for row in treatment_discrepancies)
         or not isinstance(source_documents, list)
         or any(not isinstance(row, dict) for row in source_documents)
         or not isinstance(documents_list, list)
@@ -852,11 +855,22 @@ def _build_projection(
             "symptom_projection_invalid",
             "Symptom follow-up authority is inconsistent.",
         )
+    treatment_action_ids = {
+        discrepancy.get("caregiver_action_id")
+        for discrepancy in treatment_discrepancies
+        if isinstance(discrepancy.get("caregiver_action_id"), str)
+    }
+    if linked_action_ids & treatment_action_ids:
+        raise SymptomProjectionError(
+            "symptom_projection_invalid",
+            "Symptom follow-up authority is inconsistent.",
+        )
     eligible_actions = [
         _linked_action_public(action)
         for action in actions_list
         if action.get("status") in {"open", "in_progress"}
         and action.get("id") not in linked_action_ids
+        and action.get("id") not in treatment_action_ids
     ]
     public_observations = [item["public"] for item in projected_observations]
     public_episodes = [item["public"] for item in projected_episodes]

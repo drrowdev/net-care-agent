@@ -131,7 +131,7 @@ All patient state lives in a single JSON file at `${DATA_DIR}/patient_profile.js
 
 ```
 {
-  "schema_version": 11,
+  "schema_version": 12,
   "profile_revision": 42,
   "workflow_revision": 17,
   "profile_updated_at": "2026-07-10T16:51:49",
@@ -142,7 +142,9 @@ All patient state lives in a single JSON file at `${DATA_DIR}/patient_profile.js
   "imaging":     [ {id, date, date_precision, date_kind, source_document_date, modality, findings, impression, source_document_id, evidence_status}, ... ],
   "symptoms":    [ {id, date, date_precision, date_kind, source_document_date, symptom, severity, source_document_id, evidence_status}, ... ],
   "symptom_episodes": [ {id, status, symptom_text, severity_level, severity_detail, reported_subject, onset_date, resolved_date, provenance, caregiver_action_id, history}, ... ],
-  "treatments":  [ {name, status, start_date, end_date, ...}, ... ],
+  "treatments_classified": [ {id, text, label, category, date, source_treatment_ids}, ... ],
+  "treatment_courses": [ {id, status, treatment_text, dose_text, schedule_text, start_date, stop_date, planned_date, previous_course_id, provenance, history}, ... ],
+  "treatment_discrepancies": [ {id, status, category, comparison_text, source_fact_ref, course_id, confirmations, caregiver_action_id, provenance, history}, ... ],
   "documents":   [ {date, type, summary, key_findings, source_document_id, raw_text}, ... ],
   "source_documents": [ {id, ingested_at, source: {path, sha256, length}, text: {...}}, ... ],
   "document_imports": [ {job_id, source_document_id, status, receipt_revision, changes: [...]}, ... ],
@@ -215,6 +217,18 @@ or other document types are not promoted to imaging dates. Missing dates remain
 visible `unknown`, explicit source-document dates stay separate, and modality
 wording is retained only when it occurs verbatim in source text—never by category
 normalization.
+Schema v11 keeps imported/legacy symptom observations separate from explicit
+caregiver-maintained symptom episodes and adds the bounded episode projection
+and replay-safe lifecycle/action-link mutations.
+Schema v12 adds a separate treatment reconciliation authority. Migration only
+initializes empty `treatment_courses[]` and `treatment_discrepancies[]`; it does
+not promote, normalize, merge, deduplicate, reorder, or relabel legacy raw,
+component, classified, receipt, source, evidence, or history facts. Courses use
+explicit caregiver-maintained current/past/planned workflow state and
+precision-preserving dates. Discrepancies are caregiver-created neutral
+comparisons with immutable source snapshots and explicitly unverified
+clinician attribution. The new state is intentionally excluded from model
+prompts pending a later shared Patient/Today UI slice.
 
 A daily backup is written to `${DATA_DIR}/backups/profile_YYYYMMDD.json`
 (retention: 30 days).
@@ -274,6 +288,7 @@ state and withholds the prior clinical content.
 │   ├── biomarker_series.py # bounded provenance-safe longitudinal read projection
 │   ├── imaging_series.py # complete non-inferential imaging authority projection
 │   ├── symptom_episodes.py # bounded observation + caregiver episode authority
+│   ├── treatment_reconciliation.py # bounded source/course/discrepancy authority
 │   ├── evidence.py       # validated claim-level source-span catalog/resolution
 │   ├── reconciliation.py # per-document receipts + compare-and-swap correction/undo
 │   ├── follow_through.py # durable actions/visits, validation, CAS + audit helpers
@@ -297,7 +312,8 @@ state and withholds the prior clinical content.
 ├── tests/                # pytest suite (no network or API key needed)
 │   ├── test_imaging_timeline_ui.py # actual-function Node + live responsive browser coverage
 │   ├── test_symptom_workflow_ui.py # symptom authority + live lifecycle/responsive coverage
-│   └── test_symptom_episodes.py # backend identity/lifecycle/replay/projection contract
+│   ├── test_symptom_episodes.py # backend identity/lifecycle/replay/projection contract
+│   └── test_treatment_reconciliation.py # treatment authority/lifecycle/replay contract
 └── docs/                 # Architecture & schema docs
     ├── architecture.md
     ├── operating_manual.md

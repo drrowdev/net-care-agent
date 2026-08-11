@@ -32,6 +32,8 @@ All sub-models accept **extra** fields (forward-compat) and treat every document
   'clinical_judgments': list[ClinicalJudgment],
   'symptoms': list[Symptom],
   'symptom_episodes': list[SymptomEpisode],
+  'treatment_courses': list[TreatmentCourse],
+  'treatment_discrepancies': list[TreatmentDiscrepancy],
   'questions': list[Question],
   'appointment_questions': list[Question],
   'questions_generation_id': str | None,

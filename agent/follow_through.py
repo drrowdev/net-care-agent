@@ -326,7 +326,14 @@ def request_hash(payload: dict) -> str:
 
 
 def iter_audit_events(profile: dict):
-    for collection in ("caregiver_actions", "visits", "alerts", "symptom_episodes"):
+    for collection in (
+        "caregiver_actions",
+        "visits",
+        "alerts",
+        "symptom_episodes",
+        "treatment_courses",
+        "treatment_discrepancies",
+    ):
         for record in profile.get(collection, []) or []:
             if not isinstance(record, dict):
                 continue
@@ -631,6 +638,57 @@ def _safe_result_snapshot(
             and isinstance(follow_up.get("text"), str)
             and follow_up.get("status") in ACTION_STATUSES
             and set(follow_up) == {"id", "token", "text", "status", "owner", "due_date"}
+        )
+    if endpoint in {
+        "POST /api/treatment-reconciliation/courses",
+        "PATCH /api/treatment-reconciliation/courses/<course_id>",
+        "POST /api/treatment-reconciliation/courses/<course_id>/transition",
+        "POST /api/treatment-reconciliation/courses/<course_id>/restart",
+    }:
+        course = snapshot.get("course")
+        expected_id = (
+            record.get("id")
+            if endpoint
+            in {
+                "POST /api/treatment-reconciliation/courses",
+                "POST /api/treatment-reconciliation/courses/<course_id>/restart",
+            }
+            else target.removeprefix("treatment_course:")
+        )
+        return (
+            collection == "treatment_courses"
+            and isinstance(course, dict)
+            and course.get("id") == expected_id
+            and isinstance(course.get("token"), str)
+            and bool(course["token"])
+            and set(snapshot) == {"course", "workflow_revision", "profile_revision"}
+        )
+    if endpoint in {
+        "POST /api/treatment-reconciliation/discrepancies",
+        "POST /api/treatment-reconciliation/discrepancies/<id>/resolve",
+        "POST /api/treatment-reconciliation/discrepancies/<id>/reopen",
+        "PATCH /api/treatment-reconciliation/discrepancies/<id>/follow-up",
+    }:
+        discrepancy = snapshot.get("discrepancy")
+        expected_id = (
+            record.get("id")
+            if endpoint == "POST /api/treatment-reconciliation/discrepancies"
+            else target.removeprefix("treatment_discrepancy:").removesuffix(":follow_up")
+        )
+        return (
+            collection == "treatment_discrepancies"
+            and isinstance(discrepancy, dict)
+            and discrepancy.get("id") == expected_id
+            and isinstance(discrepancy.get("token"), str)
+            and bool(discrepancy["token"])
+            and set(snapshot)
+            == {
+                "discrepancy",
+                "course",
+                "follow_up",
+                "workflow_revision",
+                "profile_revision",
+            }
         )
     return False
 

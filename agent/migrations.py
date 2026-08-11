@@ -36,7 +36,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 11
+CURRENT_SCHEMA_VERSION: int = 12
 
 # Append-only ordered registry of migrations.  Never reorder entries.
 _REGISTRY: list[dict[str, Any]] = []
@@ -566,6 +566,17 @@ def _m0011_add_symptom_episode_authority(data: dict) -> dict:
     if data.get("symptom_episodes") is None:
         data["symptom_episodes"] = []
     data["schema_version"] = 11
+    return data
+
+
+@_migration("0012_add_treatment_reconciliation_authority", to_version=12)
+def _m0012_add_treatment_reconciliation_authority(data: dict) -> dict:
+    """v11 -> v12: add empty caregiver treatment authority without inference."""
+    if data.get("treatment_courses") is None:
+        data["treatment_courses"] = []
+    if data.get("treatment_discrepancies") is None:
+        data["treatment_discrepancies"] = []
+    data["schema_version"] = 12
     return data
 
 

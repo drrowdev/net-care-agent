@@ -35,6 +35,8 @@ _COLLECTION_KEYS: tuple[str, ...] = (
     "clinical_judgments",
     "symptoms",
     "symptom_episodes",
+    "treatment_courses",
+    "treatment_discrepancies",
     "questions",
     "appointment_questions",
     "feedback",
@@ -164,6 +166,23 @@ ActionStatus = Literal["open", "in_progress", "completed", "cancelled"]
 VisitStatus = Literal["planned", "in_progress", "completed", "cancelled"]
 DecisionStatus = Literal["active", "superseded", "retracted", "needs_confirmation"]
 OutcomeKind = Literal["administrative", "caregiver_reported", "clinician_attributed"]
+TreatmentCourseStatus = Literal["current", "past", "planned"]
+TreatmentCourseDateKind = Literal["caregiver_entered", "unknown"]
+TreatmentDiscrepancyCategory = Literal[
+    "name_or_type",
+    "status",
+    "dose_or_schedule",
+    "date",
+    "source_wording",
+    "other",
+]
+TreatmentDiscrepancyStatus = Literal["open", "resolved"]
+TreatmentConfirmationOutcome = Literal[
+    "confirmed_as_recorded",
+    "caregiver_record_corrected",
+    "source_clarification_needed",
+    "no_change_documented",
+]
 
 
 # ── shared base ───────────────────────────────────────────────────────────────
@@ -562,6 +581,88 @@ class SymptomEpisode(_Lenient):
     history: list[WorkflowAuditEvent] = Field(default_factory=list)
 
 
+class TreatmentCourseProvenance(_Lenient):
+    """Immutable trust boundary for a caregiver-maintained treatment course."""
+
+    capture_method: Literal["caregiver_entered"] = "caregiver_entered"
+    source_verification: Literal["unverified"] = "unverified"
+
+
+class TreatmentCourse(_Lenient):
+    """Explicit caregiver-maintained treatment episode, separate from source facts."""
+
+    id: str
+    status: TreatmentCourseStatus
+    treatment_text: str
+    treatment_type_text: str | None = None
+    dose_text: str | None = None
+    route_text: str | None = None
+    frequency_text: str | None = None
+    cycle_text: str | None = None
+    schedule_text: str | None = None
+    formulation_text: str | None = None
+    indication_text: str | None = None
+    notes: str | None = None
+    legacy_component_ids: list[str] = Field(default_factory=list)
+    start_date: str | None = None
+    start_date_precision: BiomarkerDatePrecision = "unknown"
+    start_date_kind: TreatmentCourseDateKind = "unknown"
+    stop_date: str | None = None
+    stop_date_precision: BiomarkerDatePrecision = "unknown"
+    stop_date_kind: TreatmentCourseDateKind = "unknown"
+    planned_date: str | None = None
+    planned_date_precision: BiomarkerDatePrecision = "unknown"
+    planned_date_kind: TreatmentCourseDateKind = "unknown"
+    previous_course_id: str | None = None
+    provenance: TreatmentCourseProvenance = Field(default_factory=TreatmentCourseProvenance)
+    created_at: str
+    updated_at: str
+    history: list[WorkflowAuditEvent] = Field(default_factory=list)
+
+
+class TreatmentConfirmationProvenance(_Lenient):
+    """Visible trust boundary for caregiver-entered clinician attribution."""
+
+    capture_method: Literal["caregiver_entered"] = "caregiver_entered"
+    attributed_to: Literal["clinician"] = "clinician"
+    source_verification: Literal["unverified"] = "unverified"
+
+
+class TreatmentConfirmation(_Lenient):
+    outcome: TreatmentConfirmationOutcome
+    note: str
+    clinician_text: str | None = None
+    context_text: str | None = None
+    date: str | None = None
+    date_precision: BiomarkerDatePrecision = "unknown"
+    date_kind: TreatmentCourseDateKind = "unknown"
+    provenance: TreatmentConfirmationProvenance = Field(
+        default_factory=TreatmentConfirmationProvenance
+    )
+    recorded_at: str
+
+
+class TreatmentDiscrepancy(_Lenient):
+    """Caregiver-created neutral comparison that never rewrites source history."""
+
+    id: str
+    status: TreatmentDiscrepancyStatus = "open"
+    category: TreatmentDiscrepancyCategory
+    comparison_text: str
+    course_id: str | None = None
+    source_fact_ref: str
+    source_fact_snapshot: dict[str, Any]
+    course_snapshot: dict[str, Any] | None = None
+    recurs_from_id: str | None = None
+    confirmations: list[TreatmentConfirmation] = Field(default_factory=list)
+    caregiver_action_id: str | None = None
+    provenance: TreatmentCourseProvenance = Field(default_factory=TreatmentCourseProvenance)
+    created_at: str
+    updated_at: str
+    resolved_at: str | None = None
+    history: list[WorkflowAuditEvent] = Field(default_factory=list)
+
+
 class ActionOriginSnapshot(_Lenient):
     """Immutable source snapshot captured when a caregiver accepts an action."""
 
@@ -695,7 +796,7 @@ class PatientProfile(_Lenient):
     """The complete patient profile. Lives at ${DATA_DIR}/patient_profile.json."""
 
     schema_version: int = Field(
-        default=11,
+        default=12,
         description="Profile schema version. Incremented when a structural migration runs.",
     )
     profile_revision: int = 0
@@ -719,6 +820,8 @@ class PatientProfile(_Lenient):
     clinical_judgments: list[ClinicalJudgment] = Field(default_factory=list)
     symptoms: list[Symptom] = Field(default_factory=list)
     symptom_episodes: list[SymptomEpisode] = Field(default_factory=list)
+    treatment_courses: list[TreatmentCourse] = Field(default_factory=list)
+    treatment_discrepancies: list[TreatmentDiscrepancy] = Field(default_factory=list)
     questions: list[Question] = Field(default_factory=list)
     appointment_questions: list[Question] = Field(default_factory=list)
     questions_generation_id: str | None = None

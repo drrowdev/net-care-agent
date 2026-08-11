@@ -269,11 +269,82 @@ def test_feed_paths_share_json_error_and_task_selection_handling():
     text_feed = _function_source("submitFeed", "activateSubmittedTask")
     file_feed = _function_source("processFile", "runDigest")
     for source in (text_feed, file_feed):
-        assert "readJsonResponse(r)" in source
-        assert "activateSubmittedTask(d)" in source
+        assert "readJsonResponse(r," in source
+        assert "activateSubmittedTask(d, submission)" in source
+        assert "signal: submission.controller.signal" in source
+        assert "jobSubmissionOwnsRequest(submission)" in source
     assert "if (!response.ok)" in APP_JS
     assert "typeof data.error === 'string'" in APP_JS
     assert "data.job_id || data.task_id" in APP_JS
+
+
+def test_feed_submission_eviction_aborts_bytes_and_rejects_late_activation():
+    script = "\n".join(
+        [
+            """
+let jobSubmissionEpoch = 0;
+const jobSubmissionControllers = new Set();
+const button = { disabled: false };
+const errors = [];
+let activationCalls = 0;
+let resolveFetch;
+let capturedSignal = null;
+
+const document = {
+  getElementById(id) {
+    if (id === 'btn-feed') return button;
+    throw new Error(`unexpected element ${id}`);
+  },
+};
+const navigator = { onLine: true };
+function markResearchProjectionStale() {}
+function reportLoadSuccess() {}
+function showFeedError(message) { errors.push(message); }
+async function readJsonResponse() { throw new Error('late response must not be parsed'); }
+async function activateSubmittedTask() {
+  activationCalls += 1;
+  return true;
+}
+globalThis.fetch = async (_url, options) => {
+  capturedSignal = options.signal;
+  return new Promise(resolve => { resolveFetch = resolve; });
+};
+""",
+            _function_source("beginJobSubmission", "readJsonResponse")
+            .rstrip()
+            .removesuffix("async"),
+            _executable_function_source("submitFeed", "activateSubmittedTask"),
+            """
+(async () => {
+  const pending = submitFeed('patient bytes');
+  cancelJobSubmissions();
+  resolveFetch({ status: 200, ok: true });
+  const result = await pending;
+  console.log(JSON.stringify({
+    result,
+    signalAborted: capturedSignal.aborted,
+    activationCalls,
+    errors,
+    buttonDisabled: button.disabled,
+    controllers: jobSubmissionControllers.size,
+  }));
+})().catch(error => {
+  console.error(error);
+  process.exit(1);
+});
+""",
+        ]
+    )
+    completed = _run_node_script(script)
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {
+        "result": False,
+        "signalAborted": True,
+        "activationCalls": 0,
+        "errors": [],
+        "buttonDisabled": True,
+        "controllers": 0,
+    }
 
 
 def test_duplicate_job_submissions_reattach_to_returned_job_id():
@@ -287,9 +358,11 @@ def test_duplicate_job_submissions_reattach_to_returned_job_id():
         ("generateQuestions", "addQuestion"),
     ):
         source = _function_source(name, next_name)
-        assert "readJobSubmission(r)" in source
-    assert "activateSubmittedTask(d)" in _function_source("runDigest", "runDeepSweep")
-    assert "activateSubmittedTask(d)" in _function_source("runDeepSweep", "startPolling")
+        assert "readJobSubmission(r" in source
+    assert "activateSubmittedTask(d, submission)" in _function_source("runDigest", "runDeepSweep")
+    assert "activateSubmittedTask(d, submission)" in _function_source(
+        "runDeepSweep", "startPolling"
+    )
 
 
 def test_interrupted_jobs_are_terminal_and_show_retry_guidance():
@@ -441,6 +514,12 @@ def test_central_phi_eviction_clears_patient_panels_dialogs_and_histories():
         "clearSymptomProjection({",
         ".judgment-edit-text",
         ".receipt-editor input",
+        "typeof cancelJobSubmissions === 'function'",
+        "clearTimeout(pollingInterval)",
+        "pollingInterval = null",
+        "feedFile.value = ''",
+        "feedError.textContent = ''",
+        "feed?.contains?.(document.activeElement)",
     ):
         assert expression in eviction
     freshness = _function_source("clearFreshnessProjection", "renderClaimEvidence")
@@ -492,6 +571,41 @@ def test_central_phi_eviction_clears_patient_panels_dialogs_and_histories():
     add_question = _function_source("addQuestion", "toggleQuestion")
     assert "const request = capturePatientRequest()" in add_question
     assert "authorizePatientResponse(request, result)" in add_question
+    polling = _function_source("startPolling", "revokeVisitRecapDownloadUrl")
+    assert "if (!Array.isArray(tasks))" in polling
+    assert polling.index("if (!Array.isArray(tasks))") < polling.index("tasks.some(")
+
+
+def test_cross_workflow_controls_have_44px_targets_at_desktop_and_phone():
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    with playwright_api.sync_playwright() as playwright:
+        executable = Path(playwright.chromium.executable_path)
+        if not executable.exists():
+            pytest.skip("Installed Playwright browser is unavailable")
+        browser = playwright.chromium.launch()
+        for width, height in ((1280, 900), (360, 800)):
+            page = browser.new_page(viewport={"width": width, "height": height})
+            page.set_content(
+                """
+                <button class="resolve-btn">Resolve</button>
+                <div class="visit-question-order">
+                  <button class="button">Move</button>
+                  <select aria-label="Rank"><option>1</option></select>
+                </div>
+                <details class="research-exact-details">
+                  <summary>Exact details</summary>
+                </details>
+                """
+            )
+            page.add_style_tag(content=CSS)
+            heights = page.locator(
+                ".resolve-btn, .visit-question-order .button, "
+                ".visit-question-order select, .research-exact-details summary"
+            ).evaluate_all("(items) => items.map(item => item.getBoundingClientRect().height)")
+            assert heights
+            assert all(item >= 44 for item in heights), (width, heights)
+            page.close()
+        browser.close()
 
 
 def test_missing_selected_task_evicts_instead_of_restoring_cached_receipt():
@@ -620,7 +734,8 @@ def test_submitted_task_activation_reserves_and_checks_selection_epoch():
     assert "const activationEpoch = ++taskSelectionEpoch" in activation
     assert "await loadTasks()" in activation
     assert "await selectTask(id, activationEpoch)" in activation
-    assert activation.count("activationEpoch !== taskSelectionEpoch || selectedTaskId !== id") >= 3
+    assert activation.count("activationEpoch !== taskSelectionEpoch") >= 3
+    assert activation.count("selectedTaskId !== id") >= 3
 
 
 def test_chat_history_is_bound_to_profile_revision_and_visibly_cleared():
@@ -3275,7 +3390,7 @@ def test_narrow_appointment_order_controls_render_without_overflow_and_keep_focu
         desktop_heights = controls.evaluate_all(
             "(items) => items.map(item => item.getBoundingClientRect().height)"
         )
-        assert all(35 <= height < 44 for height in desktop_heights)
+        assert all(height >= 44 for height in desktop_heights)
         browser.close()
 
 

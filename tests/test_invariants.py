@@ -25,6 +25,8 @@ def test_invariants_doc_exists_and_lists_contracts():
         "Caregiver-entered · attributed to trial site · unverified",
     ):
         assert token in doc, f"INVARIANTS.md missing {token!r}"
+    assert '"new since acknowledged"' not in doc
+    assert "no profile collection is generically" in doc
 
 
 def test_research_model_context_isolation_is_explicit():

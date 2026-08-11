@@ -96,6 +96,8 @@
   let biomarkerNetworkAmbiguous = false;
   let receiptMutationPending = false;
   let taskSelectionEpoch = 0;
+  let jobSubmissionEpoch = 0;
+  const jobSubmissionControllers = new Set();
   let latestProfileRevision = null;
   let phiEpoch = 0;
   let statusLoadEpoch = 0;
@@ -1049,6 +1051,32 @@
     finalizeRetriedWorkflowIntent(intent, result);
   }
 
+  function beginJobSubmission() {
+    const controller = new AbortController();
+    const owner = { controller, epoch: jobSubmissionEpoch };
+    jobSubmissionControllers.add(controller);
+    return owner;
+  }
+
+  function jobSubmissionOwnsRequest(owner) {
+    return Boolean(
+      owner
+      && owner.epoch === jobSubmissionEpoch
+      && jobSubmissionControllers.has(owner.controller)
+      && !owner.controller.signal.aborted
+    );
+  }
+
+  function finishJobSubmission(owner) {
+    if (owner?.controller) jobSubmissionControllers.delete(owner.controller);
+  }
+
+  function cancelJobSubmissions() {
+    jobSubmissionEpoch += 1;
+    for (const controller of jobSubmissionControllers) controller.abort();
+    jobSubmissionControllers.clear();
+  }
+
   async function readJsonResponse(response, canEvictClientPhi = () => true) {
     if (response.status === 401 || response.status === 403) {
       const authError = new Error('Authorization failed.');
@@ -1079,11 +1107,11 @@
     return data;
   }
 
-  async function readJobSubmission(response) {
+  async function readJobSubmission(response, canEvictClientPhi = () => true) {
     if (response.status === 401 || response.status === 403) {
       const authError = new Error('Authorization failed.');
       authError.status = response.status;
-      evictClientPhi(authError);
+      if (canEvictClientPhi()) evictClientPhi(authError);
     }
     let data;
     try {
@@ -1101,7 +1129,7 @@
     error.retryAfter = response.headers.get('Retry-After');
     error.data = data;
     if (response.status === 401 || response.status === 403) {
-      evictClientPhi(error);
+      if (canEvictClientPhi()) evictClientPhi(error);
     }
     throw error;
   }
@@ -3108,6 +3136,11 @@
 
   function evictClientPhi(error = null) {
     phiEpoch += 1;
+    if (typeof cancelJobSubmissions === 'function') cancelJobSubmissions();
+    if (typeof pollingInterval !== 'undefined' && pollingInterval) {
+      clearTimeout(pollingInterval);
+    }
+    if (typeof pollingInterval !== 'undefined') pollingInterval = null;
     statusLoadEpoch += 1;
     taskSelectionEpoch += 1;
     selectedTaskId = null;
@@ -3458,11 +3491,23 @@
     });
     const feed = document.getElementById('feed-popover');
     const backdrop = document.getElementById('feed-backdrop');
+    if (feed?.contains?.(document.activeElement)) document.activeElement?.blur();
     feed?.classList.remove('visible');
     feed?.setAttribute('aria-hidden', 'true');
     backdrop?.classList.remove('visible');
     const feedText = document.getElementById('feed-textarea');
     if (feedText) feedText.value = '';
+    const feedFile = document.getElementById('file-input');
+    if (feedFile) feedFile.value = '';
+    const feedError = document.getElementById('feed-form-error');
+    if (feedError) {
+      feedError.textContent = '';
+      feedError.hidden = true;
+    }
+    for (const id of ['btn-digest', 'btn-deep-sweep']) {
+      const button = document.getElementById(id);
+      if (button) button.disabled = false;
+    }
     updateCharCount();
     lastDialogTrigger = null;
     activeDialogSurface = null;
@@ -9505,18 +9550,25 @@
   }
 
   async function submitFeed(text) {
-    document.getElementById('btn-feed').disabled = true;
+    const submission = beginJobSubmission();
+    const button = document.getElementById('btn-feed');
+    button.disabled = true;
     try {
       const r = await fetch('/api/feed', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text }),
+        signal: submission.controller.signal,
       });
-      const d = await readJsonResponse(r);
-      await activateSubmittedTask(d);
+      if (!jobSubmissionOwnsRequest(submission)) return false;
+      const d = await readJsonResponse(r, () => jobSubmissionOwnsRequest(submission));
+      if (!jobSubmissionOwnsRequest(submission)) return false;
+      const activated = await activateSubmittedTask(d, submission);
+      if (!jobSubmissionOwnsRequest(submission) || !activated) return false;
       reportLoadSuccess('action');
       return true;
     } catch (e) {
+      if (!jobSubmissionOwnsRequest(submission)) return false;
       if (e instanceof TypeError || navigator.onLine === false) {
         markResearchProjectionStale(
           'The document submission result is ambiguous. Research remains read-only until authority reloads.',
@@ -9526,23 +9578,43 @@
       showFeedError(e.message);
       return false;
     } finally {
-      document.getElementById('btn-feed').disabled = false;
+      const ownsRequest = jobSubmissionOwnsRequest(submission);
+      finishJobSubmission(submission);
+      if (ownsRequest) button.disabled = false;
     }
   }
 
-  async function activateSubmittedTask(data) {
+  async function activateSubmittedTask(data, submission = null) {
+    const activationIsCurrent = () => (
+      submission === null || jobSubmissionOwnsRequest(submission)
+    );
+    if (!activationIsCurrent()) return false;
     const id = data.job_id || data.task_id;
     if (!id) throw new Error('Response did not include a job ID');
     const activationEpoch = ++taskSelectionEpoch;
     hadActiveJobs = true;
     selectedTaskId = id;
-    await loadTasks();
-    if (activationEpoch !== taskSelectionEpoch || selectedTaskId !== id) return;
+    const tasks = await loadTasks();
+    if (
+      !activationIsCurrent()
+      || !Array.isArray(tasks)
+      || activationEpoch !== taskSelectionEpoch
+      || selectedTaskId !== id
+    ) return false;
     await selectTask(id, activationEpoch);
-    if (activationEpoch !== taskSelectionEpoch || selectedTaskId !== id) return;
+    if (
+      !activationIsCurrent()
+      || activationEpoch !== taskSelectionEpoch
+      || selectedTaskId !== id
+    ) return false;
     switchView('activity');
-    if (activationEpoch !== taskSelectionEpoch || selectedTaskId !== id) return;
+    if (
+      !activationIsCurrent()
+      || activationEpoch !== taskSelectionEpoch
+      || selectedTaskId !== id
+    ) return false;
     startPolling();
+    return true;
   }
 
   function showFeedError(message) {
@@ -9580,6 +9652,7 @@
       showFeedError('Choose a .txt, .md, or .pdf file.');
       return false;
     }
+    const submission = beginJobSubmission();
     btn.disabled = true;
     try {
       const form = new FormData();
@@ -9587,12 +9660,17 @@
       const r = await fetch('/api/feed-file', {
         method: 'POST',
         body: form,
+        signal: submission.controller.signal,
       });
-      const d = await readJsonResponse(r);
-      await activateSubmittedTask(d);
+      if (!jobSubmissionOwnsRequest(submission)) return false;
+      const d = await readJsonResponse(r, () => jobSubmissionOwnsRequest(submission));
+      if (!jobSubmissionOwnsRequest(submission)) return false;
+      const activated = await activateSubmittedTask(d, submission);
+      if (!jobSubmissionOwnsRequest(submission) || !activated) return false;
       reportLoadSuccess('action');
       return true;
     } catch (e) {
+      if (!jobSubmissionOwnsRequest(submission)) return false;
       if (e instanceof TypeError || navigator.onLine === false) {
         markResearchProjectionStale(
           'The document submission result is ambiguous. Research remains read-only until authority reloads.',
@@ -9602,19 +9680,29 @@
       showFeedError(e.message);
       return false;
     } finally {
-      updateCharCount();
+      const ownsRequest = jobSubmissionOwnsRequest(submission);
+      finishJobSubmission(submission);
+      if (ownsRequest) updateCharCount();
     }
   }
 
   async function runDigest() {
     const btn = document.getElementById('btn-digest');
+    const submission = beginJobSubmission();
     btn.disabled = true;
     try {
-      const r = await fetch('/api/digest', { method: 'POST' });
-      const d = await readJobSubmission(r);
-      await activateSubmittedTask(d);
+      const r = await fetch('/api/digest', {
+        method: 'POST',
+        signal: submission.controller.signal,
+      });
+      if (!jobSubmissionOwnsRequest(submission)) return;
+      const d = await readJobSubmission(r, () => jobSubmissionOwnsRequest(submission));
+      if (!jobSubmissionOwnsRequest(submission)) return;
+      const activated = await activateSubmittedTask(d, submission);
+      if (!jobSubmissionOwnsRequest(submission) || !activated) return;
       reportLoadSuccess('action');
     } catch (e) {
+      if (!jobSubmissionOwnsRequest(submission)) return;
       if (e instanceof TypeError || navigator.onLine === false) {
         markResearchProjectionStale(
           'The digest submission result is ambiguous. Research remains read-only until authority reloads.',
@@ -9623,7 +9711,9 @@
       }
       reportLoadError('action', e);
     } finally {
-      btn.disabled = false;
+      const ownsRequest = jobSubmissionOwnsRequest(submission);
+      finishJobSubmission(submission);
+      if (ownsRequest) btn.disabled = false;
     }
   }
 
@@ -9632,16 +9722,26 @@
     if (!confirm('Run an ensemble deep-sweep? This runs two premium models (Fable 5 + Opus 4.8) plus a synthesis pass — it takes a few minutes and costs roughly $1–2 per run. Findings are for oncologist review and are NOT saved to the tracked lists.')) {
       return;
     }
+    const submission = beginJobSubmission();
     btn.disabled = true;
     try {
-      const r = await fetch('/api/deep-sweep', { method: 'POST' });
-      const d = await readJobSubmission(r);
-      await activateSubmittedTask(d);
+      const r = await fetch('/api/deep-sweep', {
+        method: 'POST',
+        signal: submission.controller.signal,
+      });
+      if (!jobSubmissionOwnsRequest(submission)) return;
+      const d = await readJobSubmission(r, () => jobSubmissionOwnsRequest(submission));
+      if (!jobSubmissionOwnsRequest(submission)) return;
+      const activated = await activateSubmittedTask(d, submission);
+      if (!jobSubmissionOwnsRequest(submission) || !activated) return;
       reportLoadSuccess('action');
     } catch (e) {
+      if (!jobSubmissionOwnsRequest(submission)) return;
       reportLoadError('action', e);
     } finally {
-      btn.disabled = false;
+      const ownsRequest = jobSubmissionOwnsRequest(submission);
+      finishJobSubmission(submission);
+      if (ownsRequest) btn.disabled = false;
     }
   }
 
@@ -9650,6 +9750,10 @@
     if (pollingInterval) clearTimeout(pollingInterval);
     const poll = async () => {
       const tasks = await loadTasks();
+      if (!Array.isArray(tasks)) {
+        pollingInterval = null;
+        return;
+      }
       const hasActiveJobs = tasks.some(t => t.status === 'running' || t.status === 'queued');
 
       if (hasActiveJobs || (activeView === 'today' && !document.hidden)) {

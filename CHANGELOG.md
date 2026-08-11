@@ -170,6 +170,13 @@ incremented when something user-visible or operationally meaningful changes.
   hard invalidation scrub biomarker state, DOM, focus, and pending responses.
 
 ### Fixed
+- **Cross-workflow authorization teardown and control targets.** Central PHI
+  eviction now aborts and invalidates in-flight document, digest, and deep-sweep
+  submissions; clears selected upload bytes, feed errors, focus, and polling; and
+  prevents late responses from activating Activity state. Polling also stops
+  safely when authority disappears. Alert resolution, visit ordering, and
+  research disclosure controls now retain at least 44-pixel targets at desktop
+  and phone widths.
 - **Authoritative recap export preflight and offline revocation.** Every recap
   Copy, text download, and print now owns one duplicate-locked authenticated
   no-store preflight and performs its browser side effect only when the selected

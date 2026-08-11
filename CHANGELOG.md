@@ -9,6 +9,20 @@ incremented when something user-visible or operationally meaningful changes.
 ## [Unreleased]
 
 ### Added
+- **Shared Today/Patient treatment reconciliation workflow.** Today shows a
+  bounded first set of current/planned caregiver records in server order with
+  exact totals and omissions; Patient provides complete separate Treatment
+  records, Differences to review, Document mentions, and Earlier app records
+  panels. One validated projection and mutation owner preserve raw/date/null/
+  empty fidelity, render lifecycle/restart/discrepancy/outcome/recurrence/
+  follow-up controls only from server authority, keep immutable citation
+  snapshots distinct from current sides, and never promote legacy or generated
+  compatibility context into treatment authority. Canonical opaque links,
+  exact replay/CAS, conflict draft stripping, provisional full-reload success,
+  treatment-only hard clearing, central PHI eviction, owned race epochs,
+  responsive overflow, keyboard tabs, focus safety, and 44-pixel controls cover
+  desktop and phone. `/api/status` treatment UI behavior is retired while
+  backend compatibility remains.
 - **Explicit treatment terminal authority.** Schema v13 gives every past
   caregiver course a mechanical `ended`, `not_started`, `cancelled`, `other`, or
   server-only `legacy_unspecified` qualifier. Exact bounded detail is required
@@ -19,7 +33,7 @@ incremented when something user-visible or operationally meaningful changes.
   for planned-never-started, cancelled, or direct past records. Migration marks
   only missing legacy past authority, tokens bind terminal/lifecycle inputs,
   discrepancy snapshots remain immutable, and pre-extension replay remains
-  exact. Treatment UI remains deferred.
+  exact.
 - **Two-sided treatment discrepancy authority.** New discrepancies now cite
   exactly one source occurrence plus either a distinct source occurrence or an
   exact caregiver course, persist immutable snapshots of both sides, declare a
@@ -28,9 +42,8 @@ incremented when something user-visible or operationally meaningful changes.
   server-side. Existing complete source/course records remain lossless; older
   one-sided records stay visible as explicitly ineligible legacy authority and
   never receive an invented citation. Generated classification and legacy
-  compatibility rows remain non-citable. The backend-only contract uses the
-  exact fixed non-prescriptive treatment safety copy; treatment UI remains
-  deferred.
+  compatibility rows remain non-citable. The contract uses the exact fixed
+  non-prescriptive treatment safety copy.
 - **Treatment reconciliation backend foundation.** Schema v12 adds separate
   caregiver-maintained treatment courses and explicit neutral discrepancies
   without promoting or rewriting legacy raw/component/classified treatment or
@@ -46,8 +59,7 @@ incremented when something user-visible or operationally meaningful changes.
   Restarts create new linked episodes; treating-team outcomes retain exact
   caregiver wording with fixed unverified clinician attribution; no date,
   source, action, visit, model, or clock causes a lifecycle change. The new
-  authority remains excluded from model prompts and no Patient/Today UI is
-  included in this backend-only slice.
+  authority remains excluded from model prompts.
 - **Shared Today/Patient symptom episode workflow.** Today now summarizes every
   current caregiver-entered episode and linked follow-up; Patient provides the
   complete current/resolved lifecycle plus a separate read-only source

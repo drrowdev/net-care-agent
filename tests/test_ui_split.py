@@ -141,7 +141,7 @@ def test_mobile_controls_and_overflow_guards_are_explicit():
 
 
 def test_questions_view_contains_one_shared_appointment_workspace():
-    assert 'id="appointment-prep-heading">Appointment workspace</h2>' in HTML
+    assert 'id="appointment-prep-heading" tabindex="-1">Appointment workspace</h2>' in HTML
     assert 'id="visit-list"' in HTML
     assert 'id="visit-source-appointment"' in HTML
     assert 'id="appointment-overlay"' in HTML
@@ -172,6 +172,10 @@ def test_today_order_and_visible_appointments_label_preserve_internal_route():
     assert 'id="questions-heading">Appointments</h1>' in HTML
     assert "switchView('questions'" in HTML
     assert 'id="appointment-tab-questions"' in HTML
+    recent_markup = today[
+        today.index('id="recent-updates-list"') : today.index('id="treatment-today-card"')
+    ]
+    assert "aria-live=" not in recent_markup
 
 
 def test_appointment_controls_are_keyboard_and_phone_accessible():

@@ -360,7 +360,10 @@ def _job_artifact_state(job: dict) -> str:
 
 def _job_artifact_reference_unavailable(job: dict) -> bool:
     kind, field, roots = _job_artifact_contract(job)
-    if kind == "none" or _job_artifact_state(job) != "available" or not field:
+    state = _job_artifact_state(job)
+    if state == "unavailable":
+        return True
+    if kind == "none" or state != "available" or not field:
         return False
     reference = job.get(field)
     if not reference:
@@ -558,6 +561,7 @@ def _job_response(
     profile: dict | None = None,
 ) -> dict:
     response = dict(job)
+    artifact_state = _job_artifact_state(job)
     artifact_unavailable = _job_artifact_reference_unavailable(job)
     profile_dependent_report = job.get("type") in {"feed", "digest", "deep-sweep"}
     profile_dependent_result = job.get("type") in {"chat", "questions", "summary"}
@@ -646,6 +650,8 @@ def _job_response(
     if job.get("type") == "feed" and job.get("source_document_id"):
         response["receipt_url"] = f"/api/jobs/{job['id']}/receipt"
     report_ref = job.get("report_file")
+    if artifact_unavailable:
+        response["artifact_unavailable"] = True
     if report_ref:
         if feed_content_stale or report_revision_stale:
             response["report_stale"] = True
@@ -658,14 +664,12 @@ def _job_response(
                     else "patient_record_changed_after_generation"
                 )
             )
-            try:
-                report_path = safe_artifact_path(DATA_DIR, report_ref, {"reports"})
-                response["report_available_for_audit"] = report_path.is_file()
-                artifact_unavailable = not response["report_available_for_audit"]
-            except (OSError, ValueError):
-                response["report_available_for_audit"] = False
-                artifact_unavailable = True
-        else:
+            response["report_available_for_audit"] = (
+                artifact_state == "available" and not artifact_unavailable
+            )
+            if artifact_unavailable:
+                response["artifact_unavailable"] = True
+        elif artifact_state == "available" and not artifact_unavailable:
             try:
                 response["report"] = safe_artifact_path(
                     DATA_DIR, report_ref, {"reports"}
@@ -673,8 +677,10 @@ def _job_response(
             except (OSError, ValueError):
                 response["artifact_unavailable"] = True
                 artifact_unavailable = True
+        elif artifact_state == "unavailable":
+            response["artifact_unavailable"] = True
     result_ref = job.get("result_file")
-    if result_ref:
+    if result_ref and artifact_state == "available" and not artifact_unavailable:
         try:
             response["result"] = json.loads(
                 safe_artifact_path(DATA_DIR, result_ref, {"job_results"}).read_text(
@@ -748,6 +754,8 @@ def _job_response(
         except (OSError, ValueError, json.JSONDecodeError):
             response["artifact_unavailable"] = True
             artifact_unavailable = True
+    elif result_ref and artifact_state == "unavailable":
+        response["artifact_unavailable"] = True
     _public_job_artifact(response, job, unavailable=artifact_unavailable)
     return response
 

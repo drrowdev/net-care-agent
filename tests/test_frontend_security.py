@@ -1051,7 +1051,9 @@ def test_stale_job_result_is_hidden_in_activity_panel():
     assert "const staleCopy = staleTaskCopy(task)" in detail
     assert "Regenerate it before use" in detail
     assert "if (task.report_stale)" in detail
-    assert "staleTaskCopy({" in detail
+    stale_report = _function_source("staleReportMarkup", "selectTask")
+    assert "staleTaskCopy({" in stale_report
+    assert "staleReportMarkup(task)" in detail
     artifact_copy = _function_source("taskArtifactSummary", "loadTasks")
     assert "artifact.freshness === 'stale'" in artifact_copy
     assert "no longer current" in artifact_copy
@@ -1104,6 +1106,8 @@ def test_open_task_is_revalidated_and_copy_state_cleared():
     assert "freshness_cannot_be_verified" in stale
     revalidate = _function_source("revalidateOpenTask", "updateHeaderStatus")
     assert "task?.derived_content_stale" in revalidate
+    assert "staleReportMarkup({" in revalidate
+    assert "artifactStateMarkup(task)" in revalidate
     assert "clearReportCopyState()" in revalidate
     copy = _function_source("clearReportCopyState", "revalidateOpenTask")
     assert "currentReportText = ''" in copy

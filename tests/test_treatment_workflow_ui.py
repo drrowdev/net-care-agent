@@ -376,6 +376,51 @@ def _recorded_only_projection() -> dict:
     return projection
 
 
+def _component_linkage_projection() -> dict:
+    projection = _projection()
+
+    def recorded_row(name: str, component_ids: list[str]) -> dict:
+        row = _legacy()
+        row["id"] = f"txlegacy-{name}"
+        row["token"] = f"legacy-token-{name}"
+        row["raw_text"] = f"{name.title()} recorded treatment"
+        row["source_order"] = len(rows)
+        row["components"] = [
+            {
+                "id": component_id,
+                "text": f"{name.title()} component {index + 1}",
+                "component_order": index,
+            }
+            for index, component_id in enumerate(component_ids)
+        ]
+        row["generated_classification"] = []
+        return row
+
+    rows: list[dict] = []
+    rows.append(recorded_row("none", ["none-1"]))
+    rows.append(recorded_row("all", ["all-1", "all-2"]))
+    rows.append(recorded_row("partial", ["partial-1", "partial-2"]))
+    course = _course(
+        "a",
+        "Explicit caregiver status",
+        component_ids=["all-1", "all-2", "partial-1"],
+    )
+    projection.update(
+        {
+            "projection_token": "treatment-component-linkage",
+            "legacy_treatment_count": len(rows),
+            "unlinked_generated_context_count": 0,
+            "course_count": 1,
+            "discrepancy_count": 0,
+            "legacy_treatments": rows,
+            "unlinked_generated_context": [],
+            "courses": [course],
+            "discrepancies": [],
+        }
+    )
+    return projection
+
+
 def _run_validator(payloads: list[dict]) -> list[bool]:
     serialized_payloads = json.dumps(payloads)
     script = "\n".join(
@@ -865,9 +910,13 @@ def test_live_shared_projection_totals_authorities_and_accessibility(width: int,
             assert page.locator("#today-treatment-list .treatment-course-card").count() == 3
             totals = page.locator("#today-treatment-totals").inner_text()
             assert "2 current and 2 planned status records" in totals
-            assert "1 recorded treatment entry has not yet been reviewed" in totals
+            assert "All 1 recorded treatment entry is linked" in totals
             page.locator("#nav-patient").click()
             assert page.locator("#patient-treatment-list .treatment-course-card").count() == 5
+            assert (
+                "Linked to reviewed status"
+                in page.locator("#patient-treatment-list .treatment-recorded-card").inner_text()
+            )
             assert [
                 " ".join(text.split()) for text in page.locator(".treatment-tab").all_inner_texts()
             ] == [
@@ -970,13 +1019,13 @@ def test_live_recorded_treatments_are_first_class_without_status_inference(
         try:
             today = page.locator("#treatment-today-card")
             assert "No treatment is recorded as current." in today.inner_text()
-            assert "31 treatment records have not yet been reviewed" in today.inner_text()
+            assert "31 treatment records need timing/status review" in today.inner_text()
             assert page.locator("#today-treatment-list .treatment-recorded-card").count() == 3
 
             page.locator("#nav-patient").click()
             overview = page.locator("#treatment-panel-records")
             assert page.locator("#patient-treatment-list .treatment-recorded-card").count() == 31
-            assert "Status not recorded (31)" in overview.inner_text()
+            assert "Recorded treatment information (31)" in overview.inner_text()
             assert "Recorded treatment information 00" in overview.inner_text()
             assert "Recorded treatment information 30" in overview.inner_text()
             normalized = overview.inner_text().lower()
@@ -999,6 +1048,45 @@ def test_live_recorded_treatments_are_first_class_without_status_inference(
                 "() => document.documentElement.scrollWidth - document.documentElement.clientWidth"
             )
             assert overflow == 0
+        finally:
+            context.close()
+            browser.close()
+
+
+def test_live_recorded_treatment_component_linkage_is_none_all_or_partial():
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    with playwright_api.sync_playwright() as playwright:
+        if not Path(playwright.chromium.executable_path).exists():
+            pytest.skip("Installed Playwright browser is unavailable")
+        browser, context, page, _ = _open_treatment_page(
+            playwright,
+            1280,
+            800,
+            _component_linkage_projection(),
+        )
+        try:
+            totals = page.locator("#today-treatment-totals").inner_text()
+            assert "1 current and 0 planned status record" in totals
+            assert "2 recorded treatment entries need timing/status review" in totals
+
+            page.locator("#nav-patient").click()
+            cards = page.locator("#patient-treatment-list .treatment-recorded-card")
+            assert cards.count() == 3
+            assert "Status not recorded" in cards.nth(0).inner_text()
+            assert "Treatment timing/status not yet reviewed" in cards.nth(0).inner_text()
+            assert "Linked to reviewed status" in cards.nth(1).inner_text()
+            assert "All recorded components are linked" in cards.nth(1).inner_text()
+            assert "Partly linked to reviewed status" in cards.nth(2).inner_text()
+            assert "1 of 2 recorded components are linked" in cards.nth(2).inner_text()
+            assert cards.locator("h3").all_inner_texts() == [
+                "None recorded treatment",
+                "All recorded treatment",
+                "Partial recorded treatment",
+            ]
+            for card in cards.all():
+                assert "Current record" not in card.inner_text()
+                assert "Planned record" not in card.inner_text()
+                assert "Past record" not in card.inner_text()
         finally:
             context.close()
             browser.close()
@@ -1070,6 +1158,135 @@ def test_live_today_first_viewport_prioritizes_latest_assessment(
             )
             assert "Earlier visit" in page.locator("#today-appointment-summary").inner_text()
             assert page.evaluate("() => todayAppointmentVisit()?.id") == "visit-earlier"
+        finally:
+            context.close()
+            browser.close()
+
+
+@pytest.mark.parametrize("width,height", [(1280, 800), (360, 740)])
+def test_live_activity_navigation_closes_report_and_restores_meaningful_focus(
+    width: int,
+    height: int,
+):
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    with playwright_api.sync_playwright() as playwright:
+        if not Path(playwright.chromium.executable_path).exists():
+            pytest.skip("Installed Playwright browser is unavailable")
+        browser, context, page, _ = _open_treatment_page(playwright, width, height)
+        try:
+            page.locator("#today-appointment-action").click()
+            assert page.evaluate("() => activeView") == "questions"
+            assert page.evaluate("() => document.activeElement.id") == "appointment-prep-heading"
+
+            page.evaluate(
+                """() => {
+                  switchView('activity', document.getElementById('nav-activity'));
+                  visitsById = new Map([['visit-locked', {
+                    id: 'visit-locked', token: 'visit-locked-token',
+                    title: 'Locked visit', status: 'planned', date: '2026-09-01',
+                    question_snapshots: [], decisions: [], follow_up_ids: [],
+                  }]]);
+                  followUpMutationPending = true;
+                  window.__originalLoadVisits = loadVisits;
+                  loadVisits = () => Promise.resolve([]);
+                  const report = document.getElementById('report-panel');
+                  report.classList.remove('collapsed');
+                  report.setAttribute('aria-hidden', 'false');
+                  document.getElementById('panel-body').innerHTML =
+                    '<button id="activity-open-appointments" onclick="openAppointmentsView(this)">Open Appointments</button>';
+                  activateDialog(report, document.getElementById('nav-activity'));
+                }"""
+            )
+            page.locator("#activity-open-appointments").click()
+            assert page.locator("#report-panel").get_attribute("aria-hidden") == "true"
+            assert page.locator("#report-panel").evaluate(
+                "node => node.classList.contains('collapsed')"
+            )
+            assert page.evaluate("() => activeView") == "questions"
+            assert page.evaluate("() => document.activeElement.id") == "appointment-prep-heading"
+            assert not page.evaluate("() => appointmentDialogOpen")
+            page.evaluate(
+                """() => {
+                  loadVisits = window.__originalLoadVisits;
+                  followUpMutationPending = false;
+                  visitsById = new Map();
+                }"""
+            )
+
+            page.evaluate(
+                """() => {
+                  switchView('activity', document.getElementById('nav-activity'));
+                  const report = document.getElementById('report-panel');
+                  report.classList.remove('collapsed');
+                  report.setAttribute('aria-hidden', 'false');
+                  document.getElementById('panel-body').innerHTML =
+                    '<button id="activity-open-today" onclick="openTodayFromActivity(this)">Open Today</button>';
+                  activateDialog(report, document.getElementById('nav-activity'));
+                }"""
+            )
+            page.locator("#activity-open-today").click()
+            assert page.locator("#report-panel").get_attribute("aria-hidden") == "true"
+            assert page.evaluate("() => activeView") == "today"
+            assert page.evaluate("() => document.activeElement.id") == "summary-heading"
+
+            failure_deduplicated = page.evaluate(
+                """() => {
+                  switchView('patient', document.getElementById('nav-patient'));
+                  renderStatusFailure();
+                  const list = document.getElementById('recent-updates-list');
+                  const alerts = document.getElementById('alerts-list');
+                  const firstRecent = list.firstElementChild;
+                  const firstAlerts = alerts.firstElementChild;
+                  renderStatusFailure();
+                  return {
+                    sameRecentNode: firstRecent === list.firstElementChild,
+                    sameAlertsNode: firstAlerts === alerts.firstElementChild,
+                    recentFailures: list.querySelectorAll('[data-recent-updates-failure]').length,
+                    alertFailures: alerts.querySelectorAll('[data-alerts-load-failure]').length,
+                  };
+                }"""
+            )
+            assert failure_deduplicated == {
+                "sameRecentNode": True,
+                "sameAlertsNode": True,
+                "recentFailures": 1,
+                "alertFailures": 1,
+            }
+
+            stale_corrupt = page.evaluate(
+                """() => staleReportMarkup({
+                  id: 'stale-corrupt',
+                  type: 'digest',
+                  status: 'done',
+                  report_stale: true,
+                  report_stale_reason: 'patient_record_changed_after_generation',
+                  artifact: {kind: 'report', state: 'unavailable', freshness: 'unknown'},
+                })"""
+            )
+            assert "retained" not in stale_corrupt.lower()
+            assert "prior report is not available here" in stale_corrupt.lower()
+            assert "report unavailable" in stale_corrupt.lower()
+
+            polled_stale = page.evaluate(
+                """() => {
+                  selectedTaskId = 'stale-corrupt';
+                  const report = document.getElementById('report-panel');
+                  report.classList.remove('collapsed');
+                  report.setAttribute('aria-hidden', 'false');
+                  revalidateOpenTask([{
+                    id: 'stale-corrupt',
+                    type: 'digest',
+                    status: 'done',
+                    derived_content_stale: true,
+                    derived_content_stale_reason: 'patient_record_changed_after_generation',
+                    artifact: {kind: 'report', state: 'unavailable', freshness: 'unknown'},
+                  }]);
+                  return document.getElementById('panel-body').innerHTML;
+                }"""
+            )
+            assert "retained" not in polled_stale.lower()
+            assert "report unavailable" in polled_stale.lower()
+            assert "retry detail load" in polled_stale.lower()
         finally:
             context.close()
             browser.close()

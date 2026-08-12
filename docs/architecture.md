@@ -361,14 +361,17 @@ projection, response owner, revision pair, loader, and mutation controller
 render a bounded Today summary and the complete Patient workspace; no
 `/api/status` treatment row can render, edit, transition, or remove a record.
 Today shows current/planned caregiver courses when present; otherwise it shows a
-bounded first set of recorded raw rows and explicitly says their timing/status
-has not been reviewed. Patient's default Overview orders current/planned
-caregiver courses, every `legacy_treatments[]` row under Status not recorded,
-then past courses. Differences, source-document mentions, and collapsed
-automatic compatibility notes remain separate. Every row, duplicate, component,
-and stored order is preserved. Generated classification remains compatibility
-context rather than a treatment fact, and a raw component becomes course
-authority only through an explicit caregiver association.
+bounded first set of recorded raw rows. A presentation-only linkage check compares
+each raw row's component IDs with explicit `course.legacy_component_ids`: no
+linked components means timing/status not reviewed, all means linked to a
+caregiver-reviewed status record, and partial linkage keeps the row unresolved.
+Only none/partial rows count as needing review. Patient's default Overview orders
+current/planned caregiver courses, every raw row exactly once in stored order,
+then past courses. Differences, source-document mentions, and collapsed automatic
+compatibility notes remain separate. No status is assigned to raw wording.
+Generated classification remains compatibility context rather than a treatment
+fact, and a raw component becomes course authority only through an explicit
+caregiver association.
 
 Before any treatment DOM replacement, the client validates the complete
 projection, exact safety/authority bytes, top-level counts/lists, serialized
@@ -744,7 +747,7 @@ only with exact `APP_ORIGIN` or canonical HTTPS `WEBSITE_HOSTNAME`.
 | Caregiver note presented as verified clinician fact | Fixed provenance labels every answer/decision as caregiver-entered, clinician-attributed, and unverified; generated questions remain snapshots |
 | Retry duplicates a decision or follow-up | Mutation ID + canonical request hash replay returns the prior target without another save or revision increment |
 | Old chat contaminates corrected record | Client clears history on profile revision change; server rejects mismatched `history_revision` with `409` |
-| Cached PHI after auth/load failure | Central client eviction clears every patient-bearing cache, panel, dialog, chat turn, receipt/report, filter, and open feedback surface; non-auth receipt refresh is the only fallback exception |
+| Cached PHI after auth/load failure | Central client eviction clears every patient-bearing cache, panel, dialog, chat turn, receipt/report, filter, and open feedback surface; non-auth receipt refresh is the only fallback exception. Activity result links close/deactivate the report dialog before changing views and then focus the target heading/dialog. |
 | Source traversal / browser caching | Auth-gated `/api/sources/<id>[/<artifact>]` and `/api/evidence/<id>` resolve only indexed paths below `DATA_DIR`, reject traversal, and return `no-store` |
 | Stale clinical judgment | Only active, nonexpired, non-review-due judgments constrain agents; all others are visibly framed as needing clinician review |
 | Storage account deletion | `AzureBackupProtectionLock` (CanNotDelete) on the resource group, auto-applied by Azure Backup |

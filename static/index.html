@@ -91,7 +91,7 @@
           <div>
             <p class="eyebrow">Latest assessment</p>
             <div class="summary-heading-row">
-              <h2 id="summary-heading">Latest assessment</h2>
+              <h2 id="summary-heading" tabindex="-1">Latest assessment</h2>
               <span id="summary-status-inline"></span>
             </div>
             <span class="summary-updated" id="summary-updated"></span>
@@ -114,7 +114,7 @@
           </div>
           <button class="button secondary" type="button" onclick="switchView('activity', document.getElementById('nav-activity'))">Open Activity</button>
         </div>
-        <div class="recent-updates-list" id="recent-updates-list" aria-live="polite">
+        <div class="recent-updates-list" id="recent-updates-list">
           <div class="loading-state">Loading recorded update times…</div>
         </div>
       </section>
@@ -193,7 +193,7 @@
             <p class="eyebrow">Visit preparation</p>
             <h2 id="today-appointment-heading">Prepare for appointment</h2>
           </div>
-          <button class="button primary" id="today-appointment-action" type="button" onclick="openAppointmentsView()">Open Appointments</button>
+          <button class="button primary" id="today-appointment-action" type="button" onclick="openAppointmentsView(this)">Open Appointments</button>
         </div>
         <div class="today-appointment-summary" id="today-appointment-summary">Loading appointment workspace…</div>
       </section>
@@ -554,7 +554,7 @@
 
       <section class="content-card appointment-prep-card" aria-labelledby="appointment-prep-heading">
         <div class="card-header compact split-header">
-          <div><p class="eyebrow">Visit working mode</p><h2 id="appointment-prep-heading">Appointment workspace</h2></div>
+          <div><p class="eyebrow">Visit working mode</p><h2 id="appointment-prep-heading" tabindex="-1">Appointment workspace</h2></div>
           <button class="button secondary" id="visit-create-toggle" aria-controls="visit-create-panel" aria-expanded="false" onclick="toggleVisitCreateForm()">＋ New visit</button>
         </div>
         <div id="visit-create-panel" class="visit-create-panel" hidden>

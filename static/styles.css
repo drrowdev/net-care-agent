@@ -4798,7 +4798,7 @@ body.dialog-open { overflow: hidden; }
   .imaging-selection-toolbar .button,
   .imaging-retry .button {
     width: 100%;
-    min-height: 44px;
+    min-height: 45px;
     justify-content: center;
   }
   .imaging-comparison { padding: 14px; }
@@ -4895,7 +4895,7 @@ body.dialog-open { overflow: hidden; }
   .appointment-tab-panel { padding: 12px; }
   .visit-recap-toolbar { align-items: stretch; flex-direction: column; }
   .visit-recap-actions { justify-content: stretch; }
-  .visit-recap-actions .button { flex: 1 1 120px; min-height: 44px; }
+  .visit-recap-actions .button { flex: 1 1 120px; min-height: 45px; }
   .visit-recap-details dl { grid-template-columns: 1fr; }
   .visit-answer { grid-template-columns: 1fr; align-items: stretch; }
   .visit-answer .button { justify-self: stretch; }

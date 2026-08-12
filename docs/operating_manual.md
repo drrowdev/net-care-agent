@@ -592,17 +592,20 @@ excluded from all model prompts.
 ## 5b. Record and reconcile treatment information
 
 **Today → Treatment status** shows explicitly reviewed Current/Planned records
-when present. If no treatment is recorded current but recorded rows exist, it
-says exactly that those rows have not yet been reviewed for timing/status and
-shows a bounded first set. **Review treatment status** opens the complete
-**Patient → Treatments** Overview. Today and Patient use the same accepted
-projection; neither uses `/api/status` treatment data.
+when present. Each recorded raw row is also checked only against explicit
+caregiver course-component links: fully linked rows are not counted as unresolved,
+partly linked rows remain unresolved, and unlinked rows still need timing/status
+review. If no treatment is recorded current, Today says so and shows a bounded
+first set with honest unresolved counts. **Review treatment status** opens the
+complete **Patient → Treatments** Overview. Today and Patient use the same
+accepted projection; neither uses `/api/status` treatment data.
 
 Patient's default Overview combines three kinds of information without inference:
 
 1. Explicit caregiver-maintained **Current and planned** courses.
-2. Every row already in the patient treatment record under **Status not
-   recorded**, labelled **Treatment timing/status not yet reviewed**.
+2. Every row already in the patient treatment record, labelled as unlinked,
+   fully linked, or partly linked to an explicit caregiver-reviewed status
+   record. Raw wording never inherits the linked course's lifecycle.
 3. Explicit caregiver-maintained **Finished or past** courses.
 
 Record or edit only explicit wording,

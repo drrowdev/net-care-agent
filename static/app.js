@@ -3257,10 +3257,12 @@
     clearFreshnessProjection();
     if (patient) patient.textContent = 'Patient profile unavailable';
     if (patientMeta) patientMeta.innerHTML = '';
-    if (alerts) alerts.innerHTML = loadFailureMarkup('Alerts', 'loadStatus()');
+    if (alerts && !alerts.querySelector('[data-alerts-load-failure]')) {
+      alerts.innerHTML = '<div class="load-failure" role="alert" data-alerts-load-failure><strong>Alerts unavailable</strong><span>Nothing was removed. Retry when the connection is available.</span><button class="button secondary" onclick="loadStatus()">Retry</button></div>';
+    }
     const updates = document.getElementById('recent-updates-list');
-    if (updates) {
-      updates.innerHTML = '<div class="load-failure" role="alert"><strong>Couldn’t check recent updates</strong><span>Retry when the connection is available.</span></div>';
+    if (updates && !updates.querySelector('[data-recent-updates-failure]')) {
+      updates.innerHTML = '<div class="load-failure" role="alert" data-recent-updates-failure><strong>Couldn’t check recent updates</strong><span>Retry when the connection is available.</span></div>';
     }
   }
 
@@ -9257,14 +9259,23 @@
     if (!selectedTaskId || panel?.classList.contains('collapsed')) return;
     const task = tasks.find(item => item.id === selectedTaskId);
     if (!task?.derived_content_stale) return;
-    const copy = staleTaskCopy(task);
     const receiptHtml = currentReceipt?.job_id === selectedTaskId
       ? renderReceipt(currentReceipt)
       : '';
-    document.getElementById('panel-body').innerHTML = `${receiptHtml}
-      <div class="load-failure stale-artifact" role="alert">
+    const artifact = normalizedTaskArtifact(task);
+    let staleMarkup;
+    if (artifact.kind === 'report') {
+      staleMarkup = staleReportMarkup({
+        ...task,
+        report_stale_reason: task.derived_content_stale_reason,
+      });
+    } else {
+      const copy = staleTaskCopy(task);
+      staleMarkup = `<div class="load-failure stale-artifact" role="alert">
         <strong>${escHtml(copy.title)}</strong><span>${escHtml(copy.detail)} Prior generated content is hidden here.</span>
-      </div>`;
+      </div>${artifact.state === 'available' ? '' : artifactStateMarkup(task)}`;
+    }
+    document.getElementById('panel-body').innerHTML = `${receiptHtml}${staleMarkup}`;
     clearReportCopyState();
   }
 
@@ -9297,7 +9308,7 @@
     }
   }
 
-  function closePanel() {
+  function closePanel(options = {}) {
     const request = capturePatientRequest();
     const report = document.getElementById('report-panel');
     report.classList.add('collapsed');
@@ -9314,7 +9325,15 @@
       .catch(error => {
         if (patientRequestIsCurrent(request)) reportLoadError('tasks', error);
       });
-    deactivateDialog(report);
+    deactivateDialog(report, options.restoreFocus !== false);
+  }
+
+  function closeReportBeforeNavigation(invoker) {
+    const report = document.getElementById('report-panel');
+    if (report?.classList.contains('collapsed')) return false;
+    const invokerInsideReport = Boolean(invoker && report.contains(invoker));
+    closePanel({ restoreFocus: !invokerInsideReport });
+    return true;
   }
 
   function receiptValueSummary(value, category) {
@@ -9606,7 +9625,7 @@
         html: `<div class="artifact-state-card available">
           <strong>Appointment questions generated</strong>
           <span>${count} question${count === 1 ? '' : 's'} are available in Appointments.</span>
-          <button class="button secondary" type="button" onclick="openAppointmentsView()">Open Appointments</button>
+          <button class="button secondary" type="button" onclick="openAppointmentsView(this)">Open Appointments</button>
         </div>`,
         copyText: '',
       };
@@ -9616,7 +9635,7 @@
         html: `<div class="artifact-state-card available">
           <strong>Assessment refreshed</strong>
           <span>Review the current assessment and recommendations on Today.</span>
-          <button class="button secondary" type="button" onclick="switchView('today', document.getElementById('nav-today'))">Open Today</button>
+          <button class="button secondary" type="button" onclick="openTodayFromActivity(this)">Open Today</button>
         </div>`,
         copyText: '',
       };
@@ -9664,7 +9683,7 @@
       } else if (task.type === 'summary') {
         action = '<button class="button secondary" type="button" onclick="generateSummary()">Refresh assessment</button>';
       } else if (task.type === 'questions') {
-        action = '<button class="button secondary" type="button" onclick="openAppointmentsView()">Open Appointments</button>';
+        action = '<button class="button secondary" type="button" onclick="openAppointmentsView(this)">Open Appointments</button>';
       }
     }
     if (artifact.state === 'unavailable') {
@@ -9673,6 +9692,22 @@
     return `<div class="artifact-state-card ${safeClassToken(artifact.state, 'unavailable')}">
       <strong>${escHtml(copy.title)}</strong><span>${escHtml(copy.detail)}</span>${action}
     </div>`;
+  }
+
+  function staleReportMarkup(task) {
+    const staleCopy = staleTaskCopy({
+      ...task,
+      derived_content_stale_reason: task.report_stale_reason,
+    });
+    const artifact = normalizedTaskArtifact(task);
+    return `<div class="load-failure stale-artifact" role="alert">
+      <strong>${escHtml(staleCopy.title)}</strong>
+      <span>${escHtml(staleCopy.detail)} ${
+        artifact.state === 'available'
+          ? 'The prior report is retained but hidden here.'
+          : 'The prior report is not available here.'
+      }</span>
+    </div>${artifact.state === 'available' ? '' : artifactStateMarkup(task)}`;
   }
 
   async function selectTask(id, expectedEpoch = null, fallbackReceipt = null) {
@@ -9806,19 +9841,7 @@
 
     // Job details hydrate report artifacts on demand.
     if (task.report_stale) {
-      const staleCopy = staleTaskCopy({
-        ...task,
-        derived_content_stale_reason: task.report_stale_reason,
-      });
-      const artifact = normalizedTaskArtifact(task);
-      html += `<div class="load-failure stale-artifact" role="alert">
-        <strong>${escHtml(staleCopy.title)}</strong>
-        <span>${escHtml(staleCopy.detail)} ${
-          artifact.state === 'available'
-            ? 'The prior report is retained but hidden here.'
-            : 'The prior report is not available here.'
-        }</span>
-      </div>${artifact.state === 'available' ? '' : artifactStateMarkup(task)}`;
+      html += staleReportMarkup(task);
       clearReportCopyState();
     } else if (task.report) {
       currentReportText = task.report;
@@ -11030,14 +11053,21 @@
     action.textContent = visit.status === 'in_progress' ? 'Continue appointment' : 'Prepare for appointment';
   }
 
-  function openAppointmentsView() {
-    const trigger = document.getElementById('today-appointment-action');
-    switchView('questions', document.getElementById('nav-questions'));
+  function openTodayFromActivity(invoker = document.activeElement) {
+    closeReportBeforeNavigation(invoker);
+    const navigation = document.getElementById('nav-today');
+    switchView('today', navigation);
+    document.getElementById('summary-heading')?.focus({ preventScroll: true });
+  }
+
+  function openAppointmentsView(invoker = document.activeElement) {
+    closeReportBeforeNavigation(invoker);
+    const navigation = document.getElementById('nav-questions');
+    switchView('questions', navigation);
     const visit = todayAppointmentVisit();
-    if (visit) {
-      openAppointmentWorkspace(trigger, visit.id);
-    } else {
-      document.getElementById('appointment-prep-heading')?.focus();
+    const opened = visit ? openAppointmentWorkspace(navigation, visit.id) : false;
+    if (!opened) {
+      document.getElementById('appointment-prep-heading')?.focus({ preventScroll: true });
     }
   }
 
@@ -12492,12 +12522,12 @@
   }
 
   function openAppointmentWorkspace(trigger, visitId) {
-    if (followUpControlsLocked()) return;
+    if (followUpControlsLocked()) return false;
     const visit = visitsById.get(visitId);
     if (!visit) {
       setAppointmentMessage('The visit is no longer available.', 'conflict');
       loadVisits();
-      return;
+      return false;
     }
     if (selectedVisitId && selectedVisitId !== visitId) captureAppointmentDraft();
     scrubVisitRecapBeforeSelectionChange(visitId, visit.token);
@@ -12513,6 +12543,7 @@
     dialog.inert = false;
     renderAppointmentWorkspace();
     activateDialog(dialog, trigger);
+    return true;
   }
 
   function closeAppointmentWorkspace() {
@@ -14578,12 +14609,49 @@
     return row;
   }
 
-  function treatmentRecordedCard(row, compact = false) {
-    const card = treatmentElement('article', `treatment-recorded-card${compact ? ' compact' : ''}`);
+  function treatmentReviewedComponentIds() {
+    return new Set(treatmentProjection.courses.flatMap(course => course.legacy_component_ids));
+  }
+
+  function treatmentRecordedLinkage(row, reviewedComponentIds) {
+    const componentIds = row.components.map(component => component.id);
+    const linkedCount = componentIds.filter(id => reviewedComponentIds.has(id)).length;
+    if (componentIds.length > 0 && linkedCount === componentIds.length) {
+      return { state: 'all', linkedCount, totalCount: componentIds.length };
+    }
+    if (linkedCount > 0) {
+      return { state: 'partial', linkedCount, totalCount: componentIds.length };
+    }
+    return { state: 'none', linkedCount: 0, totalCount: componentIds.length };
+  }
+
+  function treatmentRecordedCard(row, compact = false, linkage = null) {
+    const reviewLinkage = linkage || treatmentRecordedLinkage(
+      row,
+      treatmentReviewedComponentIds(),
+    );
+    const presentation = {
+      none: {
+        label: 'Status not recorded',
+        detail: 'Treatment timing/status not yet reviewed.',
+      },
+      all: {
+        label: 'Linked to reviewed status',
+        detail: 'All recorded components are linked to a caregiver-reviewed treatment status. The recorded wording remains separate.',
+      },
+      partial: {
+        label: 'Partly linked to reviewed status',
+        detail: `${reviewLinkage.linkedCount} of ${reviewLinkage.totalCount} recorded components are linked; remaining details need timing/status review.`,
+      },
+    }[reviewLinkage.state];
+    const card = treatmentElement(
+      'article',
+      `treatment-recorded-card ${reviewLinkage.state}${compact ? ' compact' : ''}`,
+    );
     card.append(
-      treatmentElement('p', 'treatment-authority-label', 'Status not recorded'),
+      treatmentElement('p', 'treatment-authority-label', presentation.label),
       treatmentElement('h3', '', row.raw_text),
-      treatmentElement('p', 'treatment-recorded-guidance', 'Treatment timing/status not yet reviewed.'),
+      treatmentElement('p', 'treatment-recorded-guidance', presentation.detail),
     );
     if (compact) return card;
     const components = treatmentElement('section', 'treatment-legacy-section');
@@ -14884,19 +14952,32 @@
     );
     const unlinkedGeneratedCount = treatmentProjection.unlinked_generated_context_count;
     const shown = active.slice(0, TREATMENT_TODAY_LIMIT);
-    const recordedShown = treatmentProjection.legacy_treatments.slice(0, TREATMENT_TODAY_LIMIT);
+    const reviewedComponentIds = treatmentReviewedComponentIds();
+    const recordedRows = treatmentProjection.legacy_treatments.map(row => ({
+      row,
+      linkage: treatmentRecordedLinkage(row, reviewedComponentIds),
+    }));
+    const recordedNeedingReview = recordedRows.filter(item => item.linkage.state !== 'all');
+    const fullyLinkedCount = recordedRows.length - recordedNeedingReview.length;
+    const recordedShown = recordedRows.slice(0, TREATMENT_TODAY_LIMIT);
     const totals = document.getElementById('today-treatment-totals');
     if (totals) {
       if (!active.length && treatmentProjection.legacy_treatment_count) {
-        totals.textContent = `No treatment is recorded as current. ${treatmentProjection.legacy_treatment_count} treatment record${
-          treatmentProjection.legacy_treatment_count === 1 ? ' has' : 's have'
-        } not yet been reviewed for timing/status.`;
+        totals.textContent = `No treatment is recorded as current. ${
+          recordedNeedingReview.length
+            ? `${recordedNeedingReview.length} treatment record${recordedNeedingReview.length === 1 ? ' needs' : 's need'} timing/status review.`
+            : `All ${fullyLinkedCount} recorded treatment entr${fullyLinkedCount === 1 ? 'y is' : 'ies are'} linked to caregiver-reviewed status records.`
+        }`;
       } else if (active.length) {
         totals.textContent = `${currentCount} current and ${plannedCount} planned status record${
           active.length === 1 ? '' : 's'
-        }. ${treatmentProjection.legacy_treatment_count} recorded treatment entr${
-          treatmentProjection.legacy_treatment_count === 1 ? 'y has' : 'ies have'
-        } not yet been reviewed for timing/status.`;
+        }. ${
+          recordedNeedingReview.length
+            ? `${recordedNeedingReview.length} recorded treatment entr${recordedNeedingReview.length === 1 ? 'y needs' : 'ies need'} timing/status review.`
+            : fullyLinkedCount
+              ? `All ${fullyLinkedCount} recorded treatment entr${fullyLinkedCount === 1 ? 'y is' : 'ies are'} linked to caregiver-reviewed status records.`
+              : 'No additional recorded treatment entries need review.'
+        }`;
       } else if (pastCount) {
         totals.textContent = `No treatment is recorded as current. ${pastCount} finished or past status record${
           pastCount === 1 ? ' is' : 's are'
@@ -14911,7 +14992,7 @@
         shown.length
           ? shown.map(course => treatmentCourseCard(course, true))
           : recordedShown.length
-            ? recordedShown.map(row => treatmentRecordedCard(row, true))
+            ? recordedShown.map(item => treatmentRecordedCard(item.row, true, item.linkage))
             : [treatmentElement('div', 'empty-state', pastCount
               ? 'No treatment is recorded as current. Review finished or past records in Patient.'
               : 'No treatment information is recorded.')]
@@ -14922,8 +15003,8 @@
       const currentAndPlanned = treatmentProjection.courses
         .filter(course => ['current', 'planned'].includes(course.status))
         .map(course => treatmentCourseCard(course));
-      const statusNotRecorded = treatmentProjection.legacy_treatments.map(
-        row => treatmentRecordedCard(row),
+      const recordedInformation = recordedRows.map(
+        item => treatmentRecordedCard(item.row, false, item.linkage),
       );
       const past = treatmentProjection.courses
         .filter(course => course.status === 'past')
@@ -14936,10 +15017,10 @@
           'No treatment has been explicitly recorded as current or planned.',
         ),
         treatmentOverviewSection(
-          `Status not recorded (${statusNotRecorded.length})`,
-          'These treatment entries are part of the patient record, but their timing and status have not been reviewed in this workspace.',
-          statusNotRecorded,
-          'No treatment entries are waiting for timing/status review.',
+          `Recorded treatment information (${recordedInformation.length})`,
+          'Every recorded treatment entry stays here in stored order. Each card shows whether its explicit components are linked to a caregiver-reviewed status record.',
+          recordedInformation,
+          'No additional recorded treatment information is present.',
         ),
         treatmentOverviewSection(
           'Finished or past',

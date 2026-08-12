@@ -52,6 +52,20 @@ incremented when something user-visible or operationally meaningful changes.
   local scrolling at phone width.
 
 ### Fixed
+- **Post-review caregiver workspace blockers.** Stale corrupt or explicitly
+  unavailable reports now remain unavailable in both Activity list and detail
+  and are never hydrated or claimed as retained audit
+  content. Recorded treatment rows use only explicit component associations to
+  distinguish unlinked, fully linked, and partly linked status review without
+  hiding rows or inheriting lifecycle. Polling Recent updates is no longer a live
+  region, and repeated Recent updates or Active alerts polling failures reuse
+  one alert node instead of re-announcing unchanged failure copy. Polling an
+  open stale-unavailable Activity item preserves its unavailable state and retry
+  action. Activity result links now
+  close/deactivate the report dialog before opening Today or Appointments and
+  place focus on the target heading/dialog at desktop and phone widths, including
+  when workflow mutation locks prevent an appointment dialog from opening.
+
 - **Authorization-eviction recovery messaging.** A `401` or `403` now records the
   authorization failure before request epochs invalidate late handlers, so the
   global sign-in/access banner remains visible while every patient-derived

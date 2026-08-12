@@ -1374,6 +1374,13 @@ summary:focus-visible,
 
 .app-state-banner strong { display: block; font-size: 13px; }
 .app-state-banner p { margin-top: 2px; color: var(--text1); font-size: 12px; }
+.app-state-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
 
 .app-shell {
   width: 100%;
@@ -4566,7 +4573,7 @@ body.dialog-open { overflow: hidden; }
     margin: 10px 10px 0;
     grid-template-columns: auto 1fr;
   }
-  .app-state-banner .button { grid-column: 2; justify-self: start; }
+  .app-state-actions { grid-column: 2; justify-content: flex-start; }
 
   .app-shell { display: block; }
   .view-nav {

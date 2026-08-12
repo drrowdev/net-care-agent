@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import subprocess
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
+
+import agent
+from agent.profile import DEFAULT_PROFILE
 
 APP_JS = Path("static/app.js").read_text(encoding="utf-8")
 CSS = Path("static/styles.css").read_text(encoding="utf-8")
@@ -251,8 +256,362 @@ def test_summary_auth_eviction_cannot_repaint_freshness_or_accept_late_success(s
         "summary": '<div class="summary-empty">Patient assessment unavailable.</div>',
         "renderSummaryCalls": 0,
         "fetchCalls": 2,
-        "loadErrors": [],
+        "loadErrors": [["authorization", status]],
     }
+
+
+def _production_cardinality_projection_payloads() -> dict[str, dict]:
+    profile = copy.deepcopy(DEFAULT_PROFILE)
+    profile.update(schema_version=15, profile_revision=0, workflow_revision=0)
+    profile["biomarkers"] = [
+        {
+            "id": f"bio-{index:03d}",
+            "date": None,
+            "date_precision": "unknown",
+            "date_kind": "unknown",
+            "marker": f"Marker {index % 53:02d}",
+            "value": str(index),
+            "unit": None,
+            "reference_range": None,
+            "flag": None,
+            "flag_authority": "unknown",
+            "specimen": None,
+            "assay": None,
+            "method": None,
+            "source_document_id": None,
+            "evidence_status": "missing",
+        }
+        for index in range(78)
+    ]
+    profile["imaging"] = [
+        {
+            "id": f"img-{index:03d}",
+            "date": None,
+            "date_precision": "unknown",
+            "date_kind": "unknown",
+            "source_document_date": None,
+            "source_document_date_precision": "unknown",
+            "modality": None,
+            "findings": f"Synthetic finding {index}",
+            "impression": None,
+            "source_document_id": None,
+            "evidence_status": "missing",
+        }
+        for index in range(10)
+    ]
+    profile["symptoms"] = [
+        {
+            "id": "sym-001",
+            "date": None,
+            "date_precision": "unknown",
+            "date_kind": "unknown",
+            "source_document_date": None,
+            "source_document_date_precision": "unknown",
+            "symptom": "Synthetic symptom",
+            "severity": None,
+            "source_document_id": None,
+            "evidence_status": "missing",
+        }
+    ]
+    profile["symptom_episodes"] = []
+    profile["patient"]["current_treatments"] = [
+        f"Synthetic treatment {index}" for index in range(31)
+    ]
+    profile["patient"]["current_treatment_records"] = [
+        {
+            "id": f"tr-{index:03d}",
+            "text": f"Synthetic treatment {index}",
+            "source_order": index,
+            "component_order": 0,
+        }
+        for index in range(31)
+    ]
+    profile["treatments_classified"] = [
+        {
+            "id": f"cls-{index:03d}",
+            "text": f"Generated context {index}",
+            "label": None,
+            "category": None,
+            "date": None,
+            "source_treatment_ids": [],
+        }
+        for index in range(10)
+    ]
+    profile["treatments_classification_revision"] = 0
+    profile["trials_tracked"] = [
+        {
+            "research_record_id": f"research_trial_{index:016x}",
+            "nct_id": f"NCT{index:08d}",
+            "title": f"Synthetic trial {index}",
+            "status": "UNKNOWN",
+            "countries": [],
+        }
+        for index in range(13)
+    ]
+    profile["literature_watched"] = [
+        {
+            "research_record_id": f"research_paper_{index:016x}",
+            "pmid": str(10000000 + index),
+            "title": f"Synthetic paper {index}",
+        }
+        for index in range(60)
+    ]
+    return {
+        "/api/patient/biomarker-series": agent.project_biomarker_series(profile),
+        "/api/patient/imaging-series": agent.project_imaging_series(profile),
+        "/api/patient/symptom-episodes": agent.project_symptom_episodes(profile),
+        "/api/patient/treatment-reconciliation": (agent.project_treatment_reconciliation(profile)),
+        "/api/patient/research-workspace": agent.project_research_workspace(profile),
+    }
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_title"),
+    [
+        (401, "Sign-in required"),
+        (403, "Access to this patient record is denied"),
+    ],
+)
+def test_live_auth_eviction_explains_browser_clear_and_recovers_all_projections(
+    status, expected_title
+):
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    payloads = _production_cardinality_projection_payloads()
+    payloads.update(
+        {
+            "/api/status": {
+                "profile_revision": 0,
+                "patient": {"diagnosis": "Synthetic diagnosis"},
+                "stats": {},
+                "alerts": [],
+            },
+            "/api/summary": {"status": "not_generated", "profile_revision": 0},
+            "/api/jobs": [],
+            "/api/questions": [],
+            "/api/judgments": [],
+            "/api/patient/evidence": {"documents": [], "sources": []},
+            "/api/visits": {
+                "profile_revision": 0,
+                "workflow_revision": 0,
+                "appointments": [],
+                "items": [],
+            },
+            "/api/follow-ups": {
+                "profile_revision": 0,
+                "workflow_revision": 0,
+                "items": [],
+            },
+        }
+    )
+    html = re.sub(r"<script[^>]+src=[^>]+></script>", "", INDEX_HTML)
+    html = html.replace("<head>", '<head><base href="http://app.test/">', 1)
+    denied_once = {"status": None}
+
+    with playwright_api.sync_playwright() as playwright:
+        if not Path(playwright.chromium.executable_path).exists():
+            pytest.skip("Installed Playwright browser is unavailable")
+        browser = playwright.chromium.launch()
+        context = browser.new_context(viewport={"width": 1280, "height": 900})
+        page = context.new_page()
+
+        def fulfill(route):
+            path = urlsplit(route.request.url).path
+            if denied_once["status"] is not None and path == "/api/status":
+                denied_status = denied_once["status"]
+                denied_once["status"] = None
+                route.fulfill(
+                    status=denied_status,
+                    content_type="application/json",
+                    body=json.dumps({"error": "redacted"}),
+                )
+                return
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(payloads.get(path, {})),
+            )
+
+        page.route("**/api/**", fulfill)
+        try:
+            page.set_content(html)
+            page.add_style_tag(content=CSS)
+            page.add_script_tag(content=APP_JS)
+            page.evaluate("() => { clearTimeout(pollingInterval); pollingInterval = null; }")
+            page.wait_for_function(
+                "() => treatmentProjection !== null && symptomProjection !== null"
+            )
+            page.locator("#nav-patient").click()
+            page.wait_for_function(
+                "() => biomarkerProjection !== null && imagingProjection !== null"
+            )
+            page.locator("#nav-research").click()
+            page.wait_for_function("() => researchProjection?.item_count === 73")
+            page.locator("#nav-today").click()
+
+            denied_once["status"] = status
+            page.evaluate("() => loadStatus().then(() => undefined)")
+
+            assert page.locator("#app-state-banner").is_visible()
+            assert page.locator("#app-state-title").inner_text() == expected_title
+            assert page.evaluate("() => failedLoads.has('authorization')")
+            auth_actions = page.evaluate(
+                """() => ({
+                  reloadHidden: document.getElementById('app-state-reload').hidden,
+                  reloadLabel: document.getElementById('app-state-reload').textContent,
+                  reloadAction: document.getElementById('app-state-reload').getAttribute('onclick'),
+                  switchHidden: document.getElementById('app-state-switch-account').hidden,
+                  switchLabel: document.getElementById('app-state-switch-account').textContent,
+                  switchHref: document.getElementById('app-state-switch-account').getAttribute('href'),
+                  retryHidden: document.getElementById('app-state-retry').hidden,
+                  retryLabel: document.getElementById('app-state-retry').textContent,
+                })"""
+            )
+            assert auth_actions == {
+                "reloadHidden": status != 401,
+                "reloadLabel": "Reload to sign in",
+                "reloadAction": "window.location.reload()",
+                "switchHidden": status != 403,
+                "switchLabel": "Sign out and switch account",
+                "switchHref": "/.auth/logout?post_logout_redirect_uri=%2F",
+                "retryHidden": False,
+                "retryLabel": "Retry",
+            }
+            assert page.evaluate(
+                """() => [
+                  biomarkerProjection,
+                  imagingProjection,
+                  symptomProjection,
+                  treatmentProjection,
+                  researchProjection,
+                ].every(value => value === null)"""
+            )
+            first_eviction_epoch = page.evaluate("() => phiEpoch")
+            for selector in (
+                "#biomarker-status",
+                "#imaging-status",
+                "#today-symptom-status",
+                "#today-treatment-status",
+                "#research-status",
+            ):
+                message = page.locator(selector).inner_text().lower()
+                assert "held by this browser was cleared" in message
+                assert "stored patient records were not deleted" in message
+                assert "current authority is unavailable" not in message
+
+            page.evaluate(
+                """status => {
+                  const error = new Error('duplicate authorization failure');
+                  error.status = status;
+                  evictClientPhi(error);
+                }""",
+                status,
+            )
+            assert page.evaluate("() => phiEpoch") == first_eviction_epoch + 1
+            assert page.locator("#app-state-banner").is_visible()
+            assert page.locator("#app-state-title").inner_text() == expected_title
+            assert page.evaluate("() => failedLoads.size === 1")
+            assert page.evaluate(
+                """status => (
+                  document.getElementById('app-state-reload').hidden === (status !== 401)
+                  && document.getElementById('app-state-switch-account').hidden === (status !== 403)
+                  && !document.getElementById('app-state-retry').hidden
+                )""",
+                status,
+            )
+
+            page.locator("#app-state-retry").click()
+            page.wait_for_function(
+                """() => symptomProjection !== null
+                  && treatmentProjection !== null
+                  && researchProjection !== null"""
+            )
+            page.locator("#nav-patient").click()
+            page.wait_for_function(
+                "() => biomarkerProjection !== null && imagingProjection !== null"
+            )
+
+            recovered = page.evaluate(
+                """() => ({
+                  revisions: [
+                    biomarkerProjection,
+                    imagingProjection,
+                    symptomProjection,
+                    treatmentProjection,
+                    researchProjection,
+                  ].map(item => [item.profile_revision, item.workflow_revision]),
+                  counts: {
+                    biomarkerRows: biomarkerProjection.source_row_count,
+                    biomarkerAnalytes: biomarkerProjection.analytes.length,
+                    imagingRecords: imagingProjection.records.length,
+                    symptomObservations: symptomProjection.observations.length,
+                    symptomEpisodes: symptomProjection.episodes.length,
+                    treatmentLegacyRows: treatmentProjection.legacy_treatments.length,
+                    treatmentUnlinked: treatmentProjection.unlinked_generated_context.length,
+                    researchItems: researchProjection.items.length,
+                  },
+                  states: [
+                    biomarkerProjectionState,
+                    imagingProjectionState,
+                    symptomProjectionState,
+                    treatmentProjectionState,
+                    researchProjectionState,
+                  ],
+                  authority: [latestProfileRevision, workflowRevision],
+                  bannerHidden: document.getElementById('app-state-banner').hidden,
+                })"""
+            )
+            assert recovered == {
+                "revisions": [[0, 0]] * 5,
+                "counts": {
+                    "biomarkerRows": 78,
+                    "biomarkerAnalytes": 53,
+                    "imagingRecords": 10,
+                    "symptomObservations": 1,
+                    "symptomEpisodes": 0,
+                    "treatmentLegacyRows": 31,
+                    "treatmentUnlinked": 10,
+                    "researchItems": 73,
+                },
+                "states": ["current", "current", "current", "current", "current"],
+                "authority": [0, 0],
+                "bannerHidden": True,
+            }
+            assert page.evaluate(
+                """() => (
+                  document.getElementById('app-state-reload').hidden
+                  && document.getElementById('app-state-switch-account').hidden
+                  && !document.getElementById('app-state-retry').hidden
+                  && document.getElementById('app-state-reload').textContent === 'Reload to sign in'
+                  && document.getElementById('app-state-switch-account').textContent === 'Sign out and switch account'
+                  && document.getElementById('app-state-retry').textContent === 'Retry'
+                )"""
+            )
+
+            page.evaluate(
+                """() => {
+                  failedLoads.clear();
+                  const error = new Error('Synthetic non-auth load failure');
+                  error.status = 422;
+                  reportLoadError('synthetic-non-auth', error);
+                }"""
+            )
+            assert page.locator("#app-state-banner").is_visible()
+            assert page.locator("#app-state-title").inner_text() == (
+                "Patient data could not be loaded"
+            )
+            assert page.evaluate(
+                """() => (
+                  document.getElementById('app-state-reload').hidden
+                  && document.getElementById('app-state-switch-account').hidden
+                  && !document.getElementById('app-state-retry').hidden
+                  && document.getElementById('app-state-retry').textContent === 'Retry'
+                )"""
+            )
+            page.evaluate("() => { failedLoads.clear(); renderAppState(); }")
+            assert page.locator("#app-state-banner").is_hidden()
+        finally:
+            context.close()
+            browser.close()
 
 
 def test_process_file_posts_multipart_to_file_endpoint():
@@ -454,6 +813,10 @@ def test_load_failures_distinguish_auth_offline_and_retry_states():
     state = _function_source("renderAppState", "retryInitialLoad")
     assert "error?.status === 401" in state
     assert "error?.status === 403" in state
+    assert "reloadAction.hidden = false" in state
+    assert "switchAccountAction.hidden = false" in state
+    assert "/.auth/logout?post_logout_redirect_uri=%2F" in INDEX_HTML
+    assert 'onclick="window.location.reload()"' in INDEX_HTML
     assert "navigator.onLine === false" in state
     assert "Patient data has not been removed" in state
     retry = _function_source("retryInitialLoad", "switchView")
@@ -2450,6 +2813,7 @@ function setAppointmentMutationBusy() {}
 function setFollowUpMutationBusy() {}
 function setAlertResolutionBusy() {}
 function updateAppointmentFormValidity() {}
+function reportLoadError() {}
 """,
             _executable_function_source("workflowIntentCanRender", "refreshClinicalWorkflowState"),
             _executable_function_source("consumeWorkflowResponse", "handleWorkflowConflict"),

@@ -38,7 +38,11 @@
     <strong id="app-state-title">Patient data could not be loaded</strong>
     <p id="app-state-message">Check your connection and try again.</p>
   </div>
-  <button class="button secondary" id="app-state-retry" onclick="retryInitialLoad()">Retry</button>
+  <div class="app-state-actions">
+    <button class="button secondary" id="app-state-reload" type="button" onclick="window.location.reload()" hidden>Reload to sign in</button>
+    <a class="button secondary" id="app-state-switch-account" href="/.auth/logout?post_logout_redirect_uri=%2F" hidden>Sign out and switch account</a>
+    <button class="button secondary" id="app-state-retry" type="button" onclick="retryInitialLoad()">Retry</button>
+  </div>
 </div>
 
 <div class="app-shell">

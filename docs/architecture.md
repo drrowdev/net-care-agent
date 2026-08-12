@@ -257,10 +257,11 @@ is rejected, and neither lifecycle cascades. The legacy `/api/symptoms` and
 no symptom requests to them; only `symptoms[]` enters model prompts.
 
 `GET /api/patient/treatment-reconciliation` is the complete bounded backend
-contract for four deliberately separate authorities: every treatment receipt
-occurrence, the legacy raw/component/generated-classification compatibility
-view, caregiver-maintained treatment courses, and caregiver-created
-discrepancies. Schema v12 migration adds only empty `treatment_courses[]` and
+contract for five deliberately separate authorities: every treatment receipt
+occurrence, the legacy raw/component/mapped-classification compatibility view,
+pre-v6 generated compatibility rows whose source linkage is unavailable,
+caregiver-maintained treatment courses, and caregiver-created discrepancies.
+Schema v12 migration adds only empty `treatment_courses[]` and
 `treatment_discrepancies[]`; it never promotes or rewrites existing treatment,
 component, classification, source, receipt, evidence, duplicate, order, or
 unknown-field authority.
@@ -293,7 +294,15 @@ opaque source occurrence or one exact caregiver course. The public
 `citation_kind` is explicitly `source_vs_source` or `source_vs_course`; neutral
 source A/B names carry no chronology, preference, correctness, or clinical
 meaning. Generated classification and legacy raw/component rows are never
-citable. Neutral outcomes retain both immutable cited snapshots and the exact
+citable. Well-formed pre-v6 rows with exact string `text`, nullable stored
+`label`, `category`, and `date`, and no source IDs resolving to a live component
+are copied only into
+`unlinked_generated_context[]`, with an exact count, deterministic
+occurrence-aware ID/token, complete allowlisted row plus revision binding, and
+the exact label `Machine-generated compatibility context · source linkage unavailable · not a treatment record`.
+They remain in stored order, including duplicates, and never receive inferred
+component/source linkage, citations, controls, or currentness/relevance/
+verification meaning. Neutral outcomes retain both immutable cited snapshots and the exact
 note with the fixed label
 `Caregiver-entered · attributed to clinician · unverified`. Only
 `caregiver_record_corrected` may include an explicit course patch, atomically in
@@ -339,15 +348,19 @@ projection, response owner, revision pair, loader, and mutation controller
 render a bounded Today summary and the complete Patient workspace; no
 `/api/status` treatment row can render, edit, transition, or remove a record.
 Today keeps the first three current/planned courses in server order and states
-the exact shown, total, omitted, past, source, legacy, generated, and open-
-difference counts. Patient has separate Treatment records, Differences to
-review, Document mentions, and Earlier app records panels. Generated
+the exact shown, total, omitted, past, source, legacy, mapped-generated,
+unlinked-generated, and open-difference counts without rendering generated
+context as current/planned courses. Patient has separate Treatment records,
+Differences to review, Document mentions, and Earlier app records panels.
+The Earlier panel renders every unlinked row in server order with its exact total
+and zero-omission statement, without links or controls. Generated
 classification is persistently identified as compatibility context rather than
 a treatment record, and legacy components become course authority only through
 an explicit caregiver association labelled unverified.
 
 Before any treatment DOM replacement, the client validates the complete
-projection, exact safety bytes, bounds, IDs/tokens, raw shapes, source links,
+projection, exact safety/authority bytes, top-level counts/lists, serialized
+bounds, cross-collection IDs/tokens, raw shapes, source links,
 terminal fields, published lifecycle/restart authority, both discrepancy
 citations, outcomes, recurrence graph, and action ownership. It preserves
 server order, duplicates, raw strings, and null/empty/missing distinctions and

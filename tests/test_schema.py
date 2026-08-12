@@ -55,6 +55,29 @@ def test_normalize_preserves_extras():
     assert out["custom_block"] == {"foo": 1}
 
 
+def test_historical_feedback_judgment_source_is_preserved():
+    raw = {
+        "clinical_judgments": [
+            {
+                "id": "synthetic-judgment",
+                "text": "Synthetic historical provenance",
+                "source": "feedback",
+            }
+        ]
+    }
+
+    out = normalize_profile(raw)
+
+    assert out["clinical_judgments"][0]["source"] == "feedback"
+
+
+@pytest.mark.parametrize("invalid", [True, "42", 42.0, None])
+def test_revision_authority_is_not_coerced(invalid):
+    raw = {"profile_revision": invalid, "workflow_revision": 0}
+
+    assert normalize_profile(raw) is raw
+
+
 def test_normalize_does_not_raise_on_bad_data(caplog):
     """Lenient mode: bad data is logged + returned unchanged."""
     raw = {"patient": "not-a-dict"}  # invalid

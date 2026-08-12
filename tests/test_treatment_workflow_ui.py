@@ -139,13 +139,28 @@ def _legacy() -> dict:
             {
                 "id": "generated-one",
                 "text": "Generated compatibility text",
-                "label": "Generated label",
-                "category": "active",
+                "label": None,
+                "category": None,
                 "date": None,
                 "source_treatment_ids": ["legacy-component-one"],
             }
         ],
         "authority_label": "Legacy/generated · not caregiver lifecycle authority",
+    }
+
+
+def _unlinked(index: int) -> dict:
+    return {
+        "id": f"txunlinked_{index:024x}",
+        "token": f"unlinked-token-{index}",
+        "text": f"Generated unlinked text {index % 5}",
+        "label": None if index == 0 else f"Generated unlinked label {index % 5}",
+        "category": None if index == 0 else "active",
+        "date": None if index == 0 else f"20{index:02d}",
+        "authority_label": (
+            "Machine-generated compatibility context · source linkage unavailable · "
+            "not a treatment record"
+        ),
     }
 
 
@@ -263,10 +278,12 @@ def _projection() -> dict:
         "projection_token": "treatment-projection-5-3",
         "source_fact_count": len(sources),
         "legacy_treatment_count": 1,
+        "unlinked_generated_context_count": 10,
         "course_count": len(courses),
         "discrepancy_count": 0,
         "source_facts": sources,
         "legacy_treatments": [_legacy()],
+        "unlinked_generated_context": [_unlinked(index) for index in range(10)],
         "courses": courses,
         "discrepancies": [],
         "eligible_actions": [
@@ -372,6 +389,34 @@ def test_real_treatment_validator_is_atomic_exact_and_canonical():
     ] = ["legacy_unspecified"]
     wrong_count = copy.deepcopy(valid)
     wrong_count["course_count"] += 1
+    wrong_unlinked_count = copy.deepcopy(valid)
+    wrong_unlinked_count["unlinked_generated_context_count"] += 1
+    wrong_unlinked_authority = copy.deepcopy(valid)
+    wrong_unlinked_authority["unlinked_generated_context"][0]["authority_label"] += " "
+    duplicate_unlinked_id = copy.deepcopy(valid)
+    duplicate_unlinked_id["unlinked_generated_context"][1]["id"] = duplicate_unlinked_id[
+        "unlinked_generated_context"
+    ][0]["id"]
+    cross_component_id = copy.deepcopy(valid)
+    cross_component_id["unlinked_generated_context"][0]["id"] = cross_component_id[
+        "legacy_treatments"
+    ][0]["components"][0]["id"]
+    cross_collection_token = copy.deepcopy(valid)
+    cross_collection_token["unlinked_generated_context"][0]["token"] = cross_collection_token[
+        "legacy_treatments"
+    ][0]["token"]
+    malformed_unlinked_type = copy.deepcopy(valid)
+    malformed_unlinked_type["unlinked_generated_context"][0]["date"] = []
+    malformed_unlinked_label = copy.deepcopy(valid)
+    malformed_unlinked_label["unlinked_generated_context"][0]["label"] = []
+    malformed_unlinked_category = copy.deepcopy(valid)
+    malformed_unlinked_category["unlinked_generated_context"][0]["category"] = "unsafe"
+    cross_action_id = copy.deepcopy(valid)
+    cross_action_id["unlinked_generated_context"][0]["id"] = cross_action_id["eligible_actions"][0][
+        "id"
+    ]
+    oversized_unlinked = copy.deepcopy(valid)
+    oversized_unlinked["unlinked_generated_context"][0]["text"] = "x" * 10001
     duplicate_generated = copy.deepcopy(valid)
     second_legacy = copy.deepcopy(duplicate_generated["legacy_treatments"][0])
     second_legacy["id"] = "txlegacy_second"
@@ -380,6 +425,41 @@ def test_real_treatment_validator_is_atomic_exact_and_canonical():
     second_legacy["components"][0]["id"] = "legacy-component-two"
     duplicate_generated["legacy_treatments"].append(second_legacy)
     duplicate_generated["legacy_treatment_count"] = 2
+    spanning_generated = copy.deepcopy(duplicate_generated)
+    spanning = spanning_generated["legacy_treatments"][0]["generated_classification"][0]
+    spanning["source_treatment_ids"] = ["legacy-component-one", "legacy-component-two"]
+    spanning_generated["legacy_treatments"][1]["generated_classification"] = [
+        copy.deepcopy(spanning)
+    ]
+    incomplete_spanning = copy.deepcopy(spanning_generated)
+    incomplete_spanning["legacy_treatments"][1]["generated_classification"] = []
+    duplicate_mapped_in_place = copy.deepcopy(valid)
+    duplicate_mapped_in_place["legacy_treatments"][0]["generated_classification"].append(
+        copy.deepcopy(
+            duplicate_mapped_in_place["legacy_treatments"][0]["generated_classification"][0]
+        )
+    )
+    expanded_spanning = copy.deepcopy(spanning_generated)
+    expanded_rows = []
+    for index in range(1001):
+        row = copy.deepcopy(spanning)
+        row["id"] = f"generated-spanning-{index}"
+        row["text"] = f"Synthetic mapped context {index}"
+        expanded_rows.append(row)
+    expanded_spanning["legacy_treatments"][0]["generated_classification"] = copy.deepcopy(
+        expanded_rows
+    )
+    expanded_spanning["legacy_treatments"][1]["generated_classification"] = copy.deepcopy(
+        expanded_rows
+    )
+    malformed_mapped_category = copy.deepcopy(valid)
+    malformed_mapped_category["legacy_treatments"][0]["generated_classification"][0]["category"] = (
+        "unsafe"
+    )
+    oversized_mapped_text = copy.deepcopy(valid)
+    oversized_mapped_text["legacy_treatments"][0]["generated_classification"][0]["text"] = (
+        "x" * 10001
+    )
     recurrence_cycle = copy.deepcopy(complete)
     recurrence_cycle["discrepancies"][0]["recurs_from_id"] = recurrence_cycle["discrepancies"][1][
         "id"
@@ -392,16 +472,59 @@ def test_real_treatment_validator_is_atomic_exact_and_canonical():
         [
             valid,
             complete,
+            spanning_generated,
+            expanded_spanning,
+            incomplete_spanning,
+            duplicate_mapped_in_place,
+            malformed_mapped_category,
+            oversized_mapped_text,
             wrong_guidance,
             unsafe_link,
             encoded_link,
             duplicate,
             malformed_lifecycle,
             wrong_count,
+            wrong_unlinked_count,
+            wrong_unlinked_authority,
+            duplicate_unlinked_id,
+            cross_component_id,
+            cross_collection_token,
+            malformed_unlinked_type,
+            malformed_unlinked_label,
+            malformed_unlinked_category,
+            cross_action_id,
+            oversized_unlinked,
             duplicate_generated,
             recurrence_cycle,
         ]
-    ) == [True, True, False, False, False, False, False, False, False, False]
+    ) == [
+        True,
+        True,
+        True,
+        True,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+    ]
 
 
 def test_treatment_module_has_one_authority_and_no_legacy_or_date_inference():
@@ -421,7 +544,10 @@ def test_treatment_module_has_one_authority_and_no_legacy_or_date_inference():
     assert "Retry submission" in INDEX_HTML
     assert "Retry refresh" in INDEX_HTML
     assert INDEX_HTML.count(GUIDANCE) == 3
-    assert "Machine-generated compatibility context · not a treatment record" in source
+    assert (
+        "Machine-generated compatibility context · source linkage unavailable · "
+        "not a treatment record"
+    ) in source
     assert "Caregiver-associated · unverified" in source
 
 
@@ -672,6 +798,7 @@ def test_live_shared_projection_totals_authorities_and_accessibility(width: int,
             assert "Showing 3 of 4" in totals
             assert "2 current, 2 planned; 1 omitted" in totals
             assert "1 past records" in totals
+            assert "10 unlinked generated compatibility rows" in totals
             page.locator("#nav-patient").click()
             assert page.locator("#patient-treatment-list .treatment-course-card").count() == 5
             assert [
@@ -709,7 +836,29 @@ def test_live_shared_projection_totals_authorities_and_accessibility(width: int,
             page.locator("#treatment-tab-earlier").click()
             earlier = page.locator("#treatment-panel-earlier").inner_text()
             assert "Machine-generated compatibility context · not a treatment record" in earlier
+            assert (
+                "Machine-generated compatibility context · source linkage unavailable · "
+                "not a treatment record"
+            ) in earlier
             assert "Earlier app component · not source-verified" in earlier
+            assert "Showing all 10 rows in server order; 0 omitted." in earlier
+            assert page.locator(".treatment-unlinked-generated-card").count() == 10
+            assert (
+                page.locator(".treatment-generated-section").inner_text().count("Not recorded") == 3
+            )
+            assert (
+                page.locator(".treatment-unlinked-generated-card")
+                .first.inner_text()
+                .count("Not recorded")
+                == 3
+            )
+            assert (
+                page.locator(
+                    ".treatment-unlinked-generated-section a, "
+                    ".treatment-unlinked-generated-section button"
+                ).count()
+                == 0
+            )
             assert GUIDANCE in page.locator("#treatment-workspace").inner_text()
             treatment_gets = [
                 item

@@ -2,6 +2,7 @@
   let selectedTaskId = null;
   let pollingInterval = null;
   let currentReportText = '';
+  let openTaskRenderKey = null;
   let activeView = 'today';
   let researchProjection = null;
   let researchResponseOwner = null;
@@ -201,6 +202,82 @@
     } catch (_) {
       return '';
     }
+  }
+
+  const RECORD_SOURCE_COPY = Object.freeze({
+    document: 'From your document',
+    exact: 'Exact wording available',
+    linked: 'Document linked - exact wording unavailable',
+    none: 'No document linked',
+    entered: 'You entered this',
+    clinician: 'You recorded this from the clinician',
+    corrected: 'You corrected this',
+    older: 'Source details were not retained for this older record',
+    administrative: 'Administrative note - not clinical evidence',
+    generated: 'NET/Care-generated context - not a treatment fact',
+  });
+
+  function recordSourcePresentation(options = {}) {
+    if (options.administrative) {
+      return { label: RECORD_SOURCE_COPY.administrative, detail: '' };
+    }
+    if (options.clinician) {
+      return { label: RECORD_SOURCE_COPY.clinician, detail: '' };
+    }
+    if (options.corrected) {
+      return {
+        label: RECORD_SOURCE_COPY.corrected,
+        detail: options.evidenceUrl ? RECORD_SOURCE_COPY.exact : (
+          options.sourceUrl ? RECORD_SOURCE_COPY.linked : RECORD_SOURCE_COPY.none
+        ),
+      };
+    }
+    if (options.entered) {
+      return { label: RECORD_SOURCE_COPY.entered, detail: '' };
+    }
+    if (options.older) {
+      return { label: RECORD_SOURCE_COPY.older, detail: '' };
+    }
+    if (options.evidenceUrl || options.status === 'verified' || options.status === 'source_verified') {
+      return { label: RECORD_SOURCE_COPY.document, detail: RECORD_SOURCE_COPY.exact };
+    }
+    if (options.sourceUrl) {
+      return { label: RECORD_SOURCE_COPY.document, detail: RECORD_SOURCE_COPY.linked };
+    }
+    return { label: RECORD_SOURCE_COPY.none, detail: '' };
+  }
+
+  function recordSourceText(options = {}) {
+    const presentation = recordSourcePresentation(options);
+    return [presentation.label, presentation.detail].filter(Boolean).join(' · ');
+  }
+
+  function caregiverProvenancePresentation(value, fallback = 'Source details unavailable') {
+    const text = String(value || '');
+    if (text.includes('attributed to clinician')) return RECORD_SOURCE_COPY.clinician;
+    if (text.includes('attributed to trial site')) return 'You recorded this from the trial site';
+    if (text.includes('administrative') || text.includes('not clinical evidence')) {
+      return RECORD_SOURCE_COPY.administrative;
+    }
+    if (text.includes('generated') || text.includes('Generated')) {
+      return 'Generated question saved for this visit';
+    }
+    if (text.includes('caregiver') || text.includes('Caregiver')) return RECORD_SOURCE_COPY.entered;
+    return fallback;
+  }
+
+  function precisionLabel(value) {
+    return {
+      day: 'Exact date',
+      month: 'Month and year',
+      year: 'Year only',
+      unknown: 'Date precision not recorded',
+    }[value] || 'Date precision not recorded';
+  }
+
+  function titleCaseEnum(value, fallback = 'Not recorded') {
+    if (value == null || value === '') return fallback;
+    return String(value).replaceAll('_', ' ').replace(/\b\w/g, character => character.toUpperCase());
   }
 
   function revisionIsOlder(candidate, current) {
@@ -1005,7 +1082,7 @@
         pendingWorkflowIntent = intent;
         if (String(intent.url || '').includes('/follow-ups')) {
           markFollowUpProjectionStale(
-            'Follow-through is offline. The last loaded actions are read-only; caregiver-entered drafts remain available in this tab.',
+            'Follow-ups are offline. The last loaded actions are read-only; your drafts remain available in this tab.',
           );
         }
         const retry = document.getElementById(
@@ -1456,7 +1533,10 @@
         loadResearchWorkspace({ force: true });
       }
     }
-    if (window.location.hash !== `#${name}`) {
+    if (
+      ['http:', 'https:'].includes(window.location.protocol)
+      && window.location.hash !== `#${name}`
+    ) {
       history.replaceState(null, '', `#${name}`);
     }
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -1814,27 +1894,29 @@
       const evidenceUrl = safeBiomarkerEvidenceUrl(item.evidence_url);
       const sourceUrl = safeBiomarkerEvidenceUrl(item.source_url);
       return `<li>
-        <span><strong>${escHtml(item.status)}</strong> · evidence ID ${escHtml(item.id)}</span>
         <span class="biomarker-evidence-actions">
-          ${evidenceUrl ? `<a href="${escHtml(evidenceUrl)}" target="_blank" rel="noopener">Open exact span</a>` : ''}
+          ${evidenceUrl ? `<a href="${escHtml(evidenceUrl)}" target="_blank" rel="noopener">View exact wording</a>` : ''}
           ${sourceUrl ? `<a href="${escHtml(sourceUrl)}" target="_blank" rel="noopener">Open source</a>` : ''}
+          ${!evidenceUrl && !sourceUrl ? '<span class="biomarker-missing">No document link is available.</span>' : ''}
         </span>
       </li>`;
     }).join('');
+    const firstEvidence = evidence[0] || {};
+    const evidenceUrl = safeBiomarkerEvidenceUrl(firstEvidence.evidence_url);
+    const sourceUrl = safeBiomarkerEvidenceUrl(firstEvidence.source_url);
+    const presentation = recordSourcePresentation({
+      status: observation.provenance.status,
+      evidenceUrl,
+      sourceUrl,
+      corrected: observation.provenance.status === 'caregiver_corrected_unverified',
+      older: observation.provenance.status === 'legacy_unknown',
+    });
     return `<details class="biomarker-source-details">
-      <summary>Source details</summary>
+      <summary>Source and wording</summary>
       <div>
-        <p><strong>${escHtml(observation.provenance.label)}</strong> · ${escHtml(observation.provenance.status)}</p>
-        <p>Observation ID: <code>${escHtml(observation.id)}</code></p>
-        <p>Source row IDs:</p>
-        ${biomarkerListMarkup(observation.source_row_ids, 'No source row ID supplied')}
-        <p>Source document IDs:</p>
-        ${biomarkerListMarkup(
-          observation.provenance.source_document_ids,
-          'No source document linked',
-        )}
-        <p>Evidence records:</p>
-        ${evidenceItems ? `<ul class="biomarker-evidence-list">${evidenceItems}</ul>` : '<span class="biomarker-missing">No evidence record supplied</span>'}
+        <p><strong>${escHtml(presentation.label)}</strong>${presentation.detail ? ` · ${escHtml(presentation.detail)}` : ''}</p>
+        <p>${observation.duplicate_count === 1 ? 'One recorded entry supports this result.' : `${observation.duplicate_count} matching recorded entries support this result.`}</p>
+        ${evidenceItems ? `<ul class="biomarker-evidence-list">${evidenceItems}</ul>` : '<span class="biomarker-missing">No document link is available.</span>'}
       </div>
     </details>`;
   }
@@ -1843,7 +1925,7 @@
     const date = observation.date || {};
     const sourceDate = date.source_document_date == null
       ? ''
-      : `<span>Source document date: ${escHtml(biomarkerScalar(date.source_document_date))} · precision ${escHtml(biomarkerScalar(date.source_document_date_precision))}</span>`;
+      : `<span>Document date: ${escHtml(biomarkerScalar(date.source_document_date))} · ${escHtml(precisionLabel(date.source_document_date_precision))}</span>`;
     const unit = observation.unit == null || observation.unit === ''
       ? ''
       : ` ${escHtml(observation.unit)}`;
@@ -1861,26 +1943,43 @@
         : 'No comparability reason supplied',
     );
     const duplicateLabel = observation.duplicate_count === 1
-      ? '1 recorded source row'
-      : `${observation.duplicate_count} recorded source rows`;
+      ? '1 recorded entry'
+      : `${observation.duplicate_count} recorded entries`;
     return `<tr data-observation-id="${escHtml(observation.id)}">
       <td>
         <strong>${escHtml(biomarkerScalar(date.value))}</strong>
-        <span>Precision: ${escHtml(biomarkerScalar(date.precision))}</span>
-        <span>Date kind: ${escHtml(biomarkerScalar(date.kind))}</span>
+        <span>${escHtml(precisionLabel(date.precision))}</span>
+        <span>${escHtml({
+          collection: 'Collection date',
+          result: 'Result date',
+          clinical_unspecified: 'Clinical date - type not recorded',
+          source_document: 'Date from the document',
+          unknown: 'Date type not recorded',
+        }[date.kind] || 'Date type not recorded')}</span>
         ${sourceDate}
       </td>
       <td>
         <strong>${escHtml(biomarkerScalar(observation.value.raw))}${unit}</strong>
-        <span>Value kind: ${escHtml(biomarkerScalar(observation.value.kind))}</span>
+        <span>${escHtml({
+          numeric: 'Number as recorded',
+          qualified: 'Qualified result as recorded',
+          range: 'Range as recorded',
+          text: 'Text result as recorded',
+          missing: 'Result not recorded',
+        }[observation.value.kind] || 'Result as recorded')}</span>
       </td>
       <td>
         <strong>${escHtml(biomarkerScalar(observation.reference_range))}</strong>
         ${rangeComparison}
       </td>
       <td>
-        <strong>${escHtml(biomarkerScalar(observation.reported_flag))}</strong>
-        <span>Authority: ${escHtml(biomarkerScalar(observation.reported_flag_authority))}</span>
+        <strong>${escHtml(titleCaseEnum(observation.reported_flag))}</strong>
+        <span>${escHtml({
+          source_reported: 'Flag printed in the document',
+          caregiver_corrected: 'You corrected this flag',
+          legacy_unknown: 'Flag source details were not retained',
+          unknown: 'Flag source not recorded',
+        }[observation.reported_flag_authority] || 'Flag source not recorded')}</span>
       </td>
       <td>
         <span><strong>Specimen:</strong> ${escHtml(biomarkerScalar(observation.specimen))}</span>
@@ -1987,7 +2086,7 @@
     const context = document.getElementById('biomarker-context');
     if (context) {
       context.innerHTML = `<strong>${escHtml(analyte.display_name)}</strong>
-        <span>${analyte.observation_count} observations from ${analyte.source_row_count} source rows · ${analyte.series_count} exact comparison groups</span>
+        <span>${analyte.observation_count} displayed result${analyte.observation_count === 1 ? '' : 's'} from ${analyte.source_row_count} recorded entr${analyte.source_row_count === 1 ? 'y' : 'ies'}</span>
         <span>Recorded aliases:</span>
         ${biomarkerListMarkup(analyte.observed_aliases, 'No recorded alias supplied')}`;
     }
@@ -2021,7 +2120,7 @@
     } else {
       setBiomarkerFreshness('current', 'Current');
       setBiomarkerStatus(
-        `Authoritative record loaded · patient revision ${biomarkerProjection.profile_revision} · workflow revision ${biomarkerProjection.workflow_revision}.`,
+        'Biomarker history is up to date.',
         'current',
         false,
       );
@@ -2148,7 +2247,7 @@
       if (!authority.accepted) {
         if (biomarkerTransportRequestIsCurrent(request)) {
           markBiomarkerProjectionStale(
-            'A newer patient or workflow revision is available. Reload biomarker history.',
+            'Newer patient information is available. Reload biomarker history.',
           );
         }
         return null;
@@ -2189,7 +2288,7 @@
         if (charts) charts.innerHTML = '<div class="empty-state">No comparable chart is available.</div>';
         setBiomarkerFreshness('current', 'Current · empty');
         setBiomarkerStatus(
-          `Authoritative record loaded · patient revision ${data.profile_revision} · no biomarker observations recorded.`,
+          'Biomarker history is up to date. No biomarker results are recorded.',
           'current',
           false,
         );
@@ -2516,23 +2615,17 @@
   }
 
   function imagingDateAuthority(date) {
-    const precisionLabels = {
-      day: 'day precision',
-      month: 'month precision',
-      year: 'year precision',
-      unknown: 'precision unknown',
-    };
     let authority;
     if (date.kind === 'study') {
       authority = 'Study date';
     } else if (date.kind === 'legacy_unknown') {
-      authority = 'Legacy date; study-date authority not confirmed';
+      authority = 'Older record - date context was not retained';
     } else {
       authority = date.value == null ? 'Study date not recorded' : 'Date authority unknown';
     }
     return {
       value: imagingScalar(date.value),
-      context: `${authority} · ${precisionLabels[date.precision]}`,
+      context: `${authority} · ${precisionLabel(date.precision)}`,
     };
   }
 
@@ -2550,30 +2643,33 @@
 
   function imagingSourceDetails(record) {
     const details = imagingElement('details', 'imaging-source-details');
-    details.append(imagingElement('summary', '', 'Technical and source details'));
+    details.append(imagingElement('summary', '', 'Source and wording'));
     const content = imagingElement('div');
+    const evidenceUrl = safeImagingRecordUrl(record.provenance.evidence_url, 'evidence');
+    const sourceUrl = safeImagingRecordUrl(record.provenance.source_url, 'source');
+    const presentation = recordSourcePresentation({
+      status: record.provenance.status,
+      evidenceUrl,
+      sourceUrl,
+      corrected: record.provenance.status === 'caregiver_corrected_unverified',
+      entered: record.provenance.status === 'unverified',
+      older: record.date.kind === 'legacy_unknown' && !sourceUrl,
+    });
     const provenance = imagingElement('p');
     provenance.append(
-      imagingElement('strong', '', record.provenance.label),
-      document.createTextNode(` · ${record.provenance.status}`),
-    );
-    const identity = imagingElement('p');
-    identity.append(
-      document.createTextNode('Record ID: '),
-      imagingElement('code', '', record.id),
+      imagingElement('strong', '', presentation.label),
+      document.createTextNode(presentation.detail ? ` · ${presentation.detail}` : ''),
     );
     const sourceDate = imagingElement(
       'p',
       '',
       `Source document date (not used for study chronology): ${
         imagingScalar(record.date.source_document_date)
-      } · ${record.date.source_document_date_precision} precision`,
+      } · ${precisionLabel(record.date.source_document_date_precision)}`,
     );
     const actions = imagingElement('div', 'imaging-source-actions');
-    const evidenceUrl = safeImagingRecordUrl(record.provenance.evidence_url, 'evidence');
-    const sourceUrl = safeImagingRecordUrl(record.provenance.source_url, 'source');
     if (evidenceUrl) {
-      const link = imagingElement('a', '', 'Open exact span');
+      const link = imagingElement('a', '', 'View exact wording');
       link.href = evidenceUrl;
       link.target = '_blank';
       link.rel = 'noopener';
@@ -2587,9 +2683,9 @@
       actions.append(link);
     }
     if (!actions.childElementCount) {
-      actions.append(imagingElement('span', 'imaging-missing', 'No source link supplied'));
+      actions.append(imagingElement('span', 'imaging-missing', 'No document link is available.'));
     }
-    content.append(provenance, identity, sourceDate, actions);
+    content.append(provenance, sourceDate, actions);
     details.append(content);
     return details;
   }
@@ -2624,7 +2720,17 @@
       record.impression,
       'report-wording',
     );
-    imagingAppendFact(facts, 'Source authority', record.provenance.label);
+    imagingAppendFact(
+      facts,
+      'Source',
+      recordSourceText({
+        status: record.provenance.status,
+        evidenceUrl: record.provenance.evidence_url,
+        sourceUrl: record.provenance.source_url,
+        corrected: record.provenance.status === 'caregiver_corrected_unverified',
+        entered: record.provenance.status === 'unverified',
+      }),
+    );
     card.append(facts, imagingSourceDetails(record));
     return card;
   }
@@ -2783,8 +2889,16 @@
       imagingScalar(record.impression),
     ));
     const sourceCell = imagingElement('td');
+    const presentation = recordSourcePresentation({
+      status: record.provenance.status,
+      evidenceUrl: record.provenance.evidence_url,
+      sourceUrl: record.provenance.source_url,
+      corrected: record.provenance.status === 'caregiver_corrected_unverified',
+      entered: record.provenance.status === 'unverified',
+      older: record.date.kind === 'legacy_unknown' && !record.provenance.source_url,
+    });
     sourceCell.append(
-      imagingElement('strong', '', record.provenance.label),
+      imagingElement('strong', '', presentation.label),
       imagingSourceDetails(record),
     );
     row.append(
@@ -2802,13 +2916,13 @@
     if (!imagingResponseOwnerIsCurrent(owner)) return false;
     const summary = document.getElementById('imaging-summary');
     if (summary) {
-      summary.textContent = `${imagingProjection.records.length} authoritative records from ${
-        imagingProjection.source_row_count
-      } source rows. Records remain independent and in server-supplied order; NET/Care does not infer chronology or change.`;
+      summary.textContent = `${imagingProjection.records.length} recorded report${
+        imagingProjection.records.length === 1 ? '' : 's'
+      }. Each report remains separate; NET/Care does not infer chronology or change.`;
     }
     const caption = document.getElementById('imaging-table-caption');
     if (caption) {
-      caption.textContent = 'Complete authoritative imaging records in server-supplied order';
+      caption.textContent = 'Recorded imaging reports in their stored order';
     }
     const table = document.getElementById('imaging-table-body');
     if (table) {
@@ -2829,9 +2943,7 @@
       imagingProjectionState = 'current';
       setImagingFreshness('current', 'Current');
       setImagingStatus(
-        `Authoritative imaging loaded · patient revision ${
-          imagingProjection.profile_revision
-        } · workflow revision ${imagingProjection.workflow_revision}.`,
+        'Imaging history is up to date.',
         'current',
         false,
       );
@@ -2839,9 +2951,7 @@
       imagingProjectionState = 'empty';
       setImagingFreshness('current', 'Current · empty');
       setImagingStatus(
-        `Authoritative imaging loaded · patient revision ${
-          imagingProjection.profile_revision
-        } · no imaging records recorded.`,
+        'Imaging history is up to date. No imaging reports are recorded.',
         'current',
         false,
       );
@@ -2857,7 +2967,7 @@
     if (summary) summary.textContent = 'No imaging facts are retained in this view.';
     const caption = document.getElementById('imaging-table-caption');
     if (caption) {
-      caption.textContent = 'Complete authoritative imaging records in server-supplied order';
+      caption.textContent = 'Recorded imaging reports in their stored order';
     }
     const table = document.getElementById('imaging-table-body');
     if (table) {
@@ -3015,7 +3125,7 @@
       if (!authority.accepted) {
         if (imagingTransportRequestIsCurrent(request)) {
           markImagingProjectionStale(
-            'A newer patient or workflow revision is available. Imaging is read-only until reloaded.',
+            'Newer patient information is available. Imaging is read-only until reloaded.',
           );
         }
         return null;
@@ -3148,7 +3258,13 @@
     clearFreshnessProjection();
     if (patient) patient.textContent = 'Patient profile unavailable';
     if (patientMeta) patientMeta.innerHTML = '';
-    if (alerts) alerts.innerHTML = loadFailureMarkup('Alerts', 'loadStatus()');
+    if (alerts && !alerts.querySelector('[data-alerts-load-failure]')) {
+      alerts.innerHTML = '<div class="load-failure" role="alert" data-alerts-load-failure><strong>Alerts unavailable</strong><span>Nothing was removed. Retry when the connection is available.</span><button class="button secondary" onclick="loadStatus()">Retry</button></div>';
+    }
+    const updates = document.getElementById('recent-updates-list');
+    if (updates && !updates.querySelector('[data-recent-updates-failure]')) {
+      updates.innerHTML = '<div class="load-failure" role="alert" data-recent-updates-failure><strong>Couldn’t check recent updates</strong><span>Retry when the connection is available.</span></div>';
+    }
   }
 
   function evictClientPhi(error = null) {
@@ -3173,6 +3289,7 @@
     statusLoadEpoch += 1;
     taskSelectionEpoch += 1;
     selectedTaskId = null;
+    openTaskRenderKey = null;
     currentReportText = '';
     currentReceipt = null;
     pendingSummary = null;
@@ -3289,6 +3406,14 @@
     if (patient) patient.textContent = 'Patient data unavailable';
     clear('patient-meta');
     clear('alerts-list');
+    clear('recent-updates-list');
+    clear('today-appointment-summary');
+    const appointmentSummary = document.getElementById('today-appointment-summary');
+    if (appointmentSummary) {
+      appointmentSummary.textContent = evictionMessage('Appointment information');
+    }
+    const appointmentAction = document.getElementById('today-appointment-action');
+    if (appointmentAction) appointmentAction.textContent = 'Open Appointments';
     clear('source-history');
     clear('q-list');
     clear('visit-list');
@@ -3411,7 +3536,7 @@
     }
     const decisionLabel = document.getElementById('visit-decision-label');
     if (decisionLabel) {
-      decisionLabel.textContent = 'Caregiver-entered decision attributed to the clinician';
+      decisionLabel.textContent = 'Decision you recorded from the clinician';
     }
     for (const id of [
       'visit-create-error', 'visit-details-error', 'visit-question-error',
@@ -3560,8 +3685,55 @@
     updateAppointmentFormValidity();
   }
 
+  function renderRecentUpdates(d) {
+    const container = document.getElementById('recent-updates-list');
+    if (!container) return;
+    const latestDocument = d.latest_document_import;
+    const research = d.latest_research_update;
+    const alertCount = Array.isArray(d.alerts) ? d.alerts.length : 0;
+    const rows = [
+      {
+        label: 'Latest document import',
+        value: latestDocument
+          ? `${latestDocument.added_at ? relativeTime(latestDocument.added_at) : 'Import time unavailable'} · ${latestDocument.summary || latestDocument.type || 'Clinical document'}`
+          : 'No import time is available.',
+        action: 'activity',
+      },
+      {
+        label: 'Latest research run',
+        value: research?.completed_at
+          ? `${relativeTime(research.completed_at)} · ${titleCaseEnum(research.trigger, 'Research update')}`
+          : 'No research-run time is available.',
+        action: 'research',
+      },
+      {
+        label: 'Active recorded alerts',
+        value: `${alertCount} alert${alertCount === 1 ? '' : 's'} currently recorded as active.`,
+        action: 'patient',
+      },
+    ];
+    container.innerHTML = rows.map(row => `<article class="recent-update-item">
+      <div><strong>${escHtml(row.label)}</strong><span>${escHtml(row.value)}</span></div>
+      <button class="button-link" type="button" data-update-view="${row.action}">${
+        row.action === 'patient' ? 'Review alerts' : row.action === 'research' ? 'Open Research' : 'Open Activity'
+      }</button>
+    </article>`).join('');
+    container.querySelectorAll('[data-update-view]').forEach(button => {
+      button.addEventListener('click', () => {
+        const view = button.dataset.updateView;
+        switchView(view);
+        const focusDestination = () => {
+          document.getElementById(`nav-${view}`)?.focus({ preventScroll: true });
+        };
+        if (typeof requestAnimationFrame === 'function') requestAnimationFrame(focusDestination);
+        else setTimeout(focusDestination, 0);
+      });
+    });
+  }
+
   function renderSidebar(d) {
     const p = d.patient || {};
+    renderRecentUpdates(d);
     document.getElementById('patient-dx').textContent = p.diagnosis || 'No diagnosis recorded';
 
     const sstrClass = p.sstr_status === 'positive' ? 'positive' : p.sstr_status === 'negative' ? 'negative' : 'unknown';
@@ -3637,22 +3809,22 @@
       provenance.capture_method === 'caregiver_entered'
       && provenance.attributed_to === 'clinician'
       && provenance.source_verification === 'unverified'
-    ) return 'Caregiver-entered · attributed to clinician · unverified';
+    ) return RECORD_SOURCE_COPY.clinician;
     if (
       provenance.capture_method === 'caregiver_entered'
       && provenance.attributed_to === 'patient_or_caregiver'
       && provenance.source_verification === 'unverified'
-    ) return 'Caregiver-entered · caregiver reported · unverified';
+    ) return 'You recorded this';
     if (
       provenance.capture_method === 'caregiver_entered'
       && provenance.attributed_to === 'caregiver'
       && provenance.source_verification === 'not_applicable'
-    ) return 'Caregiver-entered administrative outcome · not clinical evidence';
+    ) return RECORD_SOURCE_COPY.administrative;
     return {
-      clinician_attributed: 'Caregiver-entered · attributed to clinician · unverified',
-      caregiver_reported: 'Caregiver-entered · caregiver reported · unverified',
-      administrative: 'Caregiver-entered administrative outcome · not clinical evidence',
-    }[kind] || 'Caregiver-entered outcome · provenance unavailable';
+      clinician_attributed: RECORD_SOURCE_COPY.clinician,
+      caregiver_reported: 'You recorded this',
+      administrative: RECORD_SOURCE_COPY.administrative,
+    }[kind] || 'You recorded this · source details unavailable';
   }
 
   function updateAlertResolutionProvenance() {
@@ -4185,7 +4357,7 @@
         );
         links.push(
           decision
-            ? `Decision · ${decision.text} · caregiver-entered, clinician-attributed, unverified`
+            ? `Decision · ${decision.text} · ${RECORD_SOURCE_COPY.clinician}`
             : 'Current visit decision linked'
         );
       }
@@ -4492,7 +4664,11 @@
 
   function evidenceBadge(status) {
     const normalized = ['verified', 'missing', 'invalid'].includes(status) ? status : 'missing';
-    const label = normalized === 'verified' ? 'Exact source' : normalized === 'invalid' ? 'Invalid source quote' : 'No exact source';
+    const label = normalized === 'verified'
+      ? RECORD_SOURCE_COPY.exact
+      : normalized === 'invalid'
+        ? 'Linked wording is unavailable'
+        : 'Document linked - exact wording unavailable';
     return `<span class="evidence-badge ${normalized}">${label}</span>`;
   }
 
@@ -4515,16 +4691,24 @@
     const visibleSources = sourceHistoryExpanded ? history : history.slice(0, 5);
     document.getElementById('source-history').innerHTML = visibleSources.length
       ? `${visibleSources.map(source => {
-          const sourceUrl = source.artifacts?.text?.url || source.artifacts?.source?.url || source.source_url;
+          const sourceUrl = source.artifacts?.text?.url || source.artifacts?.source?.url || '';
           const status = source.import_status || (source.excluded_from_clinical_context ? 'excluded' : 'legacy');
+          const statusLabel = {
+            active: 'Imported',
+            corrected: 'Corrected by you',
+            partially_removed: 'Some imported values removed',
+            undone: 'Document changes undone',
+            excluded: 'Removed from active record',
+            legacy: RECORD_SOURCE_COPY.older,
+          }[status] || 'Source status unavailable';
           return `<article class="source-history-row">
             <div class="source-history-main">
-              <strong>${escHtml(source.filename || source.type || source.document_type || 'Legacy document record')}</strong>
+              <strong>${escHtml(source.filename || source.type || source.document_type || 'Older document record')}</strong>
               <span>${escHtml(source.summary || source.document_summary || 'Clinical source document')}</span>
               <time>Added ${escHtml(relativeTime(source.added_at || source.ingested_at || source.date))}</time>
             </div>
             <div class="evidence-history-actions">
-              <span class="import-status ${safeClassToken(status, 'legacy')}">${escHtml(status.replace(/_/g, ' '))}</span>
+              <span class="import-status ${safeClassToken(status, 'legacy')}">${escHtml(statusLabel)}</span>
               ${sourceUrl ? `<a class="evidence-link" href="${escHtml(sourceUrl)}" target="_blank" rel="noopener">Open source</a>` : ''}
               ${source.receipt_job_id ? `<button class="evidence-link button-link" data-job-id="${escHtml(source.receipt_job_id)}" onclick="openReceiptJob(this.dataset.jobId)">View import receipt</button>` : ''}
             </div>
@@ -5267,12 +5451,12 @@
 
   function symptomDatePresentation(date, label) {
     const kind = {
-      caregiver_entered: `${label} entered by caregiver`,
-      clinical: 'Recorded symptom-event date',
-      legacy_unknown: 'Legacy date; symptom-event authority not confirmed',
-      unknown: `${label} authority unknown`,
-    }[date.kind] || `${label} authority unknown`;
-    return `${symptomScalar(date.value)} · ${date.precision} precision · ${kind}`;
+      caregiver_entered: `${label} entered by you`,
+      clinical: 'Recorded symptom date',
+      legacy_unknown: 'Older record - date context was not retained',
+      unknown: `${label} type not recorded`,
+    }[date.kind] || `${label} type not recorded`;
+    return `${symptomScalar(date.value)} · ${precisionLabel(date.precision)} · ${kind}`;
   }
 
   function symptomSeverityPresentation(episode) {
@@ -5309,6 +5493,13 @@
       if (!node) continue;
       node.className = `symptom-status${state ? ` ${safeClassToken(state)}` : ''}`;
       node.textContent = message || '';
+      node.setAttribute(
+        'aria-live',
+        (id.startsWith('today-') && activeView === 'today')
+          || (id.startsWith('patient-') && activeView === 'patient')
+          ? 'polite'
+          : 'off',
+      );
     }
     const retryNode = document.getElementById('symptom-retry');
     if (retryNode) retryNode.hidden = !retry;
@@ -5346,7 +5537,7 @@
       symptomElement('span', `symptom-lifecycle ${episode.status}`, episode.status === 'current'
         ? 'Current episode'
         : 'Resolved episode'),
-      symptomElement('span', 'symptom-provenance', episode.provenance.label),
+      symptomElement('span', 'symptom-provenance', RECORD_SOURCE_COPY.entered),
     );
     const title = symptomElement('h3', '', episode.symptom_text);
     const summary = symptomElement('dl', 'symptom-episode-summary');
@@ -5379,7 +5570,7 @@
         symptomElement(
           'span',
           '',
-          `${episode.follow_up.status} · ${symptomScalar(episode.follow_up.owner)} · due ${symptomScalar(episode.follow_up.due_date)}`,
+          `${titleCaseEnum(episode.follow_up.status)} · ${symptomScalar(episode.follow_up.owner)} · due ${symptomScalar(episode.follow_up.due_date)}`,
         ),
       );
       card.append(followUp);
@@ -5412,26 +5603,34 @@
 
   function symptomObservationSourceDetails(observation) {
     const details = symptomElement('details', 'symptom-source-details');
-    details.append(symptomElement('summary', '', 'Source details'));
+    details.append(symptomElement('summary', '', 'Source and wording'));
     const body = symptomElement('div');
-    body.append(
-      symptomElement('p', '', `${observation.provenance.label} · ${observation.provenance.status}`),
-      symptomElement(
-        'p',
-        '',
-        `Source document date (not symptom chronology): ${
-          symptomScalar(observation.date.source_document_date)
-        } · ${observation.date.source_document_date_precision} precision`,
-      ),
-    );
-    const links = symptomElement('div', 'symptom-source-actions');
     const evidenceUrl = safeSymptomObservationUrl(
       observation.provenance.evidence_url,
       'evidence',
     );
     const sourceUrl = safeSymptomObservationUrl(observation.provenance.source_url, 'source');
+    const presentation = recordSourcePresentation({
+      status: observation.provenance.status,
+      evidenceUrl,
+      sourceUrl,
+      corrected: observation.provenance.status === 'caregiver_corrected_unverified',
+      entered: observation.provenance.status === 'unverified',
+      older: observation.date.kind === 'legacy_unknown' && !sourceUrl,
+    });
+    body.append(
+      symptomElement('p', '', [presentation.label, presentation.detail].filter(Boolean).join(' · ')),
+      symptomElement(
+        'p',
+        '',
+        `Source document date (not symptom chronology): ${
+          symptomScalar(observation.date.source_document_date)
+        } · ${precisionLabel(observation.date.source_document_date_precision)}`,
+      ),
+    );
+    const links = symptomElement('div', 'symptom-source-actions');
     if (evidenceUrl) {
-      const link = symptomElement('a', '', 'Open exact span');
+      const link = symptomElement('a', '', 'View exact wording');
       link.href = evidenceUrl;
       link.target = '_blank';
       link.rel = 'noopener';
@@ -5445,7 +5644,7 @@
       links.append(link);
     }
     if (!links.childElementCount) {
-      links.append(symptomElement('span', 'symptom-missing', 'No source link supplied'));
+      links.append(symptomElement('span', 'symptom-missing', 'No document link is available.'));
     }
     body.append(links);
     details.append(body);
@@ -5477,8 +5676,16 @@
     symptomAppendFact(context, 'Related treatment wording', observation.related_treatment);
     contextCell.append(context);
     const sourceCell = symptomElement('td');
+    const sourcePresentation = recordSourcePresentation({
+      status: observation.provenance.status,
+      evidenceUrl: observation.provenance.evidence_url,
+      sourceUrl: observation.provenance.source_url,
+      corrected: observation.provenance.status === 'caregiver_corrected_unverified',
+      entered: observation.provenance.status === 'unverified',
+      older: observation.date.kind === 'legacy_unknown' && !observation.provenance.source_url,
+    });
     sourceCell.append(
-      symptomElement('strong', '', observation.provenance.label),
+      symptomElement('strong', '', sourcePresentation.label),
       symptomObservationSourceDetails(observation),
     );
     row.append(symptomCell, severityCell, dateCell, contextCell, sourceCell);
@@ -5577,9 +5784,9 @@
         : 'empty';
       setSymptomFreshness('current', symptomProjectionState === 'empty' ? 'Current · empty' : 'Current');
       setSymptomStatus(
-        `Authoritative symptom record loaded · patient revision ${
-          symptomProjection.profile_revision
-        } · workflow revision ${symptomProjection.workflow_revision}.`,
+        symptomProjectionState === 'empty'
+          ? 'Symptom records are up to date. No symptoms are logged.'
+          : 'Symptom records are up to date.',
         'current',
         false,
       );
@@ -5892,7 +6099,7 @@
         || (Number.isSafeInteger(currentWorkflow) && data.workflow_revision < currentWorkflow)
       ) {
         markSymptomProjectionStale(
-          'A newer patient or workflow revision is available. Symptoms remain read-only while reloading.',
+          'Newer patient information is available. Symptoms remain read-only while reloading.',
           { abortRequest: false },
         );
         return null;
@@ -6990,26 +7197,46 @@
     if (!banner) return;
     const title = document.getElementById('freshness-title');
     const message = document.getElementById('freshness-message');
+    const action = document.getElementById('freshness-action');
     banner.hidden = false;
     banner.className = 'freshness-banner';
+    if (action) {
+      action.hidden = true;
+      action.onclick = null;
+    }
 
     if (error) {
       banner.classList.add('error');
-      title.textContent = 'Assessment freshness is unavailable';
-      message.textContent = 'The assessment could not be compared with the latest patient data.';
+      title.textContent = 'Couldn’t check';
+      message.textContent = 'The latest assessment could not be compared with the patient record. Retry the check.';
+      if (action) {
+        action.textContent = 'Retry check';
+        action.onclick = retryFreshnessCheck;
+        action.hidden = false;
+      }
       return;
     }
 
     if (!d || d.status === 'not_generated') {
       banner.classList.add('stale');
-      title.textContent = 'No current assessment';
+      title.textContent = 'No assessment yet';
       message.textContent = 'Generate an assessment after checking that the patient record is complete.';
+      if (action) {
+        action.textContent = 'Generate assessment';
+        action.onclick = generateSummary;
+        action.hidden = false;
+      }
       return;
     }
     if (d.status === 'stale' || d.content_hidden) {
       banner.classList.add('stale');
-      title.textContent = 'Assessment refresh required';
-      message.textContent = 'Generated clinical conclusions are hidden because the patient record changed.';
+      title.textContent = 'New information since this assessment';
+      message.textContent = 'Prior conclusions and recommendations are hidden. Review the patient record, then refresh the assessment.';
+      if (action) {
+        action.textContent = 'Refresh assessment';
+        action.onclick = generateSummary;
+        action.hidden = false;
+      }
       return;
     }
 
@@ -7020,11 +7247,16 @@
       : '';
     if (stale) {
       banner.classList.add('stale');
-      title.textContent = 'New patient data needs assessment';
-      message.textContent = `This summary predates the current patient record.${latestDetail}`;
+      title.textContent = 'New information since this assessment';
+      message.textContent = `Review the patient record, then refresh the assessment.${latestDetail}`;
+      if (action) {
+        action.textContent = 'Refresh assessment';
+        action.onclick = generateSummary;
+        action.hidden = false;
+      }
     } else {
       banner.classList.add('current');
-      title.textContent = 'Assessment is current';
+      title.textContent = 'Up to date';
       message.textContent = d.generated_at
         ? `Updated ${fmtDate(d.generated_at_timestamp || d.generated_at)} and aligned with the current record.`
         : 'The summary is aligned with the current patient record.';
@@ -7037,10 +7269,19 @@
     const message = document.getElementById('freshness-message');
     if (title) title.textContent = '';
     if (message) message.textContent = '';
+    const action = document.getElementById('freshness-action');
+    if (action) {
+      action.hidden = true;
+      action.onclick = null;
+    }
     if (banner) {
       banner.className = 'freshness-banner';
       banner.hidden = true;
     }
+  }
+
+  async function retryFreshnessCheck() {
+    await Promise.allSettled([loadStatus(), loadSummary()]);
   }
 
   function summaryActionIsCurrent(action, summary) {
@@ -7121,9 +7362,13 @@
         ? item.evidence_status
         : 'missing';
       if (status === 'verified' && item.evidence_url) {
-        return `<a class="claim-evidence-link verified" href="${escHtml(item.evidence_url)}" target="_blank" rel="noopener">Evidence: ${escHtml(item.label)}</a>`;
+        return `<a class="claim-evidence-link verified" href="${escHtml(item.evidence_url)}" target="_blank" rel="noopener">View exact wording: ${escHtml(item.label)}</a>`;
       }
-      return `<span class="claim-evidence-link ${status}">${status === 'invalid' ? 'Invalid evidence link' : 'Evidence not linked'}</span>`;
+      return `<span class="claim-evidence-link ${status}">${
+        status === 'invalid'
+          ? 'Linked wording is unavailable'
+          : 'No exact wording is linked'
+      }</span>`;
     }).join('')}</div>`;
   }
 
@@ -7144,7 +7389,7 @@
     }
     if (d.status === 'stale' || d.content_hidden) {
       inline.innerHTML = '<span class="s-pill status-insufficient_data">ASSESSMENT NEEDS REFRESH</span>';
-      updated.textContent = `Record rev ${d.profile_revision ?? '—'} · prior assessment rev ${d.summary_revision ?? '—'}`;
+      updated.textContent = 'New information was recorded after this assessment.';
       body.innerHTML = `<div class="summary-empty stale-summary-hidden">
         <strong>Prior generated assessment is hidden</strong>
         <div>The patient record changed after it was generated. Refresh the assessment before using its actions, PRRT screening, or trial suggestion.</div>
@@ -7164,36 +7409,16 @@
     // Revision fields are authoritative; dates support profiles created before revisions.
     const isStale = summaryIsStale(d);
     updated.textContent = d.generated_at
-      ? `Updated ${d.generated_at_timestamp || fmtDate(d.generated_at)} · record rev ${d.profile_revision ?? '—'} · assessment rev ${d.summary_revision ?? '—'}${isStale ? ' · new data available' : ''}`
+      ? `Updated ${d.generated_at_timestamp || fmtDate(d.generated_at)}${isStale ? ' · new information available' : ''}`
       : '';
 
-    let html = '';
-
-    // Pills row
-    html += `<div class="summary-pills">`;
-    if (d.status_confidence) {
-      html += `<span class="s-pill" title="${escHtml(d.status_rationale || '')}">CONFIDENCE: ${escHtml(d.status_confidence.toUpperCase())}</span>`;
-    }
+    let html = '<section class="summary-primary" aria-labelledby="summary-matters-heading">';
+    html += '<h3 class="summary-section-label prominent" id="summary-matters-heading">What matters now</h3>';
     const prrtLabels = {
       eligible: 'PRRT: POTENTIAL FIT', likely_eligible: 'PRRT: MAY FIT',
       pending_dotatate: 'PRRT: NEEDS RECEPTOR-IMAGING REVIEW',
       not_eligible: 'PRRT: NOT SUPPORTED BY CURRENT RECORD', unknown: 'PRRT: NOT ASSESSED'
     };
-    html += `<span class="s-pill prrt-${safeClassToken(d.prrt_status, 'unknown')}" title="${escHtml(d.prrt_rationale||'')}">${escHtml(prrtLabels[d.prrt_status] || 'PRRT: NOT ASSESSED')}</span>`;
-    if (d.cga_trend) {
-      const cgaLabels = { rising: '↑ CgA RISING', stable: '→ CgA STABLE', falling: '↓ CgA FALLING', insufficient_data: 'CgA: NO DATA' };
-      html += `<span class="s-pill cga-${safeClassToken(d.cga_trend, 'insufficient_data')}" title="${escHtml(d.cga_trend_detail||'')}">${escHtml(cgaLabels[d.cga_trend] || 'CgA: NO DATA')}</span>`;
-    }
-    html += `</div>`;
-    if (d.cga_trend_detail) {
-      html += `<div class="summary-rationale"><strong>CgA trend:</strong> ${escHtml(d.cga_trend_detail)}${renderClaimEvidence(d.claim_evidence?.claims?.cga_trend_detail)}</div>`;
-    }
-    if (d.status_rationale) {
-      html += `<div class="summary-rationale">${escHtml(d.status_rationale)}${renderClaimEvidence(d.claim_evidence?.claims?.status_rationale)}</div>`;
-    }
-    if (d.prrt_rationale) {
-      html += `<div class="summary-rationale"><strong>PRRT screening context:</strong> ${escHtml(d.prrt_rationale)}${renderClaimEvidence(d.claim_evidence?.claims?.prrt_rationale)}</div>`;
-    }
 
     // Key concern
     if (d.key_concern) {
@@ -7204,17 +7429,12 @@
       </div>`;
     }
 
-    // Narrative
-    if (d.summary) {
-      html += `<div class="summary-narrative">${escHtml(d.summary)}${renderClaimEvidence(d.claim_evidence?.claims?.summary)}</div>`;
-    }
-
-    html += `<div style="margin:18px 22px 2px"><button class="btn-digest summary-feedback-button" style="border-color:var(--amber);color:var(--amber)" onclick="reportMissedSummary()">⚑ Report something missed or incorrect</button>${d.feedback_pending ? ` <span style="font-size:10px;color:var(--amber)">${escHtml(d.feedback_pending)} review item(s) recorded</span>` : ''}</div>`;
+    html += '</section>';
 
     // Next actions
     if (d.next_actions && d.next_actions.length) {
       html += `<div class="summary-section">
-        <div class="summary-section-label">What to do next</div>
+        <div class="summary-section-label">Recommended next steps</div>
         <div class="action-list">`;
       d.next_actions.forEach((a, idx) => {
         if (!summaryActionIsCurrent(a, d)) {
@@ -7224,7 +7444,7 @@
           return;
         }
         const provBadge = a.provisional
-          ? `<span style="font-family:var(--mono);font-size:9px;color:var(--text2);border:0.5px solid var(--border);padding:1px 4px;border-radius:2px;margin-left:4px">TBD</span>`
+          ? `<span class="action-provisional-badge">To confirm</span>`
           : '';
         const accepted = generatedActionAccepted(a.id);
         html += `<div class="action-item" id="action-${idx}" data-action-text="${escHtml(a.action || '')}" data-summary-revision="${escHtml(d.summary_revision ?? '')}" data-generated-action-source-id="${escHtml(a.id)}" data-generated-action-source-token="${escHtml(a.source_token)}">
@@ -7244,12 +7464,19 @@
       html += `</div></div>`;
     }
 
+    if (d.status_rationale) {
+      html += `<div class="summary-rationale primary-rationale">${escHtml(d.status_rationale)}${renderClaimEvidence(d.claim_evidence?.claims?.status_rationale)}</div>`;
+    }
+    if (d.summary) {
+      html += `<div class="summary-narrative">${escHtml(d.summary)}${renderClaimEvidence(d.claim_evidence?.claims?.summary)}</div>`;
+    }
+
 
     // A linear timeline remains readable with a keyboard, a screen reader, and on phones.
     if (d.timeline && d.timeline.length) {
       const today = new Date().toISOString().slice(0, 10);
       html += `<div class="summary-section">
-        <div class="summary-section-label">Timeline</div>
+        <div class="summary-section-label">What changed / upcoming</div>
         <ol class="timeline-list">${d.timeline.map(item => {
           const date = item.date || '';
           const past = date && date < today ? ' past' : '';
@@ -7263,6 +7490,31 @@
       </div>`;
     }
 
+    if (d.status_confidence || d.cga_trend || d.cga_trend_detail || d.prrt_rationale) {
+      html += `<details class="summary-context">
+        <summary>Assessment context</summary>
+        <div>`;
+      html += '<div class="summary-pills">';
+      if (d.status_confidence) {
+        html += `<span class="s-pill">CONFIDENCE: ${escHtml(d.status_confidence.toUpperCase())}</span>`;
+      }
+      html += `<span class="s-pill prrt-${safeClassToken(d.prrt_status, 'unknown')}">${escHtml(prrtLabels[d.prrt_status] || 'PRRT: NOT ASSESSED')}</span>`;
+      if (d.cga_trend) {
+        const cgaLabels = { rising: '↑ CgA RISING', stable: '→ CgA STABLE', falling: '↓ CgA FALLING', insufficient_data: 'CgA: NO DATA' };
+        html += `<span class="s-pill cga-${safeClassToken(d.cga_trend, 'insufficient_data')}">${escHtml(cgaLabels[d.cga_trend] || 'CgA: NO DATA')}</span>`;
+      }
+      html += '</div>';
+      if (d.cga_trend_detail) {
+        html += `<div class="summary-rationale"><strong>CgA trend:</strong> ${escHtml(d.cga_trend_detail)}${renderClaimEvidence(d.claim_evidence?.claims?.cga_trend_detail)}</div>`;
+      }
+      if (d.prrt_rationale) {
+        html += `<div class="summary-rationale"><strong>PRRT screening context:</strong> ${escHtml(d.prrt_rationale)}${renderClaimEvidence(d.claim_evidence?.claims?.prrt_rationale)}</div>`;
+      }
+      html += '</div></details>';
+    }
+
+    html += `<div class="summary-feedback"><button class="btn-digest summary-feedback-button" onclick="reportMissedSummary()">⚑ Report something missed or incorrect</button>${d.feedback_pending ? ` <span>${escHtml(d.feedback_pending)} review item(s) recorded</span>` : ''}</div>`;
+
     body.innerHTML = html;
     refreshGeneratedActionControls();
     if (followUpControlsLocked()) setFollowUpMutationBusy(true);
@@ -7275,6 +7527,11 @@
     generated_context: 'Machine-generated compatibility context · not relevance, eligibility, enrollment, suitability, or recommendation',
     discovery_provenance: 'Research discovery provenance',
     caregiver_workflow: 'Caregiver-maintained shortlist and disposition workflow',
+  };
+  const RESEARCH_DISPLAY_LABELS = {
+    external_facts: 'Registry or publication details',
+    generated_context: 'NET/Care-generated context - not a clinical conclusion',
+    discovery_provenance: 'How this research was found',
   };
   const RESEARCH_ATTRIBUTION_LABELS = {
     caregiver: 'Caregiver-entered · unverified',
@@ -7771,32 +8028,32 @@
           <h3>${escHtml(researchItemTitle(item))}</h3>
           <p class="research-source-id">${escHtml(researchIdentityLabel(item))}</p>
         </div>
-        ${item.latest_batch_member ? '<span class="research-latest-badge">New research</span>' : ''}
+        ${item.latest_batch_member ? '<span class="research-latest-badge">Latest batch</span>' : ''}
       </header>
       ${canonical ? `<p><a class="research-external-link" href="${escHtml(canonical)}" target="_blank" rel="noopener noreferrer">Open exact ${item.item_type === 'trial' ? 'ClinicalTrials.gov' : 'PubMed'} record <span aria-hidden="true">↗</span></a></p>` : '<p class="research-mechanical-reason">No validated canonical external link is available.</p>'}
     `;
     if (!compact) {
       article.insertAdjacentHTML('beforeend', `
         <div class="research-authority-grid">
-          ${researchAuthorityMarkup(RESEARCH_AUTHORITY_LABELS.external_facts, item.external_facts, RESEARCH_EXTERNAL_FIELDS[item.item_type])}
-          ${researchAuthorityMarkup(RESEARCH_AUTHORITY_LABELS.generated_context, item.generated_context, RESEARCH_GENERATED_FIELDS[item.item_type])}
-          ${researchAuthorityMarkup(RESEARCH_AUTHORITY_LABELS.discovery_provenance, item.discovery_provenance, RESEARCH_DISCOVERY_FIELDS[item.item_type])}
+          ${researchAuthorityMarkup(RESEARCH_DISPLAY_LABELS.external_facts, item.external_facts, RESEARCH_EXTERNAL_FIELDS[item.item_type])}
+          ${researchAuthorityMarkup(RESEARCH_DISPLAY_LABELS.generated_context, item.generated_context, RESEARCH_GENERATED_FIELDS[item.item_type])}
+          ${researchAuthorityMarkup(RESEARCH_DISPLAY_LABELS.discovery_provenance, item.discovery_provenance, RESEARCH_DISCOVERY_FIELDS[item.item_type])}
         </div>
       `);
     }
     const actions = document.createElement('div');
     actions.className = 'research-card-actions';
     if (item.shortlist.eligible) {
-      appendResearchControl(actions, 'Save exact occurrence for consideration', { kind: 'shortlist', value: item }, 'primary');
+      appendResearchControl(actions, 'Save for consideration', { kind: 'shortlist', value: item }, 'primary');
     } else if (item.consideration_id) {
       appendResearchControl(actions, 'Open existing consideration', { kind: 'navigate-consideration', value: item });
     } else {
       const reasons = {
         missing_or_invalid_source_id: 'Saving is unavailable because this occurrence has no validated source identifier.',
-        snapshot_too_large: 'Saving is unavailable because this exact occurrence exceeds the supported snapshot limit.',
-        already_shortlisted: 'This exact occurrence already has a caregiver consideration.',
+        snapshot_too_large: 'Saving is unavailable because this research entry exceeds the supported limit.',
+        already_shortlisted: 'This research entry already has a caregiver consideration.',
       };
-      actions.innerHTML = `<p class="research-mechanical-reason">${escHtml(reasons[item.shortlist.reason] || 'Saving is mechanically unavailable for this exact occurrence.')}</p>`;
+      actions.innerHTML = `<p class="research-mechanical-reason">${escHtml(reasons[item.shortlist.reason] || 'Saving is unavailable for this research entry.')}</p>`;
     }
     article.appendChild(actions);
     return article;
@@ -7804,10 +8061,11 @@
 
   function researchCurrentSectionMarkup(consideration, item, section, label, allowedFields) {
     const state = consideration.current_state[section];
+    const stateLabel = state === 'unchanged' ? 'Matches saved copy' : 'Changed since saved';
     const value = item ? item[section] : {};
     return `<section class="research-current-section">
-      <div class="research-current-heading"><h4>${escHtml(label)}</h4><span class="research-change-state ${escHtml(state)}">${escHtml(state)}</span></div>
-      ${item ? researchAuthorityMarkup('Current exact section', value, allowedFields) : '<p class="research-missing-value">The exact saved occurrence is not present in the current source rows.</p>'}
+      <div class="research-current-heading"><h4>${escHtml(label)}</h4><span class="research-change-state ${escHtml(state)}">${escHtml(stateLabel)}</span></div>
+      ${item ? researchAuthorityMarkup('Current details', value, allowedFields) : '<p class="research-missing-value">This saved research entry is not present in the current tracked list.</p>'}
     </section>`;
   }
 
@@ -7825,36 +8083,43 @@
           <span class="research-type">${escHtml(consideration.item_type === 'trial' ? 'Clinical trial consideration' : 'Research paper consideration')}</span>
           <h3>${escHtml(snapshotTitle === null ? 'Title is null' : snapshotTitle === '' ? 'Title is empty' : String(snapshotTitle))}</h3>
         </div>
-        <span class="research-workflow-state ${escHtml(consideration.status)}">${escHtml(consideration.status)}</span>
+        <span class="research-workflow-state ${escHtml(consideration.status)}">${consideration.status === 'open' ? 'Being considered' : 'Closed by you'}</span>
       </header>
-      <p class="research-attribution">${escHtml(RESEARCH_AUTHORITY_LABELS.caregiver_workflow)}</p>
+      <p class="research-attribution">${escHtml(RECORD_SOURCE_COPY.entered)}</p>
     `;
     if (!compact) {
       article.insertAdjacentHTML('beforeend', `
         <div class="research-snapshot-current-grid">
           <section class="research-snapshot-section" aria-label="Immutable saved snapshot">
             <h3>Immutable saved snapshot</h3>
-            ${researchAuthorityMarkup(RESEARCH_AUTHORITY_LABELS.external_facts, snapshot.external_facts, RESEARCH_EXTERNAL_FIELDS[consideration.item_type])}
-            ${researchAuthorityMarkup(RESEARCH_AUTHORITY_LABELS.generated_context, snapshot.generated_context, RESEARCH_GENERATED_FIELDS[consideration.item_type])}
-            ${researchAuthorityMarkup(RESEARCH_AUTHORITY_LABELS.discovery_provenance, snapshot.discovery_provenance, RESEARCH_DISCOVERY_FIELDS[consideration.item_type])}
+            ${researchAuthorityMarkup(RESEARCH_DISPLAY_LABELS.external_facts, snapshot.external_facts, RESEARCH_EXTERNAL_FIELDS[consideration.item_type])}
+            ${researchAuthorityMarkup(RESEARCH_DISPLAY_LABELS.generated_context, snapshot.generated_context, RESEARCH_GENERATED_FIELDS[consideration.item_type])}
+            ${researchAuthorityMarkup(RESEARCH_DISPLAY_LABELS.discovery_provenance, snapshot.discovery_provenance, RESEARCH_DISCOVERY_FIELDS[consideration.item_type])}
           </section>
-          <section class="research-current-section-group" aria-label="Current exact occurrence">
-            <div class="research-current-heading"><h3>Current exact occurrence</h3><span class="research-change-state ${escHtml(consideration.current_state.occurrence)}">${escHtml(consideration.current_state.occurrence)}</span></div>
-            ${researchCurrentSectionMarkup(consideration, currentItem, 'external_facts', RESEARCH_AUTHORITY_LABELS.external_facts, RESEARCH_EXTERNAL_FIELDS[consideration.item_type])}
-            ${researchCurrentSectionMarkup(consideration, currentItem, 'generated_context', RESEARCH_AUTHORITY_LABELS.generated_context, RESEARCH_GENERATED_FIELDS[consideration.item_type])}
-            ${researchCurrentSectionMarkup(consideration, currentItem, 'discovery_provenance', RESEARCH_AUTHORITY_LABELS.discovery_provenance, RESEARCH_DISCOVERY_FIELDS[consideration.item_type])}
+          <section class="research-current-section-group" aria-label="Current tracked entry">
+            <div class="research-current-heading"><h3>Current tracked entry</h3><span class="research-change-state ${escHtml(consideration.current_state.occurrence)}">${consideration.current_state.occurrence === 'present' ? 'Still tracked' : 'Not in current list'}</span></div>
+            ${researchCurrentSectionMarkup(consideration, currentItem, 'external_facts', RESEARCH_DISPLAY_LABELS.external_facts, RESEARCH_EXTERNAL_FIELDS[consideration.item_type])}
+            ${researchCurrentSectionMarkup(consideration, currentItem, 'generated_context', RESEARCH_DISPLAY_LABELS.generated_context, RESEARCH_GENERATED_FIELDS[consideration.item_type])}
+            ${researchCurrentSectionMarkup(consideration, currentItem, 'discovery_provenance', RESEARCH_DISPLAY_LABELS.discovery_provenance, RESEARCH_DISCOVERY_FIELDS[consideration.item_type])}
           </section>
         </div>
-        <section class="research-events-section"><h3>Caregiver-entered events</h3>
+        <section class="research-events-section"><h3>Your recorded events</h3>
           ${consideration.events.length ? `<ol class="research-history-list">${consideration.events.map(event => `<li>
             <div class="research-history-heading"><strong>${escHtml(RESEARCH_EVENT_LABELS[event.event_type])}</strong><span>${escHtml(event.occurred_on === null ? 'No event date entered' : event.occurred_on)}</span></div>
-            <p class="research-attribution">${escHtml(event.provenance.label)}</p>
+            <p class="research-attribution">${escHtml(caregiverProvenancePresentation(event.provenance.label))}</p>
             <div class="research-event-note">${researchValueMarkup(event.note)}</div>
             <dl class="research-event-meta"><div><dt>Who</dt><dd>${researchValueMarkup(event.who)}</dd></div><div><dt>Context</dt><dd>${researchValueMarkup(event.context)}</dd></div><div><dt>Recorded</dt><dd>${researchValueMarkup(event.recorded_at)}</dd></div></dl>
           </li>`).join('')}</ol>` : '<p class="research-empty-value">No caregiver events are recorded.</p>'}
         </section>
-        <section class="research-events-section"><h3>Lifecycle history</h3>
-          ${consideration.history.length ? `<div class="research-scroll-region" role="region" aria-label="Lifecycle history in server order" tabindex="0"><table class="research-history-table"><thead><tr><th>Operation</th><th>Recorded</th><th>Exact changes</th></tr></thead><tbody>${consideration.history.map(entry => `<tr><td>${escHtml(entry.operation)}</td><td>${escHtml(entry.at)}</td><td><pre>${escHtml(JSON.stringify(entry.changes, null, 2))}</pre></td></tr>`).join('')}</tbody></table></div>` : '<p class="research-empty-value">No lifecycle history is recorded.</p>'}
+        <section class="research-events-section"><h3>Consideration history</h3>
+          ${consideration.history.length ? `<ol class="research-history-list">${consideration.history.map(entry => `<li><div class="research-history-heading"><strong>${escHtml({
+            create: 'Saved for consideration',
+            close: 'Closed by you',
+            resume: 'Reopened for consideration',
+            add_event: 'Note recorded',
+            link_follow_up: 'Follow-up linked',
+            unlink_follow_up: 'Follow-up unlinked',
+          }[entry.operation] || 'Updated by you')}</strong><span>${escHtml(formatActionTimestamp(entry.at))}</span></div></li>`).join('')}</ol>` : '<p class="research-empty-value">No consideration history is recorded.</p>'}
         </section>
         <section class="research-follow-up-summary"><h3>Durable follow-up</h3>
           ${consideration.follow_up ? `<dl class="research-event-meta"><div><dt>Text</dt><dd>${researchValueMarkup(consideration.follow_up.text)}</dd></div><div><dt>Status</dt><dd>${researchValueMarkup(consideration.follow_up.status)}</dd></div><div><dt>Owner</dt><dd>${researchValueMarkup(consideration.follow_up.owner)}</dd></div><div><dt>Due date</dt><dd>${researchValueMarkup(consideration.follow_up.due_date)}</dd></div></dl>` : '<p class="research-empty-value">No caregiver follow-up is linked.</p>'}
@@ -7883,6 +8148,13 @@
       if (!node) continue;
       node.textContent = message || '';
       node.className = `research-status${tone ? ` ${safeClassToken(tone)}` : ''}`;
+      node.setAttribute(
+        'aria-live',
+        (id.startsWith('today-') && activeView === 'today')
+          || (id === 'research-status' && activeView === 'research')
+          ? 'polite'
+          : 'off',
+      );
     }
     const labels = {
       current: 'Current',
@@ -7921,7 +8193,7 @@
     considerationList.replaceChildren();
     researchProjection.items.forEach(item => currentList.appendChild(renderResearchOccurrence(item)));
     researchProjection.considerations.forEach(item => considerationList.appendChild(renderResearchConsideration(item)));
-    if (!researchProjection.items.length) currentList.innerHTML = '<div class="research-empty-state">No current research occurrences are present in the authoritative workspace.</div>';
+    if (!researchProjection.items.length) currentList.innerHTML = '<div class="research-empty-state">No research entries are currently tracked.</div>';
     if (!researchProjection.considerations.length) considerationList.innerHTML = '<div class="research-empty-state">No caregiver considerations are recorded.</div>';
     document.getElementById('research-count-current').textContent = String(researchProjection.item_count);
     document.getElementById('research-count-considerations').textContent = String(researchProjection.consideration_count);
@@ -7934,12 +8206,12 @@
     todayOpen.replaceChildren();
     latestVisible.forEach(item => todayLatest.appendChild(renderResearchOccurrence(item, true)));
     openVisible.forEach(item => todayOpen.appendChild(renderResearchConsideration(item, true)));
-    if (!latestVisible.length) todayLatest.innerHTML = '<div class="research-empty-state">The server reports no current exact latest-batch occurrences.</div>';
+    if (!latestVisible.length) todayLatest.innerHTML = '<div class="research-empty-state">The latest research run did not add a tracked entry.</div>';
     if (!openVisible.length) todayOpen.innerHTML = '<div class="research-empty-state">No open caregiver considerations are recorded.</div>';
     const trialTotal = latest.filter(item => item.item_type === 'trial').length;
     const paperTotal = latest.filter(item => item.item_type === 'paper').length;
     document.getElementById('today-latest-research-totals').textContent =
-      `${latest.length} exact latest-batch occurrence${latest.length === 1 ? '' : 's'} (${trialTotal} trial${trialTotal === 1 ? '' : 's'}, ${paperTotal} paper${paperTotal === 1 ? '' : 's'}). Showing ${latestVisible.length}; ${Math.max(0, latest.length - latestVisible.length)} omitted from Today.`;
+      `${latest.length} tracked entr${latest.length === 1 ? 'y' : 'ies'} in the latest batch (${trialTotal} trial${trialTotal === 1 ? '' : 's'}, ${paperTotal} paper${paperTotal === 1 ? '' : 's'}). Showing ${latestVisible.length}; ${Math.max(0, latest.length - latestVisible.length)} more in Research.`;
     document.getElementById('today-open-consideration-totals').textContent =
       `${open.length} open consideration${open.length === 1 ? '' : 's'}. Showing ${openVisible.length}; ${Math.max(0, open.length - openVisible.length)} omitted from Today.`;
     document.querySelectorAll('.research-mutation-control').forEach(control => {
@@ -8092,8 +8364,8 @@
       document.getElementById('today-research-retry-refresh').hidden = true;
       setResearchStatus(
         projection.items.length || projection.considerations.length
-          ? 'Authoritative research workspace loaded.'
-          : 'Authoritative research workspace loaded with no current occurrences or considerations.',
+          ? 'Tracked research is up to date.'
+          : 'Tracked research is up to date. No entries or considerations are recorded.',
         'current',
       );
       if (!unchangedAuthority || wasReadOnly || pendingResearchCompletion) renderResearchWorkspace();
@@ -8236,7 +8508,7 @@
     researchDraft = null;
     scrubResearchDialogFields();
     const titles = {
-      shortlist: 'Save exact occurrence',
+      shortlist: 'Save for consideration',
       event: 'Record caregiver event',
       close: 'Close caregiver consideration',
       resume: 'Resume caregiver consideration',
@@ -8424,7 +8696,7 @@
       return false;
     }
     researchDraft = captureResearchDraft();
-    setResearchDialogStatus('Caregiver-entered draft restored after authority reload. Review it before submitting.', 'conflict');
+    setResearchDialogStatus('Your draft was restored after the record reloaded. Review it before submitting.', 'conflict');
     return true;
   }
 
@@ -8808,6 +9080,62 @@
   }
 
   // ── Task log ────────────────────────────────────────────────────────────
+  function taskTypePresentation(type) {
+    return {
+      feed: 'Document processing',
+      digest: 'Research update',
+      'deep-sweep': 'Pre-appointment deep sweep',
+      summary: 'Assessment refresh',
+      questions: 'Appointment questions',
+      chat: 'Record question',
+    }[type] || 'Background activity';
+  }
+
+  function taskStatusPresentation(status) {
+    return {
+      queued: 'Queued',
+      running: 'In progress',
+      done: 'Completed',
+      error: 'Couldn’t complete',
+      interrupted: 'Interrupted',
+    }[status] || 'Status unavailable';
+  }
+
+  function normalizedTaskArtifact(task) {
+    if (
+      task?.artifact
+      && ['report', 'result', 'none'].includes(task.artifact.kind)
+      && ['available', 'expired', 'not_retained', 'unavailable', 'none', 'legacy_unknown'].includes(task.artifact.state)
+      && ['current', 'stale', 'unknown'].includes(task.artifact.freshness)
+    ) return task.artifact;
+    const kind = ['feed', 'digest', 'deep-sweep'].includes(task?.type)
+      ? 'report'
+      : ['chat', 'questions', 'summary'].includes(task?.type) ? 'result' : 'none';
+    return {
+      kind,
+      state: task?.status === 'done' ? 'legacy_unknown' : 'none',
+      freshness: task?.derived_content_stale ? 'stale' : 'unknown',
+    };
+  }
+
+  function taskArtifactSummary(task) {
+    if (['queued', 'running'].includes(task.status)) {
+      return task.status === 'queued' ? 'Waiting to start.' : 'Processing now.';
+    }
+    if (task.status === 'error') return 'The task did not complete.';
+    if (task.status === 'interrupted') return 'The server restarted before this task completed.';
+    const artifact = normalizedTaskArtifact(task);
+    if (artifact.freshness === 'stale') return 'Completed output is no longer current.';
+    return {
+      available: artifact.kind === 'report' ? 'Report available.' : 'Result available.',
+      expired: 'Output expired under the retention policy.',
+      not_retained: 'Output is no longer retained.',
+      unavailable: 'Saved output is unavailable.',
+      legacy_unknown: 'This older record does not include output-retention details.',
+      none: 'No separate saved output is expected.',
+    }[artifact.state] || 'Output status unavailable.';
+  }
+
   async function loadTasks(options = {}) {
     const request = capturePatientRequest();
     const requestLoadEpoch = ++taskLoadEpoch;
@@ -8853,11 +9181,11 @@
   }
 
   function renderTasks(tasks) {
-    document.getElementById('log-count').textContent = `${tasks.length} task${tasks.length !== 1 ? 's' : ''}`;
+    document.getElementById('log-count').textContent = `${tasks.length} item${tasks.length !== 1 ? 's' : ''}`;
 
     if (!tasks.length) {
       document.getElementById('task-list').innerHTML =
-        '<div class="empty-state">No tasks yet.<br>Feed a document to begin.</div>';
+        '<div class="empty-state">No activity yet.<br>Add a document to begin.</div>';
       return;
     }
 
@@ -8865,16 +9193,13 @@
       <button class="task-item status-${safeClassToken(t.status, 'unknown')} ${selectedTaskId === t.id ? 'selected' : ''}"
            data-task-id="${escHtml(t.id)}" onclick="selectTask(this.dataset.taskId)">
         <div class="task-header">
-          <span class="task-type ${t.type === 'digest' ? 'digest' : (t.type === 'deep-sweep' ? 'deep-sweep' : '')}">${escHtml(t.type || 'task')}</span>
-          ${t.doc_type ? `<span class="task-doctype">${escHtml(docTypeLabel(t))}</span>` : ''}
+          <span class="task-type ${t.type === 'digest' ? 'digest' : (t.type === 'deep-sweep' ? 'deep-sweep' : '')}">${escHtml(taskTypePresentation(t.type))}</span>
           <span class="task-time">${escHtml(relativeTime(t.created_at))}</span>
         </div>
-        <div class="task-preview">${t.derived_content_stale ? escHtml(staleTaskCopy(t).preview) : escHtml((t.summary || t.input_preview || '').slice(0, 100))}</div>
+        <div class="task-preview">${escHtml(taskArtifactSummary(t))}</div>
         <div class="task-status-row">
-          <span class="status-badge ${safeClassToken(t.status, 'unknown')}">${escHtml(translateStatus(t.status))}</span>
+          <span class="status-badge ${safeClassToken(t.status, 'unknown')}">${escHtml(taskStatusPresentation(t.status))}</span>
           ${t.status === 'done' && duration(t) ? `<span class="task-duration">${escHtml(duration(t))}</span>` : ''}
-          ${t.status === 'error' ? `<span class="task-duration" style="color:var(--red)">${escHtml((t.error||'').slice(0,60))}</span>` : ''}
-          ${t.status === 'interrupted' ? `<span class="task-duration" style="color:var(--amber)">${escHtml((t.retry_guidance||t.error||'Interrupted').slice(0,60))}</span>` : ''}
         </div>
       </button>`).join('');
   }
@@ -8897,7 +9222,7 @@
     if (task.derived_content_stale_reason === 'freshness_cannot_be_verified') {
       return {
         title: `${type} freshness cannot be verified`,
-        detail: 'This retained legacy task has no source profile revision.',
+        detail: 'This older activity record does not include enough information to compare it with the current patient record.',
         preview: `${type} freshness cannot be verified`,
       };
     }
@@ -8922,6 +9247,19 @@
     };
   }
 
+  function openTaskSemanticRenderKey(task) {
+    const artifact = normalizedTaskArtifact(task);
+    return [
+      task?.id || '',
+      task?.status || '',
+      task?.derived_content_stale === true ? 'stale' : 'current',
+      task?.derived_content_stale_reason || task?.report_stale_reason || '',
+      artifact.kind,
+      artifact.state,
+      artifact.freshness,
+    ].join('|');
+  }
+
   function clearReportCopyState() {
     currentReportText = '';
     const copy = document.getElementById('copy-btn');
@@ -8935,15 +9273,27 @@
     const panel = document.getElementById('report-panel');
     if (!selectedTaskId || panel?.classList.contains('collapsed')) return;
     const task = tasks.find(item => item.id === selectedTaskId);
-    if (!task?.derived_content_stale) return;
-    const copy = staleTaskCopy(task);
+    if (!task?.derived_content_stale) {
+      openTaskRenderKey = null;
+      return;
+    }
+    const renderKey = openTaskSemanticRenderKey(task);
+    if (renderKey === openTaskRenderKey) return;
     const receiptHtml = currentReceipt?.job_id === selectedTaskId
       ? renderReceipt(currentReceipt)
       : '';
-    document.getElementById('panel-body').innerHTML = `${receiptHtml}
-      <div class="load-failure stale-artifact" role="alert">
-        <strong>${escHtml(copy.title)}</strong><span>${escHtml(copy.detail)} The original artifact remains retained for audit.</span>
-      </div>`;
+    const artifact = normalizedTaskArtifact(task);
+    let staleMarkup;
+    if (artifact.kind === 'report') {
+      staleMarkup = staleReportMarkup({
+        ...task,
+        report_stale_reason: task.derived_content_stale_reason,
+      });
+    } else {
+      staleMarkup = staleResultMarkup(task);
+    }
+    document.getElementById('panel-body').innerHTML = `${receiptHtml}${staleMarkup}`;
+    openTaskRenderKey = renderKey;
     clearReportCopyState();
   }
 
@@ -8976,12 +9326,13 @@
     }
   }
 
-  function closePanel() {
+  function closePanel(options = {}) {
     const request = capturePatientRequest();
     const report = document.getElementById('report-panel');
     report.classList.add('collapsed');
     report.setAttribute('aria-hidden', 'true');
     selectedTaskId = null;
+    openTaskRenderKey = null;
     taskSelectionEpoch += 1;
     currentReceipt = null;
     // Re-render task list to clear selection highlight
@@ -8993,7 +9344,15 @@
       .catch(error => {
         if (patientRequestIsCurrent(request)) reportLoadError('tasks', error);
       });
-    deactivateDialog(report);
+    deactivateDialog(report, options.restoreFocus !== false);
+  }
+
+  function closeReportBeforeNavigation(invoker) {
+    const report = document.getElementById('report-panel');
+    if (report?.classList.contains('collapsed')) return false;
+    const invokerInsideReport = Boolean(invoker && report.contains(invoker));
+    closePanel({ restoreFocus: !invokerInsideReport });
+    return true;
   }
 
   function receiptValueSummary(value, category) {
@@ -9011,21 +9370,28 @@
   function renderReceipt(receipt) {
     currentReceipt = receipt;
     const status = safeClassToken(receipt.status, 'active');
+    const statusLabel = {
+      active: 'Imported',
+      corrected: 'Corrected by you',
+      partially_removed: 'Some imported values removed',
+      undone: 'Document changes undone',
+    }[receipt.status] || 'Import status unavailable';
     const changes = receipt.changes || [];
     return `<section class="receipt-card" aria-labelledby="receipt-heading">
       <div class="receipt-header">
         <div>
-          <p class="eyebrow">Document reconciliation</p>
-          <h3 id="receipt-heading">${escHtml(receipt.filename || receipt.document_type || 'Pasted clinical text')}</h3>
+          <p class="eyebrow">Document import</p>
+          <h3 id="receipt-heading">What this document changed</h3>
+          <strong>${escHtml(receipt.filename || receipt.document_type || 'Pasted clinical text')}</strong>
           <p>${escHtml(receipt.document_summary || 'Structured import receipt')} · ${escHtml(relativeTime(receipt.ingested_at))}</p>
         </div>
-        <span class="import-status ${status}">${escHtml((receipt.status || 'active').replace(/_/g, ' '))}</span>
+        <span class="import-status ${status}">${escHtml(statusLabel)}</span>
       </div>
       <div class="receipt-summary">
         <span>${receipt.counts?.added || 0} added</span>
         <span>${(receipt.counts?.updated || 0) + (receipt.counts?.conflict || 0)} changed</span>
         <span>${receipt.counts?.unchanged || 0} unchanged</span>
-        <a href="${escHtml(receipt.source_url)}" target="_blank" rel="noopener">Source details</a>
+        <a href="${escHtml(receipt.source_url)}" target="_blank" rel="noopener">Open source</a>
       </div>
       <div class="receipt-error" id="receipt-error" role="alert" aria-live="polite"></div>
       <div class="receipt-changes">${changes.map(change => {
@@ -9034,26 +9400,40 @@
         const editable = change.editable_fields?.length && ['active', 'corrected'].includes(change.state) && !change.conflicted;
         const removable = change.removable !== false && change.target?.kind !== 'none' && ['active', 'corrected'].includes(change.state) && !change.conflicted;
         const history = change.history?.length
-          ? `<span class="receipt-history">${change.history.length} audit event${change.history.length === 1 ? '' : 's'}</span>`
+          ? `<span class="receipt-history">${change.history.length} recorded correction${change.history.length === 1 ? '' : 's'}</span>`
           : '';
         const corrected = change.state === 'corrected';
         const firstValue = corrected ? change.after : change.before;
         const secondValue = corrected ? change.effective_value : change.after;
         const firstLabel = corrected ? 'Original extraction' : 'Before';
         const secondLabel = corrected ? 'Caregiver correction' : 'From this document';
+        const operationLabel = {
+          added: 'Added',
+          updated: 'Updated',
+          unchanged: 'Already recorded',
+          conflict: 'Needs review',
+          derived: 'Research result',
+        }[change.operation] || 'Recorded';
+        const stateLabel = {
+          corrected: 'Corrected by you',
+          removed: 'Removed from active record',
+          undone: 'Document changes undone',
+          unchanged: 'Already recorded',
+          derived: 'Generated later',
+        }[change.state] || '';
         return `<article class="receipt-change ${operation} ${state}" data-change-id="${escHtml(change.id)}">
           <div class="receipt-change-heading">
             <strong>${escHtml(change.label)}</strong>
-            <span class="change-badge ${operation}">${escHtml(change.operation)}</span>
-            ${change.state !== 'active' ? `<span class="change-badge state">${escHtml(change.state)}</span>` : ''}
+            <span class="change-badge ${operation}">${escHtml(operationLabel)}</span>
+            ${stateLabel ? `<span class="change-badge state">${escHtml(stateLabel)}</span>` : ''}
           </div>
           ${corrected || change.operation === 'updated' || change.operation === 'conflict'
             ? `<div class="value-diff"><span><small>${firstLabel}</small>${escHtml(receiptValueSummary(firstValue, change.category))}</span><span class="diff-arrow" aria-hidden="true">→</span><span><small>${secondLabel}</small>${escHtml(receiptValueSummary(secondValue, change.category))}</span></div>`
             : `<div class="receipt-value">${escHtml(receiptValueSummary(change.effective_value, change.category))}</div>`}
           <div class="receipt-provenance">
             ${evidenceBadge(change.evidence_status)}
-            ${change.evidence_url ? `<a href="${escHtml(change.evidence_url)}" target="_blank" rel="noopener">Open exact span</a>` : ''}
-            ${change.original_evidence_url ? `<a href="${escHtml(change.original_evidence_url)}" target="_blank" rel="noopener">Original extraction span (before correction)</a>` : ''}
+            ${change.evidence_url ? `<a href="${escHtml(change.evidence_url)}" target="_blank" rel="noopener">View exact wording</a>` : ''}
+            ${change.original_evidence_url ? `<a href="${escHtml(change.original_evidence_url)}" target="_blank" rel="noopener">View original wording before correction</a>` : ''}
             ${history}
           </div>
           ${change.conflicted ? `<div class="receipt-conflict">${escHtml(change.conflict_reason || 'This patient value changed later. Reload before editing.')}</div>` : ''}
@@ -9247,10 +9627,125 @@
       </div>`;
   }
 
+  function structuredResultPresentation(task) {
+    const result = task.result || {};
+    if (task.type === 'chat') {
+      const reply = typeof result.reply === 'string' ? result.reply : '';
+      return {
+        html: reply
+          ? `<div class="report-text">${formatReport(reply)}</div>`
+          : '<div class="artifact-state-card unavailable"><strong>Answer unavailable</strong><span>No readable answer was returned.</span></div>',
+        copyText: reply,
+      };
+    }
+    if (task.type === 'questions') {
+      const count = Array.isArray(result.questions) ? result.questions.length : 0;
+      return {
+        html: `<div class="artifact-state-card available">
+          <strong>Appointment questions generated</strong>
+          <span>${count} question${count === 1 ? '' : 's'} are available in Appointments.</span>
+          <button class="button secondary" type="button" onclick="openAppointmentsView(this)">Open Appointments</button>
+        </div>`,
+        copyText: '',
+      };
+    }
+    if (task.type === 'summary') {
+      return {
+        html: `<div class="artifact-state-card available">
+          <strong>Assessment refreshed</strong>
+          <span>Review the current assessment and recommendations on Today.</span>
+          <button class="button secondary" type="button" onclick="openTodayFromActivity(this)">Open Today</button>
+        </div>`,
+        copyText: '',
+      };
+    }
+    return {
+      html: '<div class="artifact-state-card available"><strong>Task completed</strong><span>No separate caregiver-facing result is available.</span></div>',
+      copyText: '',
+    };
+  }
+
+  function artifactStateMarkup(task) {
+    const artifact = normalizedTaskArtifact(task);
+    const noun = artifact.kind === 'result' ? 'result' : 'report';
+    const copy = {
+      expired: {
+        title: `${titleCaseEnum(noun)} expired`,
+        detail: `The ${noun} passed its retention period. The activity record remains, but the generated content is no longer retained.`,
+      },
+      not_retained: {
+        title: `${titleCaseEnum(noun)} not retained`,
+        detail: `The ${noun} is no longer retained under the configured storage limit.`,
+      },
+      unavailable: {
+        title: `${titleCaseEnum(noun)} unavailable`,
+        detail: `The saved ${noun} could not be read. This does not mean it is still stored elsewhere.`,
+      },
+      legacy_unknown: {
+        title: 'Older activity record',
+        detail: `This record does not say whether a separate ${noun} was retained.`,
+      },
+      none: {
+        title: 'No separate saved output',
+        detail: 'This task did not produce a separate caregiver-facing artifact.',
+      },
+    }[artifact.state] || {
+      title: 'Output unavailable',
+      detail: 'No caregiver-facing output is available for this activity.',
+    };
+    let action = '';
+    if (artifact.state === 'expired' || artifact.state === 'not_retained') {
+      if (task.type === 'digest') {
+        action = '<button class="button secondary" type="button" onclick="runDigest()">Run research update</button>';
+      } else if (task.type === 'deep-sweep') {
+        action = '<button class="button secondary" type="button" onclick="runDeepSweep()">Run deep sweep</button>';
+      } else if (task.type === 'summary') {
+        action = '<button class="button secondary" type="button" onclick="generateSummary()">Refresh assessment</button>';
+      } else if (task.type === 'questions') {
+        action = '<button class="button secondary" type="button" onclick="openAppointmentsView(this)">Open Appointments</button>';
+      }
+    }
+    if (artifact.state === 'unavailable') {
+      action = `<button class="button secondary" type="button" data-job-id="${escHtml(task.id)}" onclick="selectTask(this.dataset.jobId)">Retry detail load</button>`;
+    }
+    return `<div class="artifact-state-card ${safeClassToken(artifact.state, 'unavailable')}">
+      <strong>${escHtml(copy.title)}</strong><span>${escHtml(copy.detail)}</span>${action}
+    </div>`;
+  }
+
+  function staleReportMarkup(task) {
+    const staleCopy = staleTaskCopy({
+      ...task,
+      derived_content_stale_reason: task.report_stale_reason,
+    });
+    const artifact = normalizedTaskArtifact(task);
+    return `<div class="load-failure stale-artifact" role="alert">
+      <strong>${escHtml(staleCopy.title)}</strong>
+      <span>${escHtml(staleCopy.detail)} ${
+        artifact.state === 'available'
+          ? 'The prior report is retained but hidden here.'
+          : 'The prior report is not available here.'
+      }</span>
+    </div>${artifact.state === 'available' ? '' : artifactStateMarkup(task)}`;
+  }
+
+  function staleResultMarkup(task) {
+    const copy = staleTaskCopy(task);
+    const artifact = normalizedTaskArtifact(task);
+    const availabilityCopy = artifact.state === 'available'
+      ? 'The prior generated result is retained but hidden here. Regenerate it before use.'
+      : 'Prior generated content is not available here.';
+    return `<div class="load-failure stale-artifact" role="alert">
+      <strong>${escHtml(copy.title)}</strong>
+      <span>${escHtml(copy.detail)} ${availabilityCopy}</span>
+    </div>${artifact.state === 'available' ? '' : artifactStateMarkup(task)}`;
+  }
+
   async function selectTask(id, expectedEpoch = null, fallbackReceipt = null) {
     const selectionEpoch = expectedEpoch == null ? ++taskSelectionEpoch : expectedEpoch;
     if (selectionEpoch !== taskSelectionEpoch) return;
     selectedTaskId = id;
+    openTaskRenderKey = null;
     const request = capturePatientRequest({ taskSelection: true });
     currentReceipt = fallbackReceipt;
     currentReportText = '';
@@ -9345,11 +9840,9 @@
         <div class="report-empty">
           <div class="report-empty-icon" style="animation:pulse 1s infinite">⊙</div>
           <div class="report-empty-text">
-            ${task.status === 'queued' ? 'Queued — starting soon…' : 'Analysing…'}
+            ${task.status === 'queued' ? 'Queued - starting soon…' : 'Processing…'}
             <br><br>
-            <span style="color:var(--text2);font-size:10px">Stage: ${escHtml(task.stage || 'processing')}</span>
-            <br>
-            <span style="color:var(--text2);font-size:10px">This usually takes 30–90 seconds.</span>
+            <span class="task-progress-note">This can take a few minutes.</span>
           </div>
         </div>`;
       copyBtn.classList.remove('visible');
@@ -9358,14 +9851,14 @@
     }
 
     if (task.status === 'error') {
-      panel.innerHTML = `${receiptHtml}<div class="report-text" style="color:var(--red)">Error:\n\n${escHtml(task.error || 'Unknown error')}</div>`;
+      panel.innerHTML = `${receiptHtml}<div class="artifact-state-card error"><strong>Couldn’t complete</strong><span>${escHtml(task.error || 'The task failed. Please retry.')}</span></div>`;
       copyBtn.classList.remove('visible');
       currentReportText = '';
       return true;
     }
 
     if (task.status === 'interrupted') {
-      panel.innerHTML = `${receiptHtml}<div class="report-text" style="color:var(--amber)">Interrupted:\n\n${escHtml(task.retry_guidance || task.error || 'Re-submit this request to retry.')}</div>`;
+      panel.innerHTML = `${receiptHtml}<div class="artifact-state-card interrupted"><strong>Interrupted</strong><span>${escHtml(task.retry_guidance || task.error || 'Submit this request again to retry.')}</span></div>`;
       copyBtn.classList.remove('visible');
       currentReportText = '';
       return true;
@@ -9380,14 +9873,7 @@
 
     // Job details hydrate report artifacts on demand.
     if (task.report_stale) {
-      const staleCopy = staleTaskCopy({
-        ...task,
-        derived_content_stale_reason: task.report_stale_reason,
-      });
-      html += `<div class="load-failure stale-artifact" role="alert">
-        <strong>${escHtml(staleCopy.title)}</strong>
-        <span>${escHtml(staleCopy.detail)} The original report remains retained for audit but is hidden here.</span>
-      </div>`;
+      html += staleReportMarkup(task);
       clearReportCopyState();
     } else if (task.report) {
       currentReportText = task.report;
@@ -9396,23 +9882,22 @@
       copyBtn.disabled = false;
     } else if (task.result) {
       if (task.result.stale) {
-        const staleCopy = staleTaskCopy(task);
-        html += `<div class="load-failure stale-artifact" role="alert">
-          <strong>${escHtml(staleCopy.title)}</strong>
-          <span>${escHtml(staleCopy.detail)} Regenerate it before use.</span>
-        </div>`;
+        html += staleResultMarkup(task);
         clearReportCopyState();
       } else {
-        currentReportText = JSON.stringify(task.result, null, 2);
-        html += `<div class="report-text">${formatReport(currentReportText)}</div>`;
-        copyBtn.classList.add('visible');
-        copyBtn.disabled = false;
+        const presentation = structuredResultPresentation(task);
+        currentReportText = presentation.copyText;
+        html += presentation.html;
+        copyBtn.classList.toggle('visible', Boolean(currentReportText));
+        copyBtn.disabled = !currentReportText;
       }
     } else {
-      html += `<div class="report-text" style="color:var(--text2)">No report generated.</div>`;
+      html += artifactStateMarkup(task);
+      clearReportCopyState();
     }
 
     panel.innerHTML = html;
+    openTaskRenderKey = openTaskSemanticRenderKey(task);
     return true;
   }
 
@@ -9422,9 +9907,7 @@
       .replace(/^(#{1,3}\s.+)$/gm, '<strong>$1</strong>')
       .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
       .replace(/(NCT\d{8})/g, '<span style="color:var(--teal)">$1</span>')
-      .replace(/(PMID:\s*\d+)/gi, '<span style="color:var(--teal)">$1</span>')
-      .replace(/(URGENT|CRITICAL|IMPORTANT)/gi, '<span style="color:var(--red)">$1</span>')
-      .replace(/(PRRT|Lutathera|Lu-177|Ac-225)/g, '<span style="color:var(--amber)">$1</span>');
+      .replace(/(PMID:\s*\d+)/gi, '<span style="color:var(--teal)">$1</span>');
   }
 
   function escHtml(s) {
@@ -9965,17 +10448,17 @@
     addSection('What was asked', sections.what_was_asked, (item, index) => [
       `${index + 1}. ${recapPlainText(item.text)}`,
       `Status: ${item.status === 'unknown' ? 'Unknown' : 'Answered'}`,
-      `Provenance: ${recapPlainText(item.provenance_label)}`,
+      `Source: ${recapPlainText(caregiverProvenancePresentation(item.provenance_label))}`,
     ]);
     addSection('What we heard', sections.what_we_heard, (item, index) => [
       `${index + 1}. Question: ${recapPlainText(item.question)}`,
       `Answer: ${recapPlainText(item.text)}`,
-      `Provenance: ${recapPlainText(item.provenance_label)}`,
+      `Source: ${recapPlainText(caregiverProvenancePresentation(item.provenance_label))}`,
     ]);
     addSection('Decisions / needs confirmation', sections.decisions, (item, index) => [
       `${index + 1}. ${recapPlainText(item.text)}`,
       `Lifecycle: ${item.status === 'needs_confirmation' ? 'Needs confirmation' : 'Active'}`,
-      `Provenance: ${recapPlainText(item.provenance_label)}`,
+      `Source: ${recapPlainText(caregiverProvenancePresentation(item.provenance_label))}`,
     ]);
     addSection('Follow-ups', sections.follow_ups, (item, index) => {
       const result = [
@@ -9986,7 +10469,7 @@
       if (item.due_date) result.push(`Due date: ${recapPlainText(item.due_date)}`);
       if (item.outcome) {
         result.push(`Outcome: ${recapPlainText(item.outcome.text)}`);
-        result.push(`Outcome provenance: ${recapPlainText(item.outcome.provenance_label)}`);
+        result.push(`Outcome source: ${recapPlainText(caregiverProvenancePresentation(item.outcome.provenance_label))}`);
       }
       return result;
     });
@@ -9997,11 +10480,11 @@
         const result = [`${index + 1}. Resolved alert`];
         if (item.resolved_at) result.push(`Resolved: ${recapPlainText(item.resolved_at)}`);
         if (item.visit_id) result.push('Link: this visit');
-        if (item.decision_id) result.push(`Linked decision: ${recapPlainText(item.decision_id)}`);
-        if (item.follow_up_id) result.push(`Linked follow-up: ${recapPlainText(item.follow_up_id)}`);
+        if (item.decision_id) result.push('Linked decision: recorded for this appointment');
+        if (item.follow_up_id) result.push('Linked follow-up: recorded');
         if (item.outcome) {
           result.push(`Outcome: ${recapPlainText(item.outcome.text)}`);
-          result.push(`Outcome provenance: ${recapPlainText(item.outcome.provenance_label)}`);
+          result.push(`Outcome source: ${recapPlainText(caregiverProvenancePresentation(item.outcome.provenance_label))}`);
         } else {
           result.push('Outcome: Administrative resolution recorded; no outcome text.');
         }
@@ -10011,7 +10494,7 @@
     addSection('Unresolved / unknown items', sections.unresolved, (item, index) => [
       `${index + 1}. ${recapPlainText(item.text)}`,
       `Status: ${item.kind === 'unknown' ? 'Explicitly unknown' : 'No answer recorded'}`,
-      `Provenance: ${recapPlainText(item.provenance_label)}`,
+      `Source: ${recapPlainText(caregiverProvenancePresentation(item.provenance_label))}`,
     ]);
     return `${lines.join('\n')}\n`;
   }
@@ -10065,13 +10548,13 @@
     }
     const sections = recap.sections || {};
     html += recapSectionMarkup('What was asked', sections.what_was_asked, item =>
-      `<article><strong>${escHtml(item.text)}</strong><span class="visit-recap-meta">${item.status === 'unknown' ? 'Unknown' : 'Answered'}</span><p class="capture-provenance">${escHtml(item.provenance_label)}</p></article>`
+      `<article><strong>${escHtml(item.text)}</strong><span class="visit-recap-meta">${item.status === 'unknown' ? 'Unknown' : 'Answered'}</span><p class="capture-provenance">${escHtml(caregiverProvenancePresentation(item.provenance_label))}</p></article>`
     );
     html += recapSectionMarkup('What we heard', sections.what_we_heard, item =>
-      `<article><span class="visit-recap-question">${escHtml(item.question)}</span><p>${escHtml(item.text)}</p><p class="capture-provenance">${escHtml(item.provenance_label)}</p></article>`
+      `<article><span class="visit-recap-question">${escHtml(item.question)}</span><p>${escHtml(item.text)}</p><p class="capture-provenance">${escHtml(caregiverProvenancePresentation(item.provenance_label))}</p></article>`
     );
     html += recapSectionMarkup('Decisions / needs confirmation', sections.decisions, item =>
-      `<article><strong>${escHtml(item.text)}</strong><span class="visit-status-badge ${safeClassToken(item.status, 'active')}">${item.status === 'needs_confirmation' ? 'Needs confirmation' : 'Active'}</span><p class="capture-provenance">${escHtml(item.provenance_label)}</p></article>`
+      `<article><strong>${escHtml(item.text)}</strong><span class="visit-status-badge ${safeClassToken(item.status, 'active')}">${item.status === 'needs_confirmation' ? 'Needs confirmation' : 'Active'}</span><p class="capture-provenance">${escHtml(caregiverProvenancePresentation(item.provenance_label))}</p></article>`
     );
     html += recapSectionMarkup('Follow-ups', sections.follow_ups, item => {
       const metadata = [
@@ -10079,7 +10562,7 @@
         item.owner && `Owner: ${item.owner}`,
         item.due_date && `Due ${fmtDate(item.due_date)}`,
       ].filter(Boolean).join(' · ');
-      return `<article><strong>${escHtml(item.text)}</strong><span class="visit-recap-meta">${escHtml(metadata)}</span>${item.outcome ? `<p><b>Outcome:</b> ${escHtml(item.outcome.text)}</p><p class="capture-provenance">${escHtml(item.outcome.provenance_label)}</p>` : ''}</article>`;
+      return `<article><strong>${escHtml(item.text)}</strong><span class="visit-recap-meta">${escHtml(metadata)}</span>${item.outcome ? `<p><b>Outcome:</b> ${escHtml(item.outcome.text)}</p><p class="capture-provenance">${escHtml(caregiverProvenancePresentation(item.outcome.provenance_label))}</p>` : ''}</article>`;
     });
     html += recapSectionMarkup(
       'Related resolved alerts',
@@ -10087,14 +10570,14 @@
       item => {
         const links = [
           item.visit_id && 'This visit',
-          item.decision_id && `Decision ${item.decision_id}`,
-          item.follow_up_id && `Follow-up ${item.follow_up_id}`,
+          item.decision_id && 'Appointment decision',
+          item.follow_up_id && 'Recorded follow-up',
         ].filter(Boolean).join(' · ');
-        return `<article><strong>Resolved alert</strong>${item.resolved_at ? `<span class="visit-recap-meta">${escHtml(formatActionTimestamp(item.resolved_at))}</span>` : ''}${links ? `<p>${escHtml(links)}</p>` : ''}${item.outcome ? `<p><b>Outcome:</b> ${escHtml(item.outcome.text)}</p><p class="capture-provenance">${escHtml(item.outcome.provenance_label)}</p>` : '<p class="capture-provenance">Administrative resolution recorded · no outcome text</p>'}</article>`;
+        return `<article><strong>Resolved alert</strong>${item.resolved_at ? `<span class="visit-recap-meta">${escHtml(formatActionTimestamp(item.resolved_at))}</span>` : ''}${links ? `<p>${escHtml(links)}</p>` : ''}${item.outcome ? `<p><b>Outcome:</b> ${escHtml(item.outcome.text)}</p><p class="capture-provenance">${escHtml(caregiverProvenancePresentation(item.outcome.provenance_label))}</p>` : '<p class="capture-provenance">Administrative resolution recorded · no outcome text</p>'}</article>`;
       },
     );
     html += recapSectionMarkup('Unresolved / unknown items', sections.unresolved, item =>
-      `<article><strong>${escHtml(item.text)}</strong><span class="visit-recap-meta">${item.kind === 'unknown' ? 'Explicitly unknown' : 'No answer recorded'}</span><p class="capture-provenance">${escHtml(item.provenance_label)}</p></article>`
+      `<article><strong>${escHtml(item.text)}</strong><span class="visit-recap-meta">${item.kind === 'unknown' ? 'Explicitly unknown' : 'No answer recorded'}</span><p class="capture-provenance">${escHtml(caregiverProvenancePresentation(item.provenance_label))}</p></article>`
     );
     content.innerHTML = `${html}</div>`;
   }
@@ -10562,6 +11045,61 @@
     return appointmentOptions.find(item => item.id === id) || null;
   }
 
+  function orderedVisits() {
+    return [...visitsById.values()].sort((a, b) => {
+      const terminalA = ['completed', 'cancelled'].includes(a.status) ? 1 : 0;
+      const terminalB = ['completed', 'cancelled'].includes(b.status) ? 1 : 0;
+      return terminalA - terminalB
+        || String(a.date || '9999-12-31').localeCompare(String(b.date || '9999-12-31'))
+        || String(b.updated_at || '').localeCompare(String(a.updated_at || ''));
+    });
+  }
+
+  function todayAppointmentVisit() {
+    const visits = orderedVisits();
+    return visits.find(item => item.status === 'in_progress')
+      || visits.find(item => item.status === 'planned')
+      || null;
+  }
+
+  function renderTodayAppointment() {
+    const summary = document.getElementById('today-appointment-summary');
+    const action = document.getElementById('today-appointment-action');
+    if (!summary || !action) return;
+    const visit = todayAppointmentVisit();
+    if (!visit) {
+      summary.textContent = 'No working visit is set up yet. Create one and collect questions before the appointment.';
+      action.textContent = 'Set up appointment';
+      return;
+    }
+    const details = [
+      visit.title,
+      visit.date && fmtDate(visit.date),
+      visit.time,
+      visit.clinician,
+    ].filter(Boolean).join(' · ');
+    summary.textContent = details || 'A working visit is ready for preparation.';
+    action.textContent = visit.status === 'in_progress' ? 'Continue appointment' : 'Prepare for appointment';
+  }
+
+  function openTodayFromActivity(invoker = document.activeElement) {
+    closeReportBeforeNavigation(invoker);
+    const navigation = document.getElementById('nav-today');
+    switchView('today', navigation);
+    document.getElementById('summary-heading')?.focus({ preventScroll: true });
+  }
+
+  function openAppointmentsView(invoker = document.activeElement) {
+    closeReportBeforeNavigation(invoker);
+    const navigation = document.getElementById('nav-questions');
+    switchView('questions', navigation);
+    const visit = todayAppointmentVisit();
+    const opened = visit ? openAppointmentWorkspace(navigation, visit.id) : false;
+    if (!opened) {
+      document.getElementById('appointment-prep-heading')?.focus({ preventScroll: true });
+    }
+  }
+
   async function loadVisits(options = {}) {
     const request = capturePatientRequest();
     const requestLoadEpoch = ++visitLoadEpoch;
@@ -10599,6 +11137,7 @@
       }
       renderAppointmentOptions();
       renderVisitPreparation();
+      renderTodayAppointment();
       if (appointmentDialogOpen) renderAppointmentWorkspace();
       reportLoadSuccess('visits');
       const items = data.items || [];
@@ -10614,6 +11153,8 @@
       } else {
         const list = document.getElementById('visit-list');
         if (list) list.innerHTML = loadFailureMarkup('Appointments', 'loadVisits()');
+        const today = document.getElementById('today-appointment-summary');
+        if (today) today.textContent = 'Appointment preparation could not be loaded. Open Appointments to retry.';
       }
       reportLoadError('visits', error);
       return null;
@@ -10664,29 +11205,30 @@
   function followUpOriginLabel(item) {
     const origin = item?.origin_snapshot || {};
     if (origin.kind === 'executive_summary_action') {
-      return `Generated action snapshot · record revision ${origin.source_profile_revision ?? 'unavailable'} · generation ${origin.generation_id || 'unavailable'}`;
+      return 'Saved from an assessment recommendation';
     }
-    if (origin.kind === 'visit_decision') return 'Caregiver follow-up from a visit decision';
-    if (origin.kind === 'alert') return 'Caregiver follow-up from an alert';
-    return 'Manual caregiver follow-up';
+    if (origin.kind === 'visit_decision') return 'Follow-up from an appointment decision';
+    if (origin.kind === 'alert') return 'Follow-up from a recorded alert';
+    if (origin.kind === 'research_consideration') return 'Follow-up from tracked research';
+    return 'You entered this follow-up';
   }
 
   function followUpOutcomePresentation(outcome) {
     if (!outcome) return null;
     if (outcome.kind === 'clinician_attributed') {
       return {
-        label: 'Caregiver-entered · attributed to clinician · unverified',
+        label: RECORD_SOURCE_COPY.clinician,
         className: 'clinician-attributed',
       };
     }
     if (outcome.kind === 'caregiver_reported') {
       return {
-        label: 'Caregiver-entered · caregiver reported · unverified',
+        label: 'You recorded this',
         className: 'caregiver-reported',
       };
     }
     return {
-      label: 'Caregiver-entered administrative outcome · not clinical evidence',
+      label: RECORD_SOURCE_COPY.administrative,
       className: 'administrative',
     };
   }
@@ -10958,9 +11500,9 @@
     const guidance = document.getElementById('follow-up-outcome-guidance');
     if (!guidance) return;
     guidance.textContent = {
-      clinician_attributed: 'Caregiver-entered · attributed to clinician · unverified',
-      caregiver_reported: 'Caregiver-entered · caregiver reported · unverified',
-      administrative: 'Caregiver-entered administrative outcome · not clinical evidence',
+      clinician_attributed: RECORD_SOURCE_COPY.clinician,
+      caregiver_reported: 'You recorded this',
+      administrative: RECORD_SOURCE_COPY.administrative,
     }[kind] || '';
   }
 
@@ -11291,17 +11833,17 @@
       } else {
         if (isTransientFollowUpTransportError(error)) {
           markFollowUpProjectionStale(
-            'Follow-through is offline. The last loaded actions are read-only; caregiver-entered drafts remain available in this tab.',
+            'Follow-ups are offline. The last loaded actions are read-only; your drafts remain available in this tab.',
           );
           reportLoadError('follow-ups', error);
           return followUpItems();
         } else {
           clearFollowUpCachedProjection(
-            'Follow-through could not be loaded. Retry to get the current action list.',
+            'Follow-ups could not be loaded. Retry to get the current action list.',
             'error',
           );
           const list = document.getElementById('follow-up-list');
-          if (list) list.innerHTML = loadFailureMarkup('Follow-through', 'loadFollowUps()');
+          if (list) list.innerHTML = loadFailureMarkup('Follow-ups', 'loadFollowUps()');
           const visitList = document.getElementById('visit-followup-list');
           if (visitList && appointmentDialogOpen) {
             visitList.innerHTML = loadFailureMarkup('Visit follow-ups', 'loadFollowUps()');
@@ -11545,7 +12087,7 @@
       if (isTransientFollowUpTransportError(error)) {
         pendingFollowUpIntent = intent;
         markFollowUpProjectionStale(
-          'Connection lost. Caregiver-entered drafts remain available in this tab.',
+          'Connection lost. Your drafts remain available in this tab.',
         );
         const retry = document.getElementById(
           followUpDialogOpen ? 'follow-up-dialog-retry' : 'follow-up-retry'
@@ -11741,13 +12283,7 @@
   function renderVisitPreparation() {
     const list = document.getElementById('visit-list');
     if (!list) return;
-    const visits = [...visitsById.values()].sort((a, b) => {
-      const terminalA = ['completed', 'cancelled'].includes(a.status) ? 1 : 0;
-      const terminalB = ['completed', 'cancelled'].includes(b.status) ? 1 : 0;
-      return terminalA - terminalB
-        || String(a.date || '9999-12-31').localeCompare(String(b.date || '9999-12-31'))
-        || String(b.updated_at || '').localeCompare(String(a.updated_at || ''));
-    });
+    const visits = orderedVisits();
     if (!visits.length) {
       list.innerHTML = '<div class="empty-state">No visit workspace yet. Create one for the next appointment.</div>';
       return;
@@ -11946,7 +12482,7 @@
     const cancel = document.getElementById('visit-decision-cancel-supersede');
     if (cancel) cancel.hidden = true;
     const label = document.getElementById('visit-decision-label');
-    if (label) label.textContent = 'Caregiver-entered decision attributed to the clinician';
+    if (label) label.textContent = 'Decision you recorded from the clinician';
   }
 
   function revalidateDecisionSuccessorState(visit) {
@@ -12000,7 +12536,7 @@
     document.getElementById('visit-decision-cancel-supersede').hidden = !superseding;
     document.getElementById('visit-decision-label').textContent = superseding
       ? 'Correct with a successor decision'
-      : 'Caregiver-entered decision attributed to the clinician';
+      : 'Decision you recorded from the clinician';
     Object.entries(values.answers || {}).forEach(([questionId, answer]) => {
       const row = [...document.querySelectorAll('#visit-question-list .visit-question')]
         .find(item => item.dataset.visitQuestionId === questionId);
@@ -12015,12 +12551,12 @@
   }
 
   function openAppointmentWorkspace(trigger, visitId) {
-    if (followUpControlsLocked()) return;
+    if (followUpControlsLocked()) return false;
     const visit = visitsById.get(visitId);
     if (!visit) {
       setAppointmentMessage('The visit is no longer available.', 'conflict');
       loadVisits();
-      return;
+      return false;
     }
     if (selectedVisitId && selectedVisitId !== visitId) captureAppointmentDraft();
     scrubVisitRecapBeforeSelectionChange(visitId, visit.token);
@@ -12036,6 +12572,7 @@
     dialog.inert = false;
     renderAppointmentWorkspace();
     activateDialog(dialog, trigger);
+    return true;
   }
 
   function closeAppointmentWorkspace() {
@@ -12280,8 +12817,8 @@
       const sameGroup = questions.filter(item => Boolean(item.pinned) === Boolean(question.pinned));
       const groupIndex = sameGroup.findIndex(item => item.id === question.id);
       const sourceLabel = question.source_kind === 'generated'
-        ? `Generated snapshot · generation ${question.source_generation_id || 'unavailable'} · record revision ${question.source_profile_revision ?? 'unavailable'}`
-        : 'Manual caregiver question';
+        ? 'Generated question saved for this visit'
+        : 'You entered this question';
       const answer = question.answer;
       return `<article class="visit-question" data-visit-question-id="${escHtml(question.id)}" data-question-token="${escHtml(question.token)}">
         <div class="visit-question-heading">
@@ -12297,7 +12834,7 @@
         ${answer ? `<div class="visit-answer captured">
           <strong>${answer.status === 'unknown' ? 'Clinician answer explicitly unknown' : 'Captured answer'}</strong>
           ${answer.text ? `<p>${escHtml(answer.text)}</p>` : ''}
-          <span class="capture-provenance">Caregiver-entered · attributed to clinician · unverified</span>
+          <span class="capture-provenance">${RECORD_SOURCE_COPY.clinician}</span>
         </div>` : `<div class="visit-answer">
           <label><span>Answer status</span><select class="visit-answer-status" onchange="toggleVisitAnswerText(this)"><option value="answered">Answered</option><option value="unknown">Explicitly unknown</option></select></label>
           <label class="visit-answer-text-label"><span>Clinician-attributed answer</span><textarea class="visit-answer-text" maxlength="4000" rows="3"></textarea></label>
@@ -12470,8 +13007,8 @@
       );
       return `<article class="visit-decision" data-decision-id="${escHtml(decision.id)}" data-decision-token="${escHtml(decision.token)}">
         <div class="visit-decision-heading"><strong>${escHtml(decision.text)}</strong><span class="visit-status-badge ${safeClassToken(decision.status, 'active')}">${escHtml(decision.status.replaceAll('_', ' '))}</span></div>
-        <p class="capture-provenance">Caregiver-entered · attributed to clinician · unverified</p>
-        ${decision.supersedes_id ? `<p class="visit-source-label">Successor to ${escHtml(decision.supersedes_id)}</p>` : ''}
+        <p class="capture-provenance">${RECORD_SOURCE_COPY.clinician}</p>
+        ${decision.supersedes_id ? '<p class="visit-source-label">Correction of an earlier decision</p>' : ''}
         <p class="visit-decision-lifecycle">${escHtml(lifecycle.copy)}</p>
         ${lifecycle.controls ? `<div class="visit-form-actions">${lifecycle.controls}</div>` : ''}
       </article>`;
@@ -12498,7 +13035,7 @@
   function cancelDecisionSuccessor() {
     document.getElementById('visit-decision-supersedes').value = '';
     document.getElementById('visit-decision-label').textContent =
-      'Caregiver-entered decision attributed to the clinician';
+      'Decision you recorded from the clinician';
     document.getElementById('visit-decision-cancel-supersede').hidden = true;
     captureAppointmentDraft();
   }
@@ -12566,7 +13103,7 @@
       return `<article class="visit-followup" data-followup-id="${escHtml(item.id)}">
       <div class="visit-decision-heading"><strong>${escHtml(item.text)}</strong><span class="visit-status-badge ${safeClassToken(item.status, 'open')}">${escHtml(item.status.replaceAll('_', ' '))}</span></div>
       <p>${escHtml([item.owner && `Owner: ${item.owner}`, item.due_date && `Due ${fmtDate(item.due_date)}`].filter(Boolean).join(' · ') || 'Owner and due date not set')}</p>
-      ${item.decision_id ? `<p class="visit-source-label">Linked to visit decision ${escHtml(item.decision_id)}</p>` : ''}
+      ${item.decision_id ? '<p class="visit-source-label">Linked to an appointment decision</p>' : ''}
       ${item.outcome?.text ? `<p>${escHtml(item.outcome.text)}</p>` : ''}
       ${outcome ? `<p class="capture-provenance">${escHtml(outcome.label)}</p>` : ''}
     </article>`;
@@ -13186,12 +13723,12 @@
     not_started: 'Did not start',
     cancelled: 'Plan cancelled before starting',
     other: 'Other recorded outcome',
-    legacy_unspecified: 'Earlier record; ending detail not recorded',
+    legacy_unspecified: 'Ending detail not recorded',
   };
   const TREATMENT_RESTART_REASONS = {
     course_not_terminal: 'This record is not past.',
-    terminal_qualifier_not_restartable: 'This earlier record was not recorded as having started.',
-    no_prior_current_authority: 'The earlier workflow does not establish a prior current record.',
+    terminal_qualifier_not_restartable: 'This status record was not recorded as having started.',
+    no_prior_current_authority: 'The saved workflow does not establish a prior current record.',
     eligible_prior_current: 'The server permits a new record linked to this past record.',
   };
 
@@ -13938,10 +14475,10 @@
   }
 
   function treatmentDatePresentation(value, course, prefix) {
-    return `${value === null ? 'Null' : value} · ${course[`${prefix}_date_precision`]} precision · ${
+    return `${value === null ? 'Not recorded' : value} · ${precisionLabel(course[`${prefix}_date_precision`])} · ${
       course[`${prefix}_date_kind`] === 'caregiver_entered'
-        ? 'Caregiver-entered'
-        : 'Authority unknown'
+        ? 'You entered this date'
+        : 'Date source not recorded'
     }`;
   }
 
@@ -13958,7 +14495,7 @@
     const heading = treatmentElement('div', 'treatment-card-heading');
     heading.append(
       treatmentElement('span', `treatment-lifecycle ${course.status}`, TREATMENT_STATUS_LABELS[course.status]),
-      treatmentElement('span', 'treatment-provenance', course.provenance.label),
+      treatmentElement('span', 'treatment-provenance', RECORD_SOURCE_COPY.entered),
     );
     card.append(heading, treatmentElement('h3', '', course.treatment_text));
     const facts = treatmentElement('dl', 'treatment-facts');
@@ -13977,9 +14514,9 @@
       treatmentAppendFact(facts, 'Planned date', course, 'planned_date', (value, row) => treatmentDatePresentation(value, row, 'planned'));
       treatmentAppendFact(
         facts,
-        'Associated earlier components',
+        'Linked recorded components',
         { value: course.legacy_component_ids.length
-          ? `${course.legacy_component_ids.length} caregiver-associated · unverified`
+          ? `Linked to ${course.legacy_component_ids.length} recorded treatment entr${course.legacy_component_ids.length === 1 ? 'y' : 'ies'}`
           : null },
         'value',
       );
@@ -14050,7 +14587,7 @@
       ? ''
       : safeTreatmentSourceUrl(source.provenance.evidence_url, source.ref, 'evidence');
     if (evidenceUrl) {
-      const link = treatmentElement('a', '', 'Open exact evidence');
+      const link = treatmentElement('a', '', 'View exact wording');
       link.href = evidenceUrl;
       link.target = '_blank';
       link.rel = 'noopener';
@@ -14075,81 +14612,145 @@
     const state = treatmentElement(
       'td',
       '',
-      `${source.receipt_state} · ${source.review_state} · ${source.operation}`,
+      (() => {
+        if (source.receipt_state === 'undone' || source.review_state === 'undone') {
+          return 'Document changes were undone';
+        }
+        if (source.review_state === 'removed') return 'Removed from the active record';
+        if (source.review_state === 'corrected') return 'You corrected this';
+        if (source.operation === 'unchanged') return 'Already recorded';
+        if (source.operation === 'derived') return 'Recorded during document processing';
+        return 'Added from the document';
+      })(),
     );
     const provenance = treatmentElement('td');
-    provenance.append(
-      treatmentElement('strong', '', source.provenance.label),
-      treatmentSourceLinks(source),
-    );
+    const presentation = recordSourcePresentation({
+      status: source.provenance.status,
+      evidenceUrl: source.provenance.evidence_url,
+      sourceUrl: source.provenance.source_url,
+    });
+    provenance.append(treatmentElement('strong', '', presentation.label));
+    if (presentation.detail) {
+      provenance.append(treatmentElement('span', 'treatment-source-detail', presentation.detail));
+    }
+    provenance.append(treatmentSourceLinks(source));
     row.append(observed, value, state, provenance);
     return row;
   }
 
-  function treatmentLegacyCard(row) {
-    const card = treatmentElement('article', 'treatment-legacy-card');
-    card.append(
-      treatmentElement('p', 'treatment-authority-label', 'Earlier app record · read-only · not source-verified'),
-      treatmentElement('h3', '', row.raw_text),
+  function treatmentReviewedComponentIds() {
+    return new Set(treatmentProjection.courses.flatMap(course => course.legacy_component_ids));
+  }
+
+  function treatmentRecordedLinkage(row, reviewedComponentIds) {
+    const componentIds = row.components.map(component => component.id);
+    const linkedCount = componentIds.filter(id => reviewedComponentIds.has(id)).length;
+    if (componentIds.length > 0 && linkedCount === componentIds.length) {
+      return { state: 'all', linkedCount, totalCount: componentIds.length };
+    }
+    if (linkedCount > 0) {
+      return { state: 'partial', linkedCount, totalCount: componentIds.length };
+    }
+    return { state: 'none', linkedCount: 0, totalCount: componentIds.length };
+  }
+
+  function treatmentRecordedCard(row, compact = false, linkage = null) {
+    const reviewLinkage = linkage || treatmentRecordedLinkage(
+      row,
+      treatmentReviewedComponentIds(),
     );
+    const presentation = {
+      none: {
+        label: 'Status not recorded',
+        detail: 'Treatment timing/status not yet reviewed.',
+      },
+      all: {
+        label: 'Linked to reviewed status',
+        detail: 'All recorded components are linked to a caregiver-reviewed treatment status. The recorded wording remains separate.',
+      },
+      partial: {
+        label: 'Partly linked to reviewed status',
+        detail: `${reviewLinkage.linkedCount} of ${reviewLinkage.totalCount} recorded components are linked; remaining details need timing/status review.`,
+      },
+    }[reviewLinkage.state];
+    const card = treatmentElement(
+      'article',
+      `treatment-recorded-card ${reviewLinkage.state}${compact ? ' compact' : ''}`,
+    );
+    card.append(
+      treatmentElement('p', 'treatment-authority-label', presentation.label),
+      treatmentElement('h3', '', row.raw_text),
+      treatmentElement('p', 'treatment-recorded-guidance', presentation.detail),
+    );
+    if (compact) return card;
     const components = treatmentElement('section', 'treatment-legacy-section');
-    components.append(treatmentElement('h4', '', 'Stable earlier components'));
+    components.append(treatmentElement('h4', '', 'Recorded components'));
     if (row.components.length) {
       const list = treatmentElement('ol');
       row.components.forEach(component => {
         const item = treatmentElement('li');
-        item.append(
-          treatmentScalarNode(component.text),
-          treatmentElement('span', 'treatment-component-label', 'Earlier app component · not source-verified'),
-        );
+        item.append(treatmentScalarNode(component.text));
         list.append(item);
       });
       components.append(list);
     } else {
       components.append(treatmentElement('p', 'treatment-missing', 'No components recorded.'));
     }
-    const generated = treatmentElement('section', 'treatment-generated-section');
-    generated.append(treatmentElement(
-      'h4',
-      '',
-      'Machine-generated compatibility context · not a treatment record',
+    card.append(components);
+    return card;
+  }
+
+  function treatmentMappedGeneratedSection() {
+    const details = treatmentElement('details', 'treatment-generated-disclosure');
+    const rows = treatmentProjection.legacy_treatments.flatMap(row => (
+      row.generated_classification.map(item => ({ item, recordedText: row.raw_text }))
     ));
-    if (row.generated_classification.length) {
+    details.append(treatmentElement(
+      'summary',
+      '',
+      `Mapped automatic compatibility notes (${rows.length})`,
+    ));
+    const body = treatmentElement('div', 'treatment-generated-section');
+    body.append(treatmentElement('p', 'treatment-authority-label', RECORD_SOURCE_COPY.generated));
+    if (!rows.length) {
+      body.append(treatmentElement('p', 'treatment-missing', 'No mapped compatibility notes are recorded.'));
+    } else {
       const list = treatmentElement('ol');
-      row.generated_classification.forEach(item => {
+      rows.forEach(({ item, recordedText }) => {
         const entry = treatmentElement('li');
+        entry.append(treatmentElement('strong', '', recordedText));
         const facts = treatmentElement('dl', 'treatment-facts');
-        treatmentAppendFact(facts, 'Generated text', item, 'text');
+        treatmentAppendFact(facts, 'Generated wording', item, 'text');
         treatmentAppendFact(facts, 'Generated label', item, 'label', treatmentOptionalContext);
-        treatmentAppendFact(facts, 'Generated category', item, 'category', treatmentOptionalContext);
+        treatmentAppendFact(facts, 'Generated category', item, 'category', value => (
+          value === null ? 'Not recorded' : titleCaseEnum(value)
+        ));
         treatmentAppendFact(facts, 'Generated date', item, 'date', treatmentOptionalContext);
         entry.append(facts);
         list.append(entry);
       });
-      generated.append(list);
-    } else {
-      generated.append(treatmentElement('p', 'treatment-missing', 'No generated classification recorded.'));
+      body.append(list);
     }
-    card.append(components, generated);
-    return card;
+    details.append(body);
+    return details;
   }
 
   function treatmentUnlinkedGeneratedSection() {
-    const section = treatmentElement('section', 'treatment-unlinked-generated-section');
+    const section = treatmentElement('details', 'treatment-unlinked-generated-section');
     const count = treatmentProjection.unlinked_generated_context_count;
     section.append(
-      treatmentElement('h3', '', 'Unlinked generated compatibility context'),
+      treatmentElement('summary', '', `Other automatic compatibility notes (${count})`),
       treatmentElement(
         'p',
         'treatment-authority-label',
-        `${TREATMENT_UNLINKED_GENERATED_AUTHORITY_LABEL}. Showing all ${count} rows in server order; 0 omitted.`,
+        `${RECORD_SOURCE_COPY.generated}. All ${count} note${count === 1 ? '' : 's'} are retained; none are omitted.`,
       ),
     );
     if (!count) {
       section.append(treatmentElement(
         'p',
         'treatment-missing',
-        'No unlinked generated compatibility context is recorded.',
+        'No other automatic compatibility notes are recorded.',
       ));
       return section;
     }
@@ -14157,12 +14758,14 @@
     treatmentProjection.unlinked_generated_context.forEach(item => {
       const entry = treatmentElement('li', 'treatment-unlinked-generated-card');
       const facts = treatmentElement('dl', 'treatment-facts');
-      treatmentAppendFact(facts, 'Generated text', item, 'text');
+      treatmentAppendFact(facts, 'Generated wording', item, 'text');
       treatmentAppendFact(facts, 'Generated label', item, 'label', treatmentOptionalContext);
-      treatmentAppendFact(facts, 'Generated category', item, 'category', treatmentOptionalContext);
+      treatmentAppendFact(facts, 'Generated category', item, 'category', value => (
+        value === null ? 'Not recorded' : titleCaseEnum(value)
+      ));
       treatmentAppendFact(facts, 'Generated date', item, 'date', treatmentOptionalContext);
       entry.append(
-        treatmentElement('p', 'treatment-authority-label', item.authority_label),
+        treatmentElement('p', 'treatment-authority-label', RECORD_SOURCE_COPY.generated),
         facts,
       );
       list.append(entry);
@@ -14200,7 +14803,7 @@
     const heading = treatmentElement('div', 'treatment-card-heading');
     heading.append(
       treatmentElement('span', `treatment-lifecycle ${discrepancy.status}`, discrepancy.status === 'open' ? 'Open difference' : 'Resolved difference'),
-      treatmentElement('span', 'treatment-provenance', discrepancy.provenance.label),
+      treatmentElement('span', 'treatment-provenance', RECORD_SOURCE_COPY.entered),
     );
     card.append(
       heading,
@@ -14217,7 +14820,7 @@
       const unavailable = treatmentElement('section', 'treatment-citation-panel unavailable');
       unavailable.append(
         treatmentElement('h4', '', 'Record B'),
-        treatmentElement('p', '', 'Second citation unavailable · earlier incomplete workflow authority · read-only'),
+        treatmentElement('p', '', 'Second citation unavailable · incomplete saved workflow · read-only'),
       );
       citations.append(unavailable);
     }
@@ -14228,8 +14831,8 @@
       discrepancy.confirmations.forEach(confirmation => {
         const outcome = treatmentElement('article', 'treatment-outcome');
         outcome.append(
-          treatmentElement('p', 'treatment-confirmation-label', TREATMENT_CONFIRMATION_LABEL),
-          treatmentElement('strong', '', confirmation.outcome.replace(/_/g, ' ')),
+          treatmentElement('p', 'treatment-confirmation-label', RECORD_SOURCE_COPY.clinician),
+          treatmentElement('strong', '', titleCaseEnum(confirmation.outcome)),
         );
         const facts = treatmentElement('dl', 'treatment-facts');
         treatmentAppendFact(facts, 'Caregiver note', confirmation, 'note');
@@ -14246,7 +14849,7 @@
     if (discrepancy.follow_up) {
       followUp.append(
         treatmentElement('p', '', discrepancy.follow_up.text),
-        treatmentElement('p', '', `${discrepancy.follow_up.status} · owner ${discrepancy.follow_up.owner ?? 'Null'} · due ${discrepancy.follow_up.due_date ?? 'Null'}`),
+        treatmentElement('p', '', `${titleCaseEnum(discrepancy.follow_up.status)} · owner ${discrepancy.follow_up.owner ?? 'Not recorded'} · due ${discrepancy.follow_up.due_date ?? 'Not recorded'}`),
       );
     } else {
       followUp.append(treatmentElement('p', 'treatment-missing', 'No follow-up linked.'));
@@ -14305,6 +14908,13 @@
       if (!node) return;
       node.className = `treatment-status${state ? ` ${safeClassToken(state)}` : ''}`;
       node.textContent = message || '';
+      node.setAttribute(
+        'aria-live',
+        (id.startsWith('today-') && activeView === 'today')
+          || (id.startsWith('patient-') && activeView === 'patient')
+          ? 'polite'
+          : 'off',
+      );
     });
     ['today-treatment-retry', 'treatment-retry'].forEach(id => {
       const retryNode = document.getElementById(id);
@@ -14343,6 +14953,20 @@
     if (!treatmentMutationPending) updateTreatmentFormValidity();
   }
 
+  function treatmentOverviewSection(title, description, items, emptyCopy) {
+    const section = treatmentElement('section', 'treatment-overview-section');
+    section.append(
+      treatmentElement('h3', '', title),
+      treatmentElement('p', 'treatment-overview-description', description),
+    );
+    const list = treatmentElement('div', 'treatment-course-list');
+    list.replaceChildren(...(
+      items.length ? items : [treatmentElement('div', 'empty-state', emptyCopy)]
+    ));
+    section.append(list);
+    return section;
+  }
+
   function renderTreatmentProjection(owner = treatmentResponseOwner) {
     if (!treatmentResponseOwnerIsCurrent(owner)) return false;
     const active = treatmentProjection.courses.filter(
@@ -14351,33 +14975,89 @@
     const currentCount = treatmentProjection.courses.filter(course => course.status === 'current').length;
     const plannedCount = treatmentProjection.courses.filter(course => course.status === 'planned').length;
     const pastCount = treatmentProjection.courses.filter(course => course.status === 'past').length;
-    const openDifferences = treatmentProjection.discrepancies.filter(item => item.status === 'open').length;
     const generatedCount = treatmentProjection.legacy_treatments.reduce(
       (total, row) => total + row.generated_classification.length,
       0,
     );
     const unlinkedGeneratedCount = treatmentProjection.unlinked_generated_context_count;
     const shown = active.slice(0, TREATMENT_TODAY_LIMIT);
-    const omitted = active.length - shown.length;
+    const reviewedComponentIds = treatmentReviewedComponentIds();
+    const recordedRows = treatmentProjection.legacy_treatments.map(row => ({
+      row,
+      linkage: treatmentRecordedLinkage(row, reviewedComponentIds),
+    }));
+    const recordedNeedingReview = recordedRows.filter(item => item.linkage.state !== 'all');
+    const fullyLinkedCount = recordedRows.length - recordedNeedingReview.length;
+    const recordedShown = recordedRows.slice(0, TREATMENT_TODAY_LIMIT);
     const totals = document.getElementById('today-treatment-totals');
     if (totals) {
-      totals.textContent = `Showing ${shown.length} of ${active.length} current/planned records in server order (${currentCount} current, ${plannedCount} planned; ${omitted} omitted here). Patient also contains ${pastCount} past records, ${treatmentProjection.source_fact_count} document mentions, ${treatmentProjection.legacy_treatment_count} earlier app records, ${generatedCount} mapped generated classifications, ${unlinkedGeneratedCount} unlinked generated compatibility rows, and ${openDifferences} open differences.`;
+      if (!active.length && treatmentProjection.legacy_treatment_count) {
+        totals.textContent = `No treatment is recorded as current. ${
+          recordedNeedingReview.length
+            ? `${recordedNeedingReview.length} treatment record${recordedNeedingReview.length === 1 ? ' needs' : 's need'} timing/status review.`
+            : `All ${fullyLinkedCount} recorded treatment entr${fullyLinkedCount === 1 ? 'y is' : 'ies are'} linked to caregiver-reviewed status records.`
+        }`;
+      } else if (active.length) {
+        totals.textContent = `${currentCount} current and ${plannedCount} planned status record${
+          active.length === 1 ? '' : 's'
+        }. ${
+          recordedNeedingReview.length
+            ? `${recordedNeedingReview.length} recorded treatment entr${recordedNeedingReview.length === 1 ? 'y needs' : 'ies need'} timing/status review.`
+            : fullyLinkedCount
+              ? `All ${fullyLinkedCount} recorded treatment entr${fullyLinkedCount === 1 ? 'y is' : 'ies are'} linked to caregiver-reviewed status records.`
+              : 'No additional recorded treatment entries need review.'
+        }`;
+      } else if (pastCount) {
+        totals.textContent = `No treatment is recorded as current. ${pastCount} finished or past status record${
+          pastCount === 1 ? ' is' : 's are'
+        } recorded.`;
+      } else {
+        totals.textContent = 'No treatment information is recorded.';
+      }
     }
     const today = document.getElementById('today-treatment-list');
     if (today) {
       today.replaceChildren(...(
         shown.length
           ? shown.map(course => treatmentCourseCard(course, true))
-          : [treatmentElement('div', 'empty-state', 'No current or planned caregiver treatment records are recorded.')]
+          : recordedShown.length
+            ? recordedShown.map(item => treatmentRecordedCard(item.row, true, item.linkage))
+            : [treatmentElement('div', 'empty-state', pastCount
+              ? 'No treatment is recorded as current. Review finished or past records in Patient.'
+              : 'No treatment information is recorded.')]
       ));
     }
     const records = document.getElementById('patient-treatment-list');
     if (records) {
-      records.replaceChildren(...(
-        treatmentProjection.courses.length
-          ? treatmentProjection.courses.map(course => treatmentCourseCard(course))
-          : [treatmentElement('div', 'empty-state', 'No caregiver treatment records are recorded.')]
-      ));
+      const currentAndPlanned = treatmentProjection.courses
+        .filter(course => ['current', 'planned'].includes(course.status))
+        .map(course => treatmentCourseCard(course));
+      const recordedInformation = recordedRows.map(
+        item => treatmentRecordedCard(item.row, false, item.linkage),
+      );
+      const past = treatmentProjection.courses
+        .filter(course => course.status === 'past')
+        .map(course => treatmentCourseCard(course));
+      records.replaceChildren(
+        treatmentOverviewSection(
+          'Current and planned',
+          'Only status records explicitly reviewed by the caregiver appear here.',
+          currentAndPlanned,
+          'No treatment has been explicitly recorded as current or planned.',
+        ),
+        treatmentOverviewSection(
+          `Recorded treatment information (${recordedInformation.length})`,
+          'Every recorded treatment entry stays here in stored order. Each card shows whether its explicit components are linked to a caregiver-reviewed status record.',
+          recordedInformation,
+          'No additional recorded treatment information is present.',
+        ),
+        treatmentOverviewSection(
+          'Finished or past',
+          'Only status records explicitly reviewed as finished or past appear here.',
+          past,
+          'No treatment has been explicitly recorded as finished or past.',
+        ),
+      );
     }
     const discrepancies = document.getElementById('treatment-discrepancy-list');
     if (discrepancies) {
@@ -14401,19 +15081,16 @@
     }
     const legacy = document.getElementById('treatment-legacy-list');
     if (legacy) {
-      const legacyRows = treatmentProjection.legacy_treatments.length
-        ? treatmentProjection.legacy_treatments.map(treatmentLegacyCard)
-        : [treatmentElement('div', 'empty-state', 'No earlier app treatment records are recorded.')];
       legacy.replaceChildren(
-        ...legacyRows,
+        treatmentMappedGeneratedSection(),
         treatmentUnlinkedGeneratedSection(),
       );
     }
     const counts = {
-      records: treatmentProjection.course_count,
+      records: treatmentProjection.course_count + treatmentProjection.legacy_treatment_count,
       differences: treatmentProjection.discrepancy_count,
       sources: treatmentProjection.source_fact_count,
-      earlier: treatmentProjection.legacy_treatment_count,
+      earlier: generatedCount + unlinkedGeneratedCount,
     };
     Object.entries(counts).forEach(([name, count]) => {
       const node = document.getElementById(`treatment-count-${name}`);
@@ -14421,12 +15098,12 @@
     });
     setTreatmentFreshness(
       treatmentProjectionState === 'stale' ? 'stale' : 'current',
-      treatmentProjectionState === 'stale' ? 'Read-only snapshot' : 'Current',
+      treatmentProjectionState === 'stale' ? 'Read-only snapshot' : 'Up to date',
     );
     setTreatmentStatus(
       treatmentProjectionState === 'stale'
-        ? 'Stale snapshot · read-only until the authoritative treatment record reloads.'
-        : 'Authoritative treatment reconciliation loaded.',
+        ? 'This saved treatment view is read-only until it refreshes.'
+        : 'Treatment information is up to date.',
       treatmentProjectionState === 'stale' ? 'stale' : 'current',
       treatmentProjectionState === 'stale',
     );
@@ -14731,7 +15408,7 @@
         || (Number.isSafeInteger(knownWorkflow) && data.workflow_revision < knownWorkflow)
       ) {
         markTreatmentProjectionStale(
-          'A newer patient or workflow revision is available. Treatment information remains read-only while reloading.',
+          'Newer patient information is available. Treatment information remains read-only while reloading.',
           { abortRequest: false, preserveMutation },
         );
         return null;
@@ -14942,7 +15619,7 @@
         status,
         options.restart
           ? 'A new record is created; the prior past record is not changed.'
-          : 'This is caregiver-entered workflow status, not treatment advice.',
+          : 'This is status you explicitly record, not treatment advice.',
       ));
     }
     const labels = {
@@ -14996,11 +15673,11 @@
     fragment.append(grid);
     const componentFieldset = treatmentElement('fieldset', 'treatment-component-fieldset');
     componentFieldset.append(
-      treatmentElement('legend', '', 'Associate earlier app components (optional)'),
+      treatmentElement('legend', '', 'Link recorded treatment components (optional)'),
       treatmentElement(
         'p',
         'helper-text',
-        'Caregiver-associated · unverified. Association does not mean equivalence or source verification.',
+        'You choose this link. It does not establish equivalence or confirm the source.',
       ),
     );
     const componentOptions = [];
@@ -15022,13 +15699,13 @@
         label.append(
           input,
           treatmentElement('span', '', component.text),
-          treatmentElement('small', '', 'Caregiver-associated · unverified'),
+          treatmentElement('small', '', 'Linked by you'),
         );
         list.append(label);
       });
       componentFieldset.append(list);
     } else {
-      componentFieldset.append(treatmentElement('p', 'treatment-missing', 'No earlier components are available.'));
+      componentFieldset.append(treatmentElement('p', 'treatment-missing', 'No recorded components are available to link.'));
     }
     fragment.append(componentFieldset);
     if (options.includeStatus && !options.restart) {
@@ -15414,8 +16091,8 @@
     const eyebrow = document.getElementById('treatment-dialog-eyebrow');
     const submit = document.getElementById('treatment-submit-button');
     eyebrow.textContent = mode === 'resolve'
-      ? TREATMENT_CONFIRMATION_LABEL
-      : 'Caregiver-maintained · unverified';
+      ? RECORD_SOURCE_COPY.clinician
+      : 'You enter and review this';
     const course = selection.courseId ? treatmentCourseById(selection.courseId) : null;
     const discrepancy = selection.discrepancyId
       ? treatmentDiscrepancyById(selection.discrepancyId)
@@ -16296,9 +16973,19 @@
   }
 
   // ── Init ────────────────────────────────────────────────────────────────
+  const initialPhiEpoch = phiEpoch;
   loadStatus().finally(() => ensureTreatmentReconciliation());
   loadTasks();
   loadSummary();
+  Promise.resolve().then(() => {
+    if (
+      phiEpoch === initialPhiEpoch
+      && !researchProjection
+      && !researchRequestController
+    ) {
+      loadResearchWorkspace();
+    }
+  });
   loadQuestions();
   loadJudgments();
   ensureSymptomEpisodes();

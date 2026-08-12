@@ -78,7 +78,7 @@ def test_patient_has_authoritative_imaging_and_source_history():
     assert 'id="imaging-comparison"' in HTML
     assert "Compare selected records" in HTML
     assert 'id="source-history"' in HTML
-    assert "Complete authoritative imaging records" in HTML
+    assert "Recorded imaging reports" in HTML
     assert "Loading source history" in HTML
     assert "imaging-table-region" in CSS
     assert "imaging-comparison-grid" in CSS
@@ -134,18 +134,48 @@ def test_mobile_controls_and_overflow_guards_are_explicit():
         re.DOTALL,
     )
     assert ".visit-question-order select { min-height: 44px; }" in CSS
+    assert "font-size: 9px" not in CSS
+    assert "font-size: 10px" not in CSS
+    assert "--text2: #625d56;" in CSS
+    assert ".mob-nav" not in CSS
 
 
 def test_questions_view_contains_one_shared_appointment_workspace():
-    assert 'id="appointment-prep-heading">Appointment workspace</h2>' in HTML
+    assert 'id="appointment-prep-heading" tabindex="-1">Appointment workspace</h2>' in HTML
     assert 'id="visit-list"' in HTML
     assert 'id="visit-source-appointment"' in HTML
     assert 'id="appointment-overlay"' in HTML
     assert HTML.count('id="appointment-dialog"') == 1
     assert "mob-appointment" not in HTML
-    assert "Caregiver-entered · attributed to clinician · unverified" in HTML
+    assert "You recorded this from the clinician" in HTML
     assert HTML.count('id="appointment-tab-recap"') == 1
     assert HTML.count('id="appointment-panel-recap"') == 1
+
+
+def test_today_order_and_visible_appointments_label_preserve_internal_route():
+    today = HTML[HTML.index('id="view-today"') : HTML.index('id="view-patient"')]
+    ordered_ids = [
+        'id="freshness-banner"',
+        'id="summary-card"',
+        'id="recent-updates-card"',
+        'id="treatment-today-card"',
+        'id="symptom-today-card"',
+        'aria-labelledby="follow-through-heading"',
+        'id="today-appointment-card"',
+        'id="research-today-card"',
+        'class="clinical-disclaimer"',
+    ]
+    positions = [today.index(value) for value in ordered_ids]
+    assert positions == sorted(positions)
+    assert 'id="nav-questions"' in HTML
+    assert "<span>Appointments</span>" in HTML
+    assert 'id="questions-heading">Appointments</h1>' in HTML
+    assert "switchView('questions'" in HTML
+    assert 'id="appointment-tab-questions"' in HTML
+    recent_markup = today[
+        today.index('id="recent-updates-list"') : today.index('id="treatment-today-card"')
+    ]
+    assert "aria-live=" not in recent_markup
 
 
 def test_appointment_controls_are_keyboard_and_phone_accessible():

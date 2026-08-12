@@ -237,7 +237,7 @@ def test_research_has_one_shared_projection_and_no_legacy_display_authority():
     assert "researchProjection.items.filter(item => item.latest_batch_member)" in APP_JS
     assert "latest.slice(0, 3)" in APP_JS
     assert "open.slice(0, 3)" in APP_JS
-    assert "omitted from Today" in APP_JS
+    assert "more in Research" in APP_JS
     patient_branch = APP_JS[
         APP_JS.index("} else if (name === 'patient')") : APP_JS.index(
             "} else if (name === 'activity')"
@@ -250,12 +250,12 @@ def test_research_authorities_and_fixed_copy_remain_separate_and_visible():
     assert INDEX_HTML.count(GUIDANCE) == 3
     assert GENERATED_LABEL in APP_JS
     for section in (
-        "External registry or bibliographic facts",
-        "Research discovery provenance",
+        "Registry or publication details",
+        "How this research was found",
         "Immutable saved snapshot",
-        "Current exact occurrence",
-        "Caregiver-entered events",
-        "Lifecycle history",
+        "Current tracked entry",
+        "Your recorded events",
+        "Consideration history",
     ):
         assert section in APP_JS or section in INDEX_HTML
     assert "Machine-generated context" not in INDEX_HTML
@@ -308,7 +308,8 @@ def test_event_modes_scrub_fields_and_never_parse_or_default_dates():
 
 def test_research_accessibility_and_phone_layout_contract():
     assert 'role="tablist" aria-label="Research workspace sections"' in INDEX_HTML
-    assert 'role="region" aria-label="Lifecycle history in server order"' in APP_JS
+    assert 'class="research-history-list"' in APP_JS
+    assert "JSON.stringify(entry.changes" not in APP_JS
     assert "trapDialogFocus" in APP_JS
     assert ".research-dialog {" in CSS
     assert "height: 100dvh" in CSS
@@ -479,10 +480,7 @@ def _open_research_page(playwright, width: int, height: int):
     page.set_content(html)
     page.add_style_tag(content=CSS)
     page.add_script_tag(content=APP_JS)
-    page.evaluate(
-        "() => { clearTimeout(pollingInterval); pollingInterval = null; "
-        "loadResearchWorkspace(); }"
-    )
+    page.evaluate("() => { clearTimeout(pollingInterval); pollingInterval = null; }")
     try:
         page.wait_for_function("() => researchProjectionState === 'current'", timeout=5000)
     except Exception as error:
@@ -509,8 +507,8 @@ def test_live_shared_research_projection_totals_order_and_accessibility(
         try:
             assert page.locator("#today-latest-research-list article").count() == 3
             totals = page.locator("#today-latest-research-totals").inner_text()
-            assert "4 exact latest-batch occurrences" in totals
-            assert "Showing 3; 1 omitted from Today" in totals
+            assert "4 tracked entries in the latest batch" in totals
+            assert "Showing 3; 1 more in Research" in totals
             assert GUIDANCE in page.locator("#research-today-card").inner_text()
 
             page.locator("#nav-research").click()
@@ -520,7 +518,9 @@ def test_live_shared_research_projection_totals_order_and_accessibility(
             ).all_inner_texts()
             assert titles == ["Exact registry title"] * 4
             assert page.locator("#research-occurrence-list .research-latest-badge").count() == 4
-            assert GENERATED_LABEL in page.locator("#research-workspace").inner_text()
+            workspace_text = page.locator("#research-workspace").inner_text()
+            assert "NET/Care-generated context - not a clinical conclusion" in workspace_text
+            assert GENERATED_LABEL not in workspace_text
             assert GUIDANCE in page.locator("#research-workspace").inner_text()
             assert (
                 sum(request["path"] == "/api/patient/research-workspace" for request in requests)
@@ -533,21 +533,15 @@ def test_live_shared_research_projection_totals_order_and_accessibility(
             page.keyboard.press("End")
             assert page.evaluate("() => document.activeElement.id") == "research-tab-considerations"
             page.locator("#research-tab-considerations").click()
-            history = page.locator(".research-scroll-region")
-            history.focus()
-            assert page.evaluate("() => document.activeElement.className") == (
-                "research-scroll-region"
-            )
+            assert page.locator(".research-history-list").count() >= 1
+            record_event = page.get_by_role("button", name="Record event")
+            record_event.focus()
+            assert page.evaluate("() => document.activeElement.textContent") == "Record event"
             overflow = page.evaluate(
-                """() => ({
-                  document: document.documentElement.scrollWidth
-                    - document.documentElement.clientWidth,
-                  historyScrolls: document.querySelector('.research-scroll-region').scrollWidth
-                    > document.querySelector('.research-scroll-region').clientWidth,
-                })"""
+                """() => document.documentElement.scrollWidth
+                  - document.documentElement.clientWidth"""
             )
-            assert overflow["document"] == 0
-            assert overflow["historyScrolls"] is (width == 360)
+            assert overflow == 0
             if width == 360:
                 heights = page.locator(
                     "#research-workspace button, #research-workspace summary"
@@ -556,7 +550,7 @@ def test_live_shared_research_projection_totals_order_and_accessibility(
                     ".map(item => item.getBoundingClientRect().height)"
                 )
                 assert heights
-                assert min(heights) >= 38
+                assert min(heights) >= 44
         finally:
             context.close()
             browser.close()

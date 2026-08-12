@@ -364,6 +364,7 @@ function evictClientPhi(error) {
 }
 """,
             _function_source("safeClassToken", "safeExternalUrl"),
+            _function_source("safeExternalUrl", "revisionIsOlder"),
             _function_source("normalizedRevision", "capturePatientRequest"),
             _function_source("capturePatientRequest", "patientRequestIsCurrent"),
             _function_source("patientRequestIsCurrent", "requestClinicalConvergence"),
@@ -507,8 +508,10 @@ console.log(JSON.stringify({
     assert result["rowCount"] == result["checkboxCount"] == 4
     assert result["tableText"].index("2026-04") < result["tableText"].index("2026-03-15")
     assert result["tableText"].count("Target liver lesion increased") == 2
-    assert "Legacy date; study-date authority not confirmed" in result["tableText"]
+    assert "Older record - date context was not retained" in result["tableText"]
     assert "Source document date (not used for study chronology)" in result["tableText"]
+    assert "Record ID" not in result["tableText"]
+    assert "source_unverified" not in result["tableText"]
     assert "projection-current" not in result["tableText"]
     assert "row-partial-projection-current" not in result["tableText"]
     assert result["twoSelected"]["selected"] == [
@@ -823,9 +826,7 @@ console.log(JSON.stringify({
         "rendered": True,
         "state": "empty",
         "freshness": "Current · empty",
-        "status": (
-            "Authoritative imaging loaded · patient revision 4 · " "no imaging records recorded."
-        ),
+        "status": "Imaging history is up to date. No imaging reports are recorded.",
         "selection": "No imaging records are available to select or compare.",
         "compareDisabled": True,
     }
@@ -936,7 +937,9 @@ def test_live_imaging_is_exact_semantic_responsive_and_overflow_safe():
                 assert dates == ["2026-04", "2026-03-15", "Not recorded", "2026-03-15"]
                 table_text = page.locator("#imaging-table-body").inner_text()
                 assert table_text.count("Target liver lesion increased") == 2
-                assert "Legacy date; study-date authority not confirmed" in table_text
+                assert "Older record - date context was not retained" in table_text
+                assert "Record ID" not in table_text
+                assert "source_unverified" not in table_text
                 assert "Study date not recorded" in table_text
                 assert (
                     "STATUS IMAGING MUST NOT RENDER"

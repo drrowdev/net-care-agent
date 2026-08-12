@@ -16,13 +16,17 @@ requires App Service Easy Auth path exclusions. Local APIs are protected unless
 The desktop and phone layouts use the same five views, so every workflow is
 available at every screen size:
 
-- **Today** — assessment freshness, key concern, next actions, a bounded exact
-  latest-batch research summary, and a bounded open-consideration summary.
+- **Today** — global access/freshness, the expanded latest assessment/key
+  concern/recommendations, bounded recorded update times plus active-alert
+  count, treatment status, symptoms logged, follow-ups, appointment preparation,
+  then lower-priority tracked research. It creates no unread state.
+  Latest document import is selected by ingestion time across all active
+  documents, independently of the clinical document date.
 - **Patient** — profile snapshot, treatments, complete biomarker history,
   alerts, symptoms, imaging history, and immutable document/source history.
 - **Research** — every current trial/paper occurrence and every open/closed
   caregiver consideration in exact server order.
-- **Questions** — appointment questions, visit working mode, and clinical notes
+- **Appointments** — appointment questions, visit working mode, and clinical notes
   from the treating team.
 - **Activity** — digest/deep-sweep controls, processing status, and reports.
 
@@ -63,12 +67,12 @@ summary in `/api/status`.
 1. Choose the server-provided biomarker name from **Choose a biomarker**.
    Recorded aliases appear exactly as stored; the browser does not rename or
    merge tests.
-2. Read the table first. It is the authoritative presentation and keeps every
+2. Read the table first. It keeps every
    observation, including partial or unknown dates, qualified/ranged/text
    values, missing context, non-comparable facts, and presentation-collapsed
-   same-source duplicates. Expand **Source details** for observation/source-row,
-   source-document, and evidence identities and authenticated exact-span/source
-   links.
+   same-source duplicates. Expand **Source and wording** for plain source
+   meaning and authenticated **View exact wording** / **Open source** links.
+   Internal observation, source-row, document, and evidence IDs remain hidden.
 3. Treat **Comparable point charts** as a secondary view only. Each card is one
    exact series the server declared comparable. Points are not connected and the
    browser performs no conversion, interpolation, smoothing, aggregation,
@@ -105,10 +109,9 @@ uses `/api/status` or the compatibility imaging list in
    precision, legacy-unconfirmed date, and unknown date are labelled
    separately. The expandable source-document date is explicitly not used for
    study chronology.
-3. Expand **Technical and source details** for the subordinate record identity,
-   exact server provenance wording, and authenticated opaque source/evidence
-   links. Storage paths, source coordinates, raw import IDs, and evidence
-   offsets are not exposed.
+3. Expand **Source and wording** for plain source meaning and authenticated
+   opaque source/evidence links. Internal record/source IDs, storage paths,
+   coordinates, hashes, and evidence offsets are not exposed.
 4. Check exactly two current records, then press **Compare selected records**.
    The two panels repeat only their exact date context, modality/type, findings,
    impression, and provenance. Any comparison, change, progression, or response
@@ -155,15 +158,15 @@ links open only authenticated, no-cache source/span endpoints and never reveal a
 filesystem path.
 
 As soon as intake commits, the selected feed job shows a **Document
-reconciliation** receipt above its research report. This is scoped only to that
-document—there is no global review inbox or acknowledgement count. The receipt
-shows:
+reconciliation** receipt above its research report. This is scoped only to that document—there is no global review inbox or
+acknowledgement count. Activity calls it **What this document changed**. The
+receipt shows:
 
-- the document filename/type, ingestion time, and immutable source link;
+- the document filename/type, ingestion time, and human-readable source link;
 - each structured addition, old → new scalar update, conflict, and exact
   duplicate/no-op;
-- verified exact-span evidence links, or a clear **No exact source** /
-  **Invalid source quote** label;
+- **Exact wording available**, **Document linked - exact wording unavailable**,
+  or **No document linked**, without claiming clinical authenticity;
 - read-only trials/papers discovered later by orchestration.
 
 The server returns `202` with a job ID. The UI polls active work every three
@@ -289,7 +292,7 @@ Only one deep-sweep may be active; a duplicate returns `409`.
 After every consultation, capture the oncologist's actual position so future AI runs
 respect it as a hard constraint:
 
-1. UI → **Questions** → **Clinical notes**.
+1. UI → **Appointments** → **Clinical notes**.
 2. Pick the category:
    - `constraint` — rules out a treatment / trial / approach
    - `preference` — what the oncologist favours
@@ -341,7 +344,7 @@ and late responses. Alert resolution loading is event-driven; it adds no polling
 
 ## 4a. Track caregiver follow-through
 
-Open **Today** → **Follow-through**. Desktop and phone use the same action list
+Open **Today** → **Follow-ups**. Desktop and phone use the same action list
 and dialogs; there is no separate mobile copy or extra top-level view.
 
 1. Use **Active**, **Completed**, **Cancelled**, and **All** to filter durable
@@ -357,7 +360,7 @@ and dialogs; there is no separate mobile copy or extra top-level view.
    token, never generated text or a list index. Stale, hidden, revisionless, or
    conflicted actions become a generic unavailable row without cached text,
    token, or action control. Once accepted, the durable generated snapshot
-   remains in Follow-through after later assessment revisions.
+   remains in Follow-ups after later assessment revisions.
 4. Use **Edit owner or due date** for administrative changes. Use **Start** on an
    open task or **Move to open** on an in-progress task. Completed and cancelled
    actions are immutable terminal history and do not offer reopen controls.
@@ -402,7 +405,7 @@ isolated by action and intent in SPA memory only.
 
 ## 5. Generate appointment questions
 
-1. UI → **Questions** → **Generate questions**.
+1. UI → **Appointments** → **Generate visit questions**.
 2. Claude reads the current profile + clinical judgments and returns 10–15
    ranked questions in the language configured by `patient.language`
    (defaults to English), grouped by category
@@ -421,7 +424,7 @@ presented as current appointment preparation.
 
 ## 5d. Prepare and run an appointment
 
-Open **Questions** → **Appointment workspace**. Desktop and phone use the same
+Open **Appointments** → **Appointment workspace**. Desktop and phone use the same
 working record; on a phone it opens as a full-height sheet.
 
 1. Create a visit, or select a current imported appointment to prefill its
@@ -429,7 +432,8 @@ working record; on a phone it opens as a full-height sheet.
    separate and receipt-correctable; the working visit links it by stable ID.
 2. Open the visit and edit its title/details. Use **Start visit**, **Complete**,
    or **Cancel visit** for the explicit lifecycle.
-3. In **Questions**, add a current generated question or type a manual caregiver
+3. In **Questions** within the Appointments workspace, add a current generated
+   question or type a manual caregiver
    question. Generated acceptance sends only its stable ID/token—the browser
    never copies generated text back as the source. Outdated or revisionless
    generated rows show only a generic unavailable state; their prior text is not
@@ -444,8 +448,8 @@ working record; on a phone it opens as a full-height sheet.
    order is saved atomically after the server verifies the visit plus every
    question ID/token; a conflict cannot leave a partially reordered list.
 5. During the visit, record either an answered response with text or explicitly
-   unknown. Every captured answer is labelled
-   **Caregiver-entered · attributed to clinician · unverified**.
+   unknown.    Every captured answer is labelled **You recorded this from the clinician**.
+   This attribution does not claim that NET/Care independently verified it.
 6. In **Decisions**, record what the clinician said. Decision text is immutable.
    An active decision can be marked **Needs confirmation**, corrected through an
    immutable successor, or retracted. A decision needing confirmation can only be
@@ -587,45 +591,45 @@ excluded from all model prompts.
 
 ## 5b. Record and reconcile treatment information
 
-**Today → Treatment records** shows at most the first three Current or Planned
-caregiver records in exact server order. It states the exact current/planned
-totals and omitted count, plus exact Past, document-mention, earlier-app,
-mapped-generated, unlinked-generated, and open-difference counts. Unlinked
-generated context is counted only; Today never presents it as a current or
-planned course. **Review all treatment
-information** opens the complete **Patient → Treatments** workspace. Today and
-Patient use the same accepted projection; neither uses `/api/status` treatment
-data.
+**Today → Treatment status** shows explicitly reviewed Current/Planned records
+when present. Each recorded raw row is also checked only against explicit
+caregiver course-component links: fully linked rows are not counted as unresolved,
+partly linked rows remain unresolved, and unlinked rows still need timing/status
+review. If no treatment is recorded current, Today says so and shows a bounded
+first set with honest unresolved counts. **Review treatment status** opens the
+complete **Patient → Treatments** Overview. Today and Patient use the same
+accepted projection; neither uses `/api/status` treatment data.
 
-Patient separates four kinds of information:
+Patient's default Overview combines three kinds of information without inference:
 
-1. **Treatment records** contains every caregiver-maintained Current, Planned,
-   and Past course in server order. Record or edit only explicit wording,
+1. Explicit caregiver-maintained **Current and planned** courses.
+2. Every row already in the patient treatment record, labelled as unlinked,
+   fully linked, or partly linked to an explicit caregiver-reviewed status
+   record. Raw wording never inherits the linked course's lifecycle.
+3. Explicit caregiver-maintained **Finished or past** courses.
+
+Record or edit only explicit wording,
    optional exact fields, partial/unknown dates, and optional earlier-component
    associations. Blank dates stay blank; the browser does not default today,
    parse timezones, sort, match medications, copy document/generated text, or
    infer chronology.
-2. **Differences to review** contains explicit caregiver-recorded comparisons.
+The Overview preserves every row, duplicate, and stored order. It never promotes,
+merges, deduplicates, or assigns lifecycle. Secondary panels are:
+
+1. **Differences to review** contains explicit caregiver-recorded comparisons.
    Record A is one document mention. Record B is either a distinct document
    mention or one caregiver course. The browser does not preselect, detect,
    highlight, rank, or decide which side is correct. Immutable A/B snapshots
    remain separate from each side's current state. An older
    `legacy_incomplete` item shows its one real side and an unavailable second
    citation; it is read-only.
-3. **Document mentions** contains every source receipt occurrence, duplicate,
+2. **Mentions in source documents** contains every source receipt entry, duplicate,
    and exact raw value in server order. These rows are not caregiver lifecycle
    records. Source/evidence links are authenticated opaque routes.
-4. **Earlier app records** keeps raw rows, stable components, and
-   machine-generated compatibility context separate and read-only.
-   Machine-generated context is not a treatment record and neither legacy nor
-   generated data can appear in lifecycle, discrepancy, outcome, or follow-up
-   authority controls. Pre-v6 generated rows whose source linkage was never
-   stored appear in a distinct section labelled exactly **Machine-generated
-   compatibility context · source linkage unavailable · not a treatment
-   record**. The section shows every row in stored order, including duplicates,
-   and states the exact total and that zero rows were omitted. It has no source
-   links, citations, lifecycle, mutation, follow-up, or other controls and makes
-   no currentness, verification, relevance, or treatment-advice claim.
+3. **Automatic compatibility notes** keeps mapped and source-link-unavailable
+   NET/Care-generated context collapsed and read-only. It is explicitly not a
+   treatment fact and cannot appear in lifecycle, discrepancy, outcome, or
+   follow-up controls. Every note and duplicate remains counted and preserved.
 
 Current lifecycle buttons are exactly those returned by the server. Do not
 interpret their presence as treatment advice. A new Past record or a transition
@@ -906,7 +910,7 @@ seconds each. Do not assume either limit completes long AI work.
 | Setting | Default | Scope |
 |---|---:|---|
 | `JOB_RETENTION_DAYS` / `JOB_RETENTION_COUNT` | `365` / `200` | Completed job metadata and indexed report/result artifacts |
-| `REPORT_RETENTION_DAYS` / `REPORT_RETENTION_COUNT` | `30` / `200` | Unindexed files under `reports/`; the count rank includes indexed files |
+| `REPORT_RETENTION_DAYS` / `REPORT_RETENTION_COUNT` | `30` / `200` | Indexed and unindexed narrative report files under `reports/` |
 | `SOURCE_ORPHAN_RETENTION_DAYS` / `SOURCE_ORPHAN_RETENTION_COUNT` | `7` / `20` | Source directories not referenced by the profile |
 
 Pruning runs at startup and before new job admission. Active jobs and
@@ -920,11 +924,16 @@ Operators should periodically inspect those protected directories and remove
 only entries confirmed to have no active job or job reference. Never expose
 their contents in logs or support messages.
 
-New `jobs.json` records store an allowlisted PHI-safe metadata subset and
-generic errors. Legacy retained records are not rewritten. Reports and
-structured results are separate atomic artifacts; individual authenticated job
-lookups read them through traversal-safe roots. Job-runner logs avoid input,
-model output, prompts, and traceback. Keep all operator logs protected:
+New `jobs.json` records store an allowlisted PHI-safe metadata subset, generic
+errors, and bounded artifact state. Activity distinguishes available, stale,
+expired, not retained, unavailable, no separate artifact, and legacy-unknown
+states. Age/count pruning records the reason before clearing the reference;
+missing/corrupt content is never called expired or still stored. Feed receipts
+remain first-class while their job metadata is retained, even if the narrative
+report expired. Reports and structured results are separate atomic artifacts;
+individual authenticated job lookups read them through traversal-safe roots and
+never expose paths. Job-runner logs avoid input, model output, prompts, and
+traceback. Keep all operator logs protected:
 lower-level storage/recovery OS errors can include filesystem paths.
 Source/evidence endpoints additionally verify SHA-256/length and return
 `no-store`.

@@ -303,6 +303,7 @@ function evictClientPhi(error) {
 }
 """,
             _function_source("safeClassToken", "safeExternalUrl"),
+            _function_source("safeExternalUrl", "revisionIsOlder"),
             _function_source("normalizedRevision", "capturePatientRequest"),
             _function_source("capturePatientRequest", "patientRequestIsCurrent"),
             _function_source("patientRequestIsCurrent", "requestClinicalConvergence"),
@@ -406,10 +407,11 @@ console.log(JSON.stringify({
     assert "S-&lt;CgA&gt;" in result["first"]["context"]
     assert "&lt;5" in result["first"]["table"]
     assert "Only finite unqualified numeric values are comparable." in result["first"]["table"]
-    assert "2 recorded source rows" in result["first"]["table"]
-    assert "row-obs-cga-1-0" in result["first"]["table"]
-    assert "evidence-obs-cga-1" in result["first"]["table"]
-    assert "Open exact span" in result["first"]["table"]
+    assert "2 recorded entries" in result["first"]["table"]
+    assert "row-obs-cga-1-0" not in result["first"]["table"]
+    assert "evidence-obs-cga-1" not in result["first"]["table"]
+    assert "View exact wording" in result["first"]["table"]
+    assert "From your document" in result["first"]["table"]
     assert result["first"]["charts"].count("<circle") == 2
     assert "series-cga-isolated" not in result["first"]["charts"]
     assert "<polyline" not in result["first"]["charts"]
@@ -598,7 +600,7 @@ def test_actual_loader_distinguishes_empty_record_and_ordinary_hard_failure():
 
     assert result["emptyState"]["token"] == "projection-empty"
     assert result["emptyState"]["state"] == "empty"
-    assert "no biomarker observations recorded" in result["emptyState"]["status"].lower()
+    assert "no biomarker results are recorded" in result["emptyState"]["status"].lower()
     assert "No biomarker observations are recorded" in result["emptyState"]["table"]
     assert result["emptyState"]["disabled"] is True
     assert result["emptyState"]["caption"] == "Complete observations for the selected biomarker"

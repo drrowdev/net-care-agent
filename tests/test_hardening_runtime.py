@@ -292,6 +292,220 @@ def test_job_file_contains_only_metadata_and_detail_hydrates(hardened_app):
     assert "traceback" not in stored
     detail = hardened_app.app.test_client().get("/api/jobs/job1").get_json()
     assert detail["report"] == "private report"
+    assert detail["artifact"] == {
+        "kind": "report",
+        "state": "available",
+        "freshness": "current",
+    }
+    assert "report_file" not in detail
+    assert "result_file" not in detail
+    assert "artifact_state" not in detail
+
+
+def test_job_artifact_contract_is_bounded_and_backward_compatible(hardened_app):
+    profile_revision = hardened_app.agent.load_profile().get("profile_revision")
+    jobs = [
+        {
+            "id": "active",
+            "type": "digest",
+            "status": "running",
+            "stage": "running",
+            "created_at": "2026-08-01T10:00:00",
+            "artifact_state": "none",
+        },
+        {
+            "id": "expired",
+            "type": "feed",
+            "status": "done",
+            "stage": "done",
+            "created_at": "2026-01-01T10:00:00",
+            "artifact_state": "expired",
+            "profile_revision": profile_revision,
+        },
+        {
+            "id": "missing",
+            "type": "summary",
+            "status": "done",
+            "stage": "done",
+            "created_at": "2026-08-01T10:00:00",
+            "artifact_state": "available",
+            "result_file": "job_results/missing.json",
+            "profile_revision": profile_revision,
+        },
+        {
+            "id": "legacy",
+            "type": "digest",
+            "status": "done",
+            "stage": "done",
+            "created_at": "2025-01-01T10:00:00",
+            "profile_revision": profile_revision,
+        },
+        {
+            "id": "unknown-kind",
+            "type": "future-safe-job",
+            "status": "done",
+            "stage": "done",
+            "created_at": "2026-08-01T10:00:00",
+        },
+    ]
+
+    payloads = [
+        hardened_app._job_response(job, profile={"profile_revision": profile_revision})
+        for job in jobs
+    ]
+
+    assert [payload["artifact"] for payload in payloads] == [
+        {"kind": "report", "state": "none", "freshness": "unknown"},
+        {"kind": "report", "state": "expired", "freshness": "unknown"},
+        {"kind": "result", "state": "unavailable", "freshness": "unknown"},
+        {"kind": "report", "state": "legacy_unknown", "freshness": "unknown"},
+        {"kind": "none", "state": "none", "freshness": "unknown"},
+    ]
+    assert all("report_file" not in payload for payload in payloads)
+    assert all("result_file" not in payload for payload in payloads)
+
+
+def test_job_list_rejects_existing_but_corrupt_artifacts(hardened_app):
+    report = hardened_app.DATA_DIR / "reports" / "corrupt.txt"
+    result = hardened_app.DATA_DIR / "job_results" / "corrupt.json"
+    report.parent.mkdir(parents=True)
+    result.parent.mkdir(parents=True)
+    report.write_bytes(b"\xff\xfe")
+    result.write_text("{invalid", encoding="utf-8")
+    profile_revision = hardened_app.agent.load_profile().get("profile_revision")
+    jobs = [
+        {
+            "id": "corrupt-report",
+            "type": "digest",
+            "status": "done",
+            "stage": "done",
+            "created_at": "2026-08-01T10:00:00",
+            "artifact_state": "available",
+            "report_file": "reports/corrupt.txt",
+            "profile_revision": profile_revision,
+        },
+        {
+            "id": "corrupt-result",
+            "type": "chat",
+            "status": "done",
+            "stage": "done",
+            "created_at": "2026-08-01T10:00:00",
+            "artifact_state": "available",
+            "result_file": "job_results/corrupt.json",
+            "profile_revision": profile_revision,
+        },
+    ]
+
+    listed = [
+        hardened_app._job_response(job, profile={"profile_revision": profile_revision})
+        for job in jobs
+    ]
+    detailed = [
+        hardened_app._job_response(
+            job,
+            include_artifacts=True,
+            profile={"profile_revision": profile_revision},
+        )
+        for job in jobs
+    ]
+
+    assert [item["artifact"]["state"] for item in listed] == ["unavailable", "unavailable"]
+    assert [item["artifact"]["freshness"] for item in listed] == ["unknown", "unknown"]
+    assert all(item["artifact"]["state"] == "unavailable" for item in detailed)
+    assert all(item["artifact_unavailable"] is True for item in detailed)
+    assert "report" not in detailed[0]
+    assert "result" not in detailed[1]
+
+
+def test_stale_corrupt_report_list_and_detail_remain_unavailable(hardened_app):
+    report = hardened_app.DATA_DIR / "reports" / "stale-corrupt.txt"
+    report.parent.mkdir(parents=True)
+    report.write_bytes(b"\xff\xfe")
+    job = {
+        "id": "stale-corrupt-report",
+        "type": "digest",
+        "status": "done",
+        "stage": "done",
+        "created_at": "2026-08-01T10:00:00",
+        "artifact_state": "available",
+        "report_file": "reports/stale-corrupt.txt",
+        "profile_revision": 1,
+    }
+    profile = {"profile_revision": 2}
+
+    listed = hardened_app._job_response(job, profile=profile)
+    detailed = hardened_app._job_response(job, include_artifacts=True, profile=profile)
+
+    assert listed["artifact"] == {
+        "kind": "report",
+        "state": "unavailable",
+        "freshness": "unknown",
+    }
+    assert detailed["artifact"] == listed["artifact"]
+    assert detailed["report_stale"] is True
+    assert detailed["report_available_for_audit"] is False
+    assert detailed["artifact_unavailable"] is True
+    assert "report" not in detailed
+
+    stored_unavailable = {
+        **job,
+        "id": "stale-stored-unavailable",
+        "artifact_state": "unavailable",
+        "report_file": "reports/missing.txt",
+    }
+    unavailable_list = hardened_app._job_response(stored_unavailable, profile=profile)
+    unavailable_detail = hardened_app._job_response(
+        stored_unavailable,
+        include_artifacts=True,
+        profile=profile,
+    )
+    assert unavailable_list["artifact"] == listed["artifact"]
+    assert unavailable_detail["artifact"] == listed["artifact"]
+    assert unavailable_detail["report_available_for_audit"] is False
+    assert unavailable_detail["artifact_unavailable"] is True
+    assert "report" not in unavailable_detail
+
+
+def test_current_unavailable_state_never_hydrates_readable_artifacts(hardened_app):
+    report = hardened_app.DATA_DIR / "reports" / "readable.txt"
+    result = hardened_app.DATA_DIR / "job_results" / "readable.json"
+    report.parent.mkdir(parents=True)
+    result.parent.mkdir(parents=True)
+    report.write_text("must stay hidden", encoding="utf-8")
+    result.write_text(json.dumps({"reply": "must stay hidden"}), encoding="utf-8")
+    profile = {"profile_revision": 2}
+    jobs = [
+        {
+            "id": "unavailable-report",
+            "type": "digest",
+            "status": "done",
+            "stage": "done",
+            "created_at": "2026-08-01T10:00:00",
+            "artifact_state": "unavailable",
+            "report_file": "reports/readable.txt",
+            "profile_revision": 2,
+        },
+        {
+            "id": "unavailable-result",
+            "type": "chat",
+            "status": "done",
+            "stage": "done",
+            "created_at": "2026-08-01T10:00:00",
+            "artifact_state": "unavailable",
+            "result_file": "job_results/readable.json",
+            "profile_revision": 2,
+        },
+    ]
+
+    detailed = [
+        hardened_app._job_response(job, include_artifacts=True, profile=profile) for job in jobs
+    ]
+
+    assert all(item["artifact"]["state"] == "unavailable" for item in detailed)
+    assert all(item["artifact_unavailable"] is True for item in detailed)
+    assert "report" not in detailed[0]
+    assert "result" not in detailed[1]
+    assert "must stay hidden" not in json.dumps(detailed)
 
 
 def test_legacy_job_history_is_sanitized_and_atomically_rewritten(hardened_app):
@@ -467,7 +681,47 @@ def test_report_retention_clears_index_before_pruning(hardened_app, monkeypatch)
 
     assert not report.exists()
     assert "report_file" not in hardened_app._jobs[0]
+    assert hardened_app._jobs[0]["artifact_state"] == "expired"
     assert "reports/old.txt" not in hardened_app.JOBS_PATH.read_text(encoding="utf-8")
+    public = hardened_app._job_response(hardened_app._jobs[0])
+    assert public["artifact"] == {
+        "kind": "report",
+        "state": "expired",
+        "freshness": "unknown",
+    }
+
+
+def test_report_count_retention_records_not_retained(hardened_app, monkeypatch):
+    reports = hardened_app.DATA_DIR / "reports"
+    reports.mkdir(parents=True)
+    for name in ("new.txt", "old.txt"):
+        (reports / name).write_text(name, encoding="utf-8")
+    for job_id, name, created_at in (
+        ("old-report", "old.txt", "2026-08-01T00:00:00"),
+        ("new-report", "new.txt", "2026-08-02T00:00:00"),
+    ):
+        hardened_app._add_job(
+            {
+                "id": job_id,
+                "type": "digest",
+                "status": "done",
+                "stage": "done",
+                "created_at": created_at,
+                "report_file": f"reports/{name}",
+                "artifact_state": "available",
+            }
+        )
+    monkeypatch.setenv("REPORT_RETENTION_DAYS", "36500")
+    monkeypatch.setenv("REPORT_RETENTION_COUNT", "1")
+    monkeypatch.setenv("JOB_RETENTION_DAYS", "36500")
+    monkeypatch.setenv("JOB_RETENTION_COUNT", "200")
+
+    hardened_app._prune_retention()
+
+    older = next(item for item in hardened_app._jobs if item["id"] == "old-report")
+    assert older["artifact_state"] == "not_retained"
+    assert "report_file" not in older
+    assert not (reports / "old.txt").exists()
 
 
 def test_timeout_failure_is_sanitized_in_job_metadata(hardened_app, monkeypatch):

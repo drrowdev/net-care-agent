@@ -237,7 +237,7 @@ def test_symptom_module_has_one_authority_and_no_clinical_or_date_inference():
     assert ".dedupe" not in source
     assert GUIDANCE in INDEX_HTML
     assert INDEX_HTML.count(GUIDANCE) == 3
-    assert "Caregiver-entered · unverified" in INDEX_HTML
+    assert "You enter this" in INDEX_HTML
     assert "patient-reported" not in source.lower()
     assert "triage" not in source.lower()
     assert "treatment advice" not in source.lower()
@@ -476,8 +476,8 @@ def test_live_symptom_projection_is_separate_exact_accessible_and_overflow_safe(
             page.locator("#symptom-tab-current").click()
             episode_text = page.locator("#patient-current-symptom-list").inner_text()
             assert "Moderate · Empty string recorded" in episode_text
-            assert "2026-08 · month precision" in episode_text
-            assert "Caregiver-entered · unverified" in episode_text
+            assert "2026-08 · Month and year" in episode_text
+            assert "You entered this" in episode_text
             assert GUIDANCE in page.locator("#symptom-workspace").inner_text()
             assert not any(path == "/api/symptoms" for _, path, _ in state.requests)
             baseline = sum(path == "/api/patient/symptom-episodes" for _, path, _ in state.requests)

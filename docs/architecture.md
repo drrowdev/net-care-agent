@@ -118,9 +118,21 @@ Feed, digest, deep-sweep, chat, questions, and manual summary return `202` and a
 job ID. The SPA polls `GET /api/jobs/<id>` for completion and on-demand
 report/result expansion. `GET /api/jobs` and `jobs.json` contain only allowlisted
 PHI-safe metadata for new records; report/result bodies are separate files below
-traversal-safe roots. New job errors and job-runner logs use safe codes/types
-rather than input, model output, or traceback. Legacy records are not rewritten,
-and protected lower-level storage/recovery logs may include OS error paths.
+traversal-safe roots. Each job has a bounded PHI-free artifact contract:
+`kind=report|result|none`, durable state
+`available|expired|not_retained|unavailable|none|legacy_unknown`, and derived
+freshness `current|stale|unknown`. Age/count pruning persists the reason before
+clearing an indexed reference and deleting the file. A missing or unreadable
+indexed file is `unavailable`, never mislabeled expired. Legacy jobs without a
+durable state remain `legacy_unknown` rather than being rewritten. Public job
+responses strip report/result paths and the internal storage marker. New job
+errors and job-runner logs use safe codes/types rather than input, model output,
+or traceback. Protected lower-level storage/recovery logs may include OS paths.
+The Activity detail renderer keys stale content by selected job, stale reason,
+and public artifact kind/state/freshness. Unchanged polls do not replace its
+modal DOM, so focused actions and alert nodes remain stable. Stale result copy
+claims retained/hidden content only for `artifact.state=available`; every other
+state says the prior content is not available and keeps its precise state card.
 
 Every successful intake commit also appends one `document_imports[]` audit record
 to the profile before orchestration begins. `GET /api/jobs/<id>/receipt` exposes
@@ -128,6 +140,12 @@ that feed-job-only receipt while the job remains retained; it shows additions,
 old-to-new scalar updates, conflicts/no-ops, and exact evidence state without
 putting PHI in the job list. If orchestration or summary generation later fails,
 the already-committed receipt remains available with the intake data.
+
+`GET /api/status` keeps its date-sorted five-document compatibility list and
+separately projects `latest_document_import` from the complete active document
+set by `added_at`. Today uses only that dedicated ingestion-time field for its
+Latest document import row, so a newly imported backdated document cannot be
+mislabelled or hidden by the compatibility truncation.
 
 `GET /api/patient/biomarker-series` is a separate authenticated/no-store,
 read-only projection over all bounded `biomarkers[]`; `/api/status` remains a
@@ -347,16 +365,18 @@ The SPA treats this endpoint as the sole treatment authority. One accepted
 projection, response owner, revision pair, loader, and mutation controller
 render a bounded Today summary and the complete Patient workspace; no
 `/api/status` treatment row can render, edit, transition, or remove a record.
-Today keeps the first three current/planned courses in server order and states
-the exact shown, total, omitted, past, source, legacy, mapped-generated,
-unlinked-generated, and open-difference counts without rendering generated
-context as current/planned courses. Patient has separate Treatment records,
-Differences to review, Document mentions, and Earlier app records panels.
-The Earlier panel renders every unlinked row in server order with its exact total
-and zero-omission statement, without links or controls. Generated
-classification is persistently identified as compatibility context rather than
-a treatment record, and legacy components become course authority only through
-an explicit caregiver association labelled unverified.
+Today shows current/planned caregiver courses when present; otherwise it shows a
+bounded first set of recorded raw rows. A presentation-only linkage check compares
+each raw row's component IDs with explicit `course.legacy_component_ids`: no
+linked components means timing/status not reviewed, all means linked to a
+caregiver-reviewed status record, and partial linkage keeps the row unresolved.
+Only none/partial rows count as needing review. Patient's default Overview orders
+current/planned caregiver courses, every raw row exactly once in stored order,
+then past courses. Differences, source-document mentions, and collapsed automatic
+compatibility notes remain separate. No status is assigned to raw wording.
+Generated classification remains compatibility context rather than a treatment
+fact, and a raw component becomes course authority only through an explicit
+caregiver association.
 
 Before any treatment DOM replacement, the client validates the complete
 projection, exact safety/authority bytes, top-level counts/lists, serialized
@@ -415,7 +435,7 @@ their audit record. Full semantic-row CAS catches later alert resolution and
 other mutations; schema-added legacy defaults are canonicalized so they do not
 create false conflicts. Generated summaries, questions, and feed reports remain
 stored, but revision/generation/source invalidation hides stale conclusions from
-chat, Today, Questions, and Activity until regenerated.
+chat, Today, visible Appointments, and Activity until regenerated.
 Digest/deep-sweep reports and chat results also record their source profile
 revision; revisionless legacy artifacts are conservatively outdated. Job-list
 metadata exposes only the safe revision/stale state, never report bodies.
@@ -475,7 +495,7 @@ caregiver-visible row and generation identity. `PATCH
 due date, lifecycle, and a typed completion/cancellation outcome. Direct
 treatment instructions are rejected in favor of contact/ask/confirm wording.
 
-The Today view exposes these records through one responsive Follow-through
+The Today view exposes these records through one responsive Follow-ups
 surface with Active, Completed, Cancelled, and All projections. One browser
 cache keyed by stable action ID also supplies the appointment workspace's
 read-only visit-linked rows. Generated assessment acceptance reads only the
@@ -524,8 +544,9 @@ clinician-attributed/unverified label, and superseded/retracted decisions are
 excluded from current statements. Visit-linked action and alert outcomes retain
 their typed provenance, with administrative outcomes explicitly non-clinical.
 
-The Questions view now exposes those contracts through one responsive appointment
-working mode rather than another top-level SPA view. `GET /api/visits` includes a
+The visible Appointments view exposes those contracts through one responsive
+appointment working mode rather than another top-level SPA view. The internal
+SPA view key and route remain `questions`. `GET /api/visits` includes a
 bounded picker projection only for imported appointments whose source/import is
 still active and linkable; paths, raw text, source quotes, evidence offsets, and
 receipt internals are excluded. Visit creation revalidates the selected source ID
@@ -685,7 +706,7 @@ only with exact `APP_ORIGIN` or canonical HTTPS `WEBSITE_HOSTNAME`.
 | Decision | Why |
 |---|---|
 | JSON file, not Postgres | Single patient, single writer; auditable diffs; trivial backup. |
-| Vanilla SPA, not React | Caregiver runs the UI on a phone occasionally — zero build pipeline beats lighter frameworks. The split SPA uses one responsive Today/Patient/Research/Questions/Activity shell on every screen size. `static/index.html` owns semantic markup and dialogs, `static/app.js` owns API state/rendering, research/symptom/treatment/imaging/biomarker projection and mutation authority, receipt reconciliation, appointment and alert-resolution owners/epochs/drafts, focus/inert behavior, and load states, and `static/styles.css` provides the desktop rail, locally scrollable authority tables, overflow-safe dialogs, full-height phone sheets, and fixed phone navigation. |
+| Vanilla SPA, not React | Caregiver runs the UI on a phone occasionally — zero build pipeline beats lighter frameworks. The split SPA uses one responsive Today/Patient/Research/Appointments/Activity shell on every screen size. Today prioritizes freshness and the expanded assessment before stateless recent timestamps, patient-record status, follow-ups, appointments, and research. Internal `questions` routing is unchanged. `static/index.html` owns semantic markup and dialogs, `static/app.js` owns strict API authority plus a separate plain-language presentation layer, and `static/styles.css` provides the desktop rail, locally scrollable authority tables, overflow-safe dialogs, full-height phone sheets, and fixed phone navigation. |
 | Flask + gunicorn, not FastAPI/Containers | App Service runs Python natively; no Docker needed; rapid `az webapp deploy` cycle. |
 | No MSAL | Single user. App Service Easy Auth gates hosted APIs except health/liveness. Local API bypass is explicit (`ALLOW_LOCAL_AUTH_BYPASS=1`), never implicit. |
 | Separate treatment reconciliation authority | Source observations and legacy model classification cannot safely establish longitudinal current/past/planned truth. Explicit caregiver courses and discrepancies preserve source history while stable tokens, replay/CAS, and one-save audit make later shared Patient/Today UI work possible without browser inference. |
@@ -731,7 +752,7 @@ only with exact `APP_ORIGIN` or canonical HTTPS `WEBSITE_HOSTNAME`.
 | Caregiver note presented as verified clinician fact | Fixed provenance labels every answer/decision as caregiver-entered, clinician-attributed, and unverified; generated questions remain snapshots |
 | Retry duplicates a decision or follow-up | Mutation ID + canonical request hash replay returns the prior target without another save or revision increment |
 | Old chat contaminates corrected record | Client clears history on profile revision change; server rejects mismatched `history_revision` with `409` |
-| Cached PHI after auth/load failure | Central client eviction clears every patient-bearing cache, panel, dialog, chat turn, receipt/report, filter, and open feedback surface; non-auth receipt refresh is the only fallback exception |
+| Cached PHI after auth/load failure | Central client eviction clears every patient-bearing cache, panel, dialog, chat turn, receipt/report, filter, and open feedback surface; non-auth receipt refresh is the only fallback exception. Activity result links close/deactivate the report dialog before changing views and then focus the target heading/dialog. |
 | Source traversal / browser caching | Auth-gated `/api/sources/<id>[/<artifact>]` and `/api/evidence/<id>` resolve only indexed paths below `DATA_DIR`, reject traversal, and return `no-store` |
 | Stale clinical judgment | Only active, nonexpired, non-review-due judgments constrain agents; all others are visibly framed as needing clinician review |
 | Storage account deletion | `AzureBackupProtectionLock` (CanNotDelete) on the resource group, auto-applied by Azure Backup |
@@ -742,8 +763,9 @@ only with exact `APP_ORIGIN` or canonical HTTPS `WEBSITE_HOSTNAME`.
 
 ## Retention and deployment
 
-Completed job metadata and its indexed report/results default to 365 days/200
-records; only unindexed reports use the 30-day/200-file report settings;
+Completed job metadata and structured result artifacts default to 365 days/200
+records. Report artifacts, indexed or unindexed, use the separate
+30-day/200-file report settings;
 unreferenced source directories use 7 days/20 directories (`JOB_RETENTION_*`,
 `REPORT_RETENTION_*`, `SOURCE_ORPHAN_RETENTION_*`). Metadata/report pruning runs
 at startup and job submission. Source pruning runs only at startup or after jobs
@@ -751,8 +773,11 @@ under the serialized profile mutation lock and protects every source ID still
 indexed by the profile. It is best-effort, is not secure deletion, and does not purge
 snapshots, backups, soft-delete/version history, or provider copies.
 Reconciliation audit records are part of `patient_profile.json` and therefore
-follow profile backup/recovery rather than job-artifact pruning. The job-scoped
-receipt endpoint is intentionally available only while its feed job is retained.
+follow profile backup/recovery rather than report-artifact pruning. A retained
+feed job can still expose its receipt after the narrative report expires; source
+records referenced by the profile remain separately protected. The job-scoped
+receipt endpoint is intentionally available only while its feed job metadata is
+retained.
 
 The complete production runtime dependency closure and setuptools build
 requirement are exactly pinned from local metadata. Direct development

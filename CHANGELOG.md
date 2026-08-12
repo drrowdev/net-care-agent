@@ -8,7 +8,67 @@ incremented when something user-visible or operationally meaningful changes.
 
 ## [Unreleased]
 
+### Changed
+- **Caregiver-first Today hierarchy.** Today now leads with access/freshness and
+  the expanded latest assessment, key concern, and recommended next steps before
+  bounded recorded update times/active-alert count, treatment status, symptoms,
+  follow-ups, appointment preparation, and lower-priority tracked research.
+  Assessment freshness uses plain Up to date / New information / Couldn't check
+  language without exposing revision integers, consequential rationale is
+  touch-accessible, and a guarded deferred research load fixes the cold-start
+  empty card without delaying primary content or creating unread state.
+- **Plain record-source language with internal identity suppression.** Biomarker,
+  imaging, symptom, treatment, receipt, follow-up, alert, research, and
+  appointment/recap surfaces now explain whether information came from a linked
+  document/exact wording, was entered or corrected by the caregiver, or was
+  recorded from the clinician. Routine UI no longer prints opaque record,
+  evidence, source-row/document, generation, decision, follow-up, token, hash,
+  path, or revision identities. Exact source links remain authenticated; receipt
+  source actions open human-readable text instead of metadata JSON. These labels
+  describe traceability and never claim clinical authenticity.
+- **First-class recorded treatment Overview.** Patient Treatments now opens on
+  explicitly reviewed current/planned courses, every existing patient treatment
+  row under Status not recorded, then finished/past courses. Today no longer
+  appears empty when recorded rows exist. Every row, duplicate, order, component,
+  and count remains unchanged; no migration, lifecycle inference, promotion,
+  prefill, merge, deduplication, or model-context change was added. Automatic
+  compatibility notes are collapsed, secondary, and explicitly not treatment
+  facts.
+- **Truthful Activity artifact states.** PHI-safe job metadata now records
+  available, expired, not-retained, unavailable, none, or legacy-unknown output
+  state and publishes report/result kind plus current/stale/unknown freshness
+  without storage paths. Retention persists its reason before clearing the
+  reference; missing/corrupt output is distinct from expiry. Activity uses plain
+  task/status names, makes document import receipts first-class, renders
+  structured results without raw JSON, removes unreachable PHI-preview branches,
+  and no longer falls through to “No report generated.”
+- **Appointments navigation and responsive accessibility.** The visible Questions
+  destination is now Appointments while its internal `questions` route, APIs,
+  deep links, first Questions tab, CAS/replay, recap, and export authority remain
+  unchanged. Follow-up tabpanel labels now track selection; duplicate hidden live
+  announcements are disabled; secondary text meets 4.5:1 contrast; caregiver
+  type is at least 11px; the obsolete mobile stylesheet is removed; the 721–768px
+  shell gap is closed; and wide clinical tables retain labelled keyboard-focusable
+  local scrolling at phone width.
+
 ### Fixed
+- **Post-review caregiver workspace blockers.** Stale corrupt or explicitly
+  unavailable reports now remain unavailable in both Activity list and detail
+  and are never hydrated or claimed as retained audit
+  content. Recorded treatment rows use only explicit component associations to
+  distinguish unlinked, fully linked, and partly linked status review without
+  hiding rows or inheriting lifecycle. Polling Recent updates is no longer a live
+  region, and repeated Recent updates or Active alerts polling failures reuse
+  one alert node instead of re-announcing unchanged failure copy. Polling an
+  open stale-unavailable Activity item preserves its unavailable state and retry
+  action. Activity result links now
+  close/deactivate the report dialog before opening Today or Appointments and
+  place focus on the target heading/dialog at desktop and phone widths, including
+  when workflow mutation locks prevent an appointment dialog from opening.
+  Unchanged stale Activity polling now uses a semantic render key, preserving
+  action/alert node identity and keyboard focus inside the modal; stale result
+  copy says retained/hidden only when the artifact is actually available.
+
 - **Authorization-eviction recovery messaging.** A `401` or `403` now records the
   authorization failure before request epochs invalidate late handlers, so the
   global sign-in/access banner remains visible while every patient-derived

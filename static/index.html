@@ -57,7 +57,7 @@
       <span class="nav-icon" aria-hidden="true">⌕</span><span>Research</span>
     </button>
     <button class="view-nav-button" id="nav-questions" onclick="switchView('questions', this)">
-      <span class="nav-icon" aria-hidden="true">?</span><span>Questions</span>
+      <span class="nav-icon" aria-hidden="true">?</span><span>Appointments</span>
       <span class="nav-count" id="q-count-badge">0</span>
     </button>
     <button class="view-nav-button" id="nav-activity" onclick="switchView('activity', this)">
@@ -83,112 +83,15 @@
           <strong id="freshness-title">Checking assessment freshness…</strong>
           <p id="freshness-message">Comparing the assessment with the latest patient data.</p>
         </div>
-      </section>
-
-      <section id="research-today-card" class="content-card research-today-card" aria-labelledby="today-research-heading">
-        <div class="card-header compact split-header">
-          <div>
-            <p class="eyebrow">Exact current research workflow</p>
-            <h2 id="today-research-heading" tabindex="-1">Research</h2>
-          </div>
-          <span class="research-freshness loading" id="today-research-freshness">Not loaded</span>
-        </div>
-        <p class="research-safety-guidance">NET/Care records research you choose to follow but does not determine relevance, eligibility, enrollment, or treatment suitability. Confirm clinical questions with the treating team and trial details with the study site.</p>
-        <div class="research-status loading" id="today-research-status" role="status" aria-live="polite">Loading the authoritative research workspace…</div>
-        <section class="research-today-group" aria-labelledby="today-latest-research-heading">
-          <h3 id="today-latest-research-heading">New research</h3>
-          <p class="research-totals" id="today-latest-research-totals">No latest-batch totals are available yet.</p>
-          <div class="research-compact-list" id="today-latest-research-list">
-            <div class="loading-state">Loading exact latest-batch occurrences…</div>
-          </div>
-        </section>
-        <section class="research-today-group" aria-labelledby="today-open-considerations-heading">
-          <h3 id="today-open-considerations-heading">Open considerations</h3>
-          <p class="research-totals" id="today-open-consideration-totals">No consideration totals are available yet.</p>
-          <div class="research-compact-list" id="today-open-consideration-list">
-            <div class="loading-state">Loading open caregiver considerations…</div>
-          </div>
-        </section>
-        <div class="research-today-actions">
-          <button class="button secondary" type="button" onclick="openResearchWorkspace()">Review complete research workspace</button>
-          <button class="button secondary" id="today-research-retry-refresh" type="button" onclick="loadResearchWorkspace({ force: true })" hidden>Retry refresh</button>
-        </div>
-      </section>
-
-      <section class="content-card follow-through-card" aria-labelledby="follow-through-heading">
-        <div class="card-header compact split-header">
-          <div>
-            <p class="eyebrow">Caregiver actions</p>
-            <h2 id="follow-through-heading">Follow-through</h2>
-            <p class="helper-text">Tasks and reminders to contact, ask, discuss, or confirm with the care team.</p>
-          </div>
-          <button class="button primary" id="follow-up-create-button" onclick="openFollowUpCreateDialog(this)">＋ Add follow-up</button>
-        </div>
-        <div class="follow-up-filters" role="tablist" aria-label="Filter follow-through actions" onkeydown="handleFollowUpFilterKeydown(event)">
-          <button class="follow-up-filter active" id="follow-up-filter-active" role="tab" tabindex="0" aria-selected="true" aria-controls="follow-up-list" onclick="setFollowUpFilter('active')">Active <span id="follow-up-count-active">0</span></button>
-          <button class="follow-up-filter" id="follow-up-filter-completed" role="tab" tabindex="-1" aria-selected="false" aria-controls="follow-up-list" onclick="setFollowUpFilter('completed')">Completed <span id="follow-up-count-completed">0</span></button>
-          <button class="follow-up-filter" id="follow-up-filter-cancelled" role="tab" tabindex="-1" aria-selected="false" aria-controls="follow-up-list" onclick="setFollowUpFilter('cancelled')">Cancelled <span id="follow-up-count-cancelled">0</span></button>
-          <button class="follow-up-filter" id="follow-up-filter-all" role="tab" tabindex="-1" aria-selected="false" aria-controls="follow-up-list" onclick="setFollowUpFilter('all')">All <span id="follow-up-count-all">0</span></button>
-        </div>
-        <div id="follow-up-status" class="follow-up-status" role="status" aria-live="polite"></div>
-        <div id="follow-up-list" class="follow-up-list" role="tabpanel" aria-labelledby="follow-up-filter-active" aria-live="polite">
-          <div class="loading-state"><span class="loading-spinner" aria-hidden="true"></span>Loading follow-through…</div>
-        </div>
-        <div class="follow-up-retry" id="follow-up-retry" hidden>
-          <span>The last request may not have reached the server. Your draft is still available.</span>
-          <button class="button secondary" id="follow-up-retry-button" onclick="retryFollowUpIntent()">Retry unchanged request</button>
-        </div>
-      </section>
-
-      <section class="content-card symptom-today-card" id="symptom-today-card" aria-labelledby="today-symptoms-heading">
-        <div class="card-header compact split-header">
-          <div>
-            <p class="eyebrow">Caregiver-entered · unverified</p>
-            <h2 id="today-symptoms-heading">Current symptom episodes</h2>
-          </div>
-          <span class="symptom-freshness loading" id="today-symptom-freshness">Not loaded</span>
-        </div>
-        <p class="symptom-safety-guidance">NET/Care records what you enter but does not assess urgency or monitor symptoms. Contact the treating team about symptoms or concerns. If you think this may be a medical emergency, contact local emergency services.</p>
-        <div class="symptom-status" id="today-symptom-status" role="status" aria-live="polite">Loading the authoritative symptom record…</div>
-        <div class="symptom-episode-list compact" id="today-symptom-list">
-          <div class="loading-state">Loading current symptom episodes…</div>
-        </div>
-        <div class="symptom-workflow-actions">
-          <button class="button primary" id="today-symptom-add" type="button" onclick="openSymptomAddDialog(this)">＋ Record symptom episode</button>
-          <button class="button secondary" type="button" onclick="openPatientSymptoms()">Review all symptom records</button>
-        </div>
-      </section>
-
-      <section class="content-card treatment-today-card" id="treatment-today-card" aria-labelledby="today-treatment-heading">
-        <div class="card-header compact split-header">
-          <div>
-            <p class="eyebrow">Caregiver-maintained · unverified</p>
-            <h2 id="today-treatment-heading">Treatment records</h2>
-          </div>
-          <span class="treatment-freshness loading" id="today-treatment-freshness">Not loaded</span>
-        </div>
-        <p class="treatment-safety-guidance">NET/Care records what you enter but does not verify treatment details or advise starting, stopping, or changing treatment. Confirm treatment decisions with the treating team.</p>
-        <div class="treatment-status loading" id="today-treatment-status" role="status" aria-live="polite">Loading the authoritative treatment record…</div>
-        <p class="treatment-totals" id="today-treatment-totals">No treatment totals are available yet.</p>
-        <div class="treatment-course-list compact" id="today-treatment-list">
-          <div class="loading-state">Loading current and planned treatment records…</div>
-        </div>
-        <div class="treatment-retry" id="today-treatment-retry" hidden>
-          <span>The authoritative treatment record needs to be refreshed.</span>
-          <button class="button secondary" id="today-treatment-retry-refresh" type="button" onclick="loadTreatmentReconciliation({ force: true })">Retry refresh</button>
-        </div>
-        <div class="treatment-workflow-actions">
-          <button class="button primary" id="today-treatment-add" type="button" onclick="openTreatmentAddDialog(this)">＋ Record treatment</button>
-          <button class="button secondary" type="button" onclick="openPatientTreatments()">Review all treatment information</button>
-        </div>
+        <button class="button secondary" id="freshness-action" type="button" hidden></button>
       </section>
 
       <section class="content-card summary-card" id="summary-card" aria-labelledby="summary-heading">
         <div class="card-header">
           <div>
-            <p class="eyebrow">Current assessment</p>
+            <p class="eyebrow">Latest assessment</p>
             <div class="summary-heading-row">
-              <h2 id="summary-heading">Clinical summary</h2>
+              <h2 id="summary-heading">Latest assessment</h2>
               <span id="summary-status-inline"></span>
             </div>
             <span class="summary-updated" id="summary-updated"></span>
@@ -200,6 +103,128 @@
         </div>
         <div class="summary-body" id="summary-body">
           <div class="loading-state"><span class="loading-spinner" aria-hidden="true"></span>Loading assessment…</div>
+        </div>
+      </section>
+
+      <section class="content-card recent-updates-card" id="recent-updates-card" aria-labelledby="recent-updates-heading">
+        <div class="card-header compact split-header">
+          <div>
+            <p class="eyebrow">Recorded activity</p>
+            <h2 id="recent-updates-heading">Recent updates</h2>
+          </div>
+          <button class="button secondary" type="button" onclick="switchView('activity', document.getElementById('nav-activity'))">Open Activity</button>
+        </div>
+        <div class="recent-updates-list" id="recent-updates-list" aria-live="polite">
+          <div class="loading-state">Loading recorded update times…</div>
+        </div>
+      </section>
+
+      <section class="content-card treatment-today-card" id="treatment-today-card" aria-labelledby="today-treatment-heading">
+        <div class="card-header compact split-header">
+          <div>
+            <p class="eyebrow">Patient record</p>
+            <h2 id="today-treatment-heading">Treatment status</h2>
+          </div>
+          <span class="treatment-freshness loading" id="today-treatment-freshness">Not loaded</span>
+        </div>
+        <p class="treatment-safety-guidance">NET/Care records what you enter but does not verify treatment details or advise starting, stopping, or changing treatment. Confirm treatment decisions with the treating team.</p>
+        <div class="treatment-status loading" id="today-treatment-status" role="status" aria-live="polite">Loading treatment information…</div>
+        <p class="treatment-totals" id="today-treatment-totals">No treatment totals are available yet.</p>
+        <div class="treatment-course-list compact" id="today-treatment-list">
+          <div class="loading-state">Loading treatment status…</div>
+        </div>
+        <div class="treatment-retry" id="today-treatment-retry" hidden>
+          <span>Treatment information needs to be refreshed.</span>
+          <button class="button secondary" id="today-treatment-retry-refresh" type="button" onclick="loadTreatmentReconciliation({ force: true })">Retry refresh</button>
+        </div>
+        <div class="treatment-workflow-actions">
+          <button class="button primary" id="today-treatment-add" type="button" onclick="openPatientTreatments()">Review treatment status</button>
+          <button class="button secondary" type="button" onclick="openPatientTreatments()">Review all treatment information</button>
+        </div>
+      </section>
+
+      <section class="content-card symptom-today-card" id="symptom-today-card" aria-labelledby="today-symptoms-heading">
+        <div class="card-header compact split-header">
+          <div>
+            <p class="eyebrow">Patient record</p>
+            <h2 id="today-symptoms-heading">Symptoms logged</h2>
+          </div>
+          <span class="symptom-freshness loading" id="today-symptom-freshness">Not loaded</span>
+        </div>
+        <p class="symptom-safety-guidance">NET/Care records what you enter but does not assess urgency or monitor symptoms. Contact the treating team about symptoms or concerns. If you think this may be a medical emergency, contact local emergency services.</p>
+        <div class="symptom-status" id="today-symptom-status" role="status" aria-live="polite">Loading symptom records…</div>
+        <div class="symptom-episode-list compact" id="today-symptom-list">
+          <div class="loading-state">Loading current symptom episodes…</div>
+        </div>
+        <div class="symptom-workflow-actions">
+          <button class="button primary" id="today-symptom-add" type="button" onclick="openSymptomAddDialog(this)">＋ Record symptom episode</button>
+          <button class="button secondary" type="button" onclick="openPatientSymptoms()">Review all symptom records</button>
+        </div>
+      </section>
+
+      <section class="content-card follow-through-card" aria-labelledby="follow-through-heading">
+        <div class="card-header compact split-header">
+          <div>
+            <p class="eyebrow">Caregiver actions</p>
+            <h2 id="follow-through-heading">Follow-ups</h2>
+            <p class="helper-text">Tasks to contact, ask, discuss, or confirm with the care team.</p>
+          </div>
+          <button class="button primary" id="follow-up-create-button" onclick="openFollowUpCreateDialog(this)">＋ Add follow-up</button>
+        </div>
+        <div class="follow-up-filters" role="tablist" aria-label="Filter follow-up actions" onkeydown="handleFollowUpFilterKeydown(event)">
+          <button class="follow-up-filter active" id="follow-up-filter-active" role="tab" tabindex="0" aria-selected="true" aria-controls="follow-up-list" onclick="setFollowUpFilter('active')">Active <span id="follow-up-count-active">0</span></button>
+          <button class="follow-up-filter" id="follow-up-filter-completed" role="tab" tabindex="-1" aria-selected="false" aria-controls="follow-up-list" onclick="setFollowUpFilter('completed')">Completed <span id="follow-up-count-completed">0</span></button>
+          <button class="follow-up-filter" id="follow-up-filter-cancelled" role="tab" tabindex="-1" aria-selected="false" aria-controls="follow-up-list" onclick="setFollowUpFilter('cancelled')">Cancelled <span id="follow-up-count-cancelled">0</span></button>
+          <button class="follow-up-filter" id="follow-up-filter-all" role="tab" tabindex="-1" aria-selected="false" aria-controls="follow-up-list" onclick="setFollowUpFilter('all')">All <span id="follow-up-count-all">0</span></button>
+        </div>
+        <div id="follow-up-status" class="follow-up-status" role="status" aria-live="polite"></div>
+        <div id="follow-up-list" class="follow-up-list" role="tabpanel" aria-labelledby="follow-up-filter-active">
+          <div class="loading-state"><span class="loading-spinner" aria-hidden="true"></span>Loading follow-ups…</div>
+        </div>
+        <div class="follow-up-retry" id="follow-up-retry" hidden>
+          <span>The last request may not have reached the server. Your draft is still available.</span>
+          <button class="button secondary" id="follow-up-retry-button" onclick="retryFollowUpIntent()">Retry unchanged request</button>
+        </div>
+      </section>
+
+      <section class="content-card today-appointment-card" id="today-appointment-card" aria-labelledby="today-appointment-heading">
+        <div class="card-header compact split-header">
+          <div>
+            <p class="eyebrow">Visit preparation</p>
+            <h2 id="today-appointment-heading">Prepare for appointment</h2>
+          </div>
+          <button class="button primary" id="today-appointment-action" type="button" onclick="openAppointmentsView()">Open Appointments</button>
+        </div>
+        <div class="today-appointment-summary" id="today-appointment-summary">Loading appointment workspace…</div>
+      </section>
+
+      <section id="research-today-card" class="content-card research-today-card" aria-labelledby="today-research-heading">
+        <div class="card-header compact split-header">
+          <div>
+            <p class="eyebrow">Research activity</p>
+            <h2 id="today-research-heading" tabindex="-1">Research being tracked</h2>
+          </div>
+          <span class="research-freshness loading" id="today-research-freshness">Not loaded</span>
+        </div>
+        <p class="research-safety-guidance">NET/Care records research you choose to follow but does not determine relevance, eligibility, enrollment, or treatment suitability. Confirm clinical questions with the treating team and trial details with the study site.</p>
+        <div class="research-status loading" id="today-research-status" role="status" aria-live="polite">Loading tracked research…</div>
+        <section class="research-today-group" aria-labelledby="today-latest-research-heading">
+          <h3 id="today-latest-research-heading">Latest research batch</h3>
+          <p class="research-totals" id="today-latest-research-totals">No latest-batch totals are available yet.</p>
+          <div class="research-compact-list" id="today-latest-research-list">
+            <div class="loading-state">Loading the latest research batch…</div>
+          </div>
+        </section>
+        <section class="research-today-group" aria-labelledby="today-open-considerations-heading">
+          <h3 id="today-open-considerations-heading">Open considerations</h3>
+          <p class="research-totals" id="today-open-consideration-totals">No consideration totals are available yet.</p>
+          <div class="research-compact-list" id="today-open-consideration-list">
+            <div class="loading-state">Loading saved considerations…</div>
+          </div>
+        </section>
+        <div class="research-today-actions">
+          <button class="button secondary" type="button" onclick="openResearchWorkspace()">Review complete research workspace</button>
+          <button class="button secondary" id="today-research-retry-refresh" type="button" onclick="loadResearchWorkspace({ force: true })" hidden>Retry refresh</button>
         </div>
       </section>
 
@@ -227,26 +252,26 @@
         <section class="content-card span-two treatment-workspace" id="treatment-workspace" aria-labelledby="treatments-heading">
           <div class="card-header compact split-header">
             <div>
-              <p class="eyebrow">Caregiver records, document mentions, and earlier app context</p>
-              <h2 id="treatments-heading" tabindex="-1">Treatment reconciliation</h2>
+              <p class="eyebrow">Recorded information and caregiver-reviewed status</p>
+              <h2 id="treatments-heading" tabindex="-1">Treatments</h2>
             </div>
             <div class="treatment-header-actions">
               <span class="treatment-freshness loading" id="patient-treatment-freshness">Not loaded</span>
               <button class="button secondary" id="treatment-refresh-button" type="button" onclick="loadTreatmentReconciliation({ force: true })">Refresh</button>
-              <button class="button primary" id="patient-treatment-add" type="button" onclick="openTreatmentAddDialog(this)">＋ Record treatment</button>
+              <button class="button primary" id="patient-treatment-add" type="button" onclick="openTreatmentAddDialog(this)">＋ Add status record</button>
             </div>
           </div>
           <p class="treatment-safety-guidance">NET/Care records what you enter but does not verify treatment details or advise starting, stopping, or changing treatment. Confirm treatment decisions with the treating team.</p>
-          <div class="treatment-status loading" id="patient-treatment-status" role="status" aria-live="polite">Loading the authoritative treatment record…</div>
+          <div class="treatment-status loading" id="patient-treatment-status" role="status" aria-live="polite">Loading treatment information…</div>
           <div class="treatment-tabs" role="tablist" aria-label="Treatment record sections" onkeydown="handleTreatmentTabKeydown(event)">
-            <button class="treatment-tab active" id="treatment-tab-records" role="tab" aria-selected="true" aria-controls="treatment-panel-records" tabindex="0" onclick="selectTreatmentTab('records')">Treatment records <span id="treatment-count-records">0</span></button>
+            <button class="treatment-tab active" id="treatment-tab-records" role="tab" aria-selected="true" aria-controls="treatment-panel-records" tabindex="0" onclick="selectTreatmentTab('records')">Overview <span id="treatment-count-records">0</span></button>
             <button class="treatment-tab" id="treatment-tab-differences" role="tab" aria-selected="false" aria-controls="treatment-panel-differences" tabindex="-1" onclick="selectTreatmentTab('differences')">Differences to review <span id="treatment-count-differences">0</span></button>
-            <button class="treatment-tab" id="treatment-tab-sources" role="tab" aria-selected="false" aria-controls="treatment-panel-sources" tabindex="-1" onclick="selectTreatmentTab('sources')">Document mentions <span id="treatment-count-sources">0</span></button>
-            <button class="treatment-tab" id="treatment-tab-earlier" role="tab" aria-selected="false" aria-controls="treatment-panel-earlier" tabindex="-1" onclick="selectTreatmentTab('earlier')">Earlier app records <span id="treatment-count-earlier">0</span></button>
+            <button class="treatment-tab" id="treatment-tab-sources" role="tab" aria-selected="false" aria-controls="treatment-panel-sources" tabindex="-1" onclick="selectTreatmentTab('sources')">Mentions in source documents <span id="treatment-count-sources">0</span></button>
+            <button class="treatment-tab" id="treatment-tab-earlier" role="tab" aria-selected="false" aria-controls="treatment-panel-earlier" tabindex="-1" onclick="selectTreatmentTab('earlier')">Automatic compatibility notes <span id="treatment-count-earlier">0</span></button>
           </div>
           <section class="treatment-panel" id="treatment-panel-records" role="tabpanel" aria-labelledby="treatment-tab-records">
             <div class="treatment-panel-toolbar">
-              <p>Complete caregiver-maintained current, planned, and past records in recorded order.</p>
+              <p>Known status records and all recorded treatment information appear here without inferred timing or status.</p>
             </div>
             <div class="treatment-course-list" id="patient-treatment-list"><div class="loading-state">Loading treatment records…</div></div>
           </section>
@@ -258,21 +283,22 @@
             <div class="treatment-discrepancy-list" id="treatment-discrepancy-list"></div>
           </section>
           <section class="treatment-panel" id="treatment-panel-sources" role="tabpanel" aria-labelledby="treatment-tab-sources" hidden>
-            <p class="treatment-authority-note">Document mentions preserve every occurrence exactly as received. They are separate from caregiver treatment records.</p>
+            <p class="treatment-authority-note">These are exact treatment mentions linked to imported source documents. They do not set treatment timing or status.</p>
+            <p class="table-scroll-hint">Swipe or use Shift+mouse wheel to review all table columns.</p>
             <div class="treatment-table-region" role="region" aria-labelledby="treatment-source-caption" tabindex="0">
               <table class="treatment-table">
-                <caption id="treatment-source-caption">All document treatment mentions in recorded order</caption>
-                <thead><tr><th scope="col">Observed wording</th><th scope="col">Recorded value</th><th scope="col">Receipt state</th><th scope="col">Source</th></tr></thead>
+                <caption id="treatment-source-caption">Treatment mentions from source documents</caption>
+                <thead><tr><th scope="col">Wording in the record</th><th scope="col">Recorded value</th><th scope="col">Import status</th><th scope="col">Source</th></tr></thead>
                 <tbody id="treatment-source-table-body"><tr><td colspan="4"><div class="loading-state">Loading document mentions…</div></td></tr></tbody>
               </table>
             </div>
           </section>
           <section class="treatment-panel" id="treatment-panel-earlier" role="tabpanel" aria-labelledby="treatment-tab-earlier" hidden>
-            <p class="treatment-authority-note">Earlier app records and machine-generated compatibility context are read-only, not source-verified, not citable, and not treatment lifecycle authority.</p>
-            <div class="treatment-legacy-list" id="treatment-legacy-list"><div class="loading-state">Loading earlier app records…</div></div>
+            <p class="treatment-authority-note">NET/Care-generated compatibility notes help older app data remain readable. They are not treatment facts and cannot set treatment status.</p>
+            <div class="treatment-legacy-list" id="treatment-legacy-list"><div class="loading-state">Loading compatibility notes…</div></div>
           </section>
           <div class="treatment-retry" id="treatment-retry" hidden>
-            <span id="treatment-retry-message">The authoritative treatment record needs to be refreshed.</span>
+            <span id="treatment-retry-message">Treatment information needs to be refreshed.</span>
             <button class="button secondary" id="treatment-retry-refresh" type="button" onclick="loadTreatmentReconciliation({ force: true })">Retry refresh</button>
           </div>
         </section>
@@ -297,8 +323,9 @@
             </div>
           </div>
           <div class="biomarker-status" id="biomarker-status" role="status" aria-live="polite">
-            Loading the authoritative biomarker record…
+            Loading biomarker history…
           </div>
+          <p class="table-scroll-hint">Swipe or use Shift+mouse wheel to review all biomarker columns. Complete values remain in this table.</p>
           <div
             class="biomarker-table-region"
             id="biomarker-table-region"
@@ -330,7 +357,7 @@
                 <p class="eyebrow">Secondary view</p>
                 <h3 id="biomarker-charts-heading">Comparable point charts</h3>
               </div>
-              <p>Only exact groups the server declares comparable are charted. The table above remains authoritative.</p>
+              <p>Only results with matching recorded context are charted. The complete values remain in the table above.</p>
             </div>
             <div id="biomarker-chart-region">
               <div class="empty-state">Comparable charts will appear after the record loads.</div>
@@ -342,7 +369,7 @@
         </section>
 
         <section class="content-card" aria-labelledby="alerts-heading">
-          <div class="card-header compact"><div><p class="eyebrow">Needs review</p><h2 id="alerts-heading">Active alerts</h2></div></div>
+          <div class="card-header compact"><div><p class="eyebrow">Needs review</p><h2 id="alerts-heading" tabindex="-1">Active alerts</h2></div></div>
           <div id="alerts-list"><div class="loading-state">Loading alerts…</div></div>
         </section>
 
@@ -360,7 +387,7 @@
           </div>
           <p class="symptom-safety-guidance">NET/Care records what you enter but does not assess urgency or monitor symptoms. Contact the treating team about symptoms or concerns. If you think this may be a medical emergency, contact local emergency services.</p>
           <div class="symptom-status loading" id="patient-symptom-status" role="status" aria-live="polite">
-            Loading the authoritative symptom record…
+            Loading symptom records…
           </div>
           <div class="symptom-tabs" role="tablist" aria-label="Symptom record sections" onkeydown="handleSymptomTabKeydown(event)">
             <button class="symptom-tab active" id="symptom-tab-current" role="tab" aria-selected="true" aria-controls="symptom-panel-current" tabindex="0" onclick="selectSymptomTab('current')">Current episodes <span id="symptom-count-current">0</span></button>
@@ -376,10 +403,11 @@
             <div class="symptom-episode-list" id="patient-resolved-symptom-list"></div>
           </section>
           <section class="symptom-panel" id="symptom-panel-observations" role="tabpanel" aria-labelledby="symptom-tab-observations" hidden>
-            <p class="symptom-observation-note">Source observations are read-only mentions from imported or legacy records. They are not current symptom episodes.</p>
+            <p class="symptom-observation-note">Source observations are read-only mentions from imported or older records. They are not current symptom episodes.</p>
+            <p class="table-scroll-hint">Swipe or use Shift+mouse wheel to review all table columns.</p>
             <div class="symptom-observation-table-region" id="symptom-observation-table-region" role="region" aria-labelledby="symptom-observation-caption" tabindex="0">
               <table class="symptom-observation-table">
-                <caption id="symptom-observation-caption">Complete read-only symptom observations in server-supplied order</caption>
+                <caption id="symptom-observation-caption">Read-only symptom observations in their stored order</caption>
                 <thead>
                   <tr>
                     <th scope="col">Recorded symptom</th>
@@ -417,6 +445,7 @@
           <div class="imaging-status loading" id="imaging-status" role="status" aria-live="polite">
             Imaging will load when this Patient view is used.
           </div>
+          <p class="table-scroll-hint">Swipe or use Shift+mouse wheel to review all imaging report columns.</p>
           <div
             class="imaging-table-region"
             id="imaging-table-region"
@@ -425,7 +454,7 @@
             tabindex="0"
           >
             <table class="imaging-table">
-              <caption id="imaging-table-caption">Complete authoritative imaging records in server-supplied order</caption>
+              <caption id="imaging-table-caption">Recorded imaging reports in their stored order</caption>
               <thead>
                 <tr>
                   <th scope="col">Compare</th>
@@ -473,8 +502,8 @@
     <section class="app-view" id="view-research" aria-labelledby="research-heading" hidden>
       <div class="page-heading">
         <div>
-          <p class="eyebrow">Complete exact-occurrence workspace</p>
-          <h1 id="research-heading">Research</h1>
+          <p class="eyebrow">Complete tracked research</p>
+          <h1 id="research-heading" tabindex="-1">Research</h1>
           <p>Review current external research and the caregiver workflow without clinical ranking or eligibility inference.</p>
         </div>
         <button class="button secondary" id="research-refresh-button" type="button" onclick="loadResearchWorkspace({ force: true })">Refresh</button>
@@ -489,15 +518,15 @@
           <span class="research-freshness loading" id="research-freshness">Not loaded</span>
         </div>
         <p class="research-safety-guidance">NET/Care records research you choose to follow but does not determine relevance, eligibility, enrollment, or treatment suitability. Confirm clinical questions with the treating team and trial details with the study site.</p>
-        <div class="research-status loading" id="research-status" role="status" aria-live="polite">Loading the authoritative research workspace…</div>
+        <div class="research-status loading" id="research-status" role="status" aria-live="polite">Loading tracked research…</div>
         <div class="research-tabs" role="tablist" aria-label="Research workspace sections" onkeydown="handleResearchTabKeydown(event)">
           <button class="research-tab active" id="research-tab-current" role="tab" aria-selected="true" aria-controls="research-panel-current" tabindex="0" onclick="selectResearchTab('current')">Current research <span id="research-count-current">0</span></button>
           <button class="research-tab" id="research-tab-considerations" role="tab" aria-selected="false" aria-controls="research-panel-considerations" tabindex="-1" onclick="selectResearchTab('considerations')">Considerations <span id="research-count-considerations">0</span></button>
         </div>
         <section class="research-panel" id="research-panel-current" role="tabpanel" aria-labelledby="research-tab-current">
-          <p class="research-authority-note">Every current occurrence appears once in exact server order, including duplicate external identifiers.</p>
+          <p class="research-authority-note">Every saved research entry remains separate and in its stored order, including repeated PMID or NCT records.</p>
           <div class="research-occurrence-list" id="research-occurrence-list">
-            <div class="loading-state">Loading all current research occurrences…</div>
+            <div class="loading-state">Loading tracked research entries…</div>
           </div>
         </section>
         <section class="research-panel" id="research-panel-considerations" role="tabpanel" aria-labelledby="research-tab-considerations" hidden>
@@ -507,7 +536,7 @@
           </div>
         </section>
         <div class="research-retry" id="research-retry" hidden>
-          <span id="research-retry-message">The authoritative research workspace needs to be refreshed.</span>
+          <span id="research-retry-message">Tracked research needs to be refreshed.</span>
           <button class="button secondary" id="research-retry-refresh" type="button" onclick="loadResearchWorkspace({ force: true })">Retry refresh</button>
         </div>
       </section>
@@ -516,11 +545,11 @@
     <section class="app-view" id="view-questions" aria-labelledby="questions-heading" hidden>
       <div class="page-heading">
         <div>
-          <p class="eyebrow">Appointment preparation</p>
-          <h1 id="questions-heading">Questions</h1>
-          <p>Keep the next consultation focused and record the clinician’s guidance.</p>
+          <p class="eyebrow">Visit preparation and notes</p>
+          <h1 id="questions-heading">Appointments</h1>
+          <p>Prepare questions, run the visit, and record what you heard.</p>
         </div>
-        <button class="button secondary" id="q-gen-btn" onclick="generateQuestions()">✦ Generate questions</button>
+        <button class="button secondary" id="q-gen-btn" onclick="generateQuestions()">✦ Generate visit questions</button>
       </div>
 
       <section class="content-card appointment-prep-card" aria-labelledby="appointment-prep-heading">
@@ -583,9 +612,9 @@
     <section class="app-view" id="view-activity" aria-labelledby="activity-heading" hidden>
       <div class="page-heading">
         <div>
-          <p class="eyebrow">Research and processing</p>
-          <h1 id="activity-heading">Activity</h1>
-          <p>Run research updates and follow document-processing progress.</p>
+          <p class="eyebrow">Documents, research, and assessments</p>
+          <h1 id="activity-heading" tabindex="-1">Activity</h1>
+          <p>Review what each task produced and run updates when needed.</p>
         </div>
       </div>
 
@@ -615,12 +644,12 @@
     <div id="research-dialog-status" class="follow-up-dialog-status" role="status" aria-live="polite"></div>
     <div class="follow-up-dialog-body">
       <section class="research-dialog-context" id="research-dialog-context" aria-labelledby="research-dialog-context-heading">
-        <h3 id="research-dialog-context-heading">Selected research occurrence</h3>
-        <p>Select a current authoritative research row.</p>
+        <h3 id="research-dialog-context-heading">Selected research entry</h3>
+        <p>Select a current tracked research entry.</p>
       </section>
 
       <form id="research-shortlist-form" class="follow-up-form" onsubmit="event.preventDefault();submitResearchShortlist()" hidden>
-        <p>Save one immutable snapshot of this exact current occurrence for caregiver consideration.</p>
+        <p>Save this research entry for caregiver consideration.</p>
         <p class="capture-provenance">Saving does not determine relevance, eligibility, enrollment, availability, suitability, or recommendation.</p>
         <p class="form-error" id="research-shortlist-error" role="alert" aria-live="polite"></p>
         <div class="follow-up-dialog-actions">
@@ -694,7 +723,7 @@
   <section class="follow-up-dialog symptom-dialog" id="symptom-dialog" role="dialog" aria-modal="true" aria-labelledby="symptom-dialog-title" tabindex="-1" inert>
     <header class="dialog-header">
       <div>
-        <p class="eyebrow">Caregiver-entered · unverified</p>
+        <p class="eyebrow">You enter this</p>
         <h2 id="symptom-dialog-title">Symptom episode</h2>
       </div>
       <button class="icon-button" id="symptom-dialog-close" type="button" onclick="closeSymptomDialog()" aria-label="Close symptom episode dialog">×</button>
@@ -812,7 +841,7 @@
 
         <fieldset class="alert-resolution-fieldset">
           <legend>Optional outcome</legend>
-          <label><span>Outcome source</span><select id="alert-resolution-outcome-kind" onchange="updateAlertResolutionProvenance()"><option value="administrative">Administrative (not clinical evidence)</option><option value="caregiver_reported">Caregiver reported (unverified)</option><option value="clinician_attributed">Attributed to clinician (unverified)</option></select></label>
+          <label><span>Outcome source</span><select id="alert-resolution-outcome-kind" onchange="updateAlertResolutionProvenance()"><option value="administrative">Administrative note - not clinical evidence</option><option value="caregiver_reported">You recorded this</option><option value="clinician_attributed">You recorded this from the clinician</option></select></label>
           <label><span>What happened?</span><textarea id="alert-resolution-outcome-text" maxlength="2000" rows="3" placeholder="Optional: record the outcome of reviewing this alert."></textarea></label>
           <p class="capture-provenance" id="alert-resolution-provenance"></p>
         </fieldset>
@@ -842,7 +871,7 @@
         <section id="alert-resolution-visit-link" class="alert-resolution-link-panel" hidden>
           <label><span>Current visit</span><select id="alert-resolution-visit-select" onchange="renderAlertResolutionDecisionOptions()"></select></label>
           <label><span>Current decision (optional)</span><select id="alert-resolution-decision-select"><option value="">No linked decision</option></select></label>
-          <p class="capture-provenance">Visit decisions are caregiver-entered · attributed to clinician · unverified.</p>
+          <p class="capture-provenance">Appointment decisions are recorded by you from the clinician.</p>
         </section>
 
         <label class="alert-resolution-confirm"><input id="alert-resolution-confirm" type="checkbox"> I confirm that this alert can be marked resolved.</label>
@@ -998,7 +1027,7 @@
             <button class="button primary" id="visit-decision-submit" onclick="addVisitDecision()" disabled>Add decision</button>
             <button class="button secondary" id="visit-decision-cancel-supersede" onclick="cancelDecisionSuccessor()" hidden>Cancel correction</button>
           </div>
-          <p class="capture-provenance">Caregiver-entered · attributed to clinician · unverified</p>
+          <p class="capture-provenance">You recorded this from the clinician</p>
           <p class="form-error" id="visit-decision-error" role="alert" aria-live="polite"></p>
         </div>
         <div id="visit-decision-list" class="visit-decision-list" aria-live="polite"></div>
@@ -1021,7 +1050,7 @@
       <section id="appointment-panel-recap" class="appointment-tab-panel visit-recap-panel" role="tabpanel" aria-labelledby="appointment-tab-recap" hidden>
         <div class="visit-recap-toolbar">
           <div>
-            <p class="eyebrow">Authoritative visit record</p>
+            <p class="eyebrow">Current visit record</p>
             <h3>Visit recap</h3>
           </div>
           <div class="visit-recap-actions" id="visit-recap-actions" aria-label="Export visit recap" hidden>
@@ -1047,7 +1076,7 @@
 <div class="treatment-dialog-overlay" id="treatment-dialog-overlay" aria-hidden="true" onclick="closeTreatmentDialogFromBackdrop(event)">
   <section class="treatment-dialog" id="treatment-dialog" role="dialog" aria-modal="true" aria-labelledby="treatment-dialog-title" tabindex="-1">
     <header class="dialog-header">
-      <div><p class="eyebrow" id="treatment-dialog-eyebrow">Caregiver-maintained · unverified</p><h2 id="treatment-dialog-title">Treatment record</h2></div>
+      <div><p class="eyebrow" id="treatment-dialog-eyebrow">You enter and review this</p><h2 id="treatment-dialog-title">Treatment record</h2></div>
       <button class="icon-button" id="treatment-dialog-close" type="button" onclick="closeTreatmentDialog()" aria-label="Close treatment dialog">×</button>
     </header>
     <p class="treatment-safety-guidance dialog-guidance">NET/Care records what you enter but does not verify treatment details or advise starting, stopping, or changing treatment. Confirm treatment decisions with the treating team.</p>

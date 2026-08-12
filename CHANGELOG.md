@@ -8,6 +8,49 @@ incremented when something user-visible or operationally meaningful changes.
 
 ## [Unreleased]
 
+### Changed
+- **Caregiver-first Today hierarchy.** Today now leads with access/freshness and
+  the expanded latest assessment, key concern, and recommended next steps before
+  bounded recorded update times/active-alert count, treatment status, symptoms,
+  follow-ups, appointment preparation, and lower-priority tracked research.
+  Assessment freshness uses plain Up to date / New information / Couldn't check
+  language without exposing revision integers, consequential rationale is
+  touch-accessible, and a guarded deferred research load fixes the cold-start
+  empty card without delaying primary content or creating unread state.
+- **Plain record-source language with internal identity suppression.** Biomarker,
+  imaging, symptom, treatment, receipt, follow-up, alert, research, and
+  appointment/recap surfaces now explain whether information came from a linked
+  document/exact wording, was entered or corrected by the caregiver, or was
+  recorded from the clinician. Routine UI no longer prints opaque record,
+  evidence, source-row/document, generation, decision, follow-up, token, hash,
+  path, or revision identities. Exact source links remain authenticated; receipt
+  source actions open human-readable text instead of metadata JSON. These labels
+  describe traceability and never claim clinical authenticity.
+- **First-class recorded treatment Overview.** Patient Treatments now opens on
+  explicitly reviewed current/planned courses, every existing patient treatment
+  row under Status not recorded, then finished/past courses. Today no longer
+  appears empty when recorded rows exist. Every row, duplicate, order, component,
+  and count remains unchanged; no migration, lifecycle inference, promotion,
+  prefill, merge, deduplication, or model-context change was added. Automatic
+  compatibility notes are collapsed, secondary, and explicitly not treatment
+  facts.
+- **Truthful Activity artifact states.** PHI-safe job metadata now records
+  available, expired, not-retained, unavailable, none, or legacy-unknown output
+  state and publishes report/result kind plus current/stale/unknown freshness
+  without storage paths. Retention persists its reason before clearing the
+  reference; missing/corrupt output is distinct from expiry. Activity uses plain
+  task/status names, makes document import receipts first-class, renders
+  structured results without raw JSON, removes unreachable PHI-preview branches,
+  and no longer falls through to “No report generated.”
+- **Appointments navigation and responsive accessibility.** The visible Questions
+  destination is now Appointments while its internal `questions` route, APIs,
+  deep links, first Questions tab, CAS/replay, recap, and export authority remain
+  unchanged. Follow-up tabpanel labels now track selection; duplicate hidden live
+  announcements are disabled; secondary text meets 4.5:1 contrast; caregiver
+  type is at least 11px; the obsolete mobile stylesheet is removed; the 721–768px
+  shell gap is closed; and wide clinical tables retain labelled keyboard-focusable
+  local scrolling at phone width.
+
 ### Fixed
 - **Authorization-eviction recovery messaging.** A `401` or `403` now records the
   authorization failure before request epochs invalidate late handlers, so the

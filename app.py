@@ -101,6 +101,7 @@ _admission_lock = threading.Lock()
 _executor_lock = threading.Lock()
 _job_executor: BoundedExecutor | None = None
 _feed_executor: BoundedExecutor | None = None
+_artifact_validation_cache: dict[tuple[str, str], tuple[int, int, bool]] = {}
 
 _JOB_FIELDS = {
     "id",
@@ -118,8 +119,19 @@ _JOB_FIELDS = {
     "retry_guidance",
     "error_code",
     "error",
+    "artifact_state",
 }
 _ACTIVE_STATUSES = {"queued", "running"}
+_ARTIFACT_STATES = {
+    "available",
+    "expired",
+    "not_retained",
+    "unavailable",
+    "none",
+    "legacy_unknown",
+}
+_REPORT_JOB_TYPES = {"feed", "digest", "deep-sweep"}
+_RESULT_JOB_TYPES = {"chat", "questions", "summary"}
 _SAFE_JOB_ERRORS = {
     "job_failed": "The job failed. Please retry.",
     "upstream_timeout": "The AI service timed out. Please retry.",
@@ -260,6 +272,7 @@ def _load_jobs() -> bool:
                 j["error_code"] = "job_interrupted"
                 j["error"] = "The job was interrupted by a server restart."
                 j["retry_guidance"] = _INTERRUPTED_GUIDANCE
+                j["artifact_state"] = "none"
                 needs_save = True
 
         if needs_save:
@@ -301,6 +314,8 @@ def _save_jobs():
 
 def _clean_job(job: dict) -> dict:
     clean = {key: value for key, value in job.items() if key in _JOB_FIELDS}
+    if clean.get("artifact_state") not in _ARTIFACT_STATES:
+        clean.pop("artifact_state", None)
     status = clean.get("status")
     if status == "error":
         code = clean.get("error_code")
@@ -317,6 +332,95 @@ def _clean_job(job: dict) -> dict:
         clean.pop("retry_guidance", None)
         clean["error"] = None
     return clean
+
+
+def _job_artifact_contract(job: dict) -> tuple[str, str | None, set[str]]:
+    if job.get("type") in _REPORT_JOB_TYPES:
+        return "report", "report_file", {"reports"}
+    if job.get("type") in _RESULT_JOB_TYPES:
+        return "result", "result_file", {"job_results"}
+    return "none", None, set()
+
+
+def _job_artifact_state(job: dict) -> str:
+    kind, field, _ = _job_artifact_contract(job)
+    if kind == "none":
+        return "none"
+    stored = job.get("artifact_state")
+    if stored in _ARTIFACT_STATES:
+        if stored == "available" and not job.get(field):
+            return "unavailable"
+        return stored
+    if field and job.get(field):
+        return "available"
+    if job.get("status") in _ACTIVE_STATUSES | {"error", "interrupted"}:
+        return "none"
+    return "legacy_unknown"
+
+
+def _job_artifact_reference_unavailable(job: dict) -> bool:
+    kind, field, roots = _job_artifact_contract(job)
+    if kind == "none" or _job_artifact_state(job) != "available" or not field:
+        return False
+    reference = job.get(field)
+    if not reference:
+        return True
+    try:
+        path = safe_artifact_path(DATA_DIR, reference, roots)
+        stat = path.stat()
+        cache_key = (kind, reference)
+        fingerprint = (stat.st_mtime_ns, stat.st_size)
+        cached = _artifact_validation_cache.get(cache_key)
+        if cached and cached[:2] == fingerprint:
+            return not cached[2]
+        if kind == "report":
+            path.read_text(encoding="utf-8")
+        else:
+            json.loads(path.read_text(encoding="utf-8"))
+        if len(_artifact_validation_cache) >= 512:
+            _artifact_validation_cache.clear()
+        _artifact_validation_cache[cache_key] = (*fingerprint, True)
+        return False
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+        if isinstance(reference, str):
+            try:
+                path = safe_artifact_path(DATA_DIR, reference, roots)
+                stat = path.stat()
+                _artifact_validation_cache[(kind, reference)] = (
+                    stat.st_mtime_ns,
+                    stat.st_size,
+                    False,
+                )
+            except (OSError, ValueError):
+                pass
+        return True
+
+
+def _public_job_artifact(
+    response: dict,
+    job: dict,
+    *,
+    unavailable: bool = False,
+) -> None:
+    kind, _, _ = _job_artifact_contract(job)
+    state = "unavailable" if unavailable else _job_artifact_state(job)
+    stale = bool(
+        response.get("derived_content_stale")
+        or response.get("report_stale")
+        or (isinstance(response.get("result"), dict) and response["result"].get("stale"))
+    )
+    response.pop("report_file", None)
+    response.pop("result_file", None)
+    response.pop("artifact_state", None)
+    response["artifact"] = {
+        "kind": kind,
+        "state": state,
+        "freshness": (
+            "stale"
+            if stale and state == "available"
+            else ("current" if state == "available" else "unknown")
+        ),
+    }
 
 
 def _add_job(job: dict):
@@ -358,6 +462,7 @@ def _fail_job(job_id: str, exc: BaseException) -> None:
             "stage": "error",
             "error_code": code,
             "error": message,
+            "artifact_state": "none",
             "finished_at": datetime.datetime.now().isoformat(timespec="seconds"),
         },
     )
@@ -384,6 +489,7 @@ def _submit_job(
         "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
         "finished_at": None,
         "error": None,
+        "artifact_state": "none",
     }
 
     def run_after_persist() -> None:
@@ -452,6 +558,7 @@ def _job_response(
     profile: dict | None = None,
 ) -> dict:
     response = dict(job)
+    artifact_unavailable = _job_artifact_reference_unavailable(job)
     profile_dependent_report = job.get("type") in {"feed", "digest", "deep-sweep"}
     profile_dependent_result = job.get("type") in {"chat", "questions", "summary"}
     report_revision_stale = False
@@ -534,6 +641,7 @@ def _job_response(
             ),
         )
     if not include_artifacts:
+        _public_job_artifact(response, job, unavailable=artifact_unavailable)
         return response
     if job.get("type") == "feed" and job.get("source_document_id"):
         response["receipt_url"] = f"/api/jobs/{job['id']}/receipt"
@@ -550,7 +658,13 @@ def _job_response(
                     else "patient_record_changed_after_generation"
                 )
             )
-            response["report_available_for_audit"] = True
+            try:
+                report_path = safe_artifact_path(DATA_DIR, report_ref, {"reports"})
+                response["report_available_for_audit"] = report_path.is_file()
+                artifact_unavailable = not response["report_available_for_audit"]
+            except (OSError, ValueError):
+                response["report_available_for_audit"] = False
+                artifact_unavailable = True
         else:
             try:
                 response["report"] = safe_artifact_path(
@@ -558,6 +672,7 @@ def _job_response(
                 ).read_text(encoding="utf-8")
             except (OSError, ValueError):
                 response["artifact_unavailable"] = True
+                artifact_unavailable = True
     result_ref = job.get("result_file")
     if result_ref:
         try:
@@ -632,6 +747,8 @@ def _job_response(
                         }
         except (OSError, ValueError, json.JSONDecodeError):
             response["artifact_unavailable"] = True
+            artifact_unavailable = True
+    _public_job_artifact(response, job, unavailable=artifact_unavailable)
     return response
 
 
@@ -696,6 +813,9 @@ def _prune_retention() -> None:
                 except (TypeError, ValueError):
                     age = age_days * 86400 + 1
                 if index >= max_count or age > age_days * 86400:
+                    job["artifact_state"] = (
+                        "expired" if age > age_days * 86400 else "not_retained"
+                    )
                     refs_to_delete.append(job.pop(field))
                     changed = True
             if changed:
@@ -1921,6 +2041,7 @@ def _run_feed_job(
                     "status": "done",
                     "stage": "done_with_warnings" if summary_error else "done",
                     "report_file": _artifact_ref(rpath),
+                    "artifact_state": "available",
                     "profile_revision": profile.get("profile_revision"),
                     "summary_error": summary_error,
                     "finished_at": datetime.datetime.now().isoformat(),
@@ -2016,6 +2137,7 @@ def _run_digest_job(job_id: str):
                     "status": "done",
                     "stage": "done_with_warnings" if summary_error else "done",
                     "report_file": _artifact_ref(rpath),
+                    "artifact_state": "available",
                     "profile_revision": profile.get("profile_revision"),
                     "summary_error": summary_error,
                     "finished_at": datetime.datetime.now().isoformat(),
@@ -2052,6 +2174,7 @@ def _run_deepsweep_job(job_id: str):
                 "status": "done",
                 "stage": "done",
                 "report_file": _artifact_ref(rpath),
+                "artifact_state": "available",
                 "profile_revision": generation_revision,
                 "cost_total": result.get("cost_total"),
                 "finished_at": datetime.datetime.now().isoformat(),
@@ -2105,6 +2228,7 @@ def _run_questions_job(job_id: str, appointment_type: str) -> None:
                 "status": "done",
                 "stage": "done",
                 "result_file": result_ref,
+                "artifact_state": "available",
                 "profile_revision": generation_revision,
                 "generation_id": job_id,
                 "finished_at": now_stamp(),
@@ -2138,6 +2262,7 @@ def _run_summary_job(job_id: str) -> None:
                 "status": "done",
                 "stage": "done",
                 "result_file": result_ref,
+                "artifact_state": "available",
                 "profile_revision": profile.get("profile_revision"),
                 "finished_at": now_stamp(),
             },
@@ -2175,6 +2300,7 @@ def _run_chat_job(
                 "status": "done",
                 "stage": "done",
                 "result_file": result_ref,
+                "artifact_state": "available",
                 "profile_revision": generation_revision,
                 "finished_at": now_stamp(),
             },
@@ -2605,9 +2731,13 @@ def api_status():
         :50
     ]
     imgs = sorted(profile.get("imaging", []), key=lambda x: x.get("date") or "", reverse=True)[:3]
-    docs = sorted(agent.active_documents(profile), key=lambda x: x.get("date") or "", reverse=True)[
-        :5
-    ]
+    active_documents = agent.active_documents(profile)
+    docs = sorted(active_documents, key=lambda x: x.get("date") or "", reverse=True)[:5]
+    latest_document_import = max(
+        active_documents,
+        key=lambda item: item.get("added_at") or "",
+        default=None,
+    )
     classification_current = agent.treatment_classification_is_current(profile)
     return jsonify(
         {
@@ -2617,6 +2747,15 @@ def api_status():
             "recent_biomarkers": bms,
             "recent_imaging": imgs,
             "recent_documents": docs,
+            "latest_document_import": (
+                {
+                    key: latest_document_import.get(key)
+                    for key in ("added_at", "date", "type", "summary")
+                    if key in latest_document_import
+                }
+                if latest_document_import is not None
+                else None
+            ),
             "treatments_classified": (
                 [
                     {**item, "edit_token": agent.treatment_edit_token(profile, item)}

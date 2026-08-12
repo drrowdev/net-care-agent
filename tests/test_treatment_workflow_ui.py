@@ -341,6 +341,41 @@ def _projection_with_discrepancies() -> dict:
     return projection
 
 
+def _recorded_only_projection() -> dict:
+    projection = _projection()
+    recorded = []
+    for index in range(31):
+        row = _legacy()
+        row["id"] = f"txlegacy-recorded-{index:02d}"
+        row["token"] = f"legacy-recorded-token-{index:02d}"
+        row["raw_text"] = f"Recorded treatment information {index:02d}"
+        row["source_order"] = index
+        row["components"] = [
+            {
+                "id": f"recorded-component-{index:02d}",
+                "text": f"Recorded treatment information {index:02d}",
+                "component_order": 0,
+            }
+        ]
+        row["generated_classification"] = []
+        recorded.append(row)
+    projection.update(
+        {
+            "projection_token": "treatment-recorded-only",
+            "source_fact_count": 0,
+            "legacy_treatment_count": len(recorded),
+            "course_count": 0,
+            "discrepancy_count": 0,
+            "source_facts": [],
+            "legacy_treatments": recorded,
+            "courses": [],
+            "discrepancies": [],
+            "eligible_actions": [],
+        }
+    )
+    return projection
+
+
 def _run_validator(payloads: list[dict]) -> list[bool]:
     serialized_payloads = json.dumps(payloads)
     script = "\n".join(
@@ -548,7 +583,8 @@ def test_treatment_module_has_one_authority_and_no_legacy_or_date_inference():
         "Machine-generated compatibility context · source linkage unavailable · "
         "not a treatment record"
     ) in source
-    assert "Caregiver-associated · unverified" in source
+    assert "Status not recorded" in source
+    assert "Treatment timing/status not yet reviewed." in source
 
 
 class _LiveState:
@@ -697,7 +733,40 @@ def _standard_payload(path: str, state: _LiveState) -> object:
             "appointments": [],
             "items": [],
         },
-        "/api/summary": {"status": "not_generated", "profile_revision": revision},
+        "/api/summary": {
+            "status": "current",
+            "stale": False,
+            "profile_revision": revision,
+            "summary_revision": revision,
+            "generation_id": "summary-current",
+            "generated_at": "2026-08-12",
+            "generated_at_timestamp": "2026-08-12T09:00:00",
+            "overall_status": "stable",
+            "status_confidence": "medium",
+            "status_rationale": "The latest recorded information supports a stable assessment.",
+            "key_concern": "Confirm the next monitoring plan with the treating team.",
+            "summary": "Latest patient status is available for caregiver review.",
+            "prrt_status": "unknown",
+            "prrt_rationale": "Discuss screening context with the treating team.",
+            "cga_trend": "insufficient_data",
+            "cga_trend_detail": None,
+            "next_actions": [
+                {
+                    "id": "summary-action-current",
+                    "source_token": "summary-action-token",
+                    "generation_id": "summary-current",
+                    "source_profile_revision": revision,
+                    "stale": False,
+                    "action": "Ask the treating team to confirm the monitoring plan.",
+                    "priority": "high",
+                    "rationale": "Keep the next visit focused.",
+                    "timeframe": "Before the next visit",
+                }
+            ],
+            "timeline": [],
+            "claim_evidence": {"claims": {}, "actions": [[]]},
+            "recent_documents": [],
+        },
         "/api/jobs": [],
         "/api/questions": [],
         "/api/judgments": [],
@@ -795,19 +864,17 @@ def test_live_shared_projection_totals_authorities_and_accessibility(width: int,
         try:
             assert page.locator("#today-treatment-list .treatment-course-card").count() == 3
             totals = page.locator("#today-treatment-totals").inner_text()
-            assert "Showing 3 of 4" in totals
-            assert "2 current, 2 planned; 1 omitted" in totals
-            assert "1 past records" in totals
-            assert "10 unlinked generated compatibility rows" in totals
+            assert "2 current and 2 planned status records" in totals
+            assert "1 recorded treatment entry has not yet been reviewed" in totals
             page.locator("#nav-patient").click()
             assert page.locator("#patient-treatment-list .treatment-course-card").count() == 5
             assert [
                 " ".join(text.split()) for text in page.locator(".treatment-tab").all_inner_texts()
             ] == [
-                "Treatment records 5",
+                "Overview 6",
                 "Differences to review 0",
-                "Document mentions 2",
-                "Earlier app records 1",
+                "Mentions in source documents 2",
+                "Automatic compatibility notes 11",
             ]
             page.locator("#treatment-tab-sources").click()
             assert page.locator("#treatment-source-table-body tr").count() == 2
@@ -835,13 +902,14 @@ def test_live_shared_projection_totals_authorities_and_accessibility(width: int,
             assert page.evaluate("() => document.activeElement.id") == "treatment-tab-earlier"
             page.locator("#treatment-tab-earlier").click()
             earlier = page.locator("#treatment-panel-earlier").inner_text()
-            assert "Machine-generated compatibility context · not a treatment record" in earlier
-            assert (
-                "Machine-generated compatibility context · source linkage unavailable · "
-                "not a treatment record"
-            ) in earlier
-            assert "Earlier app component · not source-verified" in earlier
-            assert "Showing all 10 rows in server order; 0 omitted." in earlier
+            assert "Mapped automatic compatibility notes (1)" in earlier
+            assert "Other automatic compatibility notes (10)" in earlier
+            page.locator(".treatment-generated-disclosure > summary").click()
+            page.locator(".treatment-unlinked-generated-section > summary").click()
+            earlier = page.locator("#treatment-panel-earlier").inner_text()
+            assert "NET/Care-generated context - not a treatment fact" in earlier
+            assert "All 10 notes are retained; none are omitted." in earlier
+            assert "Earlier app component" not in earlier
             assert page.locator(".treatment-unlinked-generated-card").count() == 10
             assert (
                 page.locator(".treatment-generated-section").inner_text().count("Not recorded") == 3
@@ -884,6 +952,129 @@ def test_live_shared_projection_totals_authorities_and_accessibility(width: int,
             browser.close()
 
 
+@pytest.mark.parametrize("width,height", [(1280, 800), (360, 740)])
+def test_live_recorded_treatments_are_first_class_without_status_inference(
+    width: int,
+    height: int,
+):
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    with playwright_api.sync_playwright() as playwright:
+        if not Path(playwright.chromium.executable_path).exists():
+            pytest.skip("Installed Playwright browser is unavailable")
+        browser, context, page, state = _open_treatment_page(
+            playwright,
+            width,
+            height,
+            _recorded_only_projection(),
+        )
+        try:
+            today = page.locator("#treatment-today-card")
+            assert "No treatment is recorded as current." in today.inner_text()
+            assert "31 treatment records have not yet been reviewed" in today.inner_text()
+            assert page.locator("#today-treatment-list .treatment-recorded-card").count() == 3
+
+            page.locator("#nav-patient").click()
+            overview = page.locator("#treatment-panel-records")
+            assert page.locator("#patient-treatment-list .treatment-recorded-card").count() == 31
+            assert "Status not recorded (31)" in overview.inner_text()
+            assert "Recorded treatment information 00" in overview.inner_text()
+            assert "Recorded treatment information 30" in overview.inner_text()
+            normalized = overview.inner_text().lower()
+            for forbidden in ("legacy", "earlier app", "archived", "historical", "unverified"):
+                assert forbidden not in normalized
+
+            page.locator("#treatment-tab-earlier").click()
+            assert page.locator(".treatment-unlinked-generated-section").count() == 1
+            assert not page.locator(".treatment-unlinked-generated-section").evaluate(
+                "node => node.open"
+            )
+            assert page.locator(".treatment-unlinked-generated-card").count() == 10
+            writes = [
+                request
+                for request in state.requests
+                if request[0] != "GET" and request[1].startswith("/api/treatment-reconciliation/")
+            ]
+            assert writes == []
+            overflow = page.evaluate(
+                "() => document.documentElement.scrollWidth - document.documentElement.clientWidth"
+            )
+            assert overflow == 0
+        finally:
+            context.close()
+            browser.close()
+
+
+@pytest.mark.parametrize("width,height", [(1280, 800), (360, 740)])
+def test_live_today_first_viewport_prioritizes_latest_assessment(
+    width: int,
+    height: int,
+):
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    with playwright_api.sync_playwright() as playwright:
+        if not Path(playwright.chromium.executable_path).exists():
+            pytest.skip("Installed Playwright browser is unavailable")
+        browser, context, page, _ = _open_treatment_page(playwright, width, height)
+        try:
+            page.wait_for_selector("#summary-card .summary-concern")
+            positions = page.evaluate(
+                """() => Object.fromEntries([
+                  ['freshness', document.querySelector('#freshness-banner').getBoundingClientRect().top],
+                  ['summary', document.querySelector('#summary-card').getBoundingClientRect().top],
+                  ['recent', document.querySelector('#recent-updates-card').getBoundingClientRect().top],
+                  ['treatment', document.querySelector('#treatment-today-card').getBoundingClientRect().top],
+                  ['symptoms', document.querySelector('#symptom-today-card').getBoundingClientRect().top],
+                  ['followups', document.querySelector('.follow-through-card').getBoundingClientRect().top],
+                  ['appointment', document.querySelector('#today-appointment-card').getBoundingClientRect().top],
+                  ['research', document.querySelector('#research-today-card').getBoundingClientRect().top],
+                ])"""
+            )
+            assert list(positions.values()) == sorted(positions.values())
+            assert page.locator("#summary-card").get_by_text("What matters now").is_visible()
+            assert page.locator("#summary-card .summary-concern").is_visible()
+            assert page.locator("#summary-card").get_by_text("Recommended next steps").is_visible()
+            action_box = page.locator("#summary-card .action-main").bounding_box()
+            assert action_box is not None
+            assert action_box["y"] < height
+            assert page.locator("#freshness-title").inner_text() == "Up to date"
+            assert "revision" not in page.locator("#freshness-banner").inner_text().lower()
+            assert "revision" not in page.locator("#summary-card").inner_text().lower()
+            assert (
+                page.evaluate(
+                    "() => document.documentElement.scrollWidth - document.documentElement.clientWidth"
+                )
+                == 0
+            )
+
+            page.locator('[data-update-view="activity"]').click()
+            assert page.evaluate("() => activeView") == "activity"
+            page.wait_for_function("() => document.activeElement.id === 'nav-activity'")
+            assert page.evaluate("() => document.activeElement.id") == "nav-activity"
+            page.locator("#nav-today").click()
+
+            page.evaluate(
+                """() => {
+                  visitsById = new Map([
+                    ['visit-later', {
+                      id: 'visit-later', token: 'token-later', title: 'Later visit',
+                      status: 'planned', date: '2026-12-01', updated_at: '2026-08-01',
+                      question_snapshots: [], decisions: [], follow_up_ids: [],
+                    }],
+                    ['visit-earlier', {
+                      id: 'visit-earlier', token: 'token-earlier', title: 'Earlier visit',
+                      status: 'planned', date: '2026-09-01', updated_at: '2026-08-02',
+                      question_snapshots: [], decisions: [], follow_up_ids: [],
+                    }],
+                  ]);
+                  renderTodayAppointment();
+                }"""
+            )
+            assert "Earlier visit" in page.locator("#today-appointment-summary").inner_text()
+            assert page.evaluate("() => todayAppointmentVisit()?.id") == "visit-earlier"
+        finally:
+            context.close()
+            browser.close()
+
+
 def test_live_add_and_server_authorized_transition_use_full_reload():
     playwright_api = pytest.importorskip("playwright.sync_api")
     with playwright_api.sync_playwright() as playwright:
@@ -891,7 +1082,8 @@ def test_live_add_and_server_authorized_transition_use_full_reload():
             pytest.skip("Installed Playwright browser is unavailable")
         browser, context, page, state = _open_treatment_page(playwright, 1280, 900)
         try:
-            page.locator("#today-treatment-add").click()
+            page.locator("#nav-patient").click()
+            page.locator("#patient-treatment-add").click()
             assert page.locator("#treatment-field-start-date").input_value() == ""
             page.locator("#treatment-field-status").select_option("planned")
             page.locator("#treatment-field-treatment-text").fill("  Exact new wording  ")
@@ -980,7 +1172,8 @@ def test_live_server_authority_discrepancies_restart_outcomes_and_followups():
             assert page.locator("#treatment-field-treatment-text").input_value() == ""
             assert page.locator('input[name="treatment-component-choice"]:checked').count() == 0
             dialog_text = page.locator("#treatment-dialog").inner_text()
-            assert "Caregiver-associated · unverified" in dialog_text
+            assert "You choose this link" in dialog_text
+            assert "Linked by you" in dialog_text
             assert "Duplicate source wording" not in dialog_text
             assert "Generated compatibility text" not in dialog_text
             page.evaluate("() => closeTreatmentDialog(false, true, false)")
@@ -988,7 +1181,7 @@ def test_live_server_authority_discrepancies_restart_outcomes_and_followups():
             legacy = page.locator(".treatment-course-card").filter(
                 has_text="Earlier terminal authority"
             )
-            assert "Earlier record; ending detail not recorded" in legacy.inner_text()
+            assert "Ending detail not recorded" in legacy.inner_text()
             assert legacy.get_by_role("button", name="Create linked new record").count() == 0
             no_transition = page.locator(".treatment-course-card").filter(has_text="Current three")
             assert no_transition.get_by_role("button", name="Record terminal outcome").count() == 0
@@ -1008,9 +1201,7 @@ def test_live_server_authority_discrepancies_restart_outcomes_and_followups():
             assert first.get_by_role("button", name="Record treating-team outcome").count() == 1
 
             resolved = cards.nth(1)
-            assert (
-                "Caregiver-entered · attributed to clinician · unverified" in resolved.inner_text()
-            )
+            assert "You recorded this from the clinician" in resolved.inner_text()
             assert resolved.get_by_role("button", name="Reopen difference").count() == 1
             assert resolved.get_by_role("button", name="Record recurrence").count() == 1
             assert resolved.get_by_role("button", name="Record treating-team outcome").count() == 0
@@ -1134,7 +1325,8 @@ def test_live_request_validation_get_corruption_eviction_and_focus_boundaries():
             pytest.skip("Installed Playwright browser is unavailable")
         browser, context, page, state = _open_treatment_page(playwright, 1280, 900)
         try:
-            page.locator("#today-treatment-add").click()
+            page.locator("#nav-patient").click()
+            page.locator("#patient-treatment-add").click()
             page.locator("#treatment-field-status").select_option("planned")
             page.locator("#treatment-field-treatment-text").fill("Safe rejected draft")
             state.next_mutation_status = 422
@@ -1174,7 +1366,8 @@ def test_live_request_validation_get_corruption_eviction_and_focus_boundaries():
             page.evaluate(
                 "() => loadTreatmentReconciliation({ force: true }).then(() => undefined)"
             )
-            page.locator("#today-treatment-add").click()
+            page.locator("#nav-patient").click()
+            page.locator("#patient-treatment-add").click()
             page.locator("#treatment-field-status").select_option("current")
             page.locator("#treatment-field-treatment-text").fill("PHI to evict")
             page.evaluate(
@@ -1192,7 +1385,7 @@ def test_live_request_validation_get_corruption_eviction_and_focus_boundaries():
             assert not page.evaluate(
                 "() => document.getElementById('treatment-dialog').contains(document.activeElement)"
             )
-            assert page.evaluate("() => document.activeElement.id") == "nav-today"
+            assert page.evaluate("() => document.activeElement.id") == "nav-patient"
         finally:
             context.close()
             browser.close()
@@ -1229,7 +1422,8 @@ def test_live_workflow_staleness_and_repeated_verification_refresh_ownership():
                 == initial_gets + 1
             )
 
-            page.locator("#today-treatment-add").click()
+            page.locator("#nav-patient").click()
+            page.locator("#patient-treatment-add").click()
             page.locator("#treatment-field-status").select_option("planned")
             page.locator("#treatment-field-treatment-text").fill("Verification refresh ownership")
             state.abort_next_treatment_get = True
@@ -1270,7 +1464,8 @@ def test_live_submission_retry_conflict_draft_and_refresh_retry_are_separate():
             pytest.skip("Installed Playwright browser is unavailable")
         browser, context, page, state = _open_treatment_page(playwright, 1280, 900)
         try:
-            page.locator("#today-treatment-add").click()
+            page.locator("#nav-patient").click()
+            page.locator("#patient-treatment-add").click()
             page.locator("#treatment-field-status").select_option("planned")
             page.locator("#treatment-field-treatment-text").fill("Ambiguous exact bytes")
             state.abort_next_mutation = True
@@ -1284,7 +1479,8 @@ def test_live_submission_retry_conflict_draft_and_refresh_retry_are_separate():
             assert state.raw_mutation_bodies[0] == state.raw_mutation_bodies[1]
             assert page.evaluate("() => pendingTreatmentRetry === null")
 
-            page.locator("#today-treatment-add").click()
+            page.locator("#nav-patient").click()
+            page.locator("#patient-treatment-add").click()
             page.locator("#treatment-field-status").select_option("current")
             page.locator("#treatment-field-treatment-text").fill("Mismatch request")
             state.mismatch_after_mutation = True
@@ -1292,13 +1488,14 @@ def test_live_submission_retry_conflict_draft_and_refresh_retry_are_separate():
             page.wait_for_function(
                 "() => !treatmentMutationPending && treatmentProjectionState === 'stale'"
             )
-            assert page.locator("#today-treatment-retry-refresh").is_visible()
+            assert page.locator("#treatment-retry").is_visible()
             assert not page.locator("#treatment-retry-submit").is_visible()
             assert page.evaluate("() => pendingTreatmentRetry === null")
 
-            page.locator("#today-treatment-retry-refresh").click()
+            page.locator("#treatment-retry-refresh").click()
             page.wait_for_function("() => treatmentProjectionState === 'current'")
-            page.locator("#today-treatment-add").click()
+            page.locator("#nav-patient").click()
+            page.locator("#patient-treatment-add").click()
             page.locator("#treatment-field-status").select_option("planned")
             page.locator("#treatment-field-treatment-text").fill("Conflict-safe draft")
             page.locator('input[name="treatment-component-choice"]').first.check()
@@ -1323,7 +1520,8 @@ def test_live_submission_retry_conflict_draft_and_refresh_retry_are_separate():
             assert "txref_" not in serialized
             assert "treatment-component-choice" not in serialized
 
-            page.locator("#today-treatment-add").click()
+            page.locator("#nav-patient").click()
+            page.locator("#patient-treatment-add").click()
             assert (
                 page.locator("#treatment-field-treatment-text").input_value()
                 == "Conflict-safe draft"

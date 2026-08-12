@@ -125,6 +125,40 @@ def test_status_filters_latest_batch_to_items_still_tracked(client, tmp_path):
     assert update["total_count"] == 2
 
 
+def test_status_projects_latest_import_by_ingestion_time_not_clinical_date(client, tmp_path):
+    _seed_profile(
+        tmp_path,
+        documents=[
+            {
+                "id": "clinical-newer",
+                "date": "2026-08-10",
+                "added_at": "2026-08-01T10:00:00",
+                "type": "doctor_note",
+                "summary": "Newer clinical date, older import.",
+            },
+            {
+                "id": "import-newer",
+                "date": "2020-01-01",
+                "added_at": "2026-08-12T10:00:00",
+                "type": "lab_result",
+                "summary": "Backdated document imported most recently.",
+            },
+        ],
+    )
+
+    response = client.get("/api/status")
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["recent_documents"][0]["id"] == "clinical-newer"
+    assert body["latest_document_import"] == {
+        "added_at": "2026-08-12T10:00:00",
+        "date": "2020-01-01",
+        "type": "lab_result",
+        "summary": "Backdated document imported most recently.",
+    }
+
+
 def test_digest_records_zero_when_nothing_new_is_found(app_module, monkeypatch, tmp_path):
     _seed_profile(
         tmp_path,

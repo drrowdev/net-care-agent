@@ -86,6 +86,8 @@ def test_receipt_shows_additions_conflicts_and_exact_evidence(agent, empty_profi
     assert scalar["before"] == 8
     assert scalar["after"] == 12
     assert receipt["source_document_id"].startswith("doc_")
+    assert receipt["source_url"].endswith("/text")
+    assert receipt["source_url"] != f"/api/sources/{receipt['source_document_id']}"
     assert receipt["counts"]["added"] >= 2
     assert receipt["counts"]["conflict"] == 1
 

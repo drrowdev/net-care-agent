@@ -551,7 +551,7 @@ def public_receipt(profile: dict, job_id: str) -> dict:
                 change["evidence_status"] = "missing"
                 change.pop("evidence_url", None)
     result["profile_revision"] = profile.get("profile_revision")
-    result["source_url"] = f"/api/sources/{record['source_document_id']}"
+    result["source_url"] = f"/api/sources/{record['source_document_id']}/text"
     result["undo_token"] = _token(
         {
             "receipt_revision": record.get("receipt_revision"),

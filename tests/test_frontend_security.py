@@ -728,10 +728,11 @@ def test_interrupted_jobs_are_terminal_and_show_retry_guidance():
     waiter = _function_source("waitForJob", "relativeTime")
     assert "job.status === 'interrupted'" in waiter
     assert "job.retry_guidance || job.error" in waiter
-    task_ui = _function_source("renderTasks", "updateHeaderStatus")
     detail_ui = _function_source("selectTask", "formatReport")
-    assert "t.status === 'interrupted'" in task_ui
-    assert "t.retry_guidance" in task_ui
+    status_copy = _function_source("taskStatusPresentation", "normalizedTaskArtifact")
+    summary_copy = _function_source("taskArtifactSummary", "loadTasks")
+    assert "interrupted: 'Interrupted'" in status_copy
+    assert "server restarted" in summary_copy
     assert "task.status === 'interrupted'" in detail_ui
     assert "task.retry_guidance" in detail_ui
     polling = _function_source("startPolling", "toggleQuestions")
@@ -983,7 +984,24 @@ def test_processing_status_never_claims_clinical_freshness():
     assert "Processing ${running.length}" in header
     assert "lbl.textContent = 'Idle'" in header
     assert "lbl.textContent = 'Unavailable'" in header
-    assert "Up to date" not in APP_JS
+    assert "Up to date" not in header
+
+
+def test_freshness_retry_is_callable_and_recent_updates_use_true_import_projection():
+    freshness = _function_source("renderFreshness", "clearFreshnessProjection")
+    retry_scope = _function_source("clearFreshnessProjection", "summaryActionIsCurrent")
+    updates = _function_source("renderRecentUpdates", "renderSidebar")
+    eviction = _function_source("evictClientPhi", "renderSidebar")
+
+    assert "action.onclick = retryFreshnessCheck" in freshness
+    assert "async function retryFreshnessCheck()" in retry_scope
+    assert retry_scope.index("async function retryFreshnessCheck()") > retry_scope.index(
+        "function clearFreshnessProjection()"
+    )
+    assert "const latestDocument = d.latest_document_import" in updates
+    assert "recent_documents[0]" not in updates
+    assert "document.getElementById(`nav-${view}`)?.focus({ preventScroll: true })" in updates
+    assert "appointmentAction.textContent = 'Open Appointments'" in eviction
 
 
 def test_receipt_is_job_scoped_and_has_no_global_review_flow():
@@ -1000,7 +1018,7 @@ def test_corrected_receipt_renders_effective_value_without_relabelling_original_
     receipt = _function_source("renderReceipt", "receiptFieldInput")
     assert "change.effective_value" in receipt
     assert "Caregiver correction" in receipt
-    assert "Original extraction span (before correction)" in receipt
+    assert "View original wording before correction" in receipt
 
 
 def test_receipt_editor_save_stays_disabled_until_clinical_value_changes():
@@ -1034,10 +1052,47 @@ def test_stale_job_result_is_hidden_in_activity_panel():
     assert "Regenerate it before use" in detail
     assert "if (task.report_stale)" in detail
     assert "staleTaskCopy({" in detail
-    tasks = _function_source("renderTasks", "updateHeaderStatus")
-    assert "t.derived_content_stale" in tasks
-    assert "prior analysis hidden" in tasks
+    artifact_copy = _function_source("taskArtifactSummary", "loadTasks")
+    assert "artifact.freshness === 'stale'" in artifact_copy
+    assert "no longer current" in artifact_copy
     assert "!task.derived_content_stale && task.key_findings" in detail
+
+
+def test_activity_uses_bounded_artifact_states_without_raw_preview_or_json():
+    tasks = _function_source("renderTasks", "staleTaskCopy")
+    detail = _function_source("selectTask", "formatReport")
+    artifact = _function_source("artifactStateMarkup", "selectTask")
+    formatting = _function_source("formatReport", "escHtml")
+
+    for forbidden in ("t.doc_type", "t.summary", "t.input_preview", "task.stage"):
+        assert forbidden not in tasks + detail
+    assert "JSON.stringify(task.result" not in detail
+    assert "No report generated" not in detail
+    for state in ("expired", "not_retained", "unavailable", "legacy_unknown", "none"):
+        assert state in artifact
+    assert "What this document changed" in APP_JS
+    assert "(URGENT|CRITICAL|IMPORTANT)" not in formatting
+    assert "(PRRT|Lutathera|Lu-177|Ac-225)" not in formatting
+
+
+def test_routine_record_renderers_do_not_print_internal_ids_or_raw_provenance():
+    biomarker = _function_source("biomarkerEvidenceMarkup", "biomarkerObservationRow")
+    imaging = _function_source("imagingSourceDetails", "clearImagingComparison")
+    symptom = _function_source("symptomObservationSourceDetails", "symptomObservationRow")
+    recap = _function_source("buildVisitRecapText", "recapSectionMarkup")
+
+    for forbidden in (
+        "Observation ID",
+        "Source row IDs",
+        "Source document IDs",
+        "evidence ID",
+        "Record ID",
+    ):
+        assert forbidden not in biomarker + imaging
+    assert "observation.provenance.status}" not in symptom
+    assert "Linked decision: ${recapPlainText(item.decision_id)}" not in recap
+    assert "Linked follow-up: ${recapPlainText(item.follow_up_id)}" not in recap
+    assert "View exact wording" in biomarker + imaging + symptom
 
 
 def test_open_task_is_revalidated_and_copy_state_cleared():
@@ -1087,7 +1142,7 @@ def test_stale_task_copy_maps_reason_and_type_without_source_mislabeling():
     assert "Document analysis" in copy
     assert "The source document was corrected or undone." in copy
     assert "The patient record changed after this task was generated." in copy
-    assert "This retained legacy task has no source profile revision." in copy
+    assert "This older activity record does not include enough information" in copy
     assert "Generated content was invalidated by a review-state change." in copy
     assert "A newer appointment-question generation replaced this result." in copy
 
@@ -1484,9 +1539,9 @@ def test_alert_resolution_filters_link_sources_and_labels_provenance_precisely()
     assert "escHtml(label)" in source_options
     assert "escHtml(item.id)" in decision_options
     assert "escHtml(item.text)" in decision_options
-    assert "Caregiver-entered · attributed to clinician · unverified" in provenance
-    assert "Caregiver-entered · caregiver reported · unverified" in provenance
-    assert "Caregiver-entered administrative outcome · not clinical evidence" in provenance
+    assert "RECORD_SOURCE_COPY.clinician" in provenance
+    assert "You recorded this" in provenance
+    assert "RECORD_SOURCE_COPY.administrative" in provenance
     assert "source-verified" not in provenance
     assert "resolution.provenance" in result
     assert "resolution.follow_up_id" in result
@@ -2218,8 +2273,9 @@ def test_patient_history_joins_documents_and_keeps_orphaned_legacy_records():
     assert "const documents = patientEvidence.documents || []" in history
     assert "const sourcesById = new Map" in history
     assert "history_kind: 'document'" in history
-    assert "Legacy document record" in history
-    assert "source.source_url" in history
+    assert "Older document record" in history
+    assert "source.source_url" not in history
+    assert "source.artifacts?.text?.url" in history
 
 
 def test_claim_evidence_and_decision_support_wording_are_non_definitive():
@@ -2337,7 +2393,7 @@ def test_malicious_stored_display_fields_are_escaped():
         "escHtml(p.sex || '—')",
         "escHtml(alert.priority || '—')",
         "escHtml(j.date||'')",
-        "escHtml(task.stage || 'processing')",
+        "escHtml(taskTypePresentation(t.type))",
         "escHtml(translateCategory(q.category||'Other'))",
         "escHtml(item.event || '')",
         'datetime="${escHtml(date)}"',
@@ -3061,6 +3117,9 @@ def _run_decision_lifecycle_probe() -> dict:
     script = "\n".join(
         [
             """
+const RECORD_SOURCE_COPY = {
+  clinician: 'You recorded this from the clinician',
+};
 const decisions = ['active', 'needs_confirmation', 'superseded', 'retracted'].map(status => ({
   id: `decision-${status}`,
   text: `${status} decision`,
@@ -3662,13 +3721,13 @@ def test_decision_controls_match_the_server_lifecycle_matrix_at_runtime():
     }
     assert result["immediateInvalidation"] == {
         "supersedesId": "",
-        "correctionLabel": "Caregiver-entered decision attributed to the clinician",
+        "correctionLabel": "Decision you recorded from the clinician",
         "cancelHidden": True,
         "storedSupersedesId": "",
     }
     assert result["nonActiveDraft"] == {
         "supersedesId": "",
-        "correctionLabel": "Caregiver-entered decision attributed to the clinician",
+        "correctionLabel": "Decision you recorded from the clinician",
         "cancelHidden": True,
         "decisionText": "Corrected decision wording",
         "storedSupersedesId": "",
@@ -4010,7 +4069,7 @@ def test_appointment_loops_use_arrays_and_live_drafts_survive_rerenders():
 
 
 def test_appointment_provenance_and_stale_source_wording_are_fixed():
-    assert APP_JS.count("Caregiver-entered · attributed to clinician · unverified") >= 2
+    assert "You recorded this from the clinician" in APP_JS
     source_picker = _function_source("renderVisitSourceQuestions", "addGeneratedVisitQuestion")
     assert "Generated questions unavailable" in source_picker
     assert "Reload the current questions" in source_picker
@@ -4024,8 +4083,8 @@ def test_appointment_provenance_and_stale_source_wording_are_fixed():
     assert "data-source-token" not in unavailable
     assert ">Add</button>" not in unavailable
     accepted = _function_source("renderVisitQuestions", "toggleVisitAnswerText")
-    assert "Generated snapshot · generation" in accepted
-    assert "Manual caregiver question" in accepted
+    assert "Generated question saved for this visit" in accepted
+    assert "You entered this question" in accepted
 
 
 def test_appointment_flows_never_call_deferred_or_legacy_routes():
@@ -4270,10 +4329,16 @@ def test_visit_recap_plain_text_is_deterministic_exact_and_control_safe():
     script = "\n".join(
         [
             """
+const RECORD_SOURCE_COPY = {
+  clinician: 'You recorded this from the clinician',
+  administrative: 'Administrative note - not clinical evidence',
+  entered: 'You entered this',
+};
 function visitStatusLabel(status) {
   return { in_progress: 'In progress', completed: 'Completed' }[status] || status;
 }
 """,
+            _function_source("caregiverProvenancePresentation", "precisionLabel"),
             _function_source("recapPlainText", "buildVisitRecapText"),
             _function_source("buildVisitRecapText", "recapSectionMarkup"),
             """
@@ -4332,6 +4397,8 @@ console.log(JSON.stringify({
     assert result["omittedEmpty"] is True
     assert "unsupported control characters" in result["controlError"]
     assert result["text"].endswith("\n")
+    assert "decision-" not in result["text"]
+    assert "follow-up-" not in result["text"]
 
 
 def test_visit_recap_exports_recheck_authority_before_every_side_effect():
@@ -4416,6 +4483,10 @@ def _visit_recap_export_probe_script() -> str:
     return "\n".join(
         [
             """
+const RECORD_SOURCE_COPY = {
+  clinician: 'You recorded this from the clinician',
+  administrative: 'Administrative note - not clinical evidence',
+};
 class FakeClassList {
   constructor() { this.values = new Set(); }
   add(value) { this.values.add(value); }
@@ -5728,6 +5799,10 @@ def _run_follow_up_offline_projection_probe() -> dict:
     script = "\n".join(
         [
             """
+const RECORD_SOURCE_COPY = {
+  clinician: 'You recorded this from the clinician',
+  administrative: 'Administrative note - not clinical evidence',
+};
 class FakeClassList {
   constructor() { this.values = new Set(); }
   add(name) { this.values.add(name); }
@@ -7896,16 +7971,26 @@ def test_follow_up_mutation_handlers_reject_before_dom_or_state_access():
 
 def test_follow_up_outcomes_have_precise_unverified_provenance():
     presentation = _function_source("followUpOutcomePresentation", "formatActionTimestamp")
-    assert "Caregiver-entered · attributed to clinician · unverified" in presentation
-    assert "Caregiver-entered · caregiver reported · unverified" in presentation
-    assert "Caregiver-entered administrative outcome · not clinical evidence" in presentation
-    assert "verified" not in presentation.replace("unverified", "")
+    assert "RECORD_SOURCE_COPY.clinician" in presentation
+    assert "You recorded this" in presentation
+    assert "RECORD_SOURCE_COPY.administrative" in presentation
+    assert "unverified" not in presentation
     renderer = _function_source("renderFollowUps", "setFollowUpFilter")
     visit_renderer = _function_source("renderVisitFollowUps", "createVisitFollowUp")
     assert "escHtml(item.outcome.text)" in renderer
     assert "source-verified" not in renderer
     assert "followUpOutcomePresentation(item.outcome)" in visit_renderer
     assert "escHtml(outcome.label)" in visit_renderer
+
+
+def test_follow_up_tabpanel_tracks_selected_filter_and_live_region_is_not_duplicated():
+    renderer = _function_source("renderFollowUps", "setFollowUpFilter")
+    assert "list.setAttribute('aria-labelledby', `follow-up-filter-${followUpFilter}`)" in renderer
+    assert 'id="follow-up-list"' in INDEX_HTML
+    follow_up_markup = INDEX_HTML[
+        INDEX_HTML.index('id="follow-up-list"') : INDEX_HTML.index('id="follow-up-retry"')
+    ]
+    assert 'aria-live="polite"' not in follow_up_markup
 
 
 def test_follow_up_surface_is_responsive_keyboard_operable_and_overflow_safe():

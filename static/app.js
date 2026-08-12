@@ -1280,6 +1280,21 @@
   function renderAppState() {
     const banner = document.getElementById('app-state-banner');
     if (!banner) return;
+    const reloadAction = document.getElementById('app-state-reload');
+    const switchAccountAction = document.getElementById('app-state-switch-account');
+    const retryAction = document.getElementById('app-state-retry');
+    if (reloadAction) {
+      reloadAction.hidden = true;
+      reloadAction.textContent = 'Reload to sign in';
+    }
+    if (switchAccountAction) {
+      switchAccountAction.hidden = true;
+      switchAccountAction.textContent = 'Sign out and switch account';
+    }
+    if (retryAction) {
+      retryAction.hidden = false;
+      retryAction.textContent = 'Retry';
+    }
     if (!failedLoads.size && navigator.onLine !== false) {
       banner.hidden = true;
       banner.classList.remove('offline');
@@ -1296,10 +1311,12 @@
 
     if (error?.status === 401) {
       title = 'Sign-in required';
-      message = 'Your session expired or is not authenticated. Browser-held patient data was cleared; stored patient records were not deleted. Reload the page to sign in again, then retry.';
+      message = 'Your session expired or is not authenticated. Browser-held patient data was cleared; stored patient records were not deleted. Reload to complete sign-in, or retry after signing in elsewhere.';
+      if (reloadAction) reloadAction.hidden = false;
     } else if (error?.status === 403) {
       title = 'Access to this patient record is denied';
-      message = 'This account cannot access the patient record. Browser-held patient data was cleared; stored patient records were not deleted. Reload and sign in with the permitted account.';
+      message = 'This account cannot access the patient record. Browser-held patient data was cleared; stored patient records were not deleted. Sign out and switch to the permitted account, or retry if access was just granted.';
+      if (switchAccountAction) switchAccountAction.hidden = false;
     } else if (offline) {
       title = 'Connection lost';
       message = 'The page cannot reach NET/Care. Patient data has not been removed; reconnect and retry.';

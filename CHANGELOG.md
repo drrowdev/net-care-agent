@@ -15,8 +15,10 @@ incremented when something user-visible or operationally meaningful changes.
   surface is still cleared fail-closed. The banner and symptom, treatment,
   research, biomarker, and imaging empty states explicitly distinguish cleared
   browser-held data from stored patient records, which were not deleted, and
-  direct the caregiver through
-  Easy Auth reload/sign-in before strict current-revision projections repopulate.
+  expose separate manual **Reload to sign in**, **Sign out and switch account**,
+  and **Retry** controls. Denied access uses the supported same-origin Easy Auth
+  logout endpoint with an encoded return to `/`; no automatic reload loop is
+  introduced before strict current-revision projections repopulate.
 
 ### Added
 - **Shared Today/Research shortlist and disposition workflow.** One atomically

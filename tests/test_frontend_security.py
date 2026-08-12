@@ -454,6 +454,28 @@ def test_live_auth_eviction_explains_browser_clear_and_recovers_all_projections(
             assert page.locator("#app-state-banner").is_visible()
             assert page.locator("#app-state-title").inner_text() == expected_title
             assert page.evaluate("() => failedLoads.has('authorization')")
+            auth_actions = page.evaluate(
+                """() => ({
+                  reloadHidden: document.getElementById('app-state-reload').hidden,
+                  reloadLabel: document.getElementById('app-state-reload').textContent,
+                  reloadAction: document.getElementById('app-state-reload').getAttribute('onclick'),
+                  switchHidden: document.getElementById('app-state-switch-account').hidden,
+                  switchLabel: document.getElementById('app-state-switch-account').textContent,
+                  switchHref: document.getElementById('app-state-switch-account').getAttribute('href'),
+                  retryHidden: document.getElementById('app-state-retry').hidden,
+                  retryLabel: document.getElementById('app-state-retry').textContent,
+                })"""
+            )
+            assert auth_actions == {
+                "reloadHidden": status != 401,
+                "reloadLabel": "Reload to sign in",
+                "reloadAction": "window.location.reload()",
+                "switchHidden": status != 403,
+                "switchLabel": "Sign out and switch account",
+                "switchHref": "/.auth/logout?post_logout_redirect_uri=%2F",
+                "retryHidden": False,
+                "retryLabel": "Retry",
+            }
             assert page.evaluate(
                 """() => [
                   biomarkerProjection,
@@ -488,6 +510,14 @@ def test_live_auth_eviction_explains_browser_clear_and_recovers_all_projections(
             assert page.locator("#app-state-banner").is_visible()
             assert page.locator("#app-state-title").inner_text() == expected_title
             assert page.evaluate("() => failedLoads.size === 1")
+            assert page.evaluate(
+                """status => (
+                  document.getElementById('app-state-reload').hidden === (status !== 401)
+                  && document.getElementById('app-state-switch-account').hidden === (status !== 403)
+                  && !document.getElementById('app-state-retry').hidden
+                )""",
+                status,
+            )
 
             page.locator("#app-state-retry").click()
             page.wait_for_function(
@@ -546,6 +576,39 @@ def test_live_auth_eviction_explains_browser_clear_and_recovers_all_projections(
                 "authority": [0, 0],
                 "bannerHidden": True,
             }
+            assert page.evaluate(
+                """() => (
+                  document.getElementById('app-state-reload').hidden
+                  && document.getElementById('app-state-switch-account').hidden
+                  && !document.getElementById('app-state-retry').hidden
+                  && document.getElementById('app-state-reload').textContent === 'Reload to sign in'
+                  && document.getElementById('app-state-switch-account').textContent === 'Sign out and switch account'
+                  && document.getElementById('app-state-retry').textContent === 'Retry'
+                )"""
+            )
+
+            page.evaluate(
+                """() => {
+                  failedLoads.clear();
+                  const error = new Error('Synthetic non-auth load failure');
+                  error.status = 422;
+                  reportLoadError('synthetic-non-auth', error);
+                }"""
+            )
+            assert page.locator("#app-state-banner").is_visible()
+            assert page.locator("#app-state-title").inner_text() == (
+                "Patient data could not be loaded"
+            )
+            assert page.evaluate(
+                """() => (
+                  document.getElementById('app-state-reload').hidden
+                  && document.getElementById('app-state-switch-account').hidden
+                  && !document.getElementById('app-state-retry').hidden
+                  && document.getElementById('app-state-retry').textContent === 'Retry'
+                )"""
+            )
+            page.evaluate("() => { failedLoads.clear(); renderAppState(); }")
+            assert page.locator("#app-state-banner").is_hidden()
         finally:
             context.close()
             browser.close()
@@ -750,6 +813,10 @@ def test_load_failures_distinguish_auth_offline_and_retry_states():
     state = _function_source("renderAppState", "retryInitialLoad")
     assert "error?.status === 401" in state
     assert "error?.status === 403" in state
+    assert "reloadAction.hidden = false" in state
+    assert "switchAccountAction.hidden = false" in state
+    assert "/.auth/logout?post_logout_redirect_uri=%2F" in INDEX_HTML
+    assert 'onclick="window.location.reload()"' in INDEX_HTML
     assert "navigator.onLine === false" in state
     assert "Patient data has not been removed" in state
     retry = _function_source("retryInitialLoad", "switchView")

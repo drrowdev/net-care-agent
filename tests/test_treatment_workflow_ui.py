@@ -1292,6 +1292,105 @@ def test_live_activity_navigation_closes_report_and_restores_meaningful_focus(
             browser.close()
 
 
+@pytest.mark.parametrize("width,height", [(1280, 800), (360, 740)])
+def test_live_unchanged_stale_poll_preserves_action_alert_and_focus(
+    width: int,
+    height: int,
+):
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    with playwright_api.sync_playwright() as playwright:
+        if not Path(playwright.chromium.executable_path).exists():
+            pytest.skip("Installed Playwright browser is unavailable")
+        browser, context, page, _ = _open_treatment_page(playwright, width, height)
+        try:
+            page.evaluate(
+                """() => {
+                  switchView('activity', document.getElementById('nav-activity'));
+                  const report = document.getElementById('report-panel');
+                  report.classList.remove('collapsed');
+                  report.setAttribute('aria-hidden', 'false');
+                  activateDialog(report, document.getElementById('nav-activity'));
+                }"""
+            )
+            cases = [
+                ("report-unavailable", "digest", "report", "unavailable"),
+                ("report-not-retained", "digest", "report", "not_retained"),
+                ("result-unavailable", "questions", "result", "unavailable"),
+                ("result-not-retained", "questions", "result", "not_retained"),
+            ]
+            for task_id, task_type, kind, state in cases:
+                result = page.evaluate(
+                    """task => {
+                      openTaskRenderKey = null;
+                      selectedTaskId = task.id;
+                      currentReceipt = null;
+                      revalidateOpenTask([task]);
+                      const panel = document.getElementById('panel-body');
+                      const firstButton = panel.querySelector('.artifact-state-card button');
+                      const firstAlert = panel.querySelector('.stale-artifact');
+                      firstButton.id = `poll-action-${task.id}`;
+                      firstButton.focus();
+                      revalidateOpenTask([{...task, artifact: {...task.artifact}}]);
+                      return {
+                        sameButton: firstButton === panel.querySelector('.artifact-state-card button'),
+                        sameAlert: firstAlert === panel.querySelector('.stale-artifact'),
+                        focus: document.activeElement.id,
+                        focusInsideReport: document.getElementById('report-panel')
+                          .contains(document.activeElement),
+                        activeDialog: activeDialogSurface?.id || null,
+                      };
+                    }""",
+                    {
+                        "id": task_id,
+                        "type": task_type,
+                        "status": "done",
+                        "derived_content_stale": True,
+                        "derived_content_stale_reason": ("patient_record_changed_after_generation"),
+                        "artifact": {
+                            "kind": kind,
+                            "state": state,
+                            "freshness": "unknown",
+                        },
+                    },
+                )
+                assert result == {
+                    "sameButton": True,
+                    "sameAlert": True,
+                    "focus": f"poll-action-{task_id}",
+                    "focusInsideReport": True,
+                    "activeDialog": "report-panel",
+                }
+
+            stale_result_copy = page.evaluate(
+                """() => ({
+                  available: staleResultMarkup({
+                    id: 'result-available',
+                    type: 'questions',
+                    status: 'done',
+                    derived_content_stale: true,
+                    derived_content_stale_reason: 'patient_record_changed_after_generation',
+                    artifact: {kind: 'result', state: 'available', freshness: 'stale'},
+                  }),
+                  unavailable: staleResultMarkup({
+                    id: 'result-unavailable',
+                    type: 'questions',
+                    status: 'done',
+                    derived_content_stale: true,
+                    derived_content_stale_reason: 'patient_record_changed_after_generation',
+                    artifact: {kind: 'result', state: 'unavailable', freshness: 'unknown'},
+                  }),
+                })"""
+            )
+            assert "retained but hidden" in stale_result_copy["available"].lower()
+            assert "not available here" not in stale_result_copy["available"].lower()
+            assert "not available here" in stale_result_copy["unavailable"].lower()
+            assert "retained" not in stale_result_copy["unavailable"].lower()
+            assert "hidden here" not in stale_result_copy["unavailable"].lower()
+        finally:
+            context.close()
+            browser.close()
+
+
 def test_live_add_and_server_authorized_transition_use_full_reload():
     playwright_api = pytest.importorskip("playwright.sync_api")
     with playwright_api.sync_playwright() as playwright:

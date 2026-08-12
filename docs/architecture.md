@@ -128,6 +128,11 @@ durable state remain `legacy_unknown` rather than being rewritten. Public job
 responses strip report/result paths and the internal storage marker. New job
 errors and job-runner logs use safe codes/types rather than input, model output,
 or traceback. Protected lower-level storage/recovery logs may include OS paths.
+The Activity detail renderer keys stale content by selected job, stale reason,
+and public artifact kind/state/freshness. Unchanged polls do not replace its
+modal DOM, so focused actions and alert nodes remain stable. Stale result copy
+claims retained/hidden content only for `artifact.state=available`; every other
+state says the prior content is not available and keeps its precise state card.
 
 Every successful intake commit also appends one `document_imports[]` audit record
 to the profile before orchestration begins. `GET /api/jobs/<id>/receipt` exposes

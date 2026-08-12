@@ -1048,8 +1048,11 @@ def test_receipt_mutation_response_is_correlated_to_originating_job_and_revision
 def test_stale_job_result_is_hidden_in_activity_panel():
     detail = _function_source("selectTask", "formatReport")
     assert "if (task.result.stale)" in detail
-    assert "const staleCopy = staleTaskCopy(task)" in detail
-    assert "Regenerate it before use" in detail
+    assert "staleResultMarkup(task)" in detail
+    result_markup = _function_source("staleResultMarkup", "selectTask")
+    assert "artifact.state === 'available'" in result_markup
+    assert "retained but hidden" in result_markup
+    assert "Prior generated content is not available here." in result_markup
     assert "if (task.report_stale)" in detail
     stale_report = _function_source("staleReportMarkup", "selectTask")
     assert "staleTaskCopy({" in stale_report
@@ -1106,9 +1109,19 @@ def test_open_task_is_revalidated_and_copy_state_cleared():
     assert "freshness_cannot_be_verified" in stale
     revalidate = _function_source("revalidateOpenTask", "updateHeaderStatus")
     assert "task?.derived_content_stale" in revalidate
+    assert "renderKey === openTaskRenderKey" in revalidate
+    assert "openTaskRenderKey = renderKey" in revalidate
     assert "staleReportMarkup({" in revalidate
-    assert "artifactStateMarkup(task)" in revalidate
+    assert "staleResultMarkup(task)" in revalidate
+    stale_renderers = _function_source("staleReportMarkup", "selectTask")
+    assert stale_renderers.count("artifactStateMarkup(task)") == 2
     assert "clearReportCopyState()" in revalidate
+    close = _function_source("closePanel", "closeReportBeforeNavigation")
+    selection = _function_source("selectTask", "formatReport")
+    eviction = _function_source("evictClientPhi", "renderRecentUpdates")
+    assert "openTaskRenderKey = null" in close
+    assert "openTaskRenderKey = null" in selection
+    assert "openTaskRenderKey = null" in eviction
     copy = _function_source("clearReportCopyState", "revalidateOpenTask")
     assert "currentReportText = ''" in copy
     assert "copy.disabled = true" in copy

@@ -65,6 +65,9 @@ incremented when something user-visible or operationally meaningful changes.
   close/deactivate the report dialog before opening Today or Appointments and
   place focus on the target heading/dialog at desktop and phone widths, including
   when workflow mutation locks prevent an appointment dialog from opening.
+  Unchanged stale Activity polling now uses a semantic render key, preserving
+  action/alert node identity and keyboard focus inside the modal; stale result
+  copy says retained/hidden only when the artifact is actually available.
 
 - **Authorization-eviction recovery messaging.** A `401` or `403` now records the
   authorization failure before request epochs invalidate late handlers, so the

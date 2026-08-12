@@ -2,6 +2,7 @@
   let selectedTaskId = null;
   let pollingInterval = null;
   let currentReportText = '';
+  let openTaskRenderKey = null;
   let activeView = 'today';
   let researchProjection = null;
   let researchResponseOwner = null;
@@ -3288,6 +3289,7 @@
     statusLoadEpoch += 1;
     taskSelectionEpoch += 1;
     selectedTaskId = null;
+    openTaskRenderKey = null;
     currentReportText = '';
     currentReceipt = null;
     pendingSummary = null;
@@ -9245,6 +9247,19 @@
     };
   }
 
+  function openTaskSemanticRenderKey(task) {
+    const artifact = normalizedTaskArtifact(task);
+    return [
+      task?.id || '',
+      task?.status || '',
+      task?.derived_content_stale === true ? 'stale' : 'current',
+      task?.derived_content_stale_reason || task?.report_stale_reason || '',
+      artifact.kind,
+      artifact.state,
+      artifact.freshness,
+    ].join('|');
+  }
+
   function clearReportCopyState() {
     currentReportText = '';
     const copy = document.getElementById('copy-btn');
@@ -9258,7 +9273,12 @@
     const panel = document.getElementById('report-panel');
     if (!selectedTaskId || panel?.classList.contains('collapsed')) return;
     const task = tasks.find(item => item.id === selectedTaskId);
-    if (!task?.derived_content_stale) return;
+    if (!task?.derived_content_stale) {
+      openTaskRenderKey = null;
+      return;
+    }
+    const renderKey = openTaskSemanticRenderKey(task);
+    if (renderKey === openTaskRenderKey) return;
     const receiptHtml = currentReceipt?.job_id === selectedTaskId
       ? renderReceipt(currentReceipt)
       : '';
@@ -9270,12 +9290,10 @@
         report_stale_reason: task.derived_content_stale_reason,
       });
     } else {
-      const copy = staleTaskCopy(task);
-      staleMarkup = `<div class="load-failure stale-artifact" role="alert">
-        <strong>${escHtml(copy.title)}</strong><span>${escHtml(copy.detail)} Prior generated content is hidden here.</span>
-      </div>${artifact.state === 'available' ? '' : artifactStateMarkup(task)}`;
+      staleMarkup = staleResultMarkup(task);
     }
     document.getElementById('panel-body').innerHTML = `${receiptHtml}${staleMarkup}`;
+    openTaskRenderKey = renderKey;
     clearReportCopyState();
   }
 
@@ -9314,6 +9332,7 @@
     report.classList.add('collapsed');
     report.setAttribute('aria-hidden', 'true');
     selectedTaskId = null;
+    openTaskRenderKey = null;
     taskSelectionEpoch += 1;
     currentReceipt = null;
     // Re-render task list to clear selection highlight
@@ -9710,10 +9729,23 @@
     </div>${artifact.state === 'available' ? '' : artifactStateMarkup(task)}`;
   }
 
+  function staleResultMarkup(task) {
+    const copy = staleTaskCopy(task);
+    const artifact = normalizedTaskArtifact(task);
+    const availabilityCopy = artifact.state === 'available'
+      ? 'The prior generated result is retained but hidden here. Regenerate it before use.'
+      : 'Prior generated content is not available here.';
+    return `<div class="load-failure stale-artifact" role="alert">
+      <strong>${escHtml(copy.title)}</strong>
+      <span>${escHtml(copy.detail)} ${availabilityCopy}</span>
+    </div>${artifact.state === 'available' ? '' : artifactStateMarkup(task)}`;
+  }
+
   async function selectTask(id, expectedEpoch = null, fallbackReceipt = null) {
     const selectionEpoch = expectedEpoch == null ? ++taskSelectionEpoch : expectedEpoch;
     if (selectionEpoch !== taskSelectionEpoch) return;
     selectedTaskId = id;
+    openTaskRenderKey = null;
     const request = capturePatientRequest({ taskSelection: true });
     currentReceipt = fallbackReceipt;
     currentReportText = '';
@@ -9850,11 +9882,7 @@
       copyBtn.disabled = false;
     } else if (task.result) {
       if (task.result.stale) {
-        const staleCopy = staleTaskCopy(task);
-        html += `<div class="load-failure stale-artifact" role="alert">
-          <strong>${escHtml(staleCopy.title)}</strong>
-          <span>${escHtml(staleCopy.detail)} Regenerate it before use.</span>
-        </div>`;
+        html += staleResultMarkup(task);
         clearReportCopyState();
       } else {
         const presentation = structuredResultPresentation(task);
@@ -9869,6 +9897,7 @@
     }
 
     panel.innerHTML = html;
+    openTaskRenderKey = openTaskSemanticRenderKey(task);
     return true;
   }
 

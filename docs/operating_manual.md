@@ -38,6 +38,14 @@ transport retains the last verified workspace visibly stale and read-only.
 Authorization failure additionally clears open reports/receipts, chat turns and
 revision, summary feedback, all research rows/snapshots/events/dialog drafts and
 retry bytes, and clinical text or selected file bytes still in the feed dialog.
+The page identifies `401` as **Sign-in required** and `403` as denied access,
+states that browser-held patient data was cleared while stored patient records
+were not deleted, and does not imply clinical-authority corruption. For `401`,
+reload the page to use the existing Easy Auth sign-in path and then use **Retry**
+if the original page remains open. For `403`, reload and sign in with the permitted
+account. The app does not start an automatic redirect or reload loop. Current
+symptom, treatment, research, biomarker, and imaging projections return only after
+their authenticated revision and strict payload checks succeed.
 In-flight document, digest, and deep-sweep submissions are aborted and cannot
 activate Activity from a late response; activity polling stops until current
 authority starts it again. A missing selected activity is treated the same way.

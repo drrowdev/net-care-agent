@@ -8,6 +8,16 @@ incremented when something user-visible or operationally meaningful changes.
 
 ## [Unreleased]
 
+### Fixed
+- **Authorization-eviction recovery messaging.** A `401` or `403` now records the
+  authorization failure before request epochs invalidate late handlers, so the
+  global sign-in/access banner remains visible while every patient-derived
+  surface is still cleared fail-closed. The banner and symptom, treatment,
+  research, biomarker, and imaging empty states explicitly distinguish cleared
+  browser-held data from stored patient records, which were not deleted, and
+  direct the caregiver through
+  Easy Auth reload/sign-in before strict current-revision projections repopulate.
+
 ### Added
 - **Shared Today/Research shortlist and disposition workflow.** One atomically
   validated `research-workspace` projection now drives a bounded Today summary

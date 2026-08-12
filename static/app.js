@@ -1296,10 +1296,10 @@
 
     if (error?.status === 401) {
       title = 'Sign-in required';
-      message = 'Your session has expired or is not authenticated. Sign in again, then retry.';
+      message = 'Your session expired or is not authenticated. Browser-held patient data was cleared; stored patient records were not deleted. Reload the page to sign in again, then retry.';
     } else if (error?.status === 403) {
       title = 'Access to this patient record is denied';
-      message = 'You are signed in, but this account is not on the patient record allowlist.';
+      message = 'This account cannot access the patient record. Browser-held patient data was cleared; stored patient records were not deleted. Reload and sign in with the permitted account.';
     } else if (offline) {
       title = 'Connection lost';
       message = 'The page cannot reach NET/Care. Patient data has not been removed; reconnect and retry.';
@@ -3136,6 +3136,18 @@
 
   function evictClientPhi(error = null) {
     phiEpoch += 1;
+    const authStatus = Number(error?.status);
+    const authEviction = authStatus === 401 || authStatus === 403;
+    if (authEviction) reportLoadError('authorization', error);
+    const evictionMessage = subject => {
+      if (authStatus === 401) {
+        return `${subject} held by this browser was cleared because the sign-in session expired. Stored patient records were not deleted.`;
+      }
+      if (authStatus === 403) {
+        return `${subject} held by this browser was cleared because access to the patient record was denied. Stored patient records were not deleted.`;
+      }
+      return `${subject} was cleared because current patient authority is unavailable.`;
+    };
     if (typeof cancelJobSubmissions === 'function') cancelJobSubmissions();
     if (typeof pollingInterval !== 'undefined' && pollingInterval) {
       clearTimeout(pollingInterval);
@@ -3154,7 +3166,7 @@
     if (typeof clearResearchProjection === 'function') {
       clearResearchProjection({
         state: 'error',
-        message: 'Research was cleared because current patient authority is unavailable.',
+        message: evictionMessage('Research'),
         retry: false,
         fullEviction: true,
       });
@@ -3163,7 +3175,7 @@
       clearSymptomProjection({
         state: 'error',
         statusLabel: 'Patient data unavailable',
-        message: 'Symptom data was cleared because current authority is unavailable.',
+        message: evictionMessage('Symptom data'),
         retry: false,
         fullEviction: true,
       });
@@ -3172,7 +3184,7 @@
       clearTreatmentProjection({
         state: 'error',
         statusLabel: 'Patient data unavailable',
-        message: 'Treatment data was cleared because current authority is unavailable.',
+        message: evictionMessage('Treatment data'),
         retry: false,
         fullEviction: true,
       });
@@ -3181,7 +3193,7 @@
       clearImagingProjection({
         state: 'error',
         statusLabel: 'Patient data unavailable',
-        message: 'Imaging data was cleared because current authority is unavailable.',
+        message: evictionMessage('Imaging data'),
         retry: false,
       });
     }
@@ -3189,7 +3201,7 @@
       clearBiomarkerProjection({
         state: 'error',
         statusLabel: 'Patient data unavailable',
-        message: 'Biomarker data was cleared because current authority is unavailable.',
+        message: evictionMessage('Biomarker data'),
         retry: false,
       });
     }

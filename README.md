@@ -100,17 +100,45 @@ Environment variables to set as Application Settings:
 - Auth: hosted APIs require App Service Easy Auth; the platform injects
   `WEBSITE_AUTH_ENABLED` (do not add that protected setting manually). Generic
   Azure hosting variables never make Easy Auth headers trusted. When the trusted
-  encoded principal is present, authorization prefers one unique claim value in
+  encoded principal is present, the **ID** candidate is one unique claim value in
   this order: the canonical object-identifier URI, `oid`, the canonical
   name-identifier URI, then `sub`. Duplicate identical values at the selected
-  tier are accepted; malformed or conflicting selected-tier claims fail closed.
-  Only when none of those claims is supplied does the app fall back to
-  `X-MS-CLIENT-PRINCIPAL-ID`, `userId`, then `userDetails`.
-  `AUTH_ALLOWED_PRINCIPAL_IDS` is an optional comma-separated exact stable-ID
-  allowlist; convenience names or email-valued identifiers are not equivalent
-  to an object ID. `APP_ORIGIN` (preferred) or `WEBSITE_HOSTNAME` supplies the
+  tier are accepted; malformed, oversized, or conflicting selected-tier claims
+  fail closed. Only when none of those claims is supplied does the app fall back
+  to `X-MS-CLIENT-PRINCIPAL-ID`. Static Web Apps `userId`/`userDetails` fields
+  are a different product's schema and are never identity here.
+  The **name** candidate comes from `X-MS-CLIENT-PRINCIPAL-NAME`. Because this
+  deployment's platform injects the account's email into
+  `X-MS-CLIENT-PRINCIPAL-ID` and may send neither the encoded blob nor the name
+  header, a bounded `local@domain`-shaped ID-header value is also offered as a
+  name candidate. It is never normalised beyond `casefold()` and never becomes a
+  stable object ID; if a name header and an email-shaped ID header are both
+  email-shaped and differ after `casefold()`, the name path fails closed.
+  `AUTH_ALLOWED_PRINCIPAL_IDS` is an optional comma-separated **exact,
+  case-sensitive** stable-ID allowlist. `AUTH_ALLOWED_PRINCIPAL_NAMES` is an
+  optional comma-separated exact account-name/email allowlist compared only
+  against the name candidate, with surrounding whitespace trimmed and
+  Unicode-safe `casefold()` matching — dots, plus tags, and domains are never
+  rewritten. A request passes when **either** configured allowlist matches its
+  own candidate, so an operator can move an entry between the two settings
+  without a lockout window. Leaving **both** empty preserves the historical
+  Easy-Auth-only posture: any principal the platform authenticated is accepted.
+  `APP_ORIGIN` (preferred) or `WEBSITE_HOSTNAME` supplies the
   canonical HTTPS browser origin. Never set `ALLOW_LOCAL_AUTH_BYPASS` in hosted
   configuration.
+- Referrer policy: responses send `Referrer-Policy: same-origin`. **Do not
+  change this back to `no-referrer`.** The App Service Easy Auth middleware runs
+  its own CSRF check ahead of Flask and answers `403` with sub-status `60`
+  (`Cross-site request forgery detected ... from referer ''`) for any
+  state-changing request that arrives without a `Referer`, so `no-referrer`
+  breaks every mutation before the request reaches the app. `same-origin` sends
+  the Referer only to this site and still sends nothing to any other origin.
+- Auth failures carry fixed PHI-free discriminators, never identifier values:
+  `reason` is one of `principal_absent`, `principal_malformed`,
+  `principal_not_allowed`, `cross_origin`, `hosted_auth_unavailable`, and
+  `principal_source` (where meaningful) is one of `encoded_claim`,
+  `provider_id_header`, `principal_name_header`, `provider_id_name_compat`,
+  `absent`.
 
 `startup.sh` uses exactly one Gunicorn worker, a 300-second worker timeout, and
 a 30-second graceful timeout. **One worker is load-bearing:** profile writes are

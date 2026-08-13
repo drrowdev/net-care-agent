@@ -837,6 +837,293 @@ def test_load_failures_distinguish_auth_offline_and_retry_states():
     assert "'Imaging history could not be loaded." in APP_JS
 
 
+def test_no_frontend_code_reintroduces_a_no_referrer_policy():
+    assert 'name="referrer"' not in INDEX_HTML
+    assert "referrerPolicy" not in APP_JS
+    assert "referrerPolicy" not in INDEX_HTML
+    assert "no-referrer" not in APP_JS
+    assert "no-referrer" not in INDEX_HTML
+
+
+def test_offsite_anchor_templates_opt_out_of_the_referrer_individually():
+    """Only off-site anchors need `noreferrer`; the rest are same-origin routes.
+
+    With a `same-origin` document policy these off-site links send nothing at
+    all, exactly as they did under the previous global `no-referrer`.
+    """
+    offsite = [
+        line
+        for line in APP_JS.splitlines()
+        if 'target="_blank"' in line and ("${safe}" in line or "canonical" in line)
+    ]
+    assert len(offsite) >= 2
+    for line in offsite:
+        assert "noreferrer" in line, line
+
+
+def _emitted_referrer_policy() -> str:
+    source = Path("app.py").read_text(encoding="utf-8")
+    match = re.search(r'^_REFERRER_POLICY = "([^"]+)"', source, re.MULTILINE)
+    assert match, "app.py no longer declares _REFERRER_POLICY"
+    return match.group(1)
+
+
+def _referer_seen_by_a_same_origin_post(policy: str) -> str:
+    import http.server
+    import threading
+
+    seen: dict[str, str] = {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *_args):  # keep pytest output clean
+            return
+
+        def do_GET(self):
+            body = b"<!doctype html><title>referrer probe</title>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Referrer-Policy", policy)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self):
+            seen["referer"] = self.headers.get("Referer", "")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as playwright:
+            if not Path(playwright.chromium.executable_path).exists():
+                pytest.skip("Installed Playwright browser is unavailable")
+            browser = playwright.chromium.launch()
+            try:
+                page = browser.new_page()
+                page.goto(f"http://127.0.0.1:{server.server_address[1]}/")
+                status = page.evaluate(
+                    "async () => (await fetch('/api/summary/generate',"
+                    " {method: 'POST', headers: {'Content-Type': 'application/json'},"
+                    " body: '{}'})).status"
+                )
+                assert status == 200
+            finally:
+                browser.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(5)
+    return seen.get("referer", "")
+
+
+def test_same_origin_mutation_sends_a_referer_for_the_easy_auth_csrf_check():
+    """Reproduces the production 403.60 and proves the shipped policy fixes it.
+
+    App Service Easy Auth middleware runs its own CSRF check ahead of Flask and
+    rejects a state-changing request whose Referer is empty
+    ("Cross-site request forgery detected ... from referer ''"). The
+    `no-referrer` leg is the control that fails exactly the way production did.
+    """
+    pytest.importorskip("playwright.sync_api")
+
+    shipped = _referer_seen_by_a_same_origin_post(_emitted_referrer_policy())
+    control = _referer_seen_by_a_same_origin_post("no-referrer")
+
+    assert shipped.startswith("http://127.0.0.1:")
+    assert control == ""
+
+
+def test_cross_origin_denial_is_recovered_separately_from_account_denial():
+    state = _function_source("renderAppState", "retryInitialLoad")
+    # A same-origin rejection must never recommend switching accounts, and it
+    # must be selected only after a genuine account denial.
+    assert "if (isCrossOriginDenial(error)) {" in state
+    assert state.index("isCrossOriginDenial(error)) {") < state.index("error?.status === 401")
+    assert "item?.status === 403 && !isCrossOriginDenial(item)" in state
+    assert "Request blocked by the app’s address check" in state
+    guard = _function_source("authEvictsClientPhi", "applyAuthFailure")
+    assert "if (status !== 401 && status !== 403) return false" in guard
+    assert "return !isCrossOriginDenial(error)" in guard
+    reasons = _function_source("authFailureReason", "isCrossOriginDenial")
+    assert "AUTH_FAILURE_REASONS.has(reason) ? reason : ''" in reasons
+    for reason in (
+        "principal_absent",
+        "principal_malformed",
+        "principal_not_allowed",
+        "cross_origin",
+        "hosted_auth_unavailable",
+    ):
+        assert f"'{reason}'" in APP_JS
+
+
+def _run_cross_origin_probe(body: object, status: int = 403) -> dict:
+    script = "\n".join(
+        [
+            """
+class FakeClassList {
+  add() {}
+  remove() {}
+  toggle() {}
+  contains() { return false; }
+}
+
+function fakeElement() {
+  return {
+    classList: new FakeClassList(),
+    dataset: {},
+    hidden: false,
+    innerHTML: '',
+    textContent: '',
+    closest() { return null; },
+  };
+}
+
+const elements = new Map();
+const element = id => {
+  if (!elements.has(id)) elements.set(id, fakeElement());
+  return elements.get(id);
+};
+const document = { body: { children: [] }, getElementById: element };
+const navigator = { onLine: true };
+const failedLoads = new Map();
+let phiEpoch = 0;
+const evictions = [];
+
+function evictClientPhi(error) {
+  phiEpoch += 1;
+  evictions.push(Number(error?.status));
+  reportLoadError('authorization', error);
+}
+
+function reportLoadSuccess(scope) {
+  failedLoads.delete(scope);
+  renderAppState();
+}
+
+function reportLoadError(scope, error) {
+  failedLoads.set(scope, error);
+  renderAppState();
+}
+""",
+            _executable_function_source("readJsonResponse", "readJobSubmission"),
+            _function_source("shouldEvictClientPhi", "restoreDialogFocus"),
+            _executable_function_source("renderAppState", "retryInitialLoad"),
+            """
+(async () => {
+  const status = Number(process.argv[1]);
+  const payload = JSON.parse(process.argv[2]);
+  const response = {
+    status,
+    ok: false,
+    headers: { get() { return null; } },
+    async json() {
+      if (payload === null) throw new Error('unparseable body');
+      return payload;
+    },
+  };
+  let thrown = null;
+  // Mirror the real callers: an epoch guard makes eviction exactly-once.
+  const requestPhiEpoch = phiEpoch;
+  try {
+    await readJsonResponse(response, () => phiEpoch === requestPhiEpoch);
+  } catch (error) {
+    thrown = error;
+  }
+  renderAppState();
+  const beforeReport = {
+    title: element('app-state-title').textContent,
+    banner: element('app-state-banner').hidden,
+  };
+  if (thrown) reportLoadError('probe-scope', thrown);
+  console.log(JSON.stringify({
+    phiEpoch,
+    evictions,
+    reason: thrown?.reason ?? null,
+    message: thrown?.message ?? null,
+    evicts: shouldEvictClientPhi(thrown),
+    beforeReport,
+    title: element('app-state-title').textContent,
+    banner: element('app-state-banner').hidden,
+    switchAccountHidden: element('app-state-switch-account').hidden,
+    reloadHidden: element('app-state-reload').hidden,
+  }));
+})().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
+""",
+        ]
+    )
+    completed = _run_node_script(script, str(status), json.dumps(body))
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
+def test_cross_origin_mutation_denial_never_evicts_phi_or_offers_account_switch():
+    result = _run_cross_origin_probe(
+        {"error": "Cross-origin request denied.", "reason": "cross_origin"}
+    )
+
+    assert result["phiEpoch"] == 0
+    assert result["evictions"] == []
+    assert result["evicts"] is False
+    assert result["reason"] == "cross_origin"
+    assert "did not come from the app’s own web address" in result["message"]
+    assert "no patient data was cleared" in result["message"]
+    # A mutation-scoped address rejection raises no global patient-data banner.
+    assert result["beforeReport"] == {"title": "", "banner": True}
+    # If a caller does surface it, the recovery is configuration-specific.
+    assert result["title"] == "Request blocked by the app’s address check"
+    assert result["switchAccountHidden"] is True
+    assert result["reloadHidden"] is True
+
+
+def test_principal_denial_still_evicts_and_recommends_switching_accounts():
+    result = _run_cross_origin_probe(
+        {"error": "Access denied.", "reason": "principal_not_allowed", "principal_source": "absent"}
+    )
+
+    assert result["phiEpoch"] == 1
+    assert result["evictions"] == [403]
+    assert result["reason"] == "principal_not_allowed"
+    assert result["title"] == "Access to this patient record is denied"
+    assert result["switchAccountHidden"] is False
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        None,
+        {"error": "Access denied."},
+        {"error": "Access denied.", "reason": "made_up_reason"},
+        {"error": "Access denied.", "reason": {"cross_origin": True}},
+    ],
+)
+def test_unknown_legacy_or_unparseable_403_stays_a_fail_closed_eviction(body):
+    result = _run_cross_origin_probe(body)
+
+    assert result["phiEpoch"] == 1
+    assert result["evictions"] == [403]
+    assert result["reason"] is None
+
+
+def test_cross_origin_reason_never_downgrades_a_401():
+    result = _run_cross_origin_probe(
+        {"error": "Authentication required.", "reason": "cross_origin"}, status=401
+    )
+
+    assert result["phiEpoch"] == 1
+    assert result["evictions"] == [401]
+    assert result["title"] == "Sign-in required"
+
+
 def test_status_failure_clears_all_status_derived_phi_and_caches():
     failure = _function_source("renderStatusFailure", "evictClientPhi")
     for expression in (
@@ -913,12 +1200,18 @@ def test_central_phi_eviction_clears_patient_panels_dialogs_and_histories():
         assert "evictClientPhi(" in _function_source(loader, next_name)
     submission = _function_source("readJobSubmission", "waitForJob")
     json_reader = _function_source("readJsonResponse", "readJobSubmission")
-    assert json_reader.index("response.status === 401") < json_reader.index("response.json()")
-    assert submission.index("response.status === 401") < submission.index("response.json()")
+    # The body must be read before the auth branch so the fixed PHI-free reason
+    # discriminator can separate a same-origin rejection from account denial,
+    # but an unparseable body must still reach the fail-closed eviction.
+    for reader in (json_reader, submission):
+        assert reader.index("response.json()") < reader.index("response.status === 401")
+        assert reader.index("response.status === 401") < reader.index("if (!parsed)")
+        assert "authEvictsClientPhi(authError) && canEvictClientPhi()" in reader
     assert "evictClientPhi(error)" in submission
     mutation = _function_source("submitReceiptMutation", "receiptRefreshFailureMarkup")
     assert "evictClientPhi(authError)" in mutation
-    assert mutation.index("response.status === 401") < mutation.index("response.json()")
+    assert mutation.index("response.json()") < mutation.index("response.status === 401")
+    assert mutation.index("response.status === 401") < mutation.index("if (!parsed)")
     close = _function_source("closePanel", "receiptValueSummary")
     assert "const request = capturePatientRequest()" in close
     assert "authorizePatientResponse(request, tasks)" in close
@@ -1135,7 +1428,7 @@ def test_receipt_success_survives_detail_refresh_failure():
     assert "fallbackReceipt = null" in selection
     assert "receiptRefreshFailureMarkup(fallbackReceipt" in selection
     assert "Saved. Refreshing activity detail" in selection
-    assert "if (error?.status === 401 || error?.status === 403)" in selection
+    assert "if (authEvictsClientPhi(error))" in selection
     assert "evictClientPhi(error)" in selection
     assert "shouldEvictClientPhi(error) && !fallbackReceipt" in selection
 

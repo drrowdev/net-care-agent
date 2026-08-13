@@ -892,6 +892,66 @@ the instance if it returns 503 persistently (e.g. Azure Files mount not writable
 All fields are aggregate operational metadata; no job content, PHI, path, or
 secret is returned.
 
+## 10a. Recover from an authorization failure (operator)
+
+Use this when the workspace shows an authorization banner or every action fails
+with `403`. Everything below is safe to run without touching patient data.
+Substitute your own resource names; never paste real account identifiers,
+emails, tokens, or subscription IDs into the repo, an issue, or a PR.
+
+**Step 1 — decide which gate rejected the request.** There are two, and they
+fail differently.
+
+| Symptom | Gate | Meaning |
+|---|---|---|
+| `403`, sub-status `60`, warning `Cross-site request forgery detected ... from referer ''`, request absent from application logs | App Service Easy Auth middleware, before Flask | The browser sent no `Referer` on a state-changing request. Caused by a `Referrer-Policy: no-referrer` response header (or a per-request `referrerPolicy` override). |
+| JSON body with `"reason": "principal_not_allowed"` | Flask | The account authenticated, but no configured allowlist matched its typed candidate. |
+| JSON body with `"reason": "cross_origin"` | Flask | Same-origin check failed. The workspace keeps patient data and shows a configuration message; it does **not** ask you to switch accounts. |
+| JSON body with `"reason": "principal_absent"` or `"principal_malformed"` | Flask | No usable principal reached the worker, or the encoded blob was corrupt/oversized. |
+| `503` with `"reason": "hosted_auth_unavailable"` | Flask | `WEBSITE_AUTH_ENABLED` is not `true`. Re-enable Easy Auth; never work around it. |
+
+Read the middleware verdict from the site's diagnostic log stream. The Flask
+`reason` and `principal_source` values are fixed enums and contain no
+identifier, email, claim value, or token, so they are safe to quote in a ticket.
+
+**Step 2 — confirm the referrer policy.** The app must never emit
+`no-referrer`:
+
+```powershell
+curl.exe -sS -D - -o NUL https://<app-service>.azurewebsites.net/api/health |
+  Select-String -Pattern 'Referrer-Policy'
+```
+
+Expect `Referrer-Policy: same-origin`. If it says `no-referrer`, the deployed
+package predates this fix — redeploy or roll forward; do not disable Easy Auth.
+
+**Step 3 — confirm which typed allowlist should match.** Check the shape of the
+configured settings without printing their values:
+
+```powershell
+az webapp config appsettings list -g <resource-group> -n <app-service> `
+  --query "[?name=='AUTH_ALLOWED_PRINCIPAL_IDS' || name=='AUTH_ALLOWED_PRINCIPAL_NAMES'].{name:name, entries:length(split(value, ','))}" -o table
+```
+
+- `AUTH_ALLOWED_PRINCIPAL_IDS` matches only a stable ID: an object identifier,
+  `oid`, name identifier, or `sub` claim, or the `X-MS-CLIENT-PRINCIPAL-ID`
+  header when no claim is present. Comparison is exact and case-sensitive.
+- `AUTH_ALLOWED_PRINCIPAL_NAMES` matches only the account name/email, trimmed
+  and compared with Unicode-safe `casefold()`. Dots, plus tags, and domains are
+  never rewritten, so `care.giver@…` and `caregiver@…` are different accounts.
+
+A request is accepted when **either** list matches its own candidate. Leaving
+both empty accepts any account Easy Auth authenticated.
+
+**Step 4 — migrate settings without a lockout.** Never change both settings in
+one step, and never leave the ID list empty while the name list is still
+unverified. Run the sequence in [§14a](#14a-migrate-the-authorization-settings).
+
+**Step 5 — verify recovery.** Sign in in a private browser window, confirm the
+workspace loads, and run one state-changing action (for example **Run digest**).
+If patient data was evicted, it returns after the authenticated reload; stored
+records are never deleted by an authorization failure.
+
 ## 11. Running digests
 
 The digest is run on demand via `POST /api/digest` (the "Run digest" button in
@@ -983,3 +1043,66 @@ If candidate upload, Kudu completion, or readiness fails, a complete prevalidate
 the candidate failure is returned. A first deployment has no automatic restore.
 `-Rollback` requires that distinct previous package, verifies its SHA-256 and
 embedded commit, redeploys it, then repeats both checks.
+
+## 14a. Migrate the authorization settings
+
+Only needed once, after the release that adds `AUTH_ALLOWED_PRINCIPAL_NAMES`.
+The goal is to move the account **email** out of the stable-ID allowlist, where
+it never belonged, and into the name allowlist — with no step where both gates
+are mismatched. Substitute your own values; never commit them.
+
+Notation used below (all placeholders):
+
+- `<object-id>` — the caregiver account's stable object identifier (GUID).
+- `<account-email>` — the exact account name/email, lower-cased.
+
+**Precondition.** The code containing typed name authorization is already
+deployed and verified. Confirm with
+`curl.exe -sS https://<app-service>.azurewebsites.net/api/health` that
+`release_commit` matches the packaged commit. If it does not, stop: on the old
+code `AUTH_ALLOWED_PRINCIPAL_NAMES` is ignored and step 2 would lock the
+caregiver out.
+
+**Step 1 — add the name allowlist, keep the ID list untouched (both gates
+valid).**
+
+```powershell
+az webapp config appsettings set -g <resource-group> -n <app-service> `
+  --settings AUTH_ALLOWED_PRINCIPAL_NAMES=<account-email>
+```
+
+`AUTH_ALLOWED_PRINCIPAL_IDS` still contains `<object-id>,<account-email>`, so
+access survives on the legacy exact-ID path regardless of which headers the
+platform sends. Verify sign-in and one state-changing action now.
+
+**Step 2 — remove only the email from the ID allowlist.**
+
+```powershell
+az webapp config appsettings set -g <resource-group> -n <app-service> `
+  --settings AUTH_ALLOWED_PRINCIPAL_IDS=<object-id>
+```
+
+Access now comes from the ID path when the platform sends a claim or GUID
+header, and from the name path (`principal_name_header`, or the documented
+`provider_id_name_compat` bridge for an email-shaped ID header) otherwise.
+Verify sign-in and one state-changing action again.
+
+**Never** run step 2 before step 1, and never issue both changes in one command:
+that is the only ordering that can leave zero matching gates.
+
+**Rollback.** Each step is independently reversible and always leaves at least
+one valid gate:
+
+- To undo step 2: re-add the email to the ID list
+  (`AUTH_ALLOWED_PRINCIPAL_IDS=<object-id>,<account-email>`). Do this first if
+  access is failing.
+- To undo step 1 afterwards: clear the name list
+  (`AUTH_ALLOWED_PRINCIPAL_NAMES=`) only once the ID list again contains every
+  value that must be accepted.
+- Emergency widening (single-tenant deployment, Easy Auth still enforced): set
+  both lists empty to restore Easy-Auth-only access, then re-narrow once the
+  correct values are confirmed.
+
+Each `az webapp config appsettings set` restarts the site, so queued or running
+jobs become `interrupted` and must be re-submitted. Make these changes when no
+digest is running.

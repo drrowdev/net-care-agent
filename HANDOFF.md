@@ -108,29 +108,38 @@ net-care-agent/
 └── docs/                 # See section 3
 ```
 
-## 5. The five things you'll regret learning the hard way
+## 5. The six things you'll regret learning the hard way
 
 1. **Build the deploy zip in Python (`zipfile`), not PowerShell `Compress-Archive`.**
    `Compress-Archive` has hung indefinitely on this machine and left
    `wwwroot/` in a broken state with `agent/` missing. Symptom: gunicorn
    crashes with `ModuleNotFoundError: No module named 'agent'`.
 
-2. **Hosted APIs require a valid Easy Auth principal.** Flask exempts PHI-free
-   `/api/health` and `/api/live`, but anonymous external probes also need Easy
-   Auth path exclusions configured in App Service. Do not disable Easy Auth for
-   a smoke test. Local API access requires explicit
-   `ALLOW_LOCAL_AUTH_BYPASS=1`.
+2. **Hosted APIs require a valid Easy Auth principal — and a `Referer`.** Flask
+   exempts PHI-free `/api/health` and `/api/live`, but anonymous external probes
+   also need Easy Auth path exclusions configured in App Service. Do not disable
+   Easy Auth for a smoke test. Local API access requires explicit
+   `ALLOW_LOCAL_AUTH_BYPASS=1`. **Never set `Referrer-Policy: no-referrer`:** the
+   Easy Auth middleware runs its own CSRF check before Flask and answers `403`
+   sub-status `60` to any state-changing request with an empty `Referer`, which
+   silently breaks every mutation. Ship `same-origin`.
 
-3. **Repo-local `git config user.name` has been wrong before.** Always run
+3. **Two allowlists, two namespaces.** `AUTH_ALLOWED_PRINCIPAL_IDS` matches only
+   a stable ID (exact, case-sensitive); `AUTH_ALLOWED_PRINCIPAL_NAMES` matches
+   only the account name/email (trimmed, `casefold()`). Either may authorize.
+   Never put an email in the ID list — migrate it with
+   `docs/operating_manual.md` §14a.
+
+4. **Repo-local `git config user.name` has been wrong before.** Always run
    `git config user.name` before your first commit. Confirm it matches the
    project owner's configured author name (kept in the private operator
    runbook).
 
-4. **Loose files in `/home/site/wwwroot/` are leftovers from old deploys.**
+5. **Loose files in `/home/site/wwwroot/` are leftovers from old deploys.**
    Oryx runs from `output.tar.zst`, NOT loose wwwroot files. Don't waste
    time cleaning wwwroot unless something is genuinely broken.
 
-5. **Model/prompt changes require the evaluation gate.** Run the private
+6. **Model/prompt changes require the evaluation gate.** Run the private
    clinician-reviewed golden set through `Scripts/eval_harness.py` and require
    zero critical regressions before changing tiering, prompts, or token limits.
 

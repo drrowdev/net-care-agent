@@ -11,6 +11,7 @@ import pytest
 
 HTML = Path("static/index.html").read_text(encoding="utf-8")
 CSS = Path("static/styles.css").read_text(encoding="utf-8")
+APP_JS = Path("static/app.js").read_text(encoding="utf-8")
 
 
 def test_index_html_references_split_assets():
@@ -163,7 +164,6 @@ def test_today_order_and_visible_appointments_label_preserve_internal_route():
         'aria-labelledby="follow-through-heading"',
         'id="today-appointment-card"',
         'id="research-today-card"',
-        'class="clinical-disclaimer"',
     ]
     positions = [today.index(value) for value in ordered_ids]
     assert positions == sorted(positions)
@@ -176,6 +176,52 @@ def test_today_order_and_visible_appointments_label_preserve_internal_route():
         today.index('id="recent-updates-list"') : today.index('id="treatment-today-card"')
     ]
     assert "aria-live=" not in recent_markup
+
+
+def test_today_has_one_contextual_assessment_action_and_shared_update_buttons():
+    today = HTML[HTML.index('id="view-today"') : HTML.index('id="view-patient"')]
+    summary_renderer = APP_JS[
+        APP_JS.index("function renderSummary") : APP_JS.index("function researchPlainObject")
+    ]
+
+    assert 'id="btn-gen-summary"' not in today
+    assert HTML.count('id="freshness-action"') == 1
+    assert "action.onclick = generateSummary" in APP_JS
+    assert (
+        "<button"
+        not in summary_renderer[
+            summary_renderer.index(
+                "if (!d || d.status === 'not_generated')"
+            ) : summary_renderer.index("// Status pill in header")
+        ]
+    )
+    assert 'class="button secondary recent-update-action"' in APP_JS
+    assert 'class="button-link" type="button" data-update-view' not in APP_JS
+    assert ".recent-update-item .recent-update-action {" in CSS
+
+
+def test_routine_workspace_omits_generic_capability_disclaimers():
+    removed_copy = (
+        "NET/Care records what you enter but does not assess urgency or monitor symptoms.",
+        "NET/Care records what you enter but does not verify treatment details",
+        "NET/Care records research you choose to follow but does not determine relevance",
+        "Decision-support only. Confirm clinical decisions with the treating team.",
+    )
+    for text in removed_copy:
+        assert text not in HTML
+    for class_name in (
+        "clinical-disclaimer",
+        "symptom-safety-guidance",
+        "treatment-safety-guidance",
+        "research-safety-guidance",
+    ):
+        assert class_name not in HTML
+        assert f".{class_name}" not in CSS
+
+    assert "Prior generated assessment is hidden" in APP_JS
+    assert "NET/Care-generated compatibility notes" in HTML
+    assert "They are not current symptom episodes." in HTML
+    assert "Caregiver-entered · unverified" in APP_JS
 
 
 def test_appointment_controls_are_keyboard_and_phone_accessible():

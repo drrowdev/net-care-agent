@@ -30,6 +30,7 @@
   let lastDialogTrigger = null;
   let hadActiveJobs = false;
   let pendingSummary = null;
+  let summaryGenerationPending = false;
   let activeDialogSurface = null;
   let currentReceipt = null;
   let patientEvidence = null;
@@ -3714,7 +3715,7 @@
     ];
     container.innerHTML = rows.map(row => `<article class="recent-update-item">
       <div><strong>${escHtml(row.label)}</strong><span>${escHtml(row.value)}</span></div>
-      <button class="button-link" type="button" data-update-view="${row.action}">${
+      <button class="button secondary recent-update-action" type="button" data-update-view="${row.action}">${
         row.action === 'patient' ? 'Review alerts' : row.action === 'research' ? 'Open Research' : 'Open Activity'
       }</button>
     </article>`).join('');
@@ -4740,9 +4741,16 @@
   }
 
   async function generateSummary() {
+    if (summaryGenerationPending) return;
+    summaryGenerationPending = true;
     const request = capturePatientRequest();
-    const btn = document.getElementById('btn-gen-summary');
-    if (btn) { btn.disabled = true; btn.textContent = '⊙ Generating…'; }
+    const btn = document.getElementById('freshness-action');
+    const buttonLabel = btn?.textContent || '';
+    const buttonWasAvailable = Boolean(btn && !btn.hidden);
+    if (buttonWasAvailable) {
+      btn.disabled = true;
+      btn.textContent = 'Generating assessment…';
+    }
     try {
       const r = await fetch('/api/summary/generate', { method: 'POST' });
       const submitted = await readJobSubmission(r);
@@ -4754,9 +4762,16 @@
       if (!patientRequestIsCurrent(request)) return;
       reportLoadError('summary', e);
     } finally {
-      if (patientRequestIsCurrent(request) && btn) {
+      summaryGenerationPending = false;
+      if (btn) {
         btn.disabled = false;
-        btn.textContent = '↻ Refresh assessment';
+        if (
+          patientRequestIsCurrent(request)
+          && !btn.hidden
+          && btn.textContent === 'Generating assessment…'
+        ) {
+          btn.textContent = buttonLabel;
+        }
       }
     }
   }
@@ -7203,6 +7218,7 @@
     if (action) {
       action.hidden = true;
       action.onclick = null;
+      action.disabled = summaryGenerationPending;
     }
 
     if (error) {
@@ -7382,8 +7398,7 @@
       inline.innerHTML = '';
       updated.textContent = '';
       body.innerHTML = `<div class="summary-empty">
-        <div style="margin-bottom:10px">No assessment has been generated yet.</div>
-        <button class="button secondary" onclick="generateSummary()">Generate assessment</button>
+        <div>No assessment has been generated yet.</div>
       </div>`;
       return;
     }
@@ -7393,7 +7408,6 @@
       body.innerHTML = `<div class="summary-empty stale-summary-hidden">
         <strong>Prior generated assessment is hidden</strong>
         <div>The patient record changed after it was generated. Refresh the assessment before using its actions, PRRT screening, or trial suggestion.</div>
-        <button class="button secondary" onclick="generateSummary()">Refresh assessment</button>
       </div>`;
       return;
     }

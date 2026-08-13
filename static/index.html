@@ -74,7 +74,6 @@
           <h1 id="today-heading">Today</h1>
           <p>Start with what needs attention, then open the supporting evidence.</p>
         </div>
-        <button class="button secondary" id="btn-gen-summary" onclick="generateSummary()">↻ Refresh assessment</button>
       </div>
 
       <section id="freshness-banner" class="freshness-banner loading" aria-live="polite">
@@ -127,7 +126,6 @@
           </div>
           <span class="treatment-freshness loading" id="today-treatment-freshness">Not loaded</span>
         </div>
-        <p class="treatment-safety-guidance">NET/Care records what you enter but does not verify treatment details or advise starting, stopping, or changing treatment. Confirm treatment decisions with the treating team.</p>
         <div class="treatment-status loading" id="today-treatment-status" role="status" aria-live="polite">Loading treatment information…</div>
         <p class="treatment-totals" id="today-treatment-totals">No treatment totals are available yet.</p>
         <div class="treatment-course-list compact" id="today-treatment-list">
@@ -151,7 +149,6 @@
           </div>
           <span class="symptom-freshness loading" id="today-symptom-freshness">Not loaded</span>
         </div>
-        <p class="symptom-safety-guidance">NET/Care records what you enter but does not assess urgency or monitor symptoms. Contact the treating team about symptoms or concerns. If you think this may be a medical emergency, contact local emergency services.</p>
         <div class="symptom-status" id="today-symptom-status" role="status" aria-live="polite">Loading symptom records…</div>
         <div class="symptom-episode-list compact" id="today-symptom-list">
           <div class="loading-state">Loading current symptom episodes…</div>
@@ -206,7 +203,6 @@
           </div>
           <span class="research-freshness loading" id="today-research-freshness">Not loaded</span>
         </div>
-        <p class="research-safety-guidance">NET/Care records research you choose to follow but does not determine relevance, eligibility, enrollment, or treatment suitability. Confirm clinical questions with the treating team and trial details with the study site.</p>
         <div class="research-status loading" id="today-research-status" role="status" aria-live="polite">Loading tracked research…</div>
         <section class="research-today-group" aria-labelledby="today-latest-research-heading">
           <h3 id="today-latest-research-heading">Latest research batch</h3>
@@ -228,7 +224,6 @@
         </div>
       </section>
 
-      <p class="clinical-disclaimer">Decision-support only. Confirm clinical decisions with the treating team.</p>
     </section>
 
     <section class="app-view" id="view-patient" aria-labelledby="patient-heading" hidden>
@@ -261,7 +256,6 @@
               <button class="button primary" id="patient-treatment-add" type="button" onclick="openTreatmentAddDialog(this)">＋ Add status record</button>
             </div>
           </div>
-          <p class="treatment-safety-guidance">NET/Care records what you enter but does not verify treatment details or advise starting, stopping, or changing treatment. Confirm treatment decisions with the treating team.</p>
           <div class="treatment-status loading" id="patient-treatment-status" role="status" aria-live="polite">Loading treatment information…</div>
           <div class="treatment-tabs" role="tablist" aria-label="Treatment record sections" onkeydown="handleTreatmentTabKeydown(event)">
             <button class="treatment-tab active" id="treatment-tab-records" role="tab" aria-selected="true" aria-controls="treatment-panel-records" tabindex="0" onclick="selectTreatmentTab('records')">Overview <span id="treatment-count-records">0</span></button>
@@ -385,7 +379,6 @@
               <button class="button primary" id="patient-symptom-add" type="button" onclick="openSymptomAddDialog(this)">＋ Record episode</button>
             </div>
           </div>
-          <p class="symptom-safety-guidance">NET/Care records what you enter but does not assess urgency or monitor symptoms. Contact the treating team about symptoms or concerns. If you think this may be a medical emergency, contact local emergency services.</p>
           <div class="symptom-status loading" id="patient-symptom-status" role="status" aria-live="polite">
             Loading symptom records…
           </div>
@@ -517,7 +510,6 @@
           </div>
           <span class="research-freshness loading" id="research-freshness">Not loaded</span>
         </div>
-        <p class="research-safety-guidance">NET/Care records research you choose to follow but does not determine relevance, eligibility, enrollment, or treatment suitability. Confirm clinical questions with the treating team and trial details with the study site.</p>
         <div class="research-status loading" id="research-status" role="status" aria-live="polite">Loading tracked research…</div>
         <div class="research-tabs" role="tablist" aria-label="Research workspace sections" onkeydown="handleResearchTabKeydown(event)">
           <button class="research-tab active" id="research-tab-current" role="tab" aria-selected="true" aria-controls="research-panel-current" tabindex="0" onclick="selectResearchTab('current')">Current research <span id="research-count-current">0</span></button>
@@ -640,7 +632,6 @@
       </div>
       <button class="icon-button" id="research-dialog-close" type="button" onclick="closeResearchDialog()" aria-label="Close research dialog">×</button>
     </header>
-    <p class="research-safety-guidance dialog-guidance">NET/Care records research you choose to follow but does not determine relevance, eligibility, enrollment, or treatment suitability. Confirm clinical questions with the treating team and trial details with the study site.</p>
     <div id="research-dialog-status" class="follow-up-dialog-status" role="status" aria-live="polite"></div>
     <div class="follow-up-dialog-body">
       <section class="research-dialog-context" id="research-dialog-context" aria-labelledby="research-dialog-context-heading">
@@ -728,7 +719,6 @@
       </div>
       <button class="icon-button" id="symptom-dialog-close" type="button" onclick="closeSymptomDialog()" aria-label="Close symptom episode dialog">×</button>
     </header>
-    <p class="symptom-safety-guidance dialog-guidance">NET/Care records what you enter but does not assess urgency or monitor symptoms. Contact the treating team about symptoms or concerns. If you think this may be a medical emergency, contact local emergency services.</p>
     <div id="symptom-dialog-status" class="follow-up-dialog-status" role="status" aria-live="polite"></div>
     <div class="follow-up-dialog-body">
       <form id="symptom-details-form" class="follow-up-form symptom-details-form" onsubmit="event.preventDefault();submitSymptomDetails()">
@@ -1079,7 +1069,6 @@
       <div><p class="eyebrow" id="treatment-dialog-eyebrow">You enter and review this</p><h2 id="treatment-dialog-title">Treatment record</h2></div>
       <button class="icon-button" id="treatment-dialog-close" type="button" onclick="closeTreatmentDialog()" aria-label="Close treatment dialog">×</button>
     </header>
-    <p class="treatment-safety-guidance dialog-guidance">NET/Care records what you enter but does not verify treatment details or advise starting, stopping, or changing treatment. Confirm treatment decisions with the treating team.</p>
     <div class="treatment-dialog-status" id="treatment-dialog-status" role="status" aria-live="polite"></div>
     <form class="treatment-form" id="treatment-form" onsubmit="submitTreatmentDialog(event)" novalidate>
       <div id="treatment-dialog-body"></div>

@@ -19,7 +19,11 @@ available at every screen size:
 - **Today** — global access/freshness, the expanded latest assessment/key
   concern/recommendations, bounded recorded update times plus active-alert
   count, treatment status, symptoms logged, follow-ups, appointment preparation,
-  then lower-priority tracked research. It creates no unread state.
+  then lower-priority tracked research. When an assessment is stale, the
+  freshness banner beside **New information since this assessment** contains the
+  only **Refresh assessment** action; the heading and hidden stale body do not
+  repeat it. Recent-update row actions use the same secondary-button treatment
+  as the card action at desktop and phone widths. Today creates no unread state.
   Latest document import is selected by ingestion time across all active
   documents, independently of the clinical document date.
 - **Patient** — profile snapshot, treatments, complete biomarker history,
@@ -514,17 +518,19 @@ keeps the current draft for explicit retry.
 
 ## 5b. Record review feedback
 
-The **Today** view shows confidence, rationale, profile/summary revisions,
-freshness, generation time, and claim-level evidence links. Each key claim and
-next action links only to exact authenticated source spans selected from the
-server's verified catalog; missing/invalid support is labelled rather than
-invented. A prominent warning appears
-when newer patient data needs assessment. Use **Report something missed or
-incorrect** to record a prominent `missed` review item. This only appends
-structured feedback; it never edits patient facts or silently creates a clinical
-judgment. Corrected/incorrect/missed feedback on the current summary marks it
-stale for conservative review. `GET/POST /api/feedback` supports the full
-assessment set: `agreed|corrected|acted|helpful|incorrect|missed`.
+The **Today** view shows confidence, rationale, freshness, generation time, and
+claim-level evidence links. Each key claim and next action links only to exact
+authenticated source spans selected from the server's verified catalog;
+missing/invalid support is labelled rather than invented. A prominent warning
+appears when newer patient data needs assessment and owns the only
+**Refresh assessment** action. The prior generated assessment remains hidden and
+offers no conclusion or action controls until refresh succeeds. Use **Report
+something missed or incorrect** to record a prominent `missed` review item. This
+only appends structured feedback; it never edits patient facts or silently
+creates a clinical judgment. Corrected/incorrect/missed feedback on the current
+summary marks it stale for conservative review. `GET/POST /api/feedback`
+supports the full assessment set:
+`agreed|corrected|acted|helpful|incorrect|missed`.
 `PATCH /api/feedback/<id>` records later assessment, note, or outcome updates
 with a new `updated_at` timestamp.
 
@@ -578,16 +584,14 @@ draft. Authorization failure clears all patient information from the browser;
 a malformed or hard symptom failure clears the symptom surfaces without
 removing unrelated Patient cards.
 
-The fixed statement is always visible:
-
-> NET/Care records what you enter but does not assess urgency or monitor
-> symptoms. Contact the treating team about symptoms or concerns. If you think
-> this may be a medical emergency, contact local emergency services.
-
-This is static information, not a symptom assessment, triage decision,
-treatment recommendation, or monitoring promise. Legacy observations remain
-available to the existing model context; caregiver-maintained episodes remain
-excluded from all model prompts.
+Routine Today, Patient, and episode-dialog presentation does not repeat a
+generic capability or emergency disclaimer. Caregiver-entered/unverified
+attribution, stale/read-only notices, conflicts, validation errors, and retry
+actions remain visible where they apply. This presentation change does not alter
+the strict projection metadata or clinical behavior: the browser does not score
+severity, infer urgency, make a treatment recommendation, or promise monitoring.
+Legacy observations remain available to the existing model context;
+caregiver-maintained episodes remain excluded from all model prompts.
 
 ## 5b. Record and reconcile treatment information
 
@@ -669,11 +673,12 @@ migration path at schema v15. A genuinely missing top-level
 `profile_revision` is restored as `0`; an existing null or invalid revision
 remains invalid by design and requires operator review of a valid backup.
 
-The fixed statement remains visible in every state:
-
-> NET/Care records what you enter but does not verify treatment details or
-> advise starting, stopping, or changing treatment. Confirm treatment decisions
-> with the treating team.
+Routine Today, Patient, and treatment-dialog presentation does not repeat the
+generic non-prescriptive capability strip. Caregiver-entered and
+clinician-attributed labels, generated-context-not-a-treatment-fact labels,
+source uncertainty, validation errors, conflicts, and retry states remain
+visible. The strict response metadata and all treatment authority/inference
+rules are unchanged.
 
 ## 5c. See newly discovered research
 
@@ -718,13 +723,13 @@ The immutable capture remains separate from current external facts,
 machine-generated compatibility context, and discovery provenance.
 
 The **New research** labels remain only exact server-published per-occurrence
-latest-batch membership. Shortlisting, opening, noting, closing, resuming, and linking do not
-mark research read, reviewed, acknowledged, old, or new. No reminders,
-monitoring, contact automation, or background site communication is added.
-
-> NET/Care records research you choose to follow but does not determine
-> relevance, eligibility, enrollment, or treatment suitability. Confirm clinical
-> questions with the treating team and trial details with the study site.
+latest-batch membership. Shortlisting, opening, noting, closing, resuming, and
+linking do not mark research read, reviewed, acknowledged, old, or new. No
+reminders, monitoring, contact automation, or background site communication is
+added. Routine Today, Research, and research-dialog presentation omits the
+repeated generic capability strip while keeping external/generated attribution,
+source uncertainty, caregiver-entered provenance, lifecycle meaning, errors,
+conflicts, and confirmations.
 
 ## 6. Chat with the record
 

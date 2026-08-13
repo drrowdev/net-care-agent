@@ -1578,13 +1578,6 @@ main#main-content {
 .timeline-event-copy { color: var(--text0); font-size: 12px; }
 .timeline-provisional { color: var(--amber); font-size: 11px; font-style: italic; }
 
-.clinical-disclaimer {
-  margin: 14px 4px 0;
-  color: var(--text2);
-  font-size: 11px;
-  text-align: center;
-}
-
 .loading-state {
   min-height: 72px;
   padding: 20px;
@@ -2126,17 +2119,6 @@ main#main-content {
   gap: 8px;
 }
 .symptom-header-actions { justify-content: flex-end; }
-.symptom-safety-guidance {
-  margin: 0;
-  padding: 14px 18px;
-  border-top: 1px solid #d7bf75;
-  border-bottom: 1px solid #d7bf75;
-  background: #fff8de;
-  color: #684800;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.6;
-}
 .symptom-freshness,
 .symptom-lifecycle,
 .symptom-provenance {
@@ -2358,7 +2340,6 @@ main#main-content {
 }
 .symptom-retry[hidden] { display: none; }
 .symptom-dialog { width: min(700px, 96vw); }
-.symptom-dialog .dialog-guidance { border-top: 0; }
 .symptom-dialog .follow-up-dialog-body { padding-top: 14px; }
 .symptom-form-grid {
   display: grid;
@@ -2430,17 +2411,6 @@ main#main-content {
   gap: 8px;
 }
 .treatment-header-actions { justify-content: flex-end; }
-.treatment-safety-guidance {
-  margin: 0;
-  padding: 14px 18px;
-  border-top: 1px solid #d7bf75;
-  border-bottom: 1px solid #d7bf75;
-  background: #fff8de;
-  color: #684800;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.6;
-}
 .treatment-freshness,
 .treatment-lifecycle,
 .treatment-provenance,
@@ -2751,7 +2721,6 @@ main#main-content {
   background: var(--bg1);
   box-shadow: var(--shadow-lg);
 }
-.treatment-dialog .dialog-guidance { border-top: 0; }
 .treatment-form { padding: 16px 18px 18px; }
 .treatment-form-grid {
   display: grid;
@@ -4115,17 +4084,6 @@ body.dialog-open { overflow: hidden; }
   color: #684800;
 }
 
-.research-safety-guidance {
-  margin: 0;
-  padding: 14px 18px;
-  border-bottom: 1px solid #d7bf75;
-  background: #fff8de;
-  color: #594000;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.55;
-}
-.research-safety-guidance.dialog-guidance { border-top: 1px solid #d7bf75; }
 .research-status {
   min-height: 42px;
   padding: 11px 18px;
@@ -4501,7 +4459,7 @@ body.dialog-open { overflow: hidden; }
 .recent-update-item > div { min-width: 0; display: grid; gap: 3px; }
 .recent-update-item strong { font-size: 12px; }
 .recent-update-item span { color: var(--text1); font-size: 12px; overflow-wrap: anywhere; }
-.recent-update-item .button-link { flex: 0 0 auto; min-height: 44px; }
+.recent-update-item .recent-update-action { flex: 0 0 auto; min-height: 44px; }
 
 .today-appointment-summary {
   padding: 14px 18px 18px;
@@ -4742,7 +4700,7 @@ body.dialog-open { overflow: hidden; }
   .summary-context,
   .summary-feedback { margin-left: 16px; margin-right: 16px; }
   .recent-update-item { align-items: stretch; flex-direction: column; }
-  .recent-update-item .button-link { align-self: flex-start; }
+  .recent-update-item .recent-update-action { align-self: flex-start; }
   .today-appointment-card .card-header { align-items: stretch; flex-direction: column; }
   .today-appointment-card .button { width: 100%; min-height: 44px; justify-content: center; }
   .action-item { grid-template-columns: auto minmax(0, 1fr) 36px; }

@@ -623,7 +623,7 @@ def test_treatment_module_has_one_authority_and_no_legacy_or_date_inference():
     assert "pendingTreatmentCompletion" in source
     assert "Retry submission" in INDEX_HTML
     assert "Retry refresh" in INDEX_HTML
-    assert INDEX_HTML.count(GUIDANCE) == 3
+    assert GUIDANCE not in INDEX_HTML
     assert (
         "Machine-generated compatibility context · source linkage unavailable · "
         "not a treatment record"
@@ -856,6 +856,20 @@ def _open_treatment_page(
                 body=json.dumps(state.projection),
             )
             return
+        if path == "/api/summary/generate" and request.method == "POST":
+            route.fulfill(
+                status=202,
+                content_type="application/json",
+                body=json.dumps({"job_id": "summary-ui-polish"}),
+            )
+            return
+        if path == "/api/jobs/summary-ui-polish":
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"id": "summary-ui-polish", "status": "done"}),
+            )
+            return
         if path.startswith("/api/treatment-reconciliation/") and request.method != "GET":
             state.raw_mutation_bodies.append(request.post_data or "")
             if state.abort_next_mutation:
@@ -976,7 +990,7 @@ def test_live_shared_projection_totals_authorities_and_accessibility(width: int,
                 ).count()
                 == 0
             )
-            assert GUIDANCE in page.locator("#treatment-workspace").inner_text()
+            assert GUIDANCE not in page.locator("#treatment-workspace").inner_text()
             treatment_gets = [
                 item
                 for item in state.requests
@@ -1158,6 +1172,143 @@ def test_live_today_first_viewport_prioritizes_latest_assessment(
             )
             assert "Earlier visit" in page.locator("#today-appointment-summary").inner_text()
             assert page.evaluate("() => todayAppointmentVisit()?.id") == "visit-earlier"
+        finally:
+            context.close()
+            browser.close()
+
+
+@pytest.mark.parametrize("width,height", [(1280, 800), (768, 800), (360, 740)])
+def test_live_today_polish_keeps_one_guarded_action_and_consistent_update_buttons(
+    width: int,
+    height: int,
+):
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    with playwright_api.sync_playwright() as playwright:
+        if not Path(playwright.chromium.executable_path).exists():
+            pytest.skip("Installed Playwright browser is unavailable")
+        browser, context, page, state = _open_treatment_page(playwright, width, height)
+        try:
+            removed_copy = (
+                "NET/Care records what you enter but does not assess urgency or monitor symptoms.",
+                "NET/Care records what you enter but does not verify treatment details",
+                "NET/Care records research you choose to follow but does not determine relevance",
+                "Decision-support only. Confirm clinical decisions with the treating team.",
+            )
+            for selector in (
+                "#view-today",
+                "#view-patient",
+                "#view-research",
+                "#symptom-dialog",
+                "#treatment-dialog",
+                "#research-dialog",
+            ):
+                text = page.locator(selector).text_content() or ""
+                assert all(copy not in text for copy in removed_copy)
+
+            actions = page.locator("#recent-updates-list .recent-update-action")
+            assert actions.count() == 3
+            shared_styles = page.evaluate(
+                """() => {
+                  const properties = button => {
+                    const style = getComputedStyle(button);
+                    const box = button.getBoundingClientRect();
+                    return {
+                      borderRadius: style.borderRadius,
+                      fontSize: style.fontSize,
+                      fontWeight: style.fontWeight,
+                      minHeight: style.minHeight,
+                      padding: style.padding,
+                      height: box.height,
+                    };
+                  };
+                  const header = document.querySelector(
+                    '#recent-updates-card .card-header .button'
+                  );
+                  return {
+                    header: properties(header),
+                    rows: [...document.querySelectorAll(
+                      '#recent-updates-list .recent-update-action'
+                    )].map(properties),
+                    overflow: document.documentElement.scrollWidth
+                      - document.documentElement.clientWidth,
+                  };
+                }"""
+            )
+            for row in shared_styles["rows"]:
+                style_keys = (
+                    "borderRadius",
+                    "fontSize",
+                    "fontWeight",
+                    "minHeight",
+                    "padding",
+                )
+                assert {key: row[key] for key in style_keys} == {
+                    key: shared_styles["header"][key] for key in style_keys
+                }
+                assert row["height"] >= 44
+            assert shared_styles["overflow"] == 0
+            for index, expected_view in enumerate(("activity", "research", "patient")):
+                page.locator("#nav-today").click()
+                action = actions.nth(index)
+                assert {"button", "secondary", "recent-update-action"} <= set(
+                    (action.get_attribute("class") or "").split()
+                )
+                action.focus()
+                page.keyboard.press("Enter")
+                assert page.evaluate("() => activeView") == expected_view
+
+            page.locator("#nav-today").click()
+            page.evaluate(
+                """() => renderSummary({
+                  status: 'stale',
+                  stale: true,
+                  content_hidden: true,
+                  profile_revision: 9,
+                  summary_revision: 8,
+                })"""
+            )
+            refresh = page.get_by_role("button", name="Refresh assessment", exact=True)
+            assert refresh.count() == 1
+            assert refresh.is_visible()
+            assert page.locator("#summary-body button").count() == 0
+            stale_text = page.locator("#summary-body").inner_text()
+            assert "Prior generated assessment is hidden" in stale_text
+            assert "using its actions, PRRT screening, or trial suggestion" in stale_text
+            assert page.locator("#summary-card .summary-concern").count() == 0
+
+            refresh.focus()
+            page.keyboard.press("Enter")
+            page.wait_for_function(
+                "() => document.getElementById('freshness-title').textContent === 'Up to date'"
+            )
+            assert (
+                sum(
+                    method == "POST" and path == "/api/summary/generate"
+                    for method, path, _ in state.requests
+                )
+                == 1
+            )
+            assert page.get_by_role("button", name="Refresh assessment", exact=True).count() == 0
+            assert page.get_by_role("button", name="Generate assessment", exact=True).count() == 0
+
+            page.evaluate("() => renderSummary({status: 'not_generated'})")
+            generate = page.get_by_role("button", name="Generate assessment", exact=True)
+            assert generate.count() == 1
+            assert generate.is_visible()
+            assert page.locator("#summary-body button").count() == 0
+            assert page.get_by_role("button", name="Refresh assessment", exact=True).count() == 0
+
+            page.evaluate("() => renderFreshness(null, new Error('offline'))")
+            assert page.get_by_role("button", name="Retry check", exact=True).count() == 1
+            assert page.get_by_role("button", name="Generate assessment", exact=True).count() == 0
+            assert page.get_by_role("button", name="Refresh assessment", exact=True).count() == 0
+            assert (
+                page.evaluate(
+                    "() => document.documentElement.scrollWidth"
+                    " - document.documentElement.clientWidth"
+                )
+                == 0
+            )
         finally:
             context.close()
             browser.close()
@@ -1675,8 +1826,8 @@ def test_live_request_validation_get_corruption_eviction_and_focus_boundaries():
             assert page.evaluate("() => treatmentProjectionState") == "corrupt"
             assert page.evaluate("() => treatmentProjection === null")
             assert "Current one" not in page.locator("#today-treatment-list").inner_text()
-            assert GUIDANCE in page.locator("#treatment-today-card").inner_text()
-            assert GUIDANCE in page.locator("#treatment-workspace").inner_text()
+            assert GUIDANCE not in page.locator("#treatment-today-card").inner_text()
+            assert GUIDANCE not in page.locator("#treatment-workspace").inner_text()
 
             state.treatment_get_status = 200
             page.evaluate(
@@ -1697,7 +1848,7 @@ def test_live_request_validation_get_corruption_eviction_and_focus_boundaries():
             assert page.locator("#treatment-dialog-body").inner_text() == ""
             assert page.locator("#treatment-dialog-overlay").get_attribute("aria-hidden") == "true"
             assert "PHI to evict" not in page.content()
-            assert GUIDANCE in page.locator("#treatment-today-card").inner_text()
+            assert GUIDANCE not in page.locator("#treatment-today-card").inner_text()
             assert not page.evaluate(
                 "() => document.getElementById('treatment-dialog').contains(document.activeElement)"
             )

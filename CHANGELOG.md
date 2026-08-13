@@ -52,6 +52,15 @@ incremented when something user-visible or operationally meaningful changes.
   local scrolling at phone width.
 
 ### Fixed
+- **Focused caregiver workspace polish.** A stale Today assessment now exposes
+  exactly one guarded **Refresh assessment** action in its freshness banner;
+  duplicate heading and hidden-summary controls are removed while stale
+  conclusions remain fail-closed. Every Recent updates row action now uses the
+  shared secondary-button styling with phone-sized targets and consistent
+  responsive alignment. Repetitive generic symptom, treatment, research, and
+  global capability strips are removed from routine presentation while
+  actionable stale/auth/error/conflict notices, provenance, source uncertainty,
+  generated-context labels, and confirmations remain intact.
 - **Post-review caregiver workspace blockers.** Stale corrupt or explicitly
   unavailable reports now remain unavailable in both Activity list and detail
   and are never hydrated or claimed as retained audit

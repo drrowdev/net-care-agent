@@ -234,9 +234,13 @@ snapshots of both cited sides. Existing complete source/course records remain
 valid without rewriting; an older one-sided record remains visible as bounded
 `legacy_incomplete` authority and cannot be resolved, reopened, or recurred.
 Generated classification and legacy raw/component rows remain compatibility
-data, not citable source occurrences. The fixed projection copy is: `NET/Care records what you enter but does not verify treatment details or advise starting, stopping, or changing treatment. Confirm treatment decisions with the treating team.` The new state remains excluded from model prompts, and the
-shared Today/Patient treatment workspace uses this projection as its sole SPA
-authority; `/api/status` treatment fields remain backend compatibility only.
+data, not citable source occurrences. The projection retains its fixed
+non-prescriptive safety metadata as a strict response-validation contract, but
+the SPA no longer repeats that generic capability copy across routine
+Today/Patient/dialog presentation. The new state remains excluded from model
+prompts, and the shared Today/Patient treatment workspace uses this projection
+as its sole SPA authority; `/api/status` treatment fields remain backend
+compatibility only.
 Schema v13 adds explicit terminal authority for past caregiver courses. New past
 creation requires `ended`, `not_started`, `cancelled`, or `other`; `other`
 requires bounded exact caregiver detail, while every other qualifier rejects
@@ -438,15 +442,16 @@ action or create and link one bounded manual action in the same save. The
 existing-episode follow-up endpoint also supports mutually exclusive exact
 link, exact unlink, or bounded manual-action create-and-link variants; these
 link-only workflow changes do not advance the clinical profile revision. Fixed
-safety copy states that NET/Care neither assesses urgency nor monitors
-symptoms. Episodes are excluded from all model prompts; legacy symptom context
-remains unchanged. The browser validates and atomically accepts the complete
-projection, preserves every server-ordered row, and never falls back to
-`/api/status` or the retired SPA `/api/symptoms` flow. Add, edit, resolve,
-existing-action link, manual create-and-link, and unlink use one responsive
-dialog model with exact token/revision authority, byte-identical explicit
-replay, conflict reload, endpoint-specific stale retention, and PHI-safe hard
-clearing.
+safety metadata remains in the response contract for strict validation, while
+routine Today/Patient/dialog presentation omits repeated generic capability and
+emergency boilerplate. Episodes are excluded from all model prompts; legacy
+symptom context remains unchanged. The browser validates and atomically accepts
+the complete projection, preserves every server-ordered row, and never falls
+back to `/api/status` or the retired SPA `/api/symptoms` flow. Add, edit,
+resolve, existing-action link, manual create-and-link, and unlink use one
+responsive dialog model with exact token/revision authority, byte-identical
+explicit replay, conflict reload, endpoint-specific stale retention, and
+PHI-safe hard clearing.
 
 The orchestrator's behaviour is shaped by **clinical_judgments** captured from
 oncologist consultations. These act as hard constraints: anything the oncologist
@@ -459,10 +464,10 @@ The most common loops:
 
 | Action | Where | What happens |
 |---|---|---|
-| Review current priorities | **Today** | Shows assessment freshness, the expanded latest assessment, key concern, and recommended next steps first; then bounded recorded update times/active-alert count, treatment status, symptoms, follow-ups, appointment preparation, and lower-priority tracked research |
+| Review current priorities | **Today** | Shows assessment freshness, the expanded latest assessment, key concern, and recommended next steps first; when stale, the freshness banner owns the sole **Refresh assessment** action and hidden conclusions remain unavailable. Bounded recorded update times/active-alert count follow with shared secondary actions, then treatment status, symptoms, follow-ups, appointment preparation, and lower-priority tracked research |
 | Recover authorization | Any view → authorization banner | Browser-held patient data is cleared, but stored patient records are not deleted. For **Sign-in required**, choose **Reload to sign in**. For denied access, choose **Sign out and switch account**, which uses the same-origin Easy Auth logout flow, then sign in with the permitted account. **Retry** remains separate; current projections repopulate only after authenticated revision checks succeed |
 | Track durable caregiver follow-through | **Today** → **Follow-ups** | Create safe caregiver tasks, accept only current generated actions, filter active/completed/cancelled history, edit owner/due date, and record typed completion or cancellation outcomes with plain source wording; offline snapshots stay visible but read-only, and one mutation owns all related controls until authoritative reload finishes |
-| Record or review symptom episodes | **Today** → **Current symptom episodes** or **Patient** → **Symptoms** | Record durable caregiver-entered current episodes; Patient adds explicit fact editing, resolution, resolved review, read-only source observations, and atomic existing/manual follow-up linkage. The exact safety statement remains visible and the app makes no urgency, diagnosis, treatment, chronology, or monitoring inference |
+| Record or review symptom episodes | **Today** → **Current symptom episodes** or **Patient** → **Symptoms** | Record durable caregiver-entered current episodes; Patient adds explicit fact editing, resolution, resolved review, read-only source observations, and atomic existing/manual follow-up linkage. Routine capability boilerplate is omitted while caregiver-entered attribution, actionable errors, and the no-inference behavior remain unchanged |
 | Review treatment information | **Today** → **Treatment status** or **Patient** → **Treatments** | Today never appears empty when recorded treatment rows exist. Patient's default Overview shows explicitly reviewed current/planned records, then every raw treatment row with presentation-only **not linked / fully linked / partly linked** status derived solely from explicit component associations, then finished/past records. Only unresolved rows count as needing timing/status review. Source mentions, differences, and collapsed NET/Care compatibility notes stay separate; nothing is promoted, hidden, merged, deduplicated, or assigned lifecycle automatically |
 | See the latest research batch | **Today** → **Research being tracked** | A deferred guarded load fills this lower-priority card after primary status/assessment loading begins. It shows the first three latest-batch entries with exact totals/omissions; membership is passive and never unread/review state |
 | Maintain the research shortlist | **Research** → **Current research** / **Considerations** | Review every occurrence and duplicate in server order; keep external facts, machine-generated compatibility context, discovery provenance, immutable snapshots, and current state separate; explicitly save one exact occurrence, record attributed unverified events, close/resume caregiver consideration, and atomically link/create/unlink one follow-up using only current server eligibility |

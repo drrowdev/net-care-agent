@@ -246,8 +246,8 @@ def test_research_has_one_shared_projection_and_no_legacy_display_authority():
     assert "loadResearchWorkspace" not in patient_branch
 
 
-def test_research_authorities_and_fixed_copy_remain_separate_and_visible():
-    assert INDEX_HTML.count(GUIDANCE) == 3
+def test_research_authorities_remain_visible_without_routine_fixed_copy():
+    assert GUIDANCE not in INDEX_HTML
     assert GENERATED_LABEL in APP_JS
     for section in (
         "Registry or publication details",
@@ -509,7 +509,7 @@ def test_live_shared_research_projection_totals_order_and_accessibility(
             totals = page.locator("#today-latest-research-totals").inner_text()
             assert "4 tracked entries in the latest batch" in totals
             assert "Showing 3; 1 more in Research" in totals
-            assert GUIDANCE in page.locator("#research-today-card").inner_text()
+            assert GUIDANCE not in page.locator("#research-today-card").inner_text()
 
             page.locator("#nav-research").click()
             assert page.locator("#research-occurrence-list article").count() == 4
@@ -521,7 +521,7 @@ def test_live_shared_research_projection_totals_order_and_accessibility(
             workspace_text = page.locator("#research-workspace").inner_text()
             assert "NET/Care-generated context - not a clinical conclusion" in workspace_text
             assert GENERATED_LABEL not in workspace_text
-            assert GUIDANCE in page.locator("#research-workspace").inner_text()
+            assert GUIDANCE not in page.locator("#research-workspace").inner_text()
             assert (
                 sum(request["path"] == "/api/patient/research-workspace" for request in requests)
                 == 1
@@ -863,7 +863,7 @@ def test_live_mutation_validation_retains_draft_but_hard_get_clears_research_phi
             assert page.locator("#research-dialog-overlay").get_attribute("aria-hidden") == "true"
             assert page.locator("#research-occurrence-list article").count() == 0
             assert page.locator("#research-consideration-list article").count() == 0
-            assert GUIDANCE in page.locator("#research-workspace").inner_text()
+            assert GUIDANCE not in page.locator("#research-workspace").inner_text()
             assert (
                 "raw private projection body"
                 not in page.locator("#research-workspace").inner_text()
@@ -909,7 +909,7 @@ def test_live_global_phi_eviction_scrubs_hidden_and_live_research_content():
             assert "Exact caregiver note" not in visible
             assert "Live PHI status text" not in visible
             assert "Dialog PHI status text" not in page.locator("#research-dialog").inner_text()
-            assert GUIDANCE in visible
+            assert GUIDANCE not in visible
             assert page.evaluate(
                 "() => ({projection: researchProjection, draft: researchDraft,"
                 " submission: pendingResearchSubmission,"

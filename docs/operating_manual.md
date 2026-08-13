@@ -57,6 +57,16 @@ remains a separate action for access that was restored without an account switch
 The app does not start an automatic redirect or reload loop. Current symptom,
 treatment, research, biomarker, and imaging projections return only after their
 authenticated revision and strict payload checks succeed.
+
+If the permitted account still cannot regain access, verify privately that
+`AUTH_ALLOWED_PRINCIPAL_IDS` contains the unique stable object identifier from
+the trusted encoded Easy Auth principal, not a convenience name or email-valued
+identifier. Do not copy principal headers or claim payloads into logs, tickets,
+or repository files. A malformed principal or conflicting values at the
+selected claim tier intentionally returns `401`; a valid but nonmatching stable
+identifier returns `403`. Do not weaken the allowlist, enable local bypass in
+hosted configuration, or change the same-origin guard as a recovery step.
+
 In-flight document, digest, and deep-sweep submissions are aborted and cannot
 activate Activity from a late response; activity polling stops until current
 authority starts it again. A missing selected activity is treated the same way.

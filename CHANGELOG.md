@@ -52,6 +52,15 @@ incremented when something user-visible or operationally meaningful changes.
   local scrolling at phone width.
 
 ### Fixed
+- **Hosted stable-principal authorization.** Easy Auth allowlist checks now
+  prefer a unique canonical object-identifier claim, then `oid`, then
+  name-identifier/`sub` fallbacks, before provider convenience identity values.
+  Identical duplicates remain valid, malformed or conflicting selected-tier
+  claims fail as unauthenticated, and a valid nonmatching stable identifier
+  remains forbidden. This prevents an email-valued convenience header from
+  overriding the configured stable object-ID allowlist without changing hosted
+  Easy Auth, local bypass, health/liveness exemptions, exact allowlist matching,
+  or same-origin mutation protection.
 - **Focused caregiver workspace polish.** A stale Today assessment now exposes
   exactly one guarded **Refresh assessment** action in its freshness banner;
   duplicate heading and hidden-summary controls are removed while stale

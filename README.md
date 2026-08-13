@@ -99,10 +99,18 @@ Environment variables to set as Application Settings:
   `SOURCE_ORPHAN_RETENTION_DAYS=7`, `SOURCE_ORPHAN_RETENTION_COUNT=20`
 - Auth: hosted APIs require App Service Easy Auth; the platform injects
   `WEBSITE_AUTH_ENABLED` (do not add that protected setting manually). Generic
-  Azure hosting variables never make Easy Auth headers trusted. `APP_ORIGIN` (preferred) or
-  `WEBSITE_HOSTNAME` supplies the canonical HTTPS browser origin.
-  `AUTH_ALLOWED_PRINCIPAL_IDS` is an optional comma-separated exact principal-ID allowlist. Never set
-  `ALLOW_LOCAL_AUTH_BYPASS` in hosted configuration.
+  Azure hosting variables never make Easy Auth headers trusted. When the trusted
+  encoded principal is present, authorization prefers one unique claim value in
+  this order: the canonical object-identifier URI, `oid`, the canonical
+  name-identifier URI, then `sub`. Duplicate identical values at the selected
+  tier are accepted; malformed or conflicting selected-tier claims fail closed.
+  Only when none of those claims is supplied does the app fall back to
+  `X-MS-CLIENT-PRINCIPAL-ID`, `userId`, then `userDetails`.
+  `AUTH_ALLOWED_PRINCIPAL_IDS` is an optional comma-separated exact stable-ID
+  allowlist; convenience names or email-valued identifiers are not equivalent
+  to an object ID. `APP_ORIGIN` (preferred) or `WEBSITE_HOSTNAME` supplies the
+  canonical HTTPS browser origin. Never set `ALLOW_LOCAL_AUTH_BYPASS` in hosted
+  configuration.
 
 `startup.sh` uses exactly one Gunicorn worker, a 300-second worker timeout, and
 a 30-second graceful timeout. **One worker is load-bearing:** profile writes are

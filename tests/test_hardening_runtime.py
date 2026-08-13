@@ -108,8 +108,12 @@ def test_duplicate_active_digest_is_rejected(hardened_app):
     assert response.get_json()["job_id"] == "active"
 
 
-def _principal(value: dict) -> str:
+def _principal(value: object) -> str:
     return base64.b64encode(json.dumps(value).encode()).decode()
+
+
+_OBJECT_ID_CLAIM = "http://schemas.microsoft.com/identity/claims/objectidentifier"
+_NAME_ID_CLAIM = "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier"
 
 
 def test_hosted_api_requires_valid_easy_auth(hardened_app, monkeypatch):
@@ -124,6 +128,238 @@ def test_hosted_api_requires_valid_easy_auth(hardened_app, monkeypatch):
     )
     valid = _principal({"userId": "allowed-id", "claims": []})
     assert client.get("/api/status", headers={"X-MS-CLIENT-PRINCIPAL": valid}).status_code == 200
+
+
+def test_hosted_object_id_claim_overrides_email_header_and_matches_allowlist(
+    hardened_app, monkeypatch
+):
+    object_id = "00000000-0000-4000-8000-000000000001"
+    monkeypatch.setenv("WEBSITE_AUTH_ENABLED", "true")
+    monkeypatch.setenv("AUTH_ALLOWED_PRINCIPAL_IDS", object_id)
+    principal = _principal({"claims": [{"typ": _OBJECT_ID_CLAIM, "val": object_id}]})
+
+    response = hardened_app.app.test_client().get(
+        "/api/status",
+        headers={
+            "X-MS-CLIENT-PRINCIPAL-ID": "caregiver@example.invalid",
+            "X-MS-CLIENT-PRINCIPAL": principal,
+        },
+    )
+
+    assert response.status_code == 200
+
+
+def test_hosted_object_id_claim_precedes_all_lower_priority_values(hardened_app, monkeypatch):
+    object_id = "00000000-0000-4000-8000-000000000002"
+    monkeypatch.setenv("WEBSITE_AUTH_ENABLED", "true")
+    monkeypatch.setenv("AUTH_ALLOWED_PRINCIPAL_IDS", object_id)
+    principal = _principal(
+        {
+            "userId": "different-user-id",
+            "userDetails": "different-user-details",
+            "claims": [
+                {"typ": "sub", "val": "different-subject"},
+                {"typ": _NAME_ID_CLAIM, "val": "different-name-id"},
+                {"typ": _OBJECT_ID_CLAIM, "val": object_id},
+            ],
+        }
+    )
+
+    response = hardened_app.app.test_client().get(
+        "/api/status",
+        headers={
+            "X-MS-CLIENT-PRINCIPAL-ID": "different-header-id",
+            "X-MS-CLIENT-PRINCIPAL": principal,
+        },
+    )
+
+    assert response.status_code == 200
+
+
+def test_hosted_oid_claim_is_used_without_canonical_object_id(hardened_app, monkeypatch):
+    object_id = "00000000-0000-4000-8000-000000000003"
+    monkeypatch.setenv("WEBSITE_AUTH_ENABLED", "true")
+    monkeypatch.setenv("AUTH_ALLOWED_PRINCIPAL_IDS", object_id)
+    principal = _principal(
+        {
+            "claims": [
+                {"typ": _NAME_ID_CLAIM, "val": "different-name-id"},
+                {"typ": "oid", "val": object_id},
+            ]
+        }
+    )
+
+    response = hardened_app.app.test_client().get(
+        "/api/status", headers={"X-MS-CLIENT-PRINCIPAL": principal}
+    )
+
+    assert response.status_code == 200
+
+
+def test_hosted_nameidentifier_precedes_sub_deterministically(hardened_app, monkeypatch):
+    name_id = "stable-name-identifier"
+    monkeypatch.setenv("WEBSITE_AUTH_ENABLED", "true")
+    monkeypatch.setenv("AUTH_ALLOWED_PRINCIPAL_IDS", name_id)
+    principal = _principal(
+        {
+            "claims": [
+                {"typ": "sub", "val": "different-subject"},
+                {"typ": _NAME_ID_CLAIM, "val": name_id},
+            ]
+        }
+    )
+
+    response = hardened_app.app.test_client().get(
+        "/api/status", headers={"X-MS-CLIENT-PRINCIPAL": principal}
+    )
+
+    assert response.status_code == 200
+
+
+def test_hosted_sub_claim_is_used_without_higher_priority_claims(hardened_app, monkeypatch):
+    subject = "stable-subject"
+    monkeypatch.setenv("WEBSITE_AUTH_ENABLED", "true")
+    monkeypatch.setenv("AUTH_ALLOWED_PRINCIPAL_IDS", subject)
+    principal = _principal({"claims": [{"typ": "sub", "val": subject}]})
+
+    response = hardened_app.app.test_client().get(
+        "/api/status", headers={"X-MS-CLIENT-PRINCIPAL": principal}
+    )
+
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("header_id", "principal_fields", "allowed_id"),
+    [
+        (
+            "provider-header-id",
+            {"userId": "encoded-user-id", "userDetails": "encoded-user-details"},
+            "provider-header-id",
+        ),
+        (
+            None,
+            {"userId": "encoded-user-id", "userDetails": "encoded-user-details"},
+            "encoded-user-id",
+        ),
+        (None, {"userDetails": "encoded-user-details"}, "encoded-user-details"),
+    ],
+)
+def test_hosted_provider_convenience_fallback_order(
+    hardened_app, monkeypatch, header_id, principal_fields, allowed_id
+):
+    monkeypatch.setenv("WEBSITE_AUTH_ENABLED", "true")
+    monkeypatch.setenv("AUTH_ALLOWED_PRINCIPAL_IDS", allowed_id)
+    headers = {"X-MS-CLIENT-PRINCIPAL": _principal({**principal_fields, "claims": []})}
+    if header_id:
+        headers["X-MS-CLIENT-PRINCIPAL-ID"] = header_id
+
+    response = hardened_app.app.test_client().get("/api/status", headers=headers)
+
+    assert response.status_code == 200
+
+
+def test_hosted_duplicate_identical_object_id_claims_are_accepted(hardened_app, monkeypatch):
+    object_id = "00000000-0000-4000-8000-000000000004"
+    monkeypatch.setenv("WEBSITE_AUTH_ENABLED", "true")
+    monkeypatch.setenv("AUTH_ALLOWED_PRINCIPAL_IDS", object_id)
+    principal = _principal(
+        {
+            "claims": [
+                {"typ": _OBJECT_ID_CLAIM, "val": object_id},
+                {"typ": _OBJECT_ID_CLAIM, "val": f" {object_id} "},
+            ]
+        }
+    )
+
+    response = hardened_app.app.test_client().get(
+        "/api/status", headers={"X-MS-CLIENT-PRINCIPAL": principal}
+    )
+
+    assert response.status_code == 200
+
+
+def test_hosted_conflicting_selected_claim_values_fail_authentication(hardened_app, monkeypatch):
+    monkeypatch.setenv("WEBSITE_AUTH_ENABLED", "true")
+    principal = _principal(
+        {
+            "claims": [
+                {
+                    "typ": _OBJECT_ID_CLAIM,
+                    "val": "00000000-0000-4000-8000-000000000005",
+                },
+                {
+                    "typ": _OBJECT_ID_CLAIM,
+                    "val": "00000000-0000-4000-8000-000000000006",
+                },
+            ]
+        }
+    )
+
+    response = hardened_app.app.test_client().get(
+        "/api/status",
+        headers={
+            "X-MS-CLIENT-PRINCIPAL-ID": "fallback-id",
+            "X-MS-CLIENT-PRINCIPAL": principal,
+        },
+    )
+
+    assert response.status_code == 401
+
+
+@pytest.mark.parametrize(
+    "encoded",
+    [
+        "not-base64",
+        _principal([]),
+        _principal({"claims": {}}),
+        _principal({"claims": None}),
+        _principal({"claims": ["not-a-claim"]}),
+        _principal({"claims": [{"typ": [], "val": "value"}]}),
+        _principal({"claims": [{"typ": _OBJECT_ID_CLAIM, "val": {}}]}),
+        _principal({"claims": [{"typ": "oid", "val": "  "}]}),
+    ],
+)
+def test_hosted_malformed_principal_cannot_fall_back_to_header(hardened_app, monkeypatch, encoded):
+    monkeypatch.setenv("WEBSITE_AUTH_ENABLED", "true")
+    monkeypatch.setenv("AUTH_ALLOWED_PRINCIPAL_IDS", "fallback-id")
+
+    response = hardened_app.app.test_client().get(
+        "/api/status",
+        headers={
+            "X-MS-CLIENT-PRINCIPAL-ID": "fallback-id",
+            "X-MS-CLIENT-PRINCIPAL": encoded,
+        },
+    )
+
+    assert response.status_code == 401
+
+
+def test_hosted_nonmatching_object_id_is_denied_even_with_plausible_email_header(
+    hardened_app, monkeypatch
+):
+    monkeypatch.setenv("WEBSITE_AUTH_ENABLED", "true")
+    monkeypatch.setenv("AUTH_ALLOWED_PRINCIPAL_IDS", "00000000-0000-4000-8000-000000000007")
+    principal = _principal(
+        {
+            "claims": [
+                {
+                    "typ": _OBJECT_ID_CLAIM,
+                    "val": "00000000-0000-4000-8000-000000000008",
+                }
+            ]
+        }
+    )
+
+    response = hardened_app.app.test_client().get(
+        "/api/status",
+        headers={
+            "X-MS-CLIENT-PRINCIPAL-ID": "caregiver@example.invalid",
+            "X-MS-CLIENT-PRINCIPAL": principal,
+        },
+    )
+
+    assert response.status_code == 403
 
 
 def test_hosted_allowlist_fails_closed(hardened_app, monkeypatch):

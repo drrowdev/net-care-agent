@@ -696,10 +696,17 @@ requires platform-enabled Easy Auth (which injects `WEBSITE_AUTH_ENABLED`) and a
 valid principal in hosted mode.
 Generic Azure hosting variables without explicit Easy Auth fail closed. Anonymous external probes
 also require corresponding App Service Easy Auth path exclusions.
-`AUTH_ALLOWED_PRINCIPAL_IDS`, when set, is an exact comma-separated allowlist.
-Hosted mode ignores local bypass. Local API use requires explicit
-`ALLOW_LOCAL_AUTH_BYPASS=1`; state-changing hosted methods compare `Origin`
-only with exact `APP_ORIGIN` or canonical HTTPS `WEBSITE_HOSTNAME`.
+The trusted encoded principal selects identity by fixed claim-type priority:
+canonical object-identifier URI, `oid`, canonical name-identifier URI, then
+`sub`. The first populated tier must contain one unique nonempty value;
+identical duplicates are harmless, while malformed or conflicting selected-tier
+claims are unauthenticated. Header `X-MS-CLIENT-PRINCIPAL-ID`, encoded `userId`,
+and `userDetails` are provider fallbacks only when no prioritized claim exists.
+`AUTH_ALLOWED_PRINCIPAL_IDS`, when set, is an exact comma-separated allowlist;
+names and email-valued convenience identifiers are never treated as equivalent
+to stable object IDs. Hosted mode ignores local bypass. Local API use requires
+explicit `ALLOW_LOCAL_AUTH_BYPASS=1`; state-changing hosted methods compare
+`Origin` only with exact `APP_ORIGIN` or canonical HTTPS `WEBSITE_HOSTNAME`.
 
 ## Why this shape
 

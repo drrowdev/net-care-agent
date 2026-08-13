@@ -1156,15 +1156,18 @@
   }
 
   async function readJsonResponse(response, canEvictClientPhi = () => true) {
-    if (response.status === 401 || response.status === 403) {
-      const authError = new Error('Authorization failed.');
-      authError.status = response.status;
-      if (canEvictClientPhi()) evictClientPhi(authError);
-    }
     let data;
+    let parsed = true;
     try {
       data = await response.json();
     } catch (_) {
+      parsed = false;
+    }
+    if (response.status === 401 || response.status === 403) {
+      const authError = applyAuthFailure(new Error('Authorization failed.'), response, data);
+      if (authEvictsClientPhi(authError) && canEvictClientPhi()) evictClientPhi(authError);
+    }
+    if (!parsed) {
       const error = new Error(`The server returned an invalid response (${response.status}).`);
       error.status = response.status;
       throw error;
@@ -1173,42 +1176,74 @@
       const message = data && typeof data.error === 'string'
         ? data.error
         : `Request failed (${response.status})`;
-      const error = new Error(message);
-      error.status = response.status;
+      const error = applyAuthFailure(new Error(message), response, data);
       error.retryAfter = response.headers.get('Retry-After');
       error.data = data;
-      if (response.status === 401 || response.status === 403) {
-        if (canEvictClientPhi()) evictClientPhi(error);
-      }
+      if (authEvictsClientPhi(error) && canEvictClientPhi()) evictClientPhi(error);
       throw error;
     }
     return data;
   }
 
+  const AUTH_FAILURE_REASONS = new Set([
+    'principal_absent',
+    'principal_malformed',
+    'principal_not_allowed',
+    'cross_origin',
+    'hosted_auth_unavailable',
+  ]);
+  const CROSS_ORIGIN_DENIAL_MESSAGE = 'This request was blocked because it did not come from the app’s own web address. Reload NET/Care from its normal address and try again. Nothing was changed, and no patient data was cleared.';
+
+  function authFailureReason(data) {
+    const reason = data && typeof data.reason === 'string' ? data.reason : '';
+    return AUTH_FAILURE_REASONS.has(reason) ? reason : '';
+  }
+
+  function isCrossOriginDenial(error) {
+    return Number(error?.status) === 403 && error?.reason === 'cross_origin';
+  }
+
+  // Account denial and unknown/legacy 401/403 stay fail-closed evictions. Only a
+  // server-declared same-origin rejection is exempt: that is a request-address
+  // problem, not an authorization problem, so held PHI stays valid.
+  function authEvictsClientPhi(error) {
+    const status = Number(error?.status);
+    if (status !== 401 && status !== 403) return false;
+    return !isCrossOriginDenial(error);
+  }
+
+  function applyAuthFailure(error, response, data) {
+    error.status = response.status;
+    const reason = authFailureReason(data);
+    if (reason) error.reason = reason;
+    if (isCrossOriginDenial(error)) error.message = CROSS_ORIGIN_DENIAL_MESSAGE;
+    return error;
+  }
+
   async function readJobSubmission(response, canEvictClientPhi = () => true) {
-    if (response.status === 401 || response.status === 403) {
-      const authError = new Error('Authorization failed.');
-      authError.status = response.status;
-      if (canEvictClientPhi()) evictClientPhi(authError);
-    }
     let data;
+    let parsed = true;
     try {
       data = await response.json();
     } catch (_) {
+      parsed = false;
+    }
+    if (response.status === 401 || response.status === 403) {
+      const authError = applyAuthFailure(new Error('Authorization failed.'), response, data);
+      if (authEvictsClientPhi(authError) && canEvictClientPhi()) evictClientPhi(authError);
+    }
+    if (!parsed) {
       const error = new Error(`The server returned an invalid response (${response.status}).`);
       error.status = response.status;
       throw error;
     }
     if (response.ok || (response.status === 409 && data && data.job_id)) return data;
-    const error = new Error(data && typeof data.error === 'string'
+    const error = applyAuthFailure(new Error(data && typeof data.error === 'string'
       ? data.error
-      : `Request failed (${response.status})`);
-    error.status = response.status;
+      : `Request failed (${response.status})`), response, data);
     error.retryAfter = response.headers.get('Retry-After');
     error.data = data;
-    if (response.status === 401 || response.status === 403) {
-      if (canEvictClientPhi()) evictClientPhi(error);
-    }
+    if (authEvictsClientPhi(error) && canEvictClientPhi()) evictClientPhi(error);
     throw error;
   }
 
@@ -1242,6 +1277,7 @@
   }
 
   function shouldEvictClientPhi(error) {
+    if (isCrossOriginDenial(error)) return false;
     return error?.status === 401 || error?.status === 403 || Number(error?.status) >= 500;
   }
 
@@ -1380,14 +1416,18 @@
     }
 
     const errors = [...failedLoads.values()];
-    const error = errors.find(item => item?.status === 403)
+    const error = errors.find(item => item?.status === 403 && !isCrossOriginDenial(item))
       || errors.find(item => item?.status === 401)
+      || errors.find(item => isCrossOriginDenial(item))
       || errors[0];
     const offline = navigator.onLine === false || error instanceof TypeError;
     let title = 'Patient data could not be loaded';
     let message = error?.message || 'Check your connection and try again.';
 
-    if (error?.status === 401) {
+    if (isCrossOriginDenial(error)) {
+      title = 'Request blocked by the app’s address check';
+      message = CROSS_ORIGIN_DENIAL_MESSAGE;
+    } else if (error?.status === 401) {
       title = 'Sign-in required';
       message = 'Your session expired or is not authenticated. Browser-held patient data was cleared; stored patient records were not deleted. Reload to complete sign-in, or retry after signing in elsewhere.';
       if (reloadAction) reloadAction.hidden = false;
@@ -3165,7 +3205,7 @@
         error?.name === 'AbortError'
         || !imagingTransportRequestIsCurrent(request, acceptedPhiEpoch)
       ) return null;
-      if (error?.status === 401 || error?.status === 403) {
+      if (authEvictsClientPhi(error)) {
         const safeError = new Error('Imaging authorization is unavailable.');
         safeError.status = error.status;
         reportLoadError('imaging', safeError);
@@ -6146,7 +6186,7 @@
         error?.name === 'AbortError'
         || !symptomTransportRequestIsCurrent(request, acceptedPhiEpoch)
       ) return null;
-      if (error?.status === 401 || error?.status === 403) {
+      if (authEvictsClientPhi(error)) {
         const safeError = new Error('Symptom authorization is unavailable.');
         safeError.status = error.status;
         reportLoadError('symptom-episodes', safeError);
@@ -7036,7 +7076,7 @@
         error?.name === 'AbortError'
         || !symptomIntentOwnsMutation(intent, intent.requestPhiEpoch)
       ) return null;
-      if (error?.status === 401 || error?.status === 403) {
+      if (authEvictsClientPhi(error)) {
         const safeError = new Error('Symptom authorization is unavailable.');
         safeError.status = error.status;
         reportLoadError('symptom-mutation', safeError);
@@ -8395,7 +8435,7 @@
       return projection;
     } catch (error) {
       if (!current() || error?.name === 'AbortError') return null;
-      if (error?.status === 401 || error?.status === 403) {
+      if (authEvictsClientPhi(error)) {
         reportLoadError('research', error);
         evictClientPhi(error);
         return null;
@@ -8893,7 +8933,7 @@
       return data;
     } catch (error) {
       if (!researchIntentCurrent(intent)) return null;
-      if (error?.status === 401 || error?.status === 403) {
+      if (authEvictsClientPhi(error)) {
         evictClientPhi(error);
         return null;
       }
@@ -9575,27 +9615,23 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
-      if (response.status === 401 || response.status === 403) {
-        const authError = new Error('Authorization failed.');
-        authError.status = response.status;
-        evictClientPhi(authError);
-        throw authError;
-      }
       let data;
+      let parsed = true;
       try {
         data = await response.json();
       } catch (_) {
+        parsed = false;
+      }
+      if (response.status === 401 || response.status === 403) {
+        const authError = applyAuthFailure(new Error('Authorization failed.'), response, data);
+        if (authEvictsClientPhi(authError)) evictClientPhi(authError);
+        throw authError;
+      }
+      if (!parsed) {
         throw new Error(`The server returned an invalid response (${response.status}).`);
       }
       if (!authorizePatientResponse(request, data).accepted) return;
       if (!response.ok) {
-        if (response.status === 401 || response.status === 403) {
-          const authError = new Error(data.error || 'Authorization failed.');
-          authError.status = response.status;
-          authError.data = data;
-          evictClientPhi(authError);
-          throw authError;
-        }
         if (response.status === 409 && data.receipt && taskSelectionEpoch === originSelectionEpoch && selectedTaskId === originJobId && currentReceipt?.job_id === originJobId && currentReceipt?.receipt_revision === originReceiptRevision) {
           document.getElementById('panel-body').querySelector('.receipt-card')?.remove();
           document.getElementById('panel-body').insertAdjacentHTML('afterbegin', renderReceipt(data.receipt));
@@ -9837,7 +9873,7 @@
         receiptHtml = renderReceipt(receipt);
       } catch (error) {
         if (!patientRequestIsCurrent(request)) return false;
-        if (error?.status === 401 || error?.status === 403) {
+        if (authEvictsClientPhi(error)) {
           evictClientPhi(error);
           reportLoadError('tasks', error);
           return false;
@@ -15477,7 +15513,7 @@
       if (error?.name === 'AbortError' || !treatmentTransportRequestIsCurrent(request, accepted)) {
         return null;
       }
-      if (error?.status === 401 || error?.status === 403) {
+      if (authEvictsClientPhi(error)) {
         const safeError = new Error('Treatment authorization is unavailable.');
         safeError.status = error.status;
         evictClientPhi(safeError);
@@ -16888,7 +16924,7 @@
       return data;
     } catch (error) {
       if (error?.name === 'AbortError' || !treatmentIntentOwnsMutation(intent)) return null;
-      if (error?.status === 401 || error?.status === 403) {
+      if (authEvictsClientPhi(error)) {
         const safeError = new Error('Treatment authorization is unavailable.');
         safeError.status = error.status;
         evictClientPhi(safeError);

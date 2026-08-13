@@ -696,17 +696,85 @@ requires platform-enabled Easy Auth (which injects `WEBSITE_AUTH_ENABLED`) and a
 valid principal in hosted mode.
 Generic Azure hosting variables without explicit Easy Auth fail closed. Anonymous external probes
 also require corresponding App Service Easy Auth path exclusions.
-The trusted encoded principal selects identity by fixed claim-type priority:
-canonical object-identifier URI, `oid`, canonical name-identifier URI, then
-`sub`. The first populated tier must contain one unique nonempty value;
-identical duplicates are harmless, while malformed or conflicting selected-tier
-claims are unauthenticated. Header `X-MS-CLIENT-PRINCIPAL-ID`, encoded `userId`,
-and `userDetails` are provider fallbacks only when no prioritized claim exists.
-`AUTH_ALLOWED_PRINCIPAL_IDS`, when set, is an exact comma-separated allowlist;
-names and email-valued convenience identifiers are never treated as equivalent
-to stable object IDs. Hosted mode ignores local bypass. Local API use requires
+
+### Two gates, not one
+
+A hosted request passes **two independent gates** before any handler runs:
+
+1. **App Service Easy Auth middleware**, outside the Python process. It
+   authenticates the account and runs its own CSRF check. A state-changing
+   request whose `Referer` is empty is rejected there with HTTP `403`,
+   sub-status `60` (`Cross-site request forgery detected ... from referer ''`)
+   and never reaches Flask. A `Referrer-Policy: no-referrer` response header
+   therefore disables every mutation site-wide, which is exactly how the
+   2026-08-13 outage presented. Responses now send `Referrer-Policy:
+   same-origin`: the Referer is restored for this site's own requests and is
+   still withheld from every other origin.
+2. **Flask `_protect_api`**, registered as the first `before_request` handler so
+   an unauthenticated, denied, or cross-origin request performs no job-history
+   load, retention prune, or source prune. `_lazy_init` runs only afterwards.
+
+### Typed principal decision
+
+The trusted headers are parsed into two strictly separate namespaces.
+
+**ID candidate.** The encoded principal selects identity by fixed claim-type
+priority: canonical object-identifier URI, `oid`, canonical name-identifier URI,
+then `sub`. The first populated tier must contain one unique nonempty value;
+identical duplicates are harmless, while malformed, oversized, or conflicting
+selected-tier claims are unauthenticated. `X-MS-CLIENT-PRINCIPAL-ID` is a
+provider fallback only when no prioritized claim exists. Static Web Apps
+`userId`/`userDetails` fields are a different product's schema and were removed.
+IDs are compared exactly and case-sensitively.
+
+**Name candidate.** `X-MS-CLIENT-PRINCIPAL-NAME`, compared with Unicode-safe
+`casefold()` after trimming surrounding whitespace. Dots, plus tags, and domains
+are never rewritten, so no address is ever treated as equivalent to another.
+
+**Documented compatibility bridge.** This deployment's platform injects the
+account's email into `X-MS-CLIENT-PRINCIPAL-ID` and does not guarantee that the
+encoded blob or the name header reaches the worker. A bounded `local@domain`
+shaped ID-header value is therefore *also* offered as a name candidate
+(`provider_id_name_compat`). It is never normalised beyond `casefold()` and
+never acquires stable-object-ID semantics. The name header wins when present; if
+both sources are email-shaped and differ after `casefold()`, the name path fails
+closed rather than widening access.
+
+Base64 decoding accepts standard or URL-safe alphabets with missing padding,
+re-padding safely and validating strictly. Mixed alphabets, impossible lengths,
+corrupt data, oversized blobs, and excessive claim counts fail closed and never
+downgrade to the convenience headers.
+
+### Typed authorization and migration
+
+`AUTH_ALLOWED_PRINCIPAL_IDS` matches only the ID candidate;
+`AUTH_ALLOWED_PRINCIPAL_NAMES` matches only the name candidate. A request passes
+when **either** configured allowlist matches its own typed candidate, so neither
+namespace can authorize the other and an operator can move an entry between the
+two settings without an atomic lockout. With **both** empty, behaviour is
+unchanged from before: Easy Auth alone is the gate.
+
+Hosted mode ignores local bypass. Local API use requires
 explicit `ALLOW_LOCAL_AUTH_BYPASS=1`; state-changing hosted methods compare
-`Origin` only with exact `APP_ORIGIN` or canonical HTTPS `WEBSITE_HOSTNAME`.
+`Origin` only with exact `APP_ORIGIN` or canonical HTTPS `WEBSITE_HOSTNAME`, as
+defence in depth behind the platform CSRF check.
+
+### PHI-free failure discriminators
+
+Auth failures return fixed enums and never an identifier, claim value, email,
+token, or payload:
+
+| Field | Values |
+|---|---|
+| `reason` | `principal_absent`, `principal_malformed`, `principal_not_allowed`, `cross_origin`, `hosted_auth_unavailable` |
+| `principal_source` (where meaningful) | `encoded_claim`, `provider_id_header`, `principal_name_header`, `provider_id_name_compat`, `absent` |
+
+Authorization is evaluated before the origin check, so a denied account always
+sees `principal_not_allowed` and an accepted account with a bad request address
+always sees `cross_origin`. The browser uses that distinction: `cross_origin`
+never evicts patient data and never suggests switching accounts, while
+`principal_not_allowed`, `401`, and any unknown or legacy `403` remain
+fail-closed evictions.
 
 ## Why this shape
 
@@ -760,6 +828,10 @@ explicit `ALLOW_LOCAL_AUTH_BYPASS=1`; state-changing hosted methods compare
 | Retry duplicates a decision or follow-up | Mutation ID + canonical request hash replay returns the prior target without another save or revision increment |
 | Old chat contaminates corrected record | Client clears history on profile revision change; server rejects mismatched `history_revision` with `409` |
 | Cached PHI after auth/load failure | Central client eviction clears every patient-bearing cache, panel, dialog, chat turn, receipt/report, filter, and open feedback surface; non-auth receipt refresh is the only fallback exception. Activity result links close/deactivate the report dialog before changing views and then focus the target heading/dialog. |
+| Platform CSRF check rejects every mutation (`403.60`) | Responses send `Referrer-Policy: same-origin`, never `no-referrer`, so same-origin state-changing requests carry a `Referer` for the Easy Auth middleware while other origins still receive nothing. A runtime test pins the emitted header and a browser test asserts the wire `Referer`, with `no-referrer` as the failing control. |
+| Platform identity shape changes and locks the caregiver out | ID and name candidates are parsed and allow-listed separately (`AUTH_ALLOWED_PRINCIPAL_IDS` / `AUTH_ALLOWED_PRINCIPAL_NAMES`), either one may authorize, and the documented email-shaped ID-header bridge keeps a blob-less, name-header-less platform working. Settings can be migrated one at a time with no lockout window. |
+| Denied request performs storage work | `_protect_api` is the first `before_request` handler; job-history load, retention prune, and source prune run only after authorization succeeds. A test pins both the registration order and the absence of side effects. |
+| Address-check failure misread as account denial | Auth failures carry fixed PHI-free `reason`/`principal_source` enums; the browser keeps patient data and offers a same-origin recovery for `cross_origin`, and still evicts on `principal_not_allowed`, `401`, or any unknown/legacy `403`. |
 | Source traversal / browser caching | Auth-gated `/api/sources/<id>[/<artifact>]` and `/api/evidence/<id>` resolve only indexed paths below `DATA_DIR`, reject traversal, and return `no-store` |
 | Stale clinical judgment | Only active, nonexpired, non-review-due judgments constrain agents; all others are visibly framed as needing clinician review |
 | Storage account deletion | `AzureBackupProtectionLock` (CanNotDelete) on the resource group, auto-applied by Azure Backup |

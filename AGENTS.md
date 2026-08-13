@@ -118,6 +118,18 @@ the managed identity lost its **Key Vault Secrets User** role on the vault.
   also required for anonymous external probes. Do not disable Easy Auth to
   smoke-test. Local APIs require explicit
   `ALLOW_LOCAL_AUTH_BYPASS=1`, and hosted mode ignores it.
+- **Never ship `Referrer-Policy: no-referrer`.** The Easy Auth middleware runs
+  its own CSRF check ahead of Flask and rejects any state-changing request whose
+  `Referer` is empty with `403` sub-status `60`, so a `no-referrer` document
+  policy takes the whole API down while `/api/health` still looks fine. Ship
+  `same-origin`; off-site anchors opt out individually with
+  `rel="noopener noreferrer"`.
+- **Two typed allowlists.** `AUTH_ALLOWED_PRINCIPAL_IDS` is exact and
+  case-sensitive and matches only a stable ID;
+  `AUTH_ALLOWED_PRINCIPAL_NAMES` matches only the account name/email with
+  trimming plus `casefold()`. Either may authorize a request. Migrate values
+  between them one step at a time (`docs/operating_manual.md` §14a); never edit
+  both settings in one command.
 - **No scheduler.** Daily digest + ntfy were intentionally removed in
   v0.4.0. Don't reintroduce them without a strong reason — the user
   prefers manual `↻ Run digest` triggered from the header.

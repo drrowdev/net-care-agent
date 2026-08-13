@@ -52,6 +52,49 @@ incremented when something user-visible or operationally meaningful changes.
   local scrolling at phone width.
 
 ### Fixed
+- **Hosted authorization restored end to end (production outage).** Every
+  state-changing request was rejected with `403` sub-status `60`
+  (`Cross-site request forgery detected ... from referer ''`) by the App Service
+  Easy Auth middleware, before the request reached Flask, because the app sent a
+  global `Referrer-Policy: no-referrer` that suppressed the `Referer` even on
+  same-origin requests. Responses now send `Referrer-Policy: same-origin`, which
+  restores the `Referer` for this site only and still sends nothing to any other
+  origin; off-site anchors keep `rel="noopener noreferrer"`. A runtime test pins
+  the emitted header and a browser test asserts the real wire `Referer`, with
+  `no-referrer` as the failing control.
+- **Durable typed principal authorization.** Identity is now parsed into two
+  namespaces that never cross-match: an exact, case-sensitive ID candidate
+  (canonical object-identifier claim, `oid`, name-identifier, `sub`, else the
+  `X-MS-CLIENT-PRINCIPAL-ID` provider header) constrained by
+  `AUTH_ALLOWED_PRINCIPAL_IDS`, and an account-name candidate
+  (`X-MS-CLIENT-PRINCIPAL-NAME`) constrained by the new
+  `AUTH_ALLOWED_PRINCIPAL_NAMES` with trimming and Unicode-safe `casefold()`
+  matching only — dots, plus tags, and domains are never rewritten. Either list
+  may authorize a request, so the account email can be migrated out of the
+  stable-ID setting without a lockout window (see the operating manual).
+  Because the live platform injects the account email into
+  `X-MS-CLIENT-PRINCIPAL-ID` and may send neither the encoded blob nor the name
+  header, a bounded `local@domain`-shaped ID-header value is also offered as a
+  documented convenience name candidate; it never becomes a stable object ID,
+  and conflicting email-shaped name sources fail the name path closed. Leaving
+  both lists empty keeps the previous Easy-Auth-only behaviour.
+- **Fail-closed principal parsing.** Base64 principals now decode from standard
+  or URL-safe alphabets with missing padding while rejecting mixed alphabets,
+  impossible lengths, corruption, oversized blobs, over-long values, and
+  excessive claim counts — never downgrading to a convenience header. Static Web
+  Apps `userId`/`userDetails` fallbacks were removed as a different product's
+  schema.
+- **Authorization before storage.** `_protect_api` is now the first
+  `before_request` handler, so an unauthenticated, denied, or cross-origin
+  `/api/*` request performs no job-history load, retention prune, or source
+  prune. Health, liveness, and authenticated lazy initialisation are unchanged.
+- **Actionable, PHI-free denial reasons.** `401`/`403`/`503` auth responses now
+  carry fixed `reason` and `principal_source` enums and never an identifier,
+  email, claim value, token, or payload. The workspace uses them: a
+  `cross_origin` rejection keeps patient data and shows a bounded same-origin
+  recovery instead of clearing PHI and recommending an account switch, while
+  `principal_not_allowed`, `401`, and any unknown, legacy, or unparseable `403`
+  remain fail-closed evictions with the existing duplicate/stale guards.
 - **Hosted stable-principal authorization.** Easy Auth allowlist checks now
   prefer a unique canonical object-identifier claim, then `oid`, then
   name-identifier/`sub` fallbacks, before provider convenience identity values.
@@ -366,6 +409,15 @@ incremented when something user-visible or operationally meaningful changes.
   not block snapshot/backup recovery or permit duplicate initialization.
 
 ### Operations
+- **Authorization recovery and settings migration.** `docs/operating_manual.md`
+  §10a explains how to tell the App Service Easy Auth middleware CSRF rejection
+  (`403.60`, empty `Referer`, request never reaches the app) apart from a Flask
+  denial, using only the fixed PHI-free `reason`/`principal_source` enums. §14a
+  gives the two-step, never-both-at-once migration that moves the account email
+  from `AUTH_ALLOWED_PRINCIPAL_IDS` to `AUTH_ALLOWED_PRINCIPAL_NAMES`, with a
+  rollback for each step that always leaves at least one valid gate. Do not
+  apply §14a before the release containing typed name authorization is verified
+  live, and do not restore `Referrer-Policy: no-referrer` in any layer.
 - Profile-load recovery now relies only on deterministic schema v15 migration
   and normal validation/default materialization. Operators must not add empty
   treatment source IDs, map generated rows by wording/order, use `/api/status`

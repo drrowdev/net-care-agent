@@ -359,11 +359,34 @@ def test_profile_route_waits_for_background_transaction_without_lost_update(
 def test_security_headers_present(client):
     response = client.get("/")
     assert response.headers["X-Content-Type-Options"] == "nosniff"
-    assert response.headers["Referrer-Policy"] == "no-referrer"
+    assert response.headers["Referrer-Policy"] == "same-origin"
     assert response.headers["X-Frame-Options"] == "DENY"
     assert "frame-ancestors 'none'" in response.headers["Content-Security-Policy"]
     assert "script-src 'self' 'unsafe-inline'" in response.headers["Content-Security-Policy"]
     assert "camera=()" in response.headers["Permissions-Policy"]
+
+
+@pytest.mark.parametrize("path", ["/", "/api/health", "/api/live", "/static/app.js"])
+def test_referrer_policy_never_suppresses_the_same_origin_referer(app_mod, client, path):
+    """App Service Easy Auth rejects same-origin POSTs whose Referer is empty.
+
+    The middleware answers `403` with sub-status `60` ("Cross-site request
+    forgery detected ... from referer ''") before the request ever reaches
+    Flask, so a `no-referrer` document policy takes the whole API down.
+    """
+    policy = client.get(path).headers["Referrer-Policy"]
+
+    assert policy == app_mod._REFERRER_POLICY
+    assert policy != "no-referrer"
+    assert policy in app_mod._EASY_AUTH_COMPATIBLE_REFERRER_POLICIES
+
+
+def test_referrer_policy_still_sends_nothing_cross_origin(app_mod):
+    """`same-origin` keeps the previous zero-leak posture for other origins."""
+    assert app_mod._REFERRER_POLICY == "same-origin"
+    source = inspect.getsource(app_mod._add_cache_headers)
+    assert '"no-referrer"' not in source
+    assert "Cross-site request forgery detected" in source
 
 
 def test_csp_inline_script_exception_is_limited_to_legacy_static_handlers(app_mod):

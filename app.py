@@ -7,6 +7,7 @@ Data persisted to /home/data (Azure Files mount)
 
 import atexit
 import base64
+import binascii
 import copy
 import datetime
 import hashlib
@@ -14,13 +15,14 @@ import hmac
 import io
 import json
 import os
+import re
 import shutil
 import sys
 import threading
 import time
 from functools import wraps
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 # Load .env for local development. On Azure App Service, env vars come from
 # Application Settings and this is a no-op.
@@ -2318,6 +2320,20 @@ def _run_chat_job(
 
 
 # ── API routes ────────────────────────────────────────────────────────────────
+# Referrer policies that still emit a Referer on same-origin requests, which the
+# App Service Easy Auth middleware requires for its pre-Flask CSRF check.
+_EASY_AUTH_COMPATIBLE_REFERRER_POLICIES = frozenset(
+    {
+        "same-origin",
+        "strict-origin-when-cross-origin",
+        "origin-when-cross-origin",
+        "no-referrer-when-downgrade",
+        "unsafe-url",
+    }
+)
+_REFERRER_POLICY = "same-origin"
+
+
 @app.after_request
 def _add_cache_headers(response):
     """
@@ -2352,7 +2368,15 @@ def _add_cache_headers(response):
         "frame-ancestors 'none'"
     )
     response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["Referrer-Policy"] = "no-referrer"
+    # `no-referrer` broke every state-changing request in production: App Service
+    # Easy Auth middleware runs its own CSRF check before Flask and rejects a
+    # same-origin POST that arrives with an empty Referer
+    # (HTTP 403, sub-status 60, "Cross-site request forgery detected ... from
+    # referer ''"). `same-origin` restores the Referer only for our own origin,
+    # where it never leaves this site, and keeps sending nothing at all to every
+    # cross-origin destination (Google Fonts, PubMed, ClinicalTrials.gov), so no
+    # path, query, or origin leaks off-site. Do not weaken this to `no-referrer`.
+    response.headers["Referrer-Policy"] = _REFERRER_POLICY
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Permissions-Policy"] = (
         "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
@@ -2376,25 +2400,6 @@ def _profile_unavailable(error):
     ), 503
 
 
-@app.before_request
-def _lazy_init():
-    """Load jobs on the first real request — by then Azure Files is mounted."""
-    global _initialized
-    if not _initialized:
-        loaded = _load_jobs()
-        _initialized = loaded
-        if loaded:
-            _prune_retention()
-            _prune_sources_safely()
-        if not loaded and request.path not in {"/api/live", "/api/health"}:
-            return jsonify(
-                {
-                    "error": "Job history storage is temporarily unavailable.",
-                    "retryable": True,
-                }
-            ), 503
-
-
 def _easy_auth_enabled() -> bool:
     return os.environ.get("WEBSITE_AUTH_ENABLED", "").strip().lower() == "true"
 
@@ -2413,59 +2418,255 @@ _PRINCIPAL_ID_CLAIM_TYPES = (
     "sub",
 )
 
+# Bounds that keep a hostile proxy from forcing unbounded parsing work. App
+# Service caps a single request header well below these values.
+_MAX_PRINCIPAL_HEADER_CHARS = 16384
+_MAX_PRINCIPAL_BLOB_BYTES = 12288
+_MAX_PRINCIPAL_CLAIMS = 512
+_MAX_PRINCIPAL_VALUE_CHARS = 512
 
-def _principal_id() -> str | None:
-    header_id = (request.headers.get("X-MS-CLIENT-PRINCIPAL-ID") or "").strip()
-    encoded = (request.headers.get("X-MS-CLIENT-PRINCIPAL") or "").strip()
-    if not encoded:
-        return header_id or None
+# Fixed, PHI-free response discriminators. Values never leave the process.
+_PRINCIPAL_SOURCE_ENCODED_CLAIM = "encoded_claim"
+_PRINCIPAL_SOURCE_PROVIDER_ID_HEADER = "provider_id_header"
+_PRINCIPAL_SOURCE_NAME_HEADER = "principal_name_header"
+_PRINCIPAL_SOURCE_PROVIDER_ID_NAME_COMPAT = "provider_id_name_compat"
+_PRINCIPAL_SOURCE_ABSENT = "absent"
+_PRINCIPAL_SOURCES = frozenset(
+    {
+        _PRINCIPAL_SOURCE_ENCODED_CLAIM,
+        _PRINCIPAL_SOURCE_PROVIDER_ID_HEADER,
+        _PRINCIPAL_SOURCE_NAME_HEADER,
+        _PRINCIPAL_SOURCE_PROVIDER_ID_NAME_COMPAT,
+        _PRINCIPAL_SOURCE_ABSENT,
+    }
+)
+_AUTH_REASON_PRINCIPAL_ABSENT = "principal_absent"
+_AUTH_REASON_PRINCIPAL_MALFORMED = "principal_malformed"
+_AUTH_REASON_PRINCIPAL_NOT_ALLOWED = "principal_not_allowed"
+_AUTH_REASON_CROSS_ORIGIN = "cross_origin"
+_AUTH_REASON_HOSTED_AUTH_UNAVAILABLE = "hosted_auth_unavailable"
+_AUTH_FAILURE_REASONS = frozenset(
+    {
+        _AUTH_REASON_PRINCIPAL_ABSENT,
+        _AUTH_REASON_PRINCIPAL_MALFORMED,
+        _AUTH_REASON_PRINCIPAL_NOT_ALLOWED,
+        _AUTH_REASON_CROSS_ORIGIN,
+        _AUTH_REASON_HOSTED_AUTH_UNAVAILABLE,
+    }
+)
 
+# Deliberately narrow: one "@", no whitespace, a dotted domain, bounded labels.
+# This only recognises a shape; it never rewrites or widens the compared value.
+_EMAIL_LIKE_NAME = re.compile(r"\A[^@\s]{1,64}@[^@\s]{1,252}\.[^@\s.]{2,63}\Z")
+
+
+class _PrincipalDecision(NamedTuple):
+    """Typed identity candidates parsed from trusted Easy Auth headers."""
+
+    principal_id: str | None
+    id_source: str | None
+    principal_name: str | None
+    name_source: str | None
+    malformed: bool
+
+
+def _bounded_header_value(name: str) -> str:
+    raw = request.headers.get(name) or ""
+    if len(raw) > _MAX_PRINCIPAL_HEADER_CHARS:
+        return ""
+    value = raw.strip()
+    if len(value) > _MAX_PRINCIPAL_VALUE_CHARS or not value.isprintable():
+        return ""
+    return value
+
+
+def _is_email_like(value: str) -> bool:
+    return bool(_EMAIL_LIKE_NAME.fullmatch(value))
+
+
+def _decode_principal_blob(encoded: str) -> object | None:
+    """Decode a standard or URL-safe base64 principal blob, or return ``None``.
+
+    Missing padding is restored, but corrupt alphabets, impossible lengths,
+    mixed alphabets, oversized payloads, and non-JSON bodies all fail closed.
+    """
+    if len(encoded) > _MAX_PRINCIPAL_HEADER_CHARS or not encoded.isascii():
+        return None
+    if "=" in encoded:
+        if len(encoded) % 4 or "=" in encoded.rstrip("="):
+            return None
+        candidate = encoded
+    else:
+        if len(encoded) % 4 == 1:
+            return None
+        candidate = encoded + "=" * (-len(encoded) % 4)
+    urlsafe = "-" in candidate or "_" in candidate
+    standard = "+" in candidate or "/" in candidate
+    if urlsafe and standard:
+        return None
     try:
-        decoded = base64.b64decode(encoded, validate=True)
-        principal = json.loads(decoded)
-    except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
+        decoded = base64.b64decode(
+            candidate.encode("ascii"),
+            altchars=b"-_" if urlsafe else None,
+            validate=True,
+        )
+    except (ValueError, binascii.Error):
         return None
-    if not isinstance(principal, dict):
+    if len(decoded) > _MAX_PRINCIPAL_BLOB_BYTES:
+        return None
+    try:
+        return json.loads(decoded)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    except RecursionError:
+        # A bounded but deeply nested payload (e.g. thousands of nested arrays
+        # inside the size limit) exhausts the parser's stack. `RecursionError`
+        # is a `RuntimeError`, not a `ValueError`, so without this it would
+        # escape as a Flask 500 instead of the fixed `principal_malformed` 401.
         return None
 
+
+def _claim_principal_id(principal: object) -> tuple[str | None, bool]:
+    """Return ``(selected_id, malformed)`` for the canonical claim tiers."""
+    if not isinstance(principal, dict):
+        return None, True
     claims = principal.get("claims", [])
-    if not isinstance(claims, list):
-        return None
-    values_by_type = {claim_type: set() for claim_type in _PRINCIPAL_ID_CLAIM_TYPES}
+    if not isinstance(claims, list) or len(claims) > _MAX_PRINCIPAL_CLAIMS:
+        return None, True
+    values_by_type: dict[str, set[str]] = {
+        claim_type: set() for claim_type in _PRINCIPAL_ID_CLAIM_TYPES
+    }
     for claim in claims:
         if not isinstance(claim, dict):
-            return None
+            return None, True
         claim_type = claim.get("typ")
         claim_value = claim.get("val")
         if not isinstance(claim_type, str) or not isinstance(claim_value, str):
-            return None
+            return None, True
         claim_type = claim_type.strip().lower()
         claim_value = claim_value.strip()
         if not claim_type:
-            return None
+            return None, True
         if claim_type in values_by_type:
-            if not claim_value:
-                return None
+            if not claim_value or len(claim_value) > _MAX_PRINCIPAL_VALUE_CHARS:
+                return None, True
             values_by_type[claim_type].add(claim_value)
 
     for claim_type in _PRINCIPAL_ID_CLAIM_TYPES:
         values = values_by_type[claim_type]
         if len(values) > 1:
-            return None
+            return None, True
         if values:
-            return next(iter(values))
+            return next(iter(values)), False
+    return None, False
 
-    if header_id:
-        return header_id
-    for field in ("userId", "userDetails"):
-        value = principal.get(field)
-        if value is None:
-            continue
-        if not isinstance(value, str):
-            return None
-        if value := value.strip():
-            return value
-    return None
+
+def _principal_decision() -> _PrincipalDecision:
+    """Parse typed identity candidates from the trusted Easy Auth headers.
+
+    Two namespaces are kept strictly separate:
+
+    * **ID** — the canonical encoded claim (object identifier, ``oid``,
+      name identifier, then ``sub``), else the ``X-MS-CLIENT-PRINCIPAL-ID``
+      provider header. Compared case-sensitively and exactly.
+    * **Name** — ``X-MS-CLIENT-PRINCIPAL-NAME``. Compared with
+      ``str.casefold()`` only.
+
+    Live-platform compatibility bridge: the Linux App Service configuration in
+    use injects the account's email into ``X-MS-CLIENT-PRINCIPAL-ID`` and does
+    not guarantee that ``X-MS-CLIENT-PRINCIPAL`` or
+    ``X-MS-CLIENT-PRINCIPAL-NAME`` reaches the worker. An ID-header value that
+    matches the bounded ``local@domain`` shape is therefore *also* offered as a
+    convenience name candidate. It is never normalised beyond ``casefold()``
+    and never gains stable-object-ID semantics. When both a name header and an
+    email-shaped ID header exist and are email-shaped but differ after
+    ``casefold()``, the name path fails closed rather than widening access.
+    """
+    header_id = _bounded_header_value("X-MS-CLIENT-PRINCIPAL-ID")
+    header_name = _bounded_header_value("X-MS-CLIENT-PRINCIPAL-NAME")
+    encoded = (request.headers.get("X-MS-CLIENT-PRINCIPAL") or "").strip()
+
+    principal_id: str | None = None
+    id_source: str | None = None
+    if encoded:
+        principal = _decode_principal_blob(encoded)
+        if principal is None:
+            return _PrincipalDecision(None, None, None, None, True)
+        claim_id, malformed = _claim_principal_id(principal)
+        if malformed:
+            return _PrincipalDecision(None, None, None, None, True)
+        if claim_id is not None:
+            principal_id, id_source = claim_id, _PRINCIPAL_SOURCE_ENCODED_CLAIM
+    if principal_id is None and header_id:
+        principal_id, id_source = header_id, _PRINCIPAL_SOURCE_PROVIDER_ID_HEADER
+
+    principal_name: str | None = None
+    name_source: str | None = None
+    compat_name = header_id if header_id and _is_email_like(header_id) else ""
+    if header_name:
+        if (
+            compat_name
+            and _is_email_like(header_name)
+            and header_name.casefold() != compat_name.casefold()
+        ):
+            principal_name, name_source = None, None
+        else:
+            principal_name, name_source = header_name, _PRINCIPAL_SOURCE_NAME_HEADER
+    elif compat_name:
+        principal_name = compat_name
+        name_source = _PRINCIPAL_SOURCE_PROVIDER_ID_NAME_COMPAT
+
+    return _PrincipalDecision(principal_id, id_source, principal_name, name_source, False)
+
+
+def _principal_source_label(decision: _PrincipalDecision) -> str:
+    for source in (decision.id_source, decision.name_source):
+        if source in _PRINCIPAL_SOURCES:
+            return source
+    return _PRINCIPAL_SOURCE_ABSENT
+
+
+def _configured_allowlist(name: str) -> set[str]:
+    return {item.strip() for item in os.environ.get(name, "").split(",") if item.strip()}
+
+
+def _hosted_principal_allowed(decision: _PrincipalDecision) -> bool:
+    """Allow when any configured typed allowlist matches its typed candidate.
+
+    Both allowlists empty preserves the pre-existing Easy-Auth-only posture:
+    any principal the platform authenticated is accepted. Only one typed match
+    is required, so an operator can migrate an entry from
+    ``AUTH_ALLOWED_PRINCIPAL_IDS`` to ``AUTH_ALLOWED_PRINCIPAL_NAMES`` without
+    an atomic lockout window.
+    """
+    id_allowlist = _configured_allowlist("AUTH_ALLOWED_PRINCIPAL_IDS")
+    # `casefold()` is Unicode caseless matching, not a normalizer: it never
+    # rewrites dots, plus tags, or domains. Configure the exact account name.
+    name_allowlist = {
+        item.casefold() for item in _configured_allowlist("AUTH_ALLOWED_PRINCIPAL_NAMES")
+    }
+    if not id_allowlist and not name_allowlist:
+        return True
+    if id_allowlist and decision.principal_id is not None and decision.principal_id in id_allowlist:
+        return True
+    return bool(
+        name_allowlist
+        and decision.principal_name is not None
+        and decision.principal_name.casefold() in name_allowlist
+    )
+
+
+def _auth_failure(status: int, message: str, *, reason: str, principal_source: str | None = None):
+    """Return a PHI-free auth failure body carrying only fixed discriminators."""
+    body: dict[str, str] = {
+        "error": message,
+        "reason": reason if reason in _AUTH_FAILURE_REASONS else _AUTH_REASON_PRINCIPAL_NOT_ALLOWED,
+    }
+    if principal_source is not None:
+        body["principal_source"] = (
+            principal_source if principal_source in _PRINCIPAL_SOURCES else _PRINCIPAL_SOURCE_ABSENT
+        )
+    return jsonify(body), status
 
 
 def _trusted_hosted_origin() -> str | None:
@@ -2519,23 +2720,72 @@ def _protect_api():
     hosted = _is_hosted()
     if hosted:
         if not _easy_auth_enabled():
-            return jsonify({"error": "Hosted authentication is not enabled."}), 503
-        principal_id = _principal_id()
-        if principal_id is None:
-            return jsonify({"error": "Authentication required."}), 401
+            return _auth_failure(
+                503,
+                "Hosted authentication is not enabled.",
+                reason=_AUTH_REASON_HOSTED_AUTH_UNAVAILABLE,
+            )
+        decision = _principal_decision()
+        if decision.malformed:
+            return _auth_failure(
+                401,
+                "Authentication required.",
+                reason=_AUTH_REASON_PRINCIPAL_MALFORMED,
+                principal_source=_PRINCIPAL_SOURCE_ABSENT,
+            )
+        if decision.principal_id is None and decision.principal_name is None:
+            return _auth_failure(
+                401,
+                "Authentication required.",
+                reason=_AUTH_REASON_PRINCIPAL_ABSENT,
+                principal_source=_PRINCIPAL_SOURCE_ABSENT,
+            )
+        if not _hosted_principal_allowed(decision):
+            return _auth_failure(
+                403,
+                "Access denied.",
+                reason=_AUTH_REASON_PRINCIPAL_NOT_ALLOWED,
+                principal_source=_principal_source_label(decision),
+            )
     elif not local_bypass:
-        return jsonify({"error": "Authentication required."}), 401
-    else:
-        principal_id = None
+        return _auth_failure(
+            401,
+            "Authentication required.",
+            reason=_AUTH_REASON_PRINCIPAL_ABSENT,
+            principal_source=_PRINCIPAL_SOURCE_ABSENT,
+        )
     if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not _origin_is_same(hosted=hosted):
-        return jsonify({"error": "Cross-origin request denied."}), 403
-    allowlist = {
-        item.strip()
-        for item in os.environ.get("AUTH_ALLOWED_PRINCIPAL_IDS", "").split(",")
-        if item.strip()
-    }
-    if hosted and allowlist and principal_id not in allowlist:
-        return jsonify({"error": "Access denied."}), 403
+        return _auth_failure(
+            403,
+            "Cross-origin request denied.",
+            reason=_AUTH_REASON_CROSS_ORIGIN,
+        )
+    return None
+
+
+@app.before_request
+def _lazy_init():
+    """Load jobs on the first authorized request — by then Azure Files is mounted.
+
+    Registered *after* ``_protect_api`` on purpose: Flask runs ``before_request``
+    handlers in registration order, so an unauthenticated, denied, or
+    cross-origin ``/api/*`` request is rejected before any job history load,
+    retention prune, or source prune touches storage.
+    """
+    global _initialized
+    if not _initialized:
+        loaded = _load_jobs()
+        _initialized = loaded
+        if loaded:
+            _prune_retention()
+            _prune_sources_safely()
+        if not loaded and request.path not in {"/api/live", "/api/health"}:
+            return jsonify(
+                {
+                    "error": "Job history storage is temporarily unavailable.",
+                    "retryable": True,
+                }
+            ), 503
     return None
 
 

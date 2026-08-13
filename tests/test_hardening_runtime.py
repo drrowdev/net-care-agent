@@ -126,7 +126,9 @@ def test_hosted_api_requires_valid_easy_auth(hardened_app, monkeypatch):
         client.get("/api/status", headers={"X-MS-CLIENT-PRINCIPAL": "not-base64"}).status_code
         == 401
     )
-    valid = _principal({"userId": "allowed-id", "claims": []})
+    valid = _principal(
+        {"claims": [{"typ": _OBJECT_ID_CLAIM, "val": "00000000-0000-4000-8000-000000000000"}]}
+    )
     assert client.get("/api/status", headers={"X-MS-CLIENT-PRINCIPAL": valid}).status_code == 200
 
 
@@ -230,33 +232,27 @@ def test_hosted_sub_claim_is_used_without_higher_priority_claims(hardened_app, m
 
 
 @pytest.mark.parametrize(
-    ("header_id", "principal_fields", "allowed_id"),
+    ("header_id", "principal_fields", "configured_id"),
     [
-        (
-            "provider-header-id",
-            {"userId": "encoded-user-id", "userDetails": "encoded-user-details"},
-            "provider-header-id",
-        ),
-        (
-            None,
-            {"userId": "encoded-user-id", "userDetails": "encoded-user-details"},
-            "encoded-user-id",
-        ),
+        ("provider-header-id", {"userId": "encoded-user-id"}, "provider-header-id"),
+        (None, {"userId": "encoded-user-id"}, "encoded-user-id"),
         (None, {"userDetails": "encoded-user-details"}, "encoded-user-details"),
     ],
 )
-def test_hosted_provider_convenience_fallback_order(
-    hardened_app, monkeypatch, header_id, principal_fields, allowed_id
+def test_static_web_apps_principal_fields_are_never_identity(
+    hardened_app, monkeypatch, header_id, principal_fields, configured_id
 ):
+    """`userId`/`userDetails` belong to Static Web Apps, not App Service Easy Auth."""
     monkeypatch.setenv("WEBSITE_AUTH_ENABLED", "true")
-    monkeypatch.setenv("AUTH_ALLOWED_PRINCIPAL_IDS", allowed_id)
+    monkeypatch.setenv("AUTH_ALLOWED_PRINCIPAL_IDS", configured_id)
     headers = {"X-MS-CLIENT-PRINCIPAL": _principal({**principal_fields, "claims": []})}
     if header_id:
         headers["X-MS-CLIENT-PRINCIPAL-ID"] = header_id
 
     response = hardened_app.app.test_client().get("/api/status", headers=headers)
 
-    assert response.status_code == 200
+    # The provider header still authenticates; the wrong-schema fields never do.
+    assert response.status_code == (200 if header_id else 401)
 
 
 def test_hosted_duplicate_identical_object_id_claims_are_accepted(hardened_app, monkeypatch):
@@ -375,6 +371,478 @@ def test_hosted_allowlist_fails_closed(hardened_app, monkeypatch):
         client.get("/api/status", headers={"X-MS-CLIENT-PRINCIPAL-ID": "allowed-id"}).status_code
         == 200
     )
+
+
+_ACCOUNT_GUID = "00000000-0000-4000-8000-00000000000a"
+_ACCOUNT_EMAIL = "caregiver@example.invalid"
+
+
+def _hosted(monkeypatch, *, ids: str | None = None, names: str | None = None) -> None:
+    monkeypatch.setenv("WEBSITE_SITE_NAME", "hosted")
+    monkeypatch.setenv("WEBSITE_AUTH_ENABLED", "true")
+    for variable, value in (
+        ("AUTH_ALLOWED_PRINCIPAL_IDS", ids),
+        ("AUTH_ALLOWED_PRINCIPAL_NAMES", names),
+    ):
+        if value is None:
+            monkeypatch.delenv(variable, raising=False)
+        else:
+            monkeypatch.setenv(variable, value)
+
+
+def test_blob_absent_email_id_header_matches_legacy_id_allowlist(hardened_app, monkeypatch):
+    """Transition step 0: the production bridge (GUID + email in IDs) keeps working."""
+    _hosted(monkeypatch, ids=f"{_ACCOUNT_GUID},{_ACCOUNT_EMAIL}")
+
+    response = hardened_app.app.test_client().get(
+        "/api/status", headers={"X-MS-CLIENT-PRINCIPAL-ID": _ACCOUNT_EMAIL}
+    )
+
+    assert response.status_code == 200
+
+
+def test_blob_absent_email_id_header_matches_split_name_allowlist(hardened_app, monkeypatch):
+    """Transition step 2: GUID in IDs, exact email in NAMES, no blob, no name header."""
+    _hosted(monkeypatch, ids=_ACCOUNT_GUID, names=_ACCOUNT_EMAIL)
+
+    response = hardened_app.app.test_client().get(
+        "/api/status", headers={"X-MS-CLIENT-PRINCIPAL-ID": _ACCOUNT_EMAIL}
+    )
+
+    assert response.status_code == 200
+
+
+def test_transition_overlap_config_accepts_both_platform_shapes(hardened_app, monkeypatch):
+    """Transition step 1: overlapping settings never require both gates to match."""
+    _hosted(monkeypatch, ids=f"{_ACCOUNT_GUID},{_ACCOUNT_EMAIL}", names=_ACCOUNT_EMAIL)
+    client = hardened_app.app.test_client()
+
+    id_only = client.get("/api/status", headers={"X-MS-CLIENT-PRINCIPAL-ID": _ACCOUNT_EMAIL})
+    claim_only = client.get(
+        "/api/status",
+        headers={
+            "X-MS-CLIENT-PRINCIPAL": _principal(
+                {"claims": [{"typ": _OBJECT_ID_CLAIM, "val": _ACCOUNT_GUID}]}
+            )
+        },
+    )
+    name_only = client.get(
+        "/api/status",
+        headers={
+            "X-MS-CLIENT-PRINCIPAL-NAME": _ACCOUNT_EMAIL,
+            "X-MS-CLIENT-PRINCIPAL": _principal(
+                {
+                    "claims": [
+                        {"typ": _OBJECT_ID_CLAIM, "val": "00000000-0000-4000-8000-0000000000ff"}
+                    ]
+                }
+            ),
+        },
+    )
+
+    assert (id_only.status_code, claim_only.status_code, name_only.status_code) == (200, 200, 200)
+
+
+def test_principal_name_header_is_preferred_over_email_id_compat(hardened_app, monkeypatch):
+    _hosted(monkeypatch, ids=_ACCOUNT_GUID, names=_ACCOUNT_EMAIL)
+
+    response = hardened_app.app.test_client().get(
+        "/api/status",
+        headers={
+            "X-MS-CLIENT-PRINCIPAL-NAME": _ACCOUNT_EMAIL,
+            "X-MS-CLIENT-PRINCIPAL-ID": _ACCOUNT_GUID,
+        },
+    )
+
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("configured", "presented"),
+    [
+        (_ACCOUNT_EMAIL.upper(), _ACCOUNT_EMAIL),
+        (f"  {_ACCOUNT_EMAIL}  ", _ACCOUNT_EMAIL),
+        ("Caregiver@Example.Invalid", _ACCOUNT_EMAIL),
+        ("Ünicode@example.invalid", "ünicode@example.invalid"),
+    ],
+)
+def test_name_allowlist_uses_unicode_safe_casefold_and_trimming(
+    hardened_app, monkeypatch, configured, presented
+):
+    _hosted(monkeypatch, names=configured)
+
+    response = hardened_app.app.test_client().get(
+        "/api/status", headers={"X-MS-CLIENT-PRINCIPAL-NAME": presented}
+    )
+
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "presented",
+    [
+        "care.giver@example.invalid",
+        "caregiver+net@example.invalid",
+        "caregiver@example.invalid.example",
+        "caregiver",
+    ],
+)
+def test_name_allowlist_never_widens_dot_plus_or_domain_equivalence(
+    hardened_app, monkeypatch, presented
+):
+    _hosted(monkeypatch, names=_ACCOUNT_EMAIL)
+
+    response = hardened_app.app.test_client().get(
+        "/api/status", headers={"X-MS-CLIENT-PRINCIPAL-NAME": presented}
+    )
+
+    assert response.status_code == 403
+
+
+def test_conflicting_email_name_sources_fail_the_name_path_closed(hardened_app, monkeypatch):
+    _hosted(monkeypatch, names=f"{_ACCOUNT_EMAIL},other@example.invalid")
+
+    response = hardened_app.app.test_client().get(
+        "/api/status",
+        headers={
+            "X-MS-CLIENT-PRINCIPAL-NAME": "other@example.invalid",
+            "X-MS-CLIENT-PRINCIPAL-ID": _ACCOUNT_EMAIL,
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.get_json()["reason"] == "principal_not_allowed"
+
+
+def test_id_allowlist_entry_never_authorizes_the_name_candidate(hardened_app, monkeypatch):
+    _hosted(monkeypatch, ids=_ACCOUNT_EMAIL)
+
+    response = hardened_app.app.test_client().get(
+        "/api/status",
+        headers={
+            "X-MS-CLIENT-PRINCIPAL-NAME": _ACCOUNT_EMAIL,
+            "X-MS-CLIENT-PRINCIPAL": _principal(
+                {"claims": [{"typ": _OBJECT_ID_CLAIM, "val": _ACCOUNT_GUID}]}
+            ),
+        },
+    )
+
+    assert response.status_code == 403
+
+
+def test_name_allowlist_entry_never_authorizes_the_id_candidate(hardened_app, monkeypatch):
+    _hosted(monkeypatch, names=_ACCOUNT_GUID)
+
+    response = hardened_app.app.test_client().get(
+        "/api/status",
+        headers={
+            "X-MS-CLIENT-PRINCIPAL": _principal(
+                {"claims": [{"typ": _OBJECT_ID_CLAIM, "val": _ACCOUNT_GUID}]}
+            )
+        },
+    )
+
+    assert response.status_code == 403
+
+
+def test_id_allowlist_stays_case_sensitive(hardened_app, monkeypatch):
+    _hosted(monkeypatch, ids="Stable-Object-Id")
+
+    response = hardened_app.app.test_client().get(
+        "/api/status", headers={"X-MS-CLIENT-PRINCIPAL-ID": "stable-object-id"}
+    )
+
+    assert response.status_code == 403
+
+
+def test_both_allowlists_empty_preserve_easy_auth_only_access(hardened_app, monkeypatch):
+    """Documented, unchanged posture: no allowlist means Easy Auth is the only gate."""
+    _hosted(monkeypatch)
+    client = hardened_app.app.test_client()
+
+    assert client.get("/api/status").status_code == 401
+    assert (
+        client.get(
+            "/api/status", headers={"X-MS-CLIENT-PRINCIPAL-ID": "any-authenticated-id"}
+        ).status_code
+        == 200
+    )
+    assert (
+        client.get(
+            "/api/status", headers={"X-MS-CLIENT-PRINCIPAL-NAME": "someone@example.invalid"}
+        ).status_code
+        == 200
+    )
+
+
+def _encode(value: object, *, urlsafe: bool = False, padded: bool = True) -> str:
+    raw = json.dumps(value).encode()
+    encoded = (base64.urlsafe_b64encode(raw) if urlsafe else base64.b64encode(raw)).decode()
+    return encoded if padded else encoded.rstrip("=")
+
+
+@pytest.mark.parametrize("urlsafe", [False, True])
+@pytest.mark.parametrize("padded", [False, True])
+def test_standard_and_urlsafe_base64_principals_decode_with_or_without_padding(
+    hardened_app, monkeypatch, urlsafe, padded
+):
+    # "?" and ">" force bytes that encode to the differing "+/" vs "-_" alphabet.
+    object_id = "00000000-0000-4000-8000-00000000000b"
+    _hosted(monkeypatch, ids=object_id)
+    principal = _encode(
+        {"claims": [{"typ": _OBJECT_ID_CLAIM, "val": object_id}], "pad": "??>>?"},
+        urlsafe=urlsafe,
+        padded=padded,
+    )
+
+    response = hardened_app.app.test_client().get(
+        "/api/status", headers={"X-MS-CLIENT-PRINCIPAL": principal}
+    )
+
+    assert response.status_code == 200
+
+
+def _oversized_blob() -> str:
+    filler = "x" * 13000
+    return base64.b64encode(json.dumps({"claims": [], "filler": filler}).encode()).decode()
+
+
+def _too_many_claims() -> str:
+    claims = [{"typ": f"filler-{index}", "val": "v"} for index in range(513)]
+    return base64.b64encode(json.dumps({"claims": claims}).encode()).decode()
+
+
+def _deeply_nested_blob() -> str:
+    """Valid JSON, inside every size bound, that exhausts the parser's stack."""
+    raw = (b"[" * 6000) + (b"]" * 6000)
+    assert len(raw) <= 12288
+    encoded = base64.b64encode(raw).decode()
+    assert len(encoded) <= 16384
+    return encoded
+
+
+@pytest.mark.parametrize(
+    "encoded",
+    [
+        "A",
+        "not base64",
+        "YWJj=ZGVm",
+        "e30-e30_+/",
+        _oversized_blob(),
+        _too_many_claims(),
+        _deeply_nested_blob(),
+        base64.b64encode(b"not json at all").decode(),
+    ],
+)
+def test_corrupt_oversized_or_overbroad_principals_fail_closed(hardened_app, monkeypatch, encoded):
+    _hosted(monkeypatch, ids=_ACCOUNT_EMAIL, names=_ACCOUNT_EMAIL)
+
+    response = hardened_app.app.test_client().get(
+        "/api/status",
+        headers={
+            "X-MS-CLIENT-PRINCIPAL": encoded,
+            "X-MS-CLIENT-PRINCIPAL-ID": _ACCOUNT_EMAIL,
+            "X-MS-CLIENT-PRINCIPAL-NAME": _ACCOUNT_EMAIL,
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.get_json()["reason"] == "principal_malformed"
+
+
+def test_oversized_convenience_headers_are_ignored_rather_than_trusted(hardened_app, monkeypatch):
+    _hosted(monkeypatch, ids="short-id")
+
+    response = hardened_app.app.test_client().get(
+        "/api/status", headers={"X-MS-CLIENT-PRINCIPAL-ID": "x" * 513}
+    )
+
+    assert response.status_code == 401
+    assert response.get_json()["reason"] == "principal_absent"
+
+
+_ALLOWED_AUTH_REASONS = {
+    "principal_absent",
+    "principal_malformed",
+    "principal_not_allowed",
+    "cross_origin",
+    "hosted_auth_unavailable",
+}
+_ALLOWED_PRINCIPAL_SOURCES = {
+    "encoded_claim",
+    "provider_id_header",
+    "principal_name_header",
+    "provider_id_name_compat",
+    "absent",
+}
+
+
+def _auth_bodies(client, monkeypatch) -> list[tuple[int, dict]]:
+    _hosted(monkeypatch, ids=_ACCOUNT_GUID, names=_ACCOUNT_EMAIL)
+    monkeypatch.setenv("WEBSITE_HOSTNAME", "care.example")
+    monkeypatch.delenv("APP_ORIGIN", raising=False)
+    claim_denied = _principal(
+        {"claims": [{"typ": _OBJECT_ID_CLAIM, "val": "00000000-0000-4000-8000-0000000000cd"}]}
+    )
+    responses = [
+        client.get("/api/status"),
+        client.get("/api/status", headers={"X-MS-CLIENT-PRINCIPAL": "!!!"}),
+        client.get("/api/status", headers={"X-MS-CLIENT-PRINCIPAL": claim_denied}),
+        client.get("/api/status", headers={"X-MS-CLIENT-PRINCIPAL-ID": "rejected-marker-id"}),
+        client.get(
+            "/api/status", headers={"X-MS-CLIENT-PRINCIPAL-NAME": "rejected-marker@example.invalid"}
+        ),
+        client.post(
+            "/api/digest",
+            headers={
+                "Origin": "https://attacker.example",
+                "X-MS-CLIENT-PRINCIPAL-ID": _ACCOUNT_GUID,
+            },
+        ),
+    ]
+    return [(response.status_code, response.get_json()) for response in responses]
+
+
+def test_auth_failure_bodies_expose_only_fixed_phi_free_discriminators(hardened_app, monkeypatch):
+    results = _auth_bodies(hardened_app.app.test_client(), monkeypatch)
+
+    assert [status for status, _ in results] == [401, 401, 403, 403, 403, 403]
+    assert [body["reason"] for _, body in results] == [
+        "principal_absent",
+        "principal_malformed",
+        "principal_not_allowed",
+        "principal_not_allowed",
+        "principal_not_allowed",
+        "cross_origin",
+    ]
+    assert [body.get("principal_source") for _, body in results] == [
+        "absent",
+        "absent",
+        "encoded_claim",
+        "provider_id_header",
+        "principal_name_header",
+        None,
+    ]
+    serialized = json.dumps([body for _, body in results])
+    for leaked in (
+        _ACCOUNT_GUID,
+        _ACCOUNT_EMAIL,
+        "rejected-marker",
+        "attacker",
+        "schemas.microsoft.com",
+        "X-MS-CLIENT",
+    ):
+        assert leaked not in serialized
+    for _, body in results:
+        assert set(body) <= {"error", "reason", "principal_source"}
+        assert body["reason"] in _ALLOWED_AUTH_REASONS
+        assert body.get("principal_source", "absent") in _ALLOWED_PRINCIPAL_SOURCES
+
+
+def test_provider_id_name_compat_is_reported_as_its_own_source(hardened_app, monkeypatch):
+    _hosted(monkeypatch, names="someone-else@example.invalid")
+
+    response = hardened_app.app.test_client().get(
+        "/api/status", headers={"X-MS-CLIENT-PRINCIPAL-ID": _ACCOUNT_EMAIL}
+    )
+
+    assert response.status_code == 403
+    # The ID candidate wins the source label; the compat name is still evaluated.
+    assert response.get_json()["principal_source"] == "provider_id_header"
+
+
+def test_hosted_auth_unavailable_body_carries_its_own_reason(hardened_app, monkeypatch):
+    monkeypatch.setenv("WEBSITE_SITE_NAME", "hosted")
+    monkeypatch.setenv("WEBSITE_AUTH_ENABLED", "false")
+
+    response = hardened_app.app.test_client().get("/api/status")
+
+    assert response.status_code == 503
+    assert response.get_json() == {
+        "error": "Hosted authentication is not enabled.",
+        "reason": "hosted_auth_unavailable",
+    }
+
+
+def test_allowed_principal_is_still_blocked_on_a_cross_origin_mutation(hardened_app, monkeypatch):
+    """Authorization now runs before the origin check; CSRF must still hold."""
+    _hosted(monkeypatch, ids=_ACCOUNT_GUID)
+    monkeypatch.setenv("WEBSITE_HOSTNAME", "care.example")
+    monkeypatch.delenv("APP_ORIGIN", raising=False)
+
+    response = hardened_app.app.test_client().post(
+        "/api/digest",
+        headers={
+            "Origin": "https://attacker.example",
+            "X-MS-CLIENT-PRINCIPAL-ID": _ACCOUNT_GUID,
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.get_json() == {
+        "error": "Cross-origin request denied.",
+        "reason": "cross_origin",
+    }
+
+
+def test_denied_principal_is_reported_as_denial_not_as_a_cross_origin_problem(
+    hardened_app, monkeypatch
+):
+    """A denied account must keep the eviction-triggering reason."""
+    _hosted(monkeypatch, ids=_ACCOUNT_GUID)
+    monkeypatch.setenv("WEBSITE_HOSTNAME", "care.example")
+
+    response = hardened_app.app.test_client().post(
+        "/api/digest",
+        headers={
+            "Origin": "https://attacker.example",
+            "X-MS-CLIENT-PRINCIPAL-ID": "not-the-allowed-id",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.get_json()["reason"] == "principal_not_allowed"
+
+
+def test_protect_api_precedes_lazy_init_and_denied_requests_touch_no_storage(
+    hardened_app, monkeypatch
+):
+    handlers = [
+        getattr(handler, "__name__", "") for handler in hardened_app.app.before_request_funcs[None]
+    ]
+    assert handlers.index("_protect_api") < handlers.index("_lazy_init")
+
+    calls: list[str] = []
+    monkeypatch.setattr(hardened_app, "_initialized", False)
+    monkeypatch.setattr(hardened_app, "_load_jobs", lambda: calls.append("load_jobs") or True)
+    monkeypatch.setattr(hardened_app, "_prune_retention", lambda: calls.append("retention"))
+    monkeypatch.setattr(hardened_app, "_prune_sources_safely", lambda: calls.append("sources"))
+    _hosted(monkeypatch, ids=_ACCOUNT_GUID)
+    monkeypatch.setenv("WEBSITE_HOSTNAME", "care.example")
+    client = hardened_app.app.test_client()
+
+    assert client.get("/api/status").status_code == 401
+    assert (
+        client.get("/api/status", headers={"X-MS-CLIENT-PRINCIPAL-ID": "denied-id"}).status_code
+        == 403
+    )
+    assert (
+        client.post(
+            "/api/digest",
+            headers={
+                "Origin": "https://attacker.example",
+                "X-MS-CLIENT-PRINCIPAL-ID": _ACCOUNT_GUID,
+            },
+        ).status_code
+        == 403
+    )
+    assert calls == []
+    assert hardened_app._initialized is False
+
+    allowed = client.get("/api/status", headers={"X-MS-CLIENT-PRINCIPAL-ID": _ACCOUNT_GUID})
+
+    assert allowed.status_code == 200
+    assert calls == ["load_jobs", "retention", "sources"]
 
 
 def test_unhosted_principal_header_does_not_replace_explicit_bypass(hardened_app, monkeypatch):

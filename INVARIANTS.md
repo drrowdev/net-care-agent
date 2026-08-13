@@ -411,6 +411,12 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
 - Hard status/tasks/summary/evidence or authorization failure centrally evicts
   all client-side patient PHI caches and rendered/dialog content. An authoritative
   receipt may survive only a non-auth post-save detail-refresh failure.
+  A server-declared `cross_origin` `403` is the sole exception: it is a request
+  address problem, not an authorization problem, so it must not evict PHI or
+  offer switch-account recovery, and must instead surface a bounded actionable
+  same-origin/configuration message. `401`, `principal_not_allowed`, and any
+  unknown, legacy, or unparseable `403` remain fail-closed evictions, and the
+  duplicate/stale response guards stay intact.
 - Recap render and Copy/Download/Print side effects require one authenticated,
   no-store preflight per explicit action and exact equality with the reviewed
   recap token, selected visit ID/token, exportable lifecycle, both revisions, and
@@ -478,19 +484,54 @@ distributed queue and adding distributed coordination.
   no PHI or generated content is added.
 
 ## 5. Authentication, containment, and retention
+- Responses must never send `Referrer-Policy: no-referrer`, and no markup, meta
+  tag, or fetch option may force one. App Service Easy Auth middleware runs its
+  own CSRF check before Flask and rejects a state-changing request whose
+  `Referer` is empty with `403` sub-status `60`, so `no-referrer` disables every
+  mutation site-wide. The emitted policy must keep a same-origin `Referer` and
+  must still withhold path and query from other origins; `same-origin` is the
+  shipped choice, and off-site anchors keep `rel="noopener noreferrer"`.
 - Flask exempts `/api/health` and `/api/live`; all other hosted `/api/*` routes
   require a valid Easy Auth principal. Anonymous external probes additionally
-  require App Service Easy Auth path exclusions. `AUTH_ALLOWED_PRINCIPAL_IDS`,
-  when nonempty, is an exact principal-ID allowlist. Trusted encoded claims
-  select identity by canonical object-identifier URI, `oid`, canonical
-  name-identifier URI, then `sub`; the first populated tier must resolve to one
-  unique nonempty value. Malformed or conflicting selected-tier claims are
-  unauthenticated. Convenience header/`userId`/`userDetails` values are used
-  only when no prioritized claim exists and are never treated as equivalent to
-  a stable object ID. Hosted mode never honors local bypass.
+  require App Service Easy Auth path exclusions. `_protect_api` is registered as
+  the first `before_request` handler; unauthenticated, denied, or cross-origin
+  API requests must perform no job load, retention prune, or source prune.
+- Identity is parsed into two strictly separate typed namespaces that never
+  cross-match. The ID candidate comes from trusted encoded claims — canonical
+  object-identifier URI, `oid`, canonical name-identifier URI, then `sub`; the
+  first populated tier must resolve to one unique nonempty value — else from the
+  `X-MS-CLIENT-PRINCIPAL-ID` provider header, and is compared exactly and
+  case-sensitively. Malformed, oversized, over-long, or conflicting selected-tier
+  claims are unauthenticated and never downgrade to a convenience header.
+  Static Web Apps `userId`/`userDetails` fields are a different product's schema
+  and are never identity. The name candidate comes from
+  `X-MS-CLIENT-PRINCIPAL-NAME` and is compared only after trimming surrounding
+  whitespace with Unicode-safe `casefold()`; dots, plus tags, domains, and any
+  other equivalence are never rewritten or widened. A bounded `local@domain`
+  shaped ID-header value may additionally serve as a documented convenience name
+  candidate for platforms that send no blob and no name header, but never gains
+  stable-object-ID semantics; when a name header and an email-shaped ID header
+  are both email-shaped and differ after `casefold()`, the name path fails
+  closed. Base64 decoding accepts standard or URL-safe input with missing
+  padding but rejects mixed alphabets, impossible lengths, corruption,
+  oversized payloads, and excessive claim counts.
+- `AUTH_ALLOWED_PRINCIPAL_IDS` constrains only the ID candidate and
+  `AUTH_ALLOWED_PRINCIPAL_NAMES` only the name candidate. A hosted request is
+  authorized when at least one configured allowlist matches its own typed
+  candidate; matching both is never required, so an entry can be migrated
+  between settings without a lockout window. Both allowlists empty preserves the
+  historical Easy-Auth-only posture and must not be silently narrowed or
+  widened. Hosted mode never honors local bypass.
+- Auth failures return fixed PHI-free discriminators only: `reason` in
+  `principal_absent|principal_malformed|principal_not_allowed|cross_origin|hosted_auth_unavailable`
+  and, where meaningful, `principal_source` in
+  `encoded_claim|provider_id_header|principal_name_header|provider_id_name_compat|absent`.
+  No identifier, claim value, email, token, header name, or payload is logged or
+  returned. Authorization is evaluated before the origin check so a denied
+  account is never reported as `cross_origin`.
 - Local API access requires explicit `ALLOW_LOCAL_AUTH_BYPASS=1`; do not restore
   implicit unauthenticated local access. State-changing methods reject a
-  mismatched `Origin`.
+  mismatched `Origin` as defence in depth behind the platform CSRF check.
 - `/api/health` is Flask-auth-exempt by design and must remain
   PHI/path/secret-free. Executor fields are aggregate counts only.
 - `pdfplumber` stays child-only in `agent/pdf_extract_helper.py`. Preserve the

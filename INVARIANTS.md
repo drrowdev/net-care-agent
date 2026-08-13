@@ -481,8 +481,13 @@ distributed queue and adding distributed coordination.
 - Flask exempts `/api/health` and `/api/live`; all other hosted `/api/*` routes
   require a valid Easy Auth principal. Anonymous external probes additionally
   require App Service Easy Auth path exclusions. `AUTH_ALLOWED_PRINCIPAL_IDS`,
-  when nonempty, is an exact principal-ID allowlist. Hosted mode never honors
-  local bypass.
+  when nonempty, is an exact principal-ID allowlist. Trusted encoded claims
+  select identity by canonical object-identifier URI, `oid`, canonical
+  name-identifier URI, then `sub`; the first populated tier must resolve to one
+  unique nonempty value. Malformed or conflicting selected-tier claims are
+  unauthenticated. Convenience header/`userId`/`userDetails` values are used
+  only when no prioritized claim exists and are never treated as equivalent to
+  a stable object ID. Hosted mode never honors local bypass.
 - Local API access requires explicit `ALLOW_LOCAL_AUTH_BYPASS=1`; do not restore
   implicit unauthenticated local access. State-changing methods reject a
   mismatched `Origin`.

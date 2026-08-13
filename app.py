@@ -2406,37 +2406,66 @@ def _is_hosted() -> bool:
     )
 
 
+_PRINCIPAL_ID_CLAIM_TYPES = (
+    "http://schemas.microsoft.com/identity/claims/objectidentifier",
+    "oid",
+    "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier",
+    "sub",
+)
+
+
 def _principal_id() -> str | None:
-    stable = (request.headers.get("X-MS-CLIENT-PRINCIPAL-ID") or "").strip()
+    header_id = (request.headers.get("X-MS-CLIENT-PRINCIPAL-ID") or "").strip()
     encoded = (request.headers.get("X-MS-CLIENT-PRINCIPAL") or "").strip()
-    if encoded:
-        try:
-            decoded = base64.b64decode(encoded, validate=True)
-            principal = json.loads(decoded)
-            if not isinstance(principal, dict):
+    if not encoded:
+        return header_id or None
+
+    try:
+        decoded = base64.b64decode(encoded, validate=True)
+        principal = json.loads(decoded)
+    except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(principal, dict):
+        return None
+
+    claims = principal.get("claims", [])
+    if not isinstance(claims, list):
+        return None
+    values_by_type = {claim_type: set() for claim_type in _PRINCIPAL_ID_CLAIM_TYPES}
+    for claim in claims:
+        if not isinstance(claim, dict):
+            return None
+        claim_type = claim.get("typ")
+        claim_value = claim.get("val")
+        if not isinstance(claim_type, str) or not isinstance(claim_value, str):
+            return None
+        claim_type = claim_type.strip().lower()
+        claim_value = claim_value.strip()
+        if not claim_type:
+            return None
+        if claim_type in values_by_type:
+            if not claim_value:
                 return None
-            claims = principal.get("claims")
-            if claims is not None and not isinstance(claims, list):
-                return None
-            ids = [
-                claim.get("val")
-                for claim in (claims or [])
-                if isinstance(claim, dict)
-                and claim.get("typ", "").lower()
-                in {
-                    "http://schemas.microsoft.com/identity/claims/objectidentifier",
-                    "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier",
-                    "oid",
-                    "sub",
-                }
-            ]
-            stable = stable or str(principal.get("userId") or next(iter(ids), "")).strip()
-            if not stable and not principal.get("userDetails"):
-                return None
-        except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
-            return stable or None
-        return stable or str(principal.get("userDetails")).strip()
-    return stable or None
+            values_by_type[claim_type].add(claim_value)
+
+    for claim_type in _PRINCIPAL_ID_CLAIM_TYPES:
+        values = values_by_type[claim_type]
+        if len(values) > 1:
+            return None
+        if values:
+            return next(iter(values))
+
+    if header_id:
+        return header_id
+    for field in ("userId", "userDetails"):
+        value = principal.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            return None
+        if value := value.strip():
+            return value
+    return None
 
 
 def _trusted_hosted_origin() -> str | None:

@@ -399,6 +399,12 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
   `profile_revision`. Raw mutation invalidates before save. Output must cover all
   raw treatment components, contain no extras, and not collapse distinct drugs.
   Every consumer falls back to raw `current_treatments` when stale/failing.
+  Classification is derived, non-primary context: a web job that hits
+  `TreatmentClassificationError` or the narrow classifier timeout leaves the
+  stored classification and its revision/job identity untouched, completes as
+  `done` / `done_with_warnings` with a bounded generic warning, and never
+  invents, partially promotes, or marks that classification current. A fault
+  raised outside the classifier's own wrapping still fails the job.
 - Classification identity is canonical treatment identity, never action/status,
   dose, route, schedule, or formulation noise. Output identity set must exactly
   equal raw identity set, with exactly one row per identity. Stable raw component

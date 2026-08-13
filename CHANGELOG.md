@@ -52,6 +52,23 @@ incremented when something user-visible or operationally meaningful changes.
   local scrolling at phone width.
 
 ### Fixed
+- **Assessment generation no longer aborts on a treatment-classification
+  refusal (production failure).** Manual **Generate/Refresh assessment** ran the
+  model successfully and then failed the whole job with
+  `job_failed … type=TreatmentClassificationError`, so no executive summary was
+  produced. Treatment classification is ancillary derived context that fails
+  closed on purpose when it cannot certify a lossless raw/model identity
+  mapping; it now warns instead of aborting. The manual summary, feed/import,
+  and digest jobs catch that refusal and the narrow classifier timeout, leave
+  the stored classification and its revision/job identity untouched so
+  stale/current stays truthful, log one fixed PHI-free `classification_skipped`
+  line (job ID, exception type, wrapped cause type), and finish `status=done`,
+  `stage=done_with_warnings` with the assessment generated and persisted. Every
+  consumer keeps using the raw `current_treatments` fallback, and the protected
+  result/report artifact carries only the bounded notice `Treatment
+  classification could not be refreshed; raw treatment records remain
+  available.` Classifier strictness is unchanged, no classification is invented
+  or partially promoted, and a fault outside that wrapping still fails the job.
 - **Hosted authorization restored end to end (production outage).** Every
   state-changing request was rejected with `403` sub-status `60`
   (`Cross-site request forgery detected ... from referer ''`) by the App Service

@@ -162,7 +162,10 @@ The job runs in the background:
    1. **Intake** parses the text and updates biomarkers / imaging / treatments.
    2. **Orchestrator** runs PubMed + ClinicalTrials.gov searches relevant to the new findings.
    3. **Executive summary** is regenerated.
-   4. Treatments are re-classified into active / planned / completed.
+   4. Treatments are re-classified into active / planned / completed. If that
+      classification cannot be certified, the job still finishes and the
+      treatment surfaces fall back to the raw records
+      (see [§12](#12-asynchronous-jobs-restart-and-graceful-shutdown)).
 
 Every feed receives a unique source ID and ingestion timestamp. The original
 bytes plus extracted text are written atomically as immutable protected
@@ -979,6 +982,32 @@ or recycle can interrupt them; startup marks queued/running records
 `interrupted` and the operator/caregiver must re-submit. Gunicorn allows 30
 seconds for graceful shutdown and executor thread joins are bounded to five
 seconds each. Do not assume either limit completes long AI work.
+
+### Finished with warnings
+
+A job that completes its primary work but skips a non-essential derived step
+finishes `status=done` with `stage=done_with_warnings`. That is a normal
+completion, not an error, and needs no re-submission.
+
+Treatment classification is one such step: it fails closed whenever the model
+output cannot be certified as a lossless mapping of every raw treatment entry.
+The manual assessment, feed/import, and digest jobs treat that refusal — and the
+narrow classifier timeout — as a warning. The assessment/report is still
+generated and saved, the stored classification is left untouched so it stays
+honestly stale, **Today → Treatment status** and **Patient → Treatments** show
+the raw treatment records instead, and the protected result/report artifact
+carries only the bounded notice `Treatment classification could not be
+refreshed; raw treatment records remain available.`
+
+One PHI-free `classification_skipped` line is logged with the job ID, exception
+type, and wrapped cause type — class names only, never patient or model
+content. Read the pair: `type=TreatmentClassificationError cause=none` is the
+certification refusal (a treatment entry probably contains wording the certifier
+does not recognise — correct it through the import receipt or treatment
+workflow, never by relaxing the classifier); the same type with a `cause` class
+means the classifier model call itself failed (check the Anthropic key and
+`MODEL_CLASSIFY`); a timeout type is re-raised unwrapped and so also shows
+`cause=none`. A fault outside that wrapping still fails the job normally.
 
 ## 13. Retention and PHI artifacts
 

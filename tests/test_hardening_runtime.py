@@ -612,6 +612,15 @@ def _too_many_claims() -> str:
     return base64.b64encode(json.dumps({"claims": claims}).encode()).decode()
 
 
+def _deeply_nested_blob() -> str:
+    """Valid JSON, inside every size bound, that exhausts the parser's stack."""
+    raw = (b"[" * 6000) + (b"]" * 6000)
+    assert len(raw) <= 12288
+    encoded = base64.b64encode(raw).decode()
+    assert len(encoded) <= 16384
+    return encoded
+
+
 @pytest.mark.parametrize(
     "encoded",
     [
@@ -621,6 +630,7 @@ def _too_many_claims() -> str:
         "e30-e30_+/",
         _oversized_blob(),
         _too_many_claims(),
+        _deeply_nested_blob(),
         base64.b64encode(b"not json at all").decode(),
     ],
 )

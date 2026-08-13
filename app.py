@@ -2518,6 +2518,12 @@ def _decode_principal_blob(encoded: str) -> object | None:
         return json.loads(decoded)
     except (ValueError, UnicodeDecodeError):
         return None
+    except RecursionError:
+        # A bounded but deeply nested payload (e.g. thousands of nested arrays
+        # inside the size limit) exhausts the parser's stack. `RecursionError`
+        # is a `RuntimeError`, not a `ValueError`, so without this it would
+        # escape as a Flask 500 instead of the fixed `principal_malformed` 401.
+        return None
 
 
 def _claim_principal_id(principal: object) -> tuple[str | None, bool]:

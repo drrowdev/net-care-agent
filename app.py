@@ -144,6 +144,9 @@ _SAFE_JOB_ERRORS = {
 _INTERRUPTED_GUIDANCE = (
     "This job was interrupted by a server restart. Re-submit the same request to retry."
 )
+_CLASSIFICATION_SKIPPED_WARNING = (
+    "Treatment classification could not be refreshed; raw treatment records remain available."
+)
 _MAX_LINKABLE_APPOINTMENTS = 100
 _MAX_VISIT_QUESTION_REORDER_ITEMS = 200
 _APPOINTMENT_PROJECTION_FIELDS = (
@@ -1877,6 +1880,42 @@ def _refresh_summary(profile: dict, *, generation_id: str) -> str | None:
     return None
 
 
+def _log_classification_skipped(job_id: str, exc: BaseException) -> None:
+    """Record one fixed PHI-free line; only exception class names are emitted."""
+    cause = exc.__cause__
+    log.warning(
+        "classification_skipped id=%s type=%s cause=%s",
+        job_id,
+        type(exc).__name__,
+        type(cause).__name__ if cause is not None else "none",
+    )
+
+
+def _classify_treatments_or_warn(profile: dict, *, job_id: str) -> tuple[list | None, str | None]:
+    """Classify treatments, downgrading a classifier failure to a warning.
+
+    Returns ``(classified, warning)``. Classification is ancillary derived
+    context — it fails closed on purpose when it cannot certify a lossless
+    mapping — so it must not abort a job whose primary work can still complete.
+    On the warning path the caller leaves the stored classification and its
+    revision/job identity untouched, keeping the raw ``current_treatments``
+    fallback authoritative. The logged type/cause pair distinguishes a
+    certification refusal from a failed model call, which the classifier wraps
+    in the same error type. Faults raised outside that wrapping propagate and
+    still fail the job.
+    """
+    try:
+        return agent.classify_treatments(profile), None
+    except agent.TreatmentClassificationError as exc:
+        _log_classification_skipped(job_id, exc)
+        return None, _CLASSIFICATION_SKIPPED_WARNING
+    except Exception as exc:
+        if not agent.is_timeout_error(exc):
+            raise
+        _log_classification_skipped(job_id, exc)
+        return None, _CLASSIFICATION_SKIPPED_WARNING
+
+
 def _finalize_generated_alert_dependencies(
     profile: dict,
     *,
@@ -2007,10 +2046,14 @@ def _run_feed_job(
             extracted["generation_profile_revision"] = int(profile.get("profile_revision") or 0) + 1
             report = agent.run_orchestrator(profile, extracted)
             _update_job(job_id, {"stage": "classifying"})
-            profile["treatments_classified"] = agent.classify_treatments(profile)
+            classified_txs, classification_warning = _classify_treatments_or_warn(
+                profile, job_id=job_id
+            )
             final_revision = int(profile.get("profile_revision") or 0) + 1
-            profile["treatments_classification_revision"] = final_revision
-            profile["treatments_classification_job_id"] = job_id
+            if classification_warning is None:
+                profile["treatments_classified"] = classified_txs
+                profile["treatments_classification_revision"] = final_revision
+                profile["treatments_classification_job_id"] = job_id
             research_update = agent.record_latest_research_update(
                 profile,
                 job_id=job_id,
@@ -2041,6 +2084,8 @@ def _run_feed_job(
             reports_dir.mkdir(parents=True, exist_ok=True)
             stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             rpath = reports_dir / f"report_feed_{stamp}.txt"
+            if classification_warning:
+                report += f"\n\n## Treatment classification warning\n{classification_warning}"
             if summary_error:
                 report += f"\n\n## Summary refresh warning\n{summary_error}"
             atomic_write_text(rpath, report)
@@ -2049,7 +2094,9 @@ def _run_feed_job(
                 job_id,
                 {
                     "status": "done",
-                    "stage": "done_with_warnings" if summary_error else "done",
+                    "stage": (
+                        "done_with_warnings" if (summary_error or classification_warning) else "done"
+                    ),
                     "report_file": _artifact_ref(rpath),
                     "artifact_state": "available",
                     "profile_revision": profile.get("profile_revision"),
@@ -2111,10 +2158,14 @@ def _run_digest_job(job_id: str):
             }
             report = agent.run_orchestrator(profile, extracted)
             _update_job(job_id, {"stage": "classifying"})
-            profile["treatments_classified"] = agent.classify_treatments(profile)
+            classified_txs, classification_warning = _classify_treatments_or_warn(
+                profile, job_id=job_id
+            )
             final_revision = int(profile.get("profile_revision") or 0) + 1
-            profile["treatments_classification_revision"] = final_revision
-            profile["treatments_classification_job_id"] = job_id
+            if classification_warning is None:
+                profile["treatments_classified"] = classified_txs
+                profile["treatments_classification_revision"] = final_revision
+                profile["treatments_classification_job_id"] = job_id
             agent.record_latest_research_update(
                 profile,
                 job_id=job_id,
@@ -2137,6 +2188,8 @@ def _run_digest_job(job_id: str):
             reports_dir.mkdir(parents=True, exist_ok=True)
             stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             rpath = reports_dir / f"report_digest_{stamp}.txt"
+            if classification_warning:
+                report += f"\n\n## Treatment classification warning\n{classification_warning}"
             if summary_error:
                 report += f"\n\n## Summary refresh warning\n{summary_error}"
             atomic_write_text(rpath, report)
@@ -2145,7 +2198,9 @@ def _run_digest_job(job_id: str):
                 job_id,
                 {
                     "status": "done",
-                    "stage": "done_with_warnings" if summary_error else "done",
+                    "stage": (
+                        "done_with_warnings" if (summary_error or classification_warning) else "done"
+                    ),
                     "report_file": _artifact_ref(rpath),
                     "artifact_state": "available",
                     "profile_revision": profile.get("profile_revision"),
@@ -2253,15 +2308,30 @@ def _run_summary_job(job_id: str) -> None:
         _update_job(job_id, {"status": "running", "stage": "generating", "started_at": now_stamp()})
         with agent.serialized_mutation():
             profile = agent.load_profile()
-            classified_txs = agent.classify_treatments(profile)
-            profile["treatments_classified"] = classified_txs
-            profile["treatments_classification_revision"] = profile.get("profile_revision")
-            profile["treatments_classification_job_id"] = job_id
+            classified_txs, classification_warning = _classify_treatments_or_warn(
+                profile, job_id=job_id
+            )
+            if classification_warning is None:
+                profile["treatments_classified"] = classified_txs
+                profile["treatments_classification_revision"] = profile.get("profile_revision")
+                profile["treatments_classification_job_id"] = job_id
             summary_error = _refresh_summary(profile, generation_id=job_id)
             agent.save_profile(profile, clinical_change=False)
+            classification_current = agent.treatment_classification_is_current(profile)
             result = {
                 "summary": profile["executive_summary"],
-                "treatments_classified": classified_txs,
+                "treatments_classified": (
+                    list(profile.get("treatments_classified") or [])
+                    if classification_current
+                    else []
+                ),
+                "treatments_fallback": (
+                    []
+                    if classification_current
+                    else profile.get("patient", {}).get("current_treatments", [])
+                ),
+                "treatments_classification_current": classification_current,
+                "classification_warning": classification_warning,
                 "summary_error": summary_error,
                 "profile_revision": profile["profile_revision"],
             }
@@ -2270,7 +2340,10 @@ def _run_summary_job(job_id: str) -> None:
             job_id,
             {
                 "status": "done",
-                "stage": "done",
+                # Only the newly non-fatal classification skip changes this stage.
+                # A summary-generation failure keeps its existing stage and is
+                # surfaced through summary staleness exactly as before.
+                "stage": "done_with_warnings" if classification_warning else "done",
                 "result_file": result_ref,
                 "artifact_state": "available",
                 "profile_revision": profile.get("profile_revision"),

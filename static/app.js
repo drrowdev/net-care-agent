@@ -14850,12 +14850,21 @@
       provenance.append(treatmentElement('span', 'treatment-source-detail', presentation.detail));
     }
     provenance.append(treatmentSourceLinks(source));
+    const actions = treatmentElement('td', 'treatment-source-record');
+    const record = treatmentElement('button', 'button secondary', 'Record status');
+    record.type = 'button';
+    record.disabled = !(treatmentProjectionState === 'current' && treatmentResponseOwnerIsCurrent());
+    record.dataset.treatmentSourceRef = source.ref;
+    record.setAttribute('aria-label', `Record status for ${source.observed_text}`);
+    record.addEventListener('click', () => openTreatmentSourceStatusDialog(record, source.ref));
+    actions.append(record);
     row.append(
       observed,
       value,
       treatmentSourceDocumentCell(treatmentSourceDocumentByRef(source.ref)),
       state,
       provenance,
+      actions,
     );
     return row;
   }
@@ -15189,12 +15198,23 @@
       const past = treatmentSortedCourses(
         treatmentProjection.courses.filter(course => course.status === 'past'),
       ).map(course => treatmentCourseCard(course));
+      // Only offer routes that exist right now. Add status record is always
+      // present; the other two depend on rows actually being on the page.
+      const routes = ['use Add status record above'];
+      if (recordedRows.length) {
+        routes.push('choose Record status on a recorded treatment entry below');
+      }
+      if (treatmentProjection.source_facts.length) {
+        routes.push('choose Record status on a mention in source documents');
+      }
+      const lastRoute = routes.pop();
+      const routeText = routes.length ? `${routes.join(', ')}, or ${lastRoute}` : lastRoute;
       records.replaceChildren(
         treatmentOverviewSection(
           'Current and planned',
           'Only status records explicitly reviewed by the caregiver appear here, newest first by the date each record is about. Records without that date come last.',
           currentAndPlanned,
-          'No treatment has been explicitly recorded as current or planned.',
+          `No treatment has been explicitly recorded as current or planned. To add one, ${routeText}. You choose the status and any dates.`,
         ),
         treatmentOverviewSection(
           `Recorded treatment information (${recordedInformation.length})`,
@@ -15225,7 +15245,7 @@
       } else {
         const row = treatmentElement('tr');
         const cell = treatmentElement('td', 'empty-state', 'No document treatment mentions are recorded.');
-        cell.colSpan = 5;
+        cell.colSpan = 6;
         row.append(cell);
         sourceBody.replaceChildren(row);
       }
@@ -15267,7 +15287,7 @@
     if (sources) {
       const row = treatmentElement('tr');
       const cell = treatmentElement('td', 'empty-state', message);
-      cell.colSpan = 5;
+      cell.colSpan = 6;
       row.append(cell);
       sources.replaceChildren(row);
     }
@@ -15708,26 +15728,38 @@
     return control;
   }
 
-  function treatmentOptionalField(label, field, value) {
-    const wrapper = treatmentElement('div', 'treatment-optional-field');
+  function treatmentOptionalField(label, field, value, storedEmptyString = false) {
     const control = treatmentTextControl(field, value);
-    wrapper.append(treatmentFieldLabel(label, control));
-    const emptyLabel = treatmentElement('label', 'treatment-empty-toggle');
-    const empty = treatmentElement('input');
-    empty.type = 'checkbox';
-    empty.id = `treatment-empty-${field.replaceAll('_', '-')}`;
-    empty.checked = value === '';
-    empty.dataset.caregiverField = 'true';
-    empty.addEventListener('change', () => {
-      if (empty.checked) control.value = '';
-      updateTreatmentFormValidity();
-    });
-    control.addEventListener('input', () => {
-      if (control.value !== '') empty.checked = false;
-    });
-    emptyLabel.append(empty, treatmentElement('span', '', 'Record an exact empty string instead of Null'));
-    wrapper.append(emptyLabel);
-    return wrapper;
+    // A stored exact empty string and a stored null both render as an empty box.
+    // This marker is what lets an untouched empty box round-trip to whichever of
+    // the two is already saved, instead of silently rewriting it.
+    if (storedEmptyString) control.dataset.storedEmptyString = 'true';
+    return treatmentFieldLabel(label, control);
+  }
+
+  function treatmentOptionalControls() {
+    return [...document.querySelectorAll('#treatment-optional-details [data-caregiver-field="true"]')];
+  }
+
+  // A closed disclosure may never hide wording. The summary count is refreshed on
+  // every edit and on every collapse, so a caregiver who folds the section away
+  // still sees that something is in there.
+  function refreshTreatmentOptionalCount() {
+    const count = document.getElementById('treatment-optional-count');
+    if (!count) return 0;
+    const filled = treatmentOptionalControls().filter(control => control.value !== '').length;
+    count.textContent = filled ? `${filled} filled in` : '';
+    count.hidden = filled === 0;
+    return filled;
+  }
+
+  // Opening is one-way. Wording restored from a draft or loaded from a saved
+  // record reveals itself, but a caregiver who then folds the section away is
+  // not fought on every keystroke.
+  function syncTreatmentOptionalDisclosure() {
+    const details = document.getElementById('treatment-optional-details');
+    if (!details) return;
+    if (refreshTreatmentOptionalCount()) details.open = true;
   }
 
   function treatmentCourseForm(course = null, options = {}) {
@@ -15790,14 +15822,10 @@
       required,
       prefilledText === null
         ? 'Required exact caregiver wording. Nothing is copied from document mentions or generated context.'
-        : 'Copied from the recorded treatment entry you chose. Edit it to the exact wording you want to record.',
+        : options.prefillSource === 'document_mention'
+          ? 'Copied from the document mention you chose. Edit it to the exact wording you want to record.'
+          : 'Copied from the recorded treatment entry you chose. Edit it to the exact wording you want to record.',
     ));
-    for (const field of TREATMENT_OPTIONAL_TEXT_FIELDS) {
-      const value = Object.prototype.hasOwnProperty.call(draft, field)
-        ? draft[field]
-        : (course?.[field] ?? null);
-      grid.append(treatmentOptionalField(labels[field], field, value));
-    }
     for (const prefix of ['start', 'stop', 'planned']) {
       const field = `${prefix}_date`;
       const input = treatmentElement('input');
@@ -15817,6 +15845,34 @@
       ));
     }
     fragment.append(grid);
+    const optional = treatmentElement('details', 'treatment-optional-details');
+    optional.id = 'treatment-optional-details';
+    const summary = treatmentElement('summary');
+    summary.append(treatmentElement('span', '', 'Add more detail (optional)'));
+    const optionalCount = treatmentElement('span', 'treatment-optional-count');
+    optionalCount.id = 'treatment-optional-count';
+    optionalCount.hidden = true;
+    summary.append(optionalCount);
+    optional.append(summary);
+    optional.append(treatmentElement(
+      'p',
+      'helper-text',
+      'Leave these empty when your treatment wording above already says it. '
+      + 'An empty box records nothing for that detail.',
+    ));
+    const optionalGrid = treatmentElement('div', 'treatment-form-grid');
+    for (const field of TREATMENT_OPTIONAL_TEXT_FIELDS) {
+      const value = Object.prototype.hasOwnProperty.call(draft, field)
+        ? draft[field]
+        : (course?.[field] ?? null);
+      optionalGrid.append(
+        treatmentOptionalField(labels[field], field, value, course?.[field] === ''),
+      );
+    }
+    optional.append(optionalGrid);
+    optional.addEventListener('toggle', refreshTreatmentOptionalCount);
+    optionalGrid.addEventListener('input', refreshTreatmentOptionalCount);
+    fragment.append(optional);
     const componentFieldset = treatmentElement('fieldset', 'treatment-component-fieldset');
     componentFieldset.append(
       treatmentElement('legend', '', 'Link recorded treatment components (optional)'),
@@ -16188,6 +16244,7 @@
     treatmentDraft = {
       mode: treatmentDialogMode,
       recordedRowId: treatmentSelection?.recordedRowId ?? null,
+      sourceFactRef: treatmentSelection?.sourceFactRef ?? null,
       values,
     };
     return treatmentDraft;
@@ -16228,6 +16285,7 @@
     }
     const preservedDraft = treatmentDraft?.mode === mode
       && (treatmentDraft.recordedRowId ?? null) === (selection.recordedRowId ?? null)
+      && (treatmentDraft.sourceFactRef ?? null) === (selection.sourceFactRef ?? null)
       ? treatmentDraft
       : null;
     clearTreatmentRetry();
@@ -16258,6 +16316,7 @@
       // choices are never restored, so re-asserting them here would silently
       // reinstate a link the caregiver explicitly removed.
       const prefillFromRow = Boolean(selection.recordedRowId) && preservedDraft === null;
+      const prefillFromSource = Boolean(selection.sourceFactRef) && preservedDraft === null;
       if (selection.recordedRowId) {
         body.append(treatmentElement(
           'p',
@@ -16268,10 +16327,25 @@
             : 'Your preserved draft wording is restored. Choose the component links again, and '
               + 'choose the record status and any dates; no timing or status is preselected.',
         ));
+      } else if (selection.sourceFactRef) {
+        body.append(treatmentElement(
+          'p',
+          'treatment-authority-note',
+          prefillFromSource
+            ? 'Wording is copied from the document mention you chose so you can edit it. What you '
+              + 'save is a caregiver-entered record in your own words; it is not stored as a '
+              + 'quotation and is not linked back to that document. You still choose the record '
+              + 'status and any dates; no timing or status is preselected.'
+            : 'Your preserved draft wording is restored. Choose the record status and any dates; '
+              + 'no timing or status is preselected.',
+        ));
       }
       body.append(treatmentCourseForm(null, {
         includeStatus: true,
-        prefillTreatmentText: prefillFromRow ? (selection.prefillTreatmentText ?? null) : null,
+        prefillTreatmentText: prefillFromRow || prefillFromSource
+          ? (selection.prefillTreatmentText ?? null)
+          : null,
+        prefillSource: prefillFromSource ? 'document_mention' : 'recorded_entry',
         preselectedComponentIds: prefillFromRow ? selection.preselectedComponentIds : [],
       }));
       renderTreatmentTerminalFields();
@@ -16347,6 +16421,7 @@
       return scrubTreatmentDialog();
     }
     restoreTreatmentDraft(preservedDraft);
+    syncTreatmentOptionalDisclosure();
     setFormError('treatment-form-error', '');
     setTreatmentDialogStatus('');
     const overlay = document.getElementById('treatment-dialog-overlay');
@@ -16370,6 +16445,23 @@
 
   function treatmentRecordedRowById(rowId) {
     return treatmentProjection?.legacy_treatments.find(row => row.id === rowId) ?? null;
+  }
+
+  function treatmentSourceFactByRef(ref) {
+    return treatmentProjection?.source_facts.find(item => item.ref === ref) ?? null;
+  }
+
+  // The mention carries the clinician's verbatim wording, so it may seed the
+  // wording field only. Nothing temporal or clinical is copied: a source fact
+  // has no dates, and its `operation` is list-membership, not a clinical event.
+  function openTreatmentSourceStatusDialog(trigger, ref) {
+    if (treatmentDialogOpen) return;
+    const source = treatmentSourceFactByRef(ref);
+    if (!source) return;
+    openTreatmentDialog('add', trigger, {
+      sourceFactRef: source.ref,
+      prefillTreatmentText: source.observed_text,
+    });
   }
 
   function openTreatmentRecordedStatusDialog(trigger, rowId) {
@@ -16564,10 +16656,13 @@
   }
 
   function treatmentOptionalInputValue(field) {
-    const value = document.getElementById(`treatment-field-${field.replaceAll('_', '-')}`)?.value ?? '';
-    const exactEmpty = document.getElementById(`treatment-empty-${field.replaceAll('_', '-')}`)?.checked === true;
-    if (value === '') return exactEmpty ? '' : null;
-    return value;
+    const control = document.getElementById(`treatment-field-${field.replaceAll('_', '-')}`);
+    const value = control?.value ?? '';
+    if (value !== '') return value;
+    // An empty box means the detail was not provided. The one exception is a
+    // record that already stores an exact empty string: that stored value is
+    // kept rather than quietly turned into null behind the caregiver.
+    return control?.dataset.storedEmptyString === 'true' ? '' : null;
   }
 
   function treatmentSelectedComponentIds() {

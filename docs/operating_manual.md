@@ -272,7 +272,10 @@ Machine-generated classifications additionally cannot seed a form or become a
 discrepancy citation. A legacy raw row is the one exception to seeding: its
 **Record status** action copies that row's wording and component links into the
 status-record dialog for you to review, and still refuses to save until you
-choose the status yourself (see *Patient's default Overview* below).
+choose the status yourself (see *Patient's default Overview* below). A source
+document mention is the second: its own **Record status** action copies that
+mention's wording — and nothing else — into the same dialog, under the same
+refusal.
 
 Alert lifetime follows its declared dependency. Ingestion-failure and
 trial-status alerts are durable until resolved. Feed-source alerts deactivate
@@ -651,7 +654,12 @@ accepted projection; neither uses `/api/status` treatment data.
 
 Patient's default Overview combines three kinds of information without inference:
 
-1. Explicit caregiver-maintained **Current and planned** courses.
+1. Explicit caregiver-maintained **Current and planned** courses. When none
+   exists, the empty list names how to create one instead of reading as a dead
+   end. It always offers **＋ Add status record**, and adds **Record status** on
+   a recorded treatment entry or on a mention in source documents only when such
+   rows are actually present, so it never sends you to an empty surface. It
+   repeats that you choose the status and any dates. Nothing is created for you.
 2. Every row already in the patient treatment record, labelled as unlinked,
    fully linked, or partly linked to an explicit caregiver-reviewed status
    record. Raw wording never inherits the linked course's lifecycle. Each of
@@ -671,6 +679,29 @@ Record or edit only explicit wording,
    associations. Blank dates stay blank; the browser does not default today,
    parse timezones, match medications, copy document/generated text, or
    infer timing that was never recorded.
+
+### The Record treatment dialog
+
+The dialog shows only what you have to decide: the **record status**, the
+**treatment wording**, and the **start**, **stop** and **planned** dates. The
+nine optional wording boxes — type, dose, route, frequency, cycle, schedule,
+formulation, indication and notes — sit behind one **Add more detail
+(optional)** disclosure that starts closed. Leave them empty whenever your
+treatment wording already says it; the course card shows that wording as the
+heading and these boxes as a list beneath it, so repeating yourself only
+duplicates the heading.
+
+Nothing is ever hidden from you. When you edit a record that already has
+optional wording, the disclosure opens by itself. It also opens when a draft you
+were part-way through is restored. Whenever any of the boxes hold something, the
+summary says how many are filled in — including while the section is folded
+away — so collapsing it never conceals wording that will be saved.
+
+An empty box records nothing for that detail. There is no control for choosing
+between "nothing recorded" and "an exact empty string" — that was a storage
+distinction, not a caregiver decision, and it was removed. If a record already
+stores an exact empty string, editing it keeps that exact empty string; the
+value is never changed behind your back.
 
 Each of the three groups above is listed newest-first. A status record is placed
 by the date its own status is about: the planned date for a planned record, the
@@ -706,6 +737,19 @@ panels are:
    *Not recorded* rather than guessing. This column answers "which document, and
    when"; it never links a mention to one of your status records and never
    affects treatment timing or status.
+
+   Each mention row also carries a **Record status** action. It opens the same
+   status-record dialog and uses the same single creation contract as the
+   recorded rows above — there is no second way to create a course. It copies
+   only that mention's exact observed wording into the treatment-wording field.
+   It preselects no status, no date, no terminal outcome and no component link,
+   because a mention carries no timing at all, and because the `added` /
+   `removed` marking on a mention is only about which list it appeared in — a
+   sentence reading *"Everolimus 10 mg daily was stopped"* is still recorded as
+   `added`. Nothing there is read as a clinical event. The copied wording stays
+   editable, and only the wording is copied: what you save is a caregiver-entered
+   record in your own words, stored neither as a quotation nor with any link
+   back to that document.
 
 The former **Automatic compatibility notes** tab was removed. The NET/Care-generated
 compatibility rows behind it are still stored in the profile and still returned by

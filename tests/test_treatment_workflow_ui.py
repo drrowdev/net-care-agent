@@ -1679,8 +1679,9 @@ def test_live_add_and_server_authorized_transition_use_full_reload():
             assert page.locator("#treatment-field-start-date").input_value() == ""
             page.locator("#treatment-field-status").select_option("planned")
             page.locator("#treatment-field-treatment-text").fill("  Exact new wording  ")
-            page.locator("#treatment-field-treatment-type-text").fill("")
-            page.locator("#treatment-empty-treatment-type-text").check()
+            # Optional detail is now behind one closed disclosure. Leaving it
+            # untouched must record "not provided", not an exact empty string.
+            assert page.locator("#treatment-optional-details").get_attribute("open") is None
             page.locator("#treatment-field-start-date").fill("2027")
             page.locator("#treatment-submit-button").click()
             page.wait_for_function("() => !treatmentMutationPending")
@@ -1711,7 +1712,7 @@ def test_live_add_and_server_authorized_transition_use_full_reload():
             ]
             assert [item[0] for item in mutations] == ["POST", "POST"]
             assert mutations[0][2]["treatment_text"] == "  Exact new wording  "
-            assert mutations[0][2]["treatment_type_text"] == ""
+            assert mutations[0][2]["treatment_type_text"] is None
             assert mutations[0][2]["start_date"] == "2027"
             assert mutations[1][2]["terminal_qualifier"] == "not_started"
             assert all(item[2]["mutation_id"] for item in mutations)
@@ -2412,6 +2413,604 @@ def test_live_recorded_row_reopen_does_not_reassert_removed_component_link():
             # The restored status is the caregiver's own earlier choice, never
             # anything the row prefill supplied.
             assert page.locator("#treatment-field-status").input_value() == "planned"
+        finally:
+            context.close()
+            browser.close()
+
+
+# ── Caregiver-sized recording dialog ───────────────────────────────────────
+
+_OPTIONAL_FIELDS = (
+    "treatment_type_text",
+    "dose_text",
+    "route_text",
+    "frequency_text",
+    "cycle_text",
+    "schedule_text",
+    "formulation_text",
+    "indication_text",
+    "notes",
+)
+
+
+def _mention_projection() -> dict:
+    """Two mentions with distinct wording and no recorded status yet."""
+    projection = _projection()
+    mentions = [
+        _source("1", "Continued Somatuline Autogel (lanreotide) 120 mg every 4 weeks"),
+        _source("2", "Everolimus 10 mg daily was stopped"),
+    ]
+    projection.update(
+        {
+            "projection_token": "treatment-mentions",
+            "source_facts": mentions,
+            "source_fact_count": len(mentions),
+            "courses": [],
+            "course_count": 0,
+            "discrepancies": [],
+            "discrepancy_count": 0,
+            "unlinked_generated_context": [],
+            "unlinked_generated_context_count": 0,
+        }
+    )
+    return projection
+
+
+def test_dialog_drops_the_null_versus_empty_string_control():
+    source = _treatment_source()
+    # The database distinction was never an invariant and is meaningless to a
+    # caregiver, so neither the control nor its wiring may survive.
+    assert "Record an exact empty string instead of Null" not in source
+    assert "treatment-empty-" not in source
+    assert "treatment-empty-toggle" not in CSS
+    assert "treatment-empty-" not in INDEX_HTML
+    # What replaces it is a stored-value marker, so an untouched empty box
+    # round-trips to whatever is already saved instead of rewriting it.
+    assert "storedEmptyString" in source
+    assert "control?.dataset.storedEmptyString === 'true' ? '' : null" in source
+
+
+def test_optional_wording_sits_behind_one_closed_disclosure():
+    source = _treatment_source()
+    assert "treatment-optional-details" in source
+    assert "Add more detail (optional)" in source
+    # Closed by default: the element is never created with `open` preset, and
+    # only content re-opens it.
+    assert "optional.open = true" not in source
+    assert "details.open = true" in source
+    assert "function syncTreatmentOptionalDisclosure(" in source
+    # A native disclosure keeps keyboard reachability and expanded state for free.
+    assert "treatmentElement('details'" in source
+    assert "treatmentElement('summary')" in source
+
+
+def test_current_and_planned_empty_state_names_the_recording_action():
+    source = _treatment_source()
+    start = source.index("const routes = ['use Add status record above'];")
+    empty_state = source[start : source.index("`Recorded treatment information", start)]
+    assert "Record status on a recorded treatment entry below" in empty_state
+    assert "mention in source documents" in empty_state
+    assert "use Add status record above" in empty_state
+    assert "You choose the status and any dates." in empty_state
+    # Only routes that exist right now may be offered: the two row-bound actions
+    # are gated on rows actually being on the page.
+    assert "if (recordedRows.length) {" in empty_state
+    assert "if (treatmentProjection.source_facts.length) {" in empty_state
+    # It must not promise that anything happens on its own, and must assert
+    # nothing clinical about the patient.
+    for forbidden in ("will appear", "automatically", "we ", "once treatment", "is not on"):
+        assert forbidden not in empty_state
+
+
+def test_source_document_mentions_expose_status_recording_without_inference():
+    source = _treatment_source()
+    assert "function openTreatmentSourceStatusDialog(" in source
+    assert "Record status for ${source.observed_text}" in source
+    mention_dialog = source[
+        source.index("function openTreatmentSourceStatusDialog(") : source.index(
+            "function openTreatmentRecordedStatusDialog("
+        )
+    ]
+    # The mention may seed wording only. Source facts carry no temporal data and
+    # `operation` is list-membership, so nothing clinical may be read from them.
+    for forbidden in (
+        "status",
+        "start_date",
+        "stop_date",
+        "planned_date",
+        "terminal_qualifier",
+        "terminal_detail",
+        "legacy_component_ids",
+        "operation",
+    ):
+        assert forbidden not in mention_dialog
+    assert "'add'" in mention_dialog
+    # Still exactly one creation contract; no second endpoint was invented.
+    assert source.count("url: '/api/treatment-reconciliation/courses'") == 1
+
+
+@pytest.mark.parametrize("width,height", [(1280, 900), (768, 900), (360, 800)])
+def test_live_optional_detail_is_collapsed_and_empty_boxes_record_nothing(
+    width: int,
+    height: int,
+):
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    with playwright_api.sync_playwright() as playwright:
+        if not Path(playwright.chromium.executable_path).exists():
+            pytest.skip("Installed Playwright browser is unavailable")
+        browser, context, page, state = _open_treatment_page(playwright, width, height)
+        try:
+            page.locator("#nav-patient").click()
+            page.locator("#patient-treatment-add").click()
+
+            # No null-versus-empty control survives anywhere in the dialog.
+            assert page.locator("#treatment-dialog .treatment-empty-toggle").count() == 0
+            assert page.locator('#treatment-dialog input[id^="treatment-empty-"]').count() == 0
+            assert "empty string" not in page.locator("#treatment-dialog").inner_text().lower()
+
+            details = page.locator("#treatment-optional-details")
+            assert details.count() == 1
+            assert details.get_attribute("open") is None
+            assert page.locator("#treatment-optional-count").is_hidden()
+            # Status, wording and the three dates stay up front; the nine
+            # optional boxes are the only thing behind the disclosure.
+            for field in _OPTIONAL_FIELDS:
+                control = f"#treatment-field-{field.replace('_', '-')}"
+                assert page.locator(control).count() == 1
+                assert page.locator(control).is_hidden()
+                assert details.locator(control).count() == 1
+            for visible in ("status", "treatment-text", "start-date", "stop-date", "planned-date"):
+                assert page.locator(f"#treatment-field-{visible}").is_visible()
+                assert details.locator(f"#treatment-field-{visible}").count() == 0
+
+            page.locator("#treatment-field-status").select_option("current")
+            page.locator("#treatment-field-treatment-text").fill(
+                "Continued Somatuline Autogel (lanreotide) 120 mg subcutaneously every 4 weeks"
+            )
+            page.locator("#treatment-submit-button").click()
+            page.wait_for_function("() => !treatmentMutationPending")
+
+            body = [
+                item
+                for item in state.requests
+                if item[0] == "POST" and item[1] == "/api/treatment-reconciliation/courses"
+            ][0][2]
+            # An untouched empty box on a new record means "not provided".
+            for field in _OPTIONAL_FIELDS:
+                assert body[field] is None, field
+            assert body["treatment_text"].startswith("Continued Somatuline Autogel")
+            overflow = page.evaluate(
+                "() => document.documentElement.scrollWidth - document.documentElement.clientWidth"
+            )
+            assert overflow == 0
+        finally:
+            context.close()
+            browser.close()
+
+
+def test_live_editing_preserves_a_stored_empty_string_and_reveals_existing_detail():
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    with playwright_api.sync_playwright() as playwright:
+        if not Path(playwright.chromium.executable_path).exists():
+            pytest.skip("Installed Playwright browser is unavailable")
+        browser, context, page, state = _open_treatment_page(playwright, 1280, 900)
+        try:
+            page.locator("#nav-patient").click()
+            page.locator("#patient-treatment-list .treatment-course-card").filter(
+                has_text="Current one"
+            ).get_by_role("button", name="Edit recorded details").click()
+
+            # The saved record already carries route and schedule wording, so
+            # nothing may stay hidden behind a closed disclosure.
+            details = page.locator("#treatment-optional-details")
+            assert details.get_attribute("open") is not None
+            assert page.locator("#treatment-optional-count").inner_text() == "2 filled in"
+            assert page.locator("#treatment-field-route-text").is_visible()
+            assert page.locator("#treatment-field-route-text").input_value() == "  exact route  "
+
+            # treatment_type_text and cycle_text store exact empty strings and
+            # render identically to the stored nulls beside them.
+            for field in ("treatment-type-text", "cycle-text", "dose-text", "notes"):
+                assert page.locator(f"#treatment-field-{field}").input_value() == ""
+            marked = page.evaluate(
+                """() => Object.fromEntries(
+                  [...document.querySelectorAll('#treatment-optional-details input, '
+                    + '#treatment-optional-details textarea')]
+                    .map(control => [control.name, control.dataset.storedEmptyString === 'true'])
+                )"""
+            )
+            assert marked["treatment_type_text"] is True
+            assert marked["cycle_text"] is True
+            assert marked["dose_text"] is False
+            assert marked["notes"] is False
+
+            # Typing into a stored-empty box and clearing it again returns the
+            # box to exactly the state it was rendered in, so the stored empty
+            # string must survive rather than silently flipping to null.
+            page.locator("#treatment-field-treatment-type-text").fill("typed then removed")
+            page.locator("#treatment-field-treatment-type-text").fill("")
+            page.locator("#treatment-field-notes").fill("Caregiver note")
+            page.locator("#treatment-submit-button").click()
+            page.wait_for_function("() => !treatmentMutationPending")
+
+            patches = [
+                item
+                for item in state.requests
+                if item[0] == "PATCH" and item[1].startswith("/api/treatment-reconciliation/")
+            ]
+            assert len(patches) == 1
+            body = patches[0][2]
+            assert body["treatment_type_text"] == ""
+            assert body["cycle_text"] == ""
+            assert body["dose_text"] is None
+            assert body["frequency_text"] is None
+            assert body["route_text"] == "  exact route  "
+            assert body["schedule_text"] == "Every four weeks"
+            assert body["notes"] == "Caregiver note"
+            assert body["expected_course_token"]
+            assert body["mutation_id"]
+        finally:
+            context.close()
+            browser.close()
+
+
+def test_live_disclosure_is_keyboard_operable_and_reveals_restored_draft_content():
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    with playwright_api.sync_playwright() as playwright:
+        if not Path(playwright.chromium.executable_path).exists():
+            pytest.skip("Installed Playwright browser is unavailable")
+        browser, context, page, state = _open_treatment_page(playwright, 1280, 900)
+        try:
+            page.locator("#nav-patient").click()
+            page.locator("#patient-treatment-add").click()
+            summary = page.locator("#treatment-optional-details > summary")
+            summary.focus()
+            assert page.evaluate("() => document.activeElement.tagName") == "SUMMARY"
+            assert "Add more detail" in summary.inner_text()
+            page.keyboard.press("Enter")
+            assert page.locator("#treatment-optional-details").get_attribute("open") is not None
+            assert page.locator("#treatment-field-dose-text").is_visible()
+            page.keyboard.press("Enter")
+            assert page.locator("#treatment-optional-details").get_attribute("open") is None
+
+            # A draft preserved through a conflict must not be tucked away.
+            summary.focus()
+            page.keyboard.press("Enter")
+            page.locator("#treatment-field-status").select_option("planned")
+            page.locator("#treatment-field-treatment-text").fill("Exact caregiver wording")
+            page.locator("#treatment-field-dose-text").fill("120 mg")
+            state.next_mutation_status = 409
+            page.locator("#treatment-submit-button").click()
+            page.wait_for_function(
+                "() => !treatmentMutationPending && treatmentProjectionState === 'current'"
+            )
+            assert page.evaluate("() => treatmentProjection.courses.length") == 5
+
+            page.locator("#nav-patient").click()
+            page.locator("#patient-treatment-add").click()
+            assert page.locator("#treatment-field-dose-text").input_value() == "120 mg"
+            assert page.locator("#treatment-optional-details").get_attribute("open") is not None
+            assert page.locator("#treatment-optional-count").inner_text() == "1 filled in"
+        finally:
+            context.close()
+            browser.close()
+
+
+def test_live_collapsed_disclosure_keeps_saying_what_it_holds():
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    with playwright_api.sync_playwright() as playwright:
+        if not Path(playwright.chromium.executable_path).exists():
+            pytest.skip("Installed Playwright browser is unavailable")
+        browser, context, page, state = _open_treatment_page(playwright, 1280, 900)
+        try:
+            page.locator("#nav-patient").click()
+            page.locator("#patient-treatment-add").click()
+            details = page.locator("#treatment-optional-details")
+            count = page.locator("#treatment-optional-count")
+            summary = page.locator("#treatment-optional-details > summary")
+            assert count.is_hidden()
+
+            # Typing behind an open disclosure updates the summary immediately,
+            # so folding it away can never conceal wording that will be sent.
+            summary.click()
+            page.locator("#treatment-field-dose-text").fill("120 mg")
+            assert count.inner_text() == "1 filled in"
+            page.locator("#treatment-field-notes").fill("Caregiver note")
+            assert count.inner_text() == "2 filled in"
+            summary.click()
+            assert details.get_attribute("open") is None
+            assert count.is_visible()
+            assert count.inner_text() == "2 filled in"
+            assert page.locator("#treatment-field-dose-text").is_hidden()
+
+            # Emptying the boxes again retires the badge rather than leaving a
+            # stale count claiming content that is no longer there.
+            summary.click()
+            page.locator("#treatment-field-dose-text").fill("")
+            assert count.inner_text() == "1 filled in"
+            page.locator("#treatment-field-notes").fill("")
+            assert count.is_hidden()
+
+            # A collapsed-but-filled disclosure still submits what it holds.
+            page.locator("#treatment-field-dose-text").fill("120 mg")
+            summary.click()
+            assert details.get_attribute("open") is None
+            page.locator("#treatment-field-status").select_option("current")
+            page.locator("#treatment-field-treatment-text").fill("Exact caregiver wording")
+            page.locator("#treatment-submit-button").click()
+            page.wait_for_function("() => !treatmentMutationPending")
+            posts = [
+                entry
+                for entry in state.requests
+                if entry[0] == "POST" and entry[1] == "/api/treatment-reconciliation/courses"
+            ]
+            assert len(posts) == 1
+            assert posts[0][2]["dose_text"] == "120 mg"
+            assert posts[0][2]["notes"] is None
+        finally:
+            context.close()
+            browser.close()
+
+
+def test_live_empty_state_only_offers_routes_that_exist():
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    bare = _projection()
+    bare["courses"] = []
+    bare["course_count"] = 0
+    bare["discrepancies"] = []
+    bare["discrepancy_count"] = 0
+    bare["legacy_treatments"] = []
+    bare["legacy_treatment_count"] = 0
+    bare["source_facts"] = []
+    bare["source_fact_documents"] = []
+    bare["source_fact_count"] = 0
+    with playwright_api.sync_playwright() as playwright:
+        if not Path(playwright.chromium.executable_path).exists():
+            pytest.skip("Installed Playwright browser is unavailable")
+        browser, context, page, state = _open_treatment_page(playwright, 1280, 900, bare)
+        try:
+            page.locator("#nav-patient").click()
+            empty = " ".join(
+                page.locator("#patient-treatment-list .empty-state").first.inner_text().split()
+            )
+            # Neither row-bound action exists on this page, so neither may be
+            # named: sending the caregiver to a surface that reads "No document
+            # treatment mentions are recorded." is another dead end.
+            assert "use Add status record above" in empty
+            assert "recorded treatment entry" not in empty
+            assert "mention in source documents" not in empty
+            assert "You choose the status and any dates." in empty
+        finally:
+            context.close()
+            browser.close()
+
+        # With rows present, both routes are named again.
+        browser, context, page, state = _open_treatment_page(
+            playwright, 1280, 900, _mention_projection()
+        )
+        try:
+            page.locator("#nav-patient").click()
+            empty = " ".join(
+                page.locator("#patient-treatment-list .empty-state").first.inner_text().split()
+            )
+            assert "use Add status record above" in empty
+            assert "Record status on a recorded treatment entry below" in empty
+            assert "Record status on a mention in source documents" in empty
+        finally:
+            context.close()
+            browser.close()
+
+
+@pytest.mark.parametrize("width,height", [(1280, 900), (768, 900), (360, 800)])
+def test_live_document_mention_records_status_prefilled_from_observed_text(
+    width: int,
+    height: int,
+):
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    with playwright_api.sync_playwright() as playwright:
+        if not Path(playwright.chromium.executable_path).exists():
+            pytest.skip("Installed Playwright browser is unavailable")
+        browser, context, page, state = _open_treatment_page(
+            playwright,
+            width,
+            height,
+            _mention_projection(),
+        )
+        try:
+            page.locator("#nav-patient").click()
+            # The dead-end empty state now names the action that fills it.
+            empty_state = page.locator("#patient-treatment-list .empty-state").first.inner_text()
+            assert "Record status on a recorded treatment entry below" in empty_state
+            assert "mention in source documents" in empty_state
+
+            page.locator("#treatment-tab-sources").click()
+            rows = page.locator("#treatment-source-table-body tr")
+            assert rows.count() == 2
+            # "was stopped" is clinician wording inside the mention. The import
+            # operation stays list-membership, so the row still reads as added.
+            stopped = rows.filter(has_text="Everolimus 10 mg daily was stopped")
+            assert "Added from the document" in stopped.inner_text()
+            assert "Exact wording available" in stopped.inner_text()
+            action = stopped.get_by_role(
+                "button", name="Record status for Everolimus 10 mg daily was stopped"
+            )
+            assert action.count() == 1
+            assert action.is_enabled()
+            action.click()
+
+            assert page.locator("#treatment-dialog-overlay").get_attribute("aria-hidden") == "false"
+            assert (
+                page.locator("#treatment-field-treatment-text").input_value()
+                == "Everolimus 10 mg daily was stopped"
+            )
+            # Nothing clinical is chosen for the caregiver.
+            assert page.locator("#treatment-field-status").input_value() == ""
+            for prefix in ("start", "stop", "planned"):
+                assert page.locator(f"#treatment-field-{prefix}-date").input_value() == ""
+            assert page.locator("#treatment-field-terminal-qualifier").input_value() == ""
+            assert page.locator('input[name="treatment-component-choice"]:checked').count() == 0
+            assert page.locator("#treatment-submit-button").is_disabled()
+            note = page.locator("#treatment-dialog .treatment-authority-note").inner_text()
+            # The copy may not claim an anchor the record does not carry: nothing
+            # in the saved course refers back to the document or the mention.
+            assert "not stored as a quotation and is not linked back to that document" in note
+            assert "anchored" not in note
+            assert "no timing or status is preselected" in note
+            # The prefilled wording stays editable.
+            assert page.locator("#treatment-field-treatment-text").is_editable()
+
+            page.locator("#treatment-field-status").select_option("past")
+            page.locator("#treatment-field-terminal-qualifier").select_option("ended")
+            page.locator("#treatment-submit-button").click()
+            page.wait_for_function("() => !treatmentMutationPending")
+
+            mutations = [
+                item
+                for item in state.requests
+                if item[0] == "POST" and item[1] == "/api/treatment-reconciliation/courses"
+            ]
+            assert len(mutations) == 1
+            body = mutations[0][2]
+            assert body["treatment_text"] == "Everolimus 10 mg daily was stopped"
+            assert body["status"] == "past"
+            assert body["terminal_qualifier"] == "ended"
+            assert body["legacy_component_ids"] == []
+            assert body["start_date"] is None
+            assert body["stop_date"] is None
+            assert body["planned_date"] is None
+            assert all(body[field] is None for field in _OPTIONAL_FIELDS)
+            assert body["expected_projection_token"] == "treatment-mentions"
+            assert body["expected_profile_revision"] == 5
+            assert body["expected_workflow_revision"] == 3
+            assert body["mutation_id"]
+            assert "expected_course_token" not in body
+            assert json.loads(state.raw_mutation_bodies[0]) == body
+
+            page.locator("#nav-patient").click()
+            assert (
+                "Everolimus 10 mg daily was stopped"
+                in page.locator("#patient-treatment-list").inner_text()
+            )
+            overflow = page.evaluate(
+                "() => document.documentElement.scrollWidth - document.documentElement.clientWidth"
+            )
+            assert overflow == 0
+        finally:
+            context.close()
+            browser.close()
+
+
+def test_live_document_mention_conflict_is_scoped_and_leaves_the_record_untouched():
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    with playwright_api.sync_playwright() as playwright:
+        if not Path(playwright.chromium.executable_path).exists():
+            pytest.skip("Installed Playwright browser is unavailable")
+        browser, context, page, state = _open_treatment_page(
+            playwright,
+            1280,
+            900,
+            _mention_projection(),
+        )
+        try:
+            page.locator("#nav-patient").click()
+            page.locator("#treatment-tab-sources").click()
+            page.locator("#treatment-source-table-body tr").filter(
+                has_text="Everolimus 10 mg daily was stopped"
+            ).get_by_role(
+                "button", name="Record status for Everolimus 10 mg daily was stopped"
+            ).click()
+            page.locator("#treatment-field-status").select_option("planned")
+            state.next_mutation_status = 409
+            page.locator("#treatment-submit-button").click()
+            page.wait_for_function(
+                "() => !treatmentMutationPending && treatmentProjectionState === 'current'"
+            )
+            assert page.evaluate("() => pendingTreatmentRetry === null")
+            assert page.evaluate("() => treatmentProjection.courses.length") == 0
+            assert page.evaluate("() => treatmentDraft.sourceFactRef") == f"txref_{'2' * 64}"
+
+            # The draft belongs to that one mention, so no other creation path
+            # may inherit it.
+            page.locator("#nav-patient").click()
+            page.locator("#patient-treatment-add").click()
+            assert page.locator("#treatment-field-treatment-text").input_value() == ""
+            assert page.locator("#treatment-field-status").input_value() == ""
+            page.keyboard.press("Escape")
+            page.locator("#treatment-tab-sources").click()
+            other = page.locator("#treatment-source-table-body tr").filter(
+                has_text="Continued Somatuline Autogel"
+            )
+            other.get_by_role(
+                "button",
+                name="Record status for Continued Somatuline Autogel (lanreotide) 120 mg every 4 weeks",
+            ).click()
+            assert (
+                page.locator("#treatment-field-treatment-text").input_value()
+                == "Continued Somatuline Autogel (lanreotide) 120 mg every 4 weeks"
+            )
+            assert page.locator("#treatment-field-status").input_value() == ""
+        finally:
+            context.close()
+            browser.close()
+
+
+def test_live_document_mention_action_is_keyboard_reachable_and_not_duplicated():
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    with playwright_api.sync_playwright() as playwright:
+        if not Path(playwright.chromium.executable_path).exists():
+            pytest.skip("Installed Playwright browser is unavailable")
+        browser, context, page, state = _open_treatment_page(
+            playwright,
+            1280,
+            900,
+            _mention_projection(),
+        )
+        try:
+            page.locator("#nav-patient").click()
+            page.locator("#treatment-tab-sources").click()
+            ref = f"txref_{'2' * 64}"
+            action = page.locator(f'button[data-treatment-source-ref="{ref}"]')
+            assert action.count() == 1
+            action.focus()
+            assert page.evaluate("() => document.activeElement.dataset.treatmentSourceRef") == ref
+            page.keyboard.press("Enter")
+            assert page.evaluate(
+                "() => document.getElementById('treatment-dialog').contains(document.activeElement)"
+            )
+            assert page.evaluate(
+                "() => document.getElementById('treatment-dialog').inert === false"
+            )
+            assert page.evaluate(
+                "() => document.getElementById('treatment-workspace').closest('[inert]') !== null"
+            )
+
+            # Duplicate rapid activation must not rebuild the dialog or discard edits.
+            epoch = page.evaluate("() => treatmentDialogEpoch")
+            page.locator("#treatment-field-treatment-text").fill("Caregiver edited wording")
+            page.evaluate(
+                """(ref) => openTreatmentSourceStatusDialog(
+                  document.querySelector(`button[data-treatment-source-ref="${ref}"]`),
+                  ref,
+                )""",
+                ref,
+            )
+            assert page.evaluate("() => treatmentDialogEpoch") == epoch
+            assert (
+                page.locator("#treatment-field-treatment-text").input_value()
+                == "Caregiver edited wording"
+            )
+
+            page.keyboard.press("Escape")
+            assert page.locator("#treatment-dialog-overlay").get_attribute("aria-hidden") == "true"
+            # Focus returns to the mention row action only after inert clears.
+            assert page.evaluate("() => document.activeElement.dataset.treatmentSourceRef") == ref
+            assert page.evaluate(
+                "() => document.getElementById('treatment-workspace').closest('[inert]') === null"
+            )
+            assert not any(
+                method != "GET" and path.startswith("/api/treatment-reconciliation/")
+                for method, path, _ in state.requests
+            )
         finally:
             context.close()
             browser.close()

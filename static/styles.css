@@ -2653,6 +2653,8 @@ main#main-content {
   color: var(--blue);
   font-weight: 600;
 }
+.treatment-source-record { white-space: nowrap; }
+.treatment-source-record button { width: 100%; min-width: 0; }
 .treatment-legacy-section,
 .treatment-outcomes,
 .treatment-linked-follow-up {
@@ -2745,10 +2747,39 @@ main#main-content {
   font-weight: 400;
 }
 .treatment-field textarea { resize: vertical; }
-.treatment-field small,
-.treatment-empty-toggle small { color: var(--text2); font-weight: 400; line-height: 1.4; }
-.treatment-optional-field { display: grid; gap: 5px; }
-.treatment-empty-toggle,
+.treatment-field small { color: var(--text2); font-weight: 400; line-height: 1.4; }
+.treatment-optional-details {
+  min-width: 0;
+  margin: 14px 0 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg2);
+}
+.treatment-optional-details > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 11px 13px;
+  border-radius: 10px;
+  color: var(--text0);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.treatment-optional-details[open] > summary { border-radius: 10px 10px 0 0; }
+.treatment-optional-count {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg1);
+  color: var(--text2);
+  font-size: 11px;
+  font-weight: 400;
+}
+.treatment-optional-details > .helper-text { margin: 0; padding: 0 13px; }
+.treatment-optional-details > .treatment-form-grid { padding: 9px 13px 13px; }
 .treatment-component-options label,
 .treatment-choice-fieldset label,
 .treatment-confirm-row {
@@ -2761,7 +2792,6 @@ main#main-content {
   font-size: 11px;
   cursor: pointer;
 }
-.treatment-empty-toggle input,
 .treatment-component-options input,
 .treatment-choice-fieldset input,
 .treatment-confirm-row input {

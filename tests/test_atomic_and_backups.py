@@ -13,6 +13,10 @@ def _profile_temps(config):
     return list(config.DATA_DIR.glob(f".{config.PROFILE_PATH.name}.*.tmp"))
 
 
+def _noon_today() -> float:
+    return datetime.datetime.combine(datetime.date.today(), datetime.time(12)).timestamp()
+
+
 def test_atomic_write_replaces_target(tmp_path):
     from agent.io import atomic_write_text
 
@@ -49,6 +53,63 @@ def test_daily_backup_writes_once_per_day(agent, tmp_path, monkeypatch):
     result = backups.daily_backup()
     assert result is None
     assert expected.stat().st_mtime == mtime_before
+
+
+def test_daily_backup_names_the_file_after_the_profile_mtime(agent, monkeypatch):
+    """The filename must agree with the mtime ``copy2`` preserves on the copy.
+
+    A save landing a hair before midnight whose ``daily_backup`` call ran a tick
+    after it used to claim tomorrow's filename while carrying yesterday's mtime,
+    which then suppressed the following day's real backup. ``/api/health`` reads
+    the mtime and judges freshness by calendar day, so the two must not disagree.
+    """
+    import os
+
+    from agent import backups, config
+
+    agent.save_profile({"patient": {}})
+
+    backups_dir = config.DATA_DIR / "backups"
+    for stale in backups_dir.glob("profile_*.json"):
+        stale.unlink()
+
+    # The profile was last written at 23:59:59 yesterday.
+    yesterday = datetime.date.today() - datetime.timedelta(days=1)
+    when = datetime.datetime.combine(yesterday, datetime.time(23, 59, 59)).timestamp()
+    os.utime(config.PROFILE_PATH, (when, when))
+
+    written = backups.daily_backup()
+
+    assert written is not None
+    assert written.name == f"profile_{yesterday.strftime('%Y%m%d')}.json"
+    assert datetime.date.fromtimestamp(written.stat().st_mtime) == yesterday
+    assert backups.backup_lag_days(when, written.stat().st_mtime) == 0
+
+
+@pytest.mark.parametrize(
+    ("profile_days_ago", "backup_days_ago", "expected"),
+    [(0, 0, 0), (0, 1, 1), (0, 2, 2), (1, 0, -1)],
+)
+def test_backup_lag_days_counts_whole_calendar_days(profile_days_ago, backup_days_ago, expected):
+    from agent import backups
+
+    def at(days_ago: int, hour: int) -> float:
+        day = datetime.date.today() - datetime.timedelta(days=days_ago)
+        return datetime.datetime.combine(day, datetime.time(hour)).timestamp()
+
+    # Deliberately lopsided clock times: only the calendar day may matter, so a
+    # backup taken at 00:01 and a save at 23:59 the same day are lag 0.
+    lag = backups.backup_lag_days(at(profile_days_ago, 23), at(backup_days_ago, 0))
+
+    assert lag == expected
+
+
+def test_backup_lag_days_returns_none_for_unrepresentable_timestamps():
+    """A corrupt mtime must surface as unknown, never raise into /api/health."""
+    from agent import backups
+
+    assert backups.backup_lag_days(1e300, _noon_today()) is None
+    assert backups.backup_lag_days(_noon_today(), float("nan")) is None
 
 
 def test_daily_backup_prunes_old_files(agent, tmp_path, monkeypatch):

@@ -226,6 +226,18 @@ def restore_from_candidate(candidate: RecoveryCandidate) -> dict:
         content = json.dumps(data, indent=2, default=str)
         atomic_write_text(config.PROFILE_PATH, content)
 
+        # Protect the restored state immediately. The restore gives the profile
+        # a current mtime while the candidate it came from may be days old, so
+        # without this the newest daily backup would trail the profile by whole
+        # calendar days and /api/health would report the storage as out of date
+        # until the caregiver happened to save something.
+        try:
+            from . import backups
+
+            backups.daily_backup()
+        except Exception as exc:  # never let a backup failure fail a recovery
+            log.warning("recovery_daily_backup_failed: %s", exc)
+
     log.warning(
         "profile_restored source=%s candidate=%s",
         candidate.source,

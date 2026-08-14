@@ -2,11 +2,42 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
+import shutil
 import time
 
 import pytest
+
+
+def _stamp(path, days_ago: int, hour: int, minute: int = 0) -> None:
+    """Pin a file's mtime to an explicit local wall-clock time *days_ago* days back.
+
+    Tests that care about calendar-day boundaries must not rewind by a number of
+    seconds: "24 hours ago" lands on a different local date depending on what
+    time the suite happens to run and on DST transitions, which would make the
+    assertions pass or fail for the wrong reason.
+    """
+    day = datetime.date.today() - datetime.timedelta(days=days_ago)
+    when = datetime.datetime.combine(day, datetime.time(hour, minute)).timestamp()
+    os.utime(path, (when, when))
+
+
+def _restamp_backup(backups_dir, days_ago: int, hour: int, minute: int = 0):
+    """Re-date every backup file, keeping filename and mtime in agreement.
+
+    ``daily_backup`` names the file after the mtime it copies, so a test that
+    moves an mtime without renaming the file would build a directory state the
+    writer can never produce.
+    """
+    day = datetime.date.today() - datetime.timedelta(days=days_ago)
+    moved = []
+    for path in list(backups_dir.glob("profile_*.json")):
+        target = path.rename(backups_dir / f"profile_{day.strftime('%Y%m%d')}.json")
+        _stamp(target, days_ago, hour, minute)
+        moved.append(target)
+    return moved
 
 
 @pytest.fixture
@@ -213,30 +244,294 @@ def test_health_includes_backup_ages(client):
     assert "backup_out_of_date" in body
 
 
-def test_old_but_current_backup_does_not_degrade_health(agent, client, monkeypatch):
-    from agent import backups
+def test_old_but_current_backup_does_not_degrade_health(agent, client):
+    """An untouched eight-day-old profile with an equally old backup is fine."""
+    import agent.config as cfg
 
     agent.save_profile({"patient": {"diagnosis": "NET"}})
-    old = time.time() - 8 * 24 * 3600
-    os.utime(agent.PROFILE_PATH, (old, old))
-    monkeypatch.setattr(backups, "newest_file_age_seconds", lambda *_args: 8 * 24 * 3600)
+
+    eight_days = 8 * 24 * 3600
+    _stamp(cfg.PROFILE_PATH, 8, 10)
+    _restamp_backup(cfg.DATA_DIR / "backups", 8, 10)
 
     body = client.get("/api/health").get_json()
 
+    assert body["newest_backup_age_seconds"] > eight_days - 24 * 3600
+    assert body["profile_age_seconds"] > eight_days - 24 * 3600
     assert body["backup_out_of_date"] is False
     assert body["status"] == "ok"
 
 
-def test_backup_lagging_current_profile_degrades_health(agent, client, monkeypatch):
-    from agent import backups
+# ── backup freshness is judged on the daily-backup cadence ────────────────────
+#
+# ``daily_backup`` writes one file per calendar day; ``save_profile`` runs many
+# times a day.  Comparing the two ages directly reported degraded from the
+# second save of every day until midnight.  These tests pin the corrected
+# behaviour.
+
+
+def test_repeated_saves_after_todays_backup_stay_healthy(agent, client):
+    """The exact production false alarm: today's backup + a later edit.
+
+    ``daily_backup`` correctly refuses to rewrite today's file, so the backup
+    keeps the mtime of the day's first save while the profile advances.  That is
+    normal, not a fault, and must not degrade.
+    """
+    import agent.config as cfg
+
+    profile = {"patient": {"diagnosis": "NET"}}
+    agent.save_profile(profile)
+
+    for path in (cfg.DATA_DIR / "backups").glob("profile_*.json"):
+        _stamp(path, 0, 0, 0)  # today's file, taken by the first save at 00:00
+
+    # A perfectly ordinary later edit on the same day.
+    profile["patient"]["stage"] = "IV"
+    agent.save_profile(profile)
+
+    body = client.get("/api/health").get_json()
+
+    assert body["profile_status"] == "ok"
+    assert body["profile_age_seconds"] < 60
+    # The backup is structurally older than the profile: that is the steady
+    # state the old check mistook for a fault.
+    assert body["newest_backup_age_seconds"] >= body["profile_age_seconds"]
+    assert body["backup_out_of_date"] is False
+    assert body["status"] == "ok"
+
+
+def test_idle_days_after_a_late_save_stay_healthy(agent, client):
+    """Backup taken at 00:01, last save at 23:59 that same day, then idle days.
+
+    The backup's age grows without bound and it trails the profile by nearly 24
+    hours, yet nothing is wrong: both belong to the same calendar day, so that
+    day's ``daily_backup`` did its job.  An absolute age threshold would
+    false-alarm here, and the old age comparison degraded immediately.
+    """
+    import agent.config as cfg
+
+    profile = {"patient": {"diagnosis": "NET"}}
+    agent.save_profile(profile)
+
+    _restamp_backup(cfg.DATA_DIR / "backups", 3, 0, 1)
+    _stamp(cfg.PROFILE_PATH, 3, 23, 59)
+
+    body = client.get("/api/health").get_json()
+
+    assert body["newest_backup_age_seconds"] > 3 * 24 * 3600
+    assert body["newest_backup_age_seconds"] - body["profile_age_seconds"] > 23 * 3600
+    assert body["backup_out_of_date"] is False
+    assert body["status"] == "ok"
+
+
+def test_backup_missing_for_the_day_the_profile_was_saved_degrades(agent, client):
+    """A save whose day produced no backup means the writer is broken."""
+    import agent.config as cfg
+
+    profile = {"patient": {"diagnosis": "NET"}}
+    agent.save_profile(profile)
+
+    # Re-date the only backup three days back, exactly as a writer that stopped
+    # working three days ago would leave the directory, and keep the profile
+    # saved today.
+    _restamp_backup(cfg.DATA_DIR / "backups", 3, 12)
+
+    body = client.get("/api/health").get_json()
+
+    assert body["profile_age_seconds"] < 60
+    assert body["newest_backup_age_seconds"] > 2 * 24 * 3600
+    assert body["backup_out_of_date"] is True
+    assert body["status"] == "degraded"
+
+
+def test_recovery_from_an_old_candidate_does_not_leave_health_degraded(agent, client):
+    """Restoring an old backup must not report the storage as out of date.
+
+    ``restore_from_candidate`` gives the profile a current mtime, so without a
+    backup of the restored state the newest backup would trail it by whole
+    calendar days and degrade until the caregiver happened to save something.
+    """
+    import agent.config as cfg
+    from agent import recovery
 
     agent.save_profile({"patient": {"diagnosis": "NET"}})
-    monkeypatch.setattr(backups, "newest_file_age_seconds", lambda *_args: 3600)
+
+    backups_dir = cfg.DATA_DIR / "backups"
+    restored = _restamp_backup(backups_dir, 5, 9)[0]
+
+    recovery.restore_from_candidate(recovery.RecoveryCandidate(restored, "daily_backup"))
+
+    body = client.get("/api/health").get_json()
+
+    assert body["profile_status"] == "ok"
+    assert body["profile_age_seconds"] < 60
+    assert body["backup_out_of_date"] is False
+    assert body["status"] == "ok"
+
+
+def test_backup_one_day_behind_a_save_degrades(agent, client):
+    """Yesterday's backup plus a save today means today's backup never landed.
+
+    The tolerance is zero on purpose: a whole day of slack would let a writer
+    that broke yesterday and then saw no further saves sit at a lag of exactly
+    one forever and never be reported.
+    """
+    import agent.config as cfg
+    from agent import backups
+
+    assert backups.BACKUP_MAX_LAG_DAYS == 0
+
+    agent.save_profile({"patient": {"diagnosis": "NET"}})
+
+    _restamp_backup(cfg.DATA_DIR / "backups", 1, 12)
 
     body = client.get("/api/health").get_json()
 
     assert body["backup_out_of_date"] is True
     assert body["status"] == "degraded"
+
+
+def test_backup_newer_than_profile_after_restore_is_healthy(agent, client):
+    """A restore can leave the backup ahead of the profile; that is not a fault."""
+    import agent.config as cfg
+
+    agent.save_profile({"patient": {"diagnosis": "NET"}})
+    _stamp(cfg.PROFILE_PATH, 2, 12)
+
+    body = client.get("/api/health").get_json()
+
+    assert body["profile_age_seconds"] > 24 * 3600
+    assert body["backup_out_of_date"] is False
+    assert body["status"] == "ok"
+
+
+def test_unreadable_backup_timestamp_degrades_without_crashing(agent, client, monkeypatch):
+    """A timestamp that is not a representable date must degrade, not 500."""
+    from agent import backups
+
+    agent.save_profile({"patient": {"diagnosis": "NET"}})
+    monkeypatch.setattr(backups, "backup_lag_days", lambda *_args: None)
+
+    resp = client.get("/api/health")
+    body = resp.get_json()
+
+    assert resp.status_code == 200
+    assert body["backup_out_of_date"] is True
+    assert body["status"] == "degraded"
+
+
+def test_missing_backup_degrades_health(agent, client):
+    """No daily backup at all is still a real fault."""
+    import agent.config as cfg
+
+    agent.save_profile({"patient": {"diagnosis": "NET"}})
+    shutil.rmtree(cfg.DATA_DIR / "backups")
+
+    body = client.get("/api/health").get_json()
+
+    assert body["profile_status"] == "ok"
+    assert body["newest_backup_age_seconds"] is None
+    assert body["backup_out_of_date"] is True
+    assert body["status"] == "degraded"
+
+
+def test_backup_signal_suppressed_when_profile_not_ok(agent):
+    """``profile_status != "ok"`` still suppresses the storage-freshness signal."""
+    import importlib
+    import sys
+
+    import agent.config as cfg
+
+    cfg.PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    cfg.PROFILE_PATH.write_bytes(b"{{not-valid-json}}")
+
+    if "app" in sys.modules:
+        del sys.modules["app"]
+    import app as app_mod
+
+    importlib.reload(app_mod)
+    app_mod.app.config["TESTING"] = True
+
+    body = app_mod.app.test_client().get("/api/health").get_json()
+
+    assert body["profile_status"] == "invalid_json"
+    assert body["newest_backup_age_seconds"] is None
+    assert body["backup_out_of_date"] is False
+    assert body["status"] == "error"
+
+
+# ── snapshot age is informational and must never raise an alarm ───────────────
+#
+# ``rotating_snapshot`` copies the PRE-write profile with ``shutil.copy2``,
+# which preserves the source mtime.  The newest snapshot therefore carries the
+# *previous* profile revision's mtime and is older than the profile by
+# construction on every save.
+
+
+def test_stale_snapshot_age_after_idle_week_is_healthy(agent, client):
+    """A fresh snapshot inherits an eight-day-old mtime and must not degrade."""
+    import agent.config as cfg
+
+    profile = {"patient": {"diagnosis": "NET"}}
+    agent.save_profile(profile)
+
+    eight_days = 8 * 24 * 3600
+    _restamp_backup(cfg.DATA_DIR / "backups", 8, 10)
+    _stamp(cfg.PROFILE_PATH, 8, 10)
+
+    # First edit in eight days.  This writes a brand-new snapshot, but copy2
+    # stamps it with the eight-day-old source mtime, and daily_backup writes a
+    # fresh backup for today.
+    profile["patient"]["stage"] = "IV"
+    agent.save_profile(profile)
+
+    body = client.get("/api/health").get_json()
+
+    assert list((cfg.DATA_DIR / "snapshots").glob("profile_*.json"))
+    assert body["newest_snapshot_age_seconds"] > eight_days - 24 * 3600
+    assert body["profile_age_seconds"] < 60
+    assert body["backup_out_of_date"] is False
+    assert body["status"] == "ok"
+
+
+def test_snapshot_older_than_profile_on_every_save_is_healthy(agent, client):
+    """Snapshot age exceeding profile age is structural, never a fault."""
+    profile = {"patient": {"diagnosis": "NET"}}
+    agent.save_profile(profile)
+    time.sleep(0.01)
+    profile["patient"]["stage"] = "IV"
+    agent.save_profile(profile)
+
+    body = client.get("/api/health").get_json()
+
+    assert body["newest_snapshot_age_seconds"] >= body["profile_age_seconds"]
+    assert body["status"] == "ok"
+
+
+# ── deploy gate contract ──────────────────────────────────────────────────────
+
+
+def test_health_payload_keeps_deploy_gate_contract(agent, client):
+    """Scripts/deploy.ps1 reads these exact fields; none may be renamed."""
+    agent.save_profile({"patient": {"diagnosis": "NET"}})
+    resp = client.get("/api/health")
+    body = resp.get_json()
+
+    assert resp.status_code == 200
+    for key in ("status", "data_dir_writable", "jobs_healthy", "release_commit"):
+        assert key in body
+    # deploy.ps1 accepts only these two values and requires both flags truthy.
+    assert body["status"] in ("ok", "degraded")
+    assert body["data_dir_writable"] is True
+    assert body["jobs_healthy"] is True
+    # Fields other tooling and the operating manual document.
+    for key in (
+        "newest_backup_age_seconds",
+        "newest_snapshot_age_seconds",
+        "profile_age_seconds",
+        "backup_out_of_date",
+    ):
+        assert key in body
 
 
 def test_health_jobs_healthy_true_normally(client):

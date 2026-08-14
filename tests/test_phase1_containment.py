@@ -58,7 +58,6 @@ def _stub_job_pipeline(app_mod, agent, monkeypatch):
         ),
     )
     monkeypatch.setattr(agent, "run_orchestrator", lambda *_args: "report")
-    monkeypatch.setattr(agent, "classify_treatments", lambda _profile: [{"text": "SSA"}])
     monkeypatch.setattr(agent, "generate_executive_summary", lambda _profile: _successful_summary())
 
 
@@ -76,8 +75,8 @@ def test_feed_and_digest_refresh_summary(app_mod, agent, monkeypatch, job_type):
     assert profile["executive_summary"]["summary"] == "Fresh summary"
     assert profile["executive_summary"]["summary_revision"] == profile["profile_revision"]
     assert profile["summary_stale"] is False
-    assert profile["treatments_classified"][0]["text"] == "SSA"
-    assert profile["treatments_classification_revision"] == profile["profile_revision"]
+    assert profile["treatments_classified"] == []
+    assert profile["treatments_classification_revision"] is None
 
 
 @pytest.mark.parametrize("job_type", ["feed", "digest"])
@@ -117,7 +116,6 @@ def test_feed_and_digest_summary_see_new_alert_at_final_revision(
         return _successful_summary()
 
     monkeypatch.setattr(agent, "run_orchestrator", orchestrate)
-    monkeypatch.setattr(agent, "classify_treatments", lambda _profile: [])
     monkeypatch.setattr(agent, "generate_executive_summary", summary)
 
     if job_type == "feed":
@@ -149,7 +147,6 @@ def test_manual_summary_is_derived_and_preserves_current_alert_revision(
     revision = profile["profile_revision"]
     captured = {}
     monkeypatch.setattr(app_mod, "_update_job", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(agent, "classify_treatments", lambda _profile: [])
 
     def summary(current):
         captured["alerts"] = [item["message"] for item in agent.active_alerts(current)]
@@ -164,7 +161,7 @@ def test_manual_summary_is_derived_and_preserves_current_alert_revision(
     assert saved["profile_revision"] == revision
     assert saved["executive_summary"]["summary_revision"] == revision
     assert [item["message"] for item in agent.active_alerts(saved)] == ["Current alert"]
-    assert saved["treatments_classification_revision"] == revision
+    assert saved["treatments_classification_revision"] is None
 
 
 def test_digest_summary_sees_same_run_durable_trial_poll_alert(app_mod, agent, monkeypatch):
@@ -194,7 +191,6 @@ def test_digest_summary_sees_same_run_durable_trial_poll_alert(app_mod, agent, m
 
     monkeypatch.setattr(agent, "poll_tracked_trials", poll)
     monkeypatch.setattr(agent, "run_orchestrator", orchestrate)
-    monkeypatch.setattr(agent, "classify_treatments", lambda _profile: [])
     monkeypatch.setattr(agent, "generate_executive_summary", lambda _profile: _successful_summary())
 
     app_mod._run_digest_job("digest-job")
@@ -257,7 +253,6 @@ def test_summary_failure_preserves_mutations_and_marks_existing_summary_stale(
 
     monkeypatch.setattr(agent, "run_intake", intake)
     monkeypatch.setattr(agent, "run_orchestrator", lambda *_args: "report")
-    monkeypatch.setattr(agent, "classify_treatments", lambda _profile: [])
     monkeypatch.setattr(
         agent,
         "generate_executive_summary",

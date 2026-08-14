@@ -190,7 +190,11 @@ Every fed document, kept for audit and downstream re-analysis.
 
 ## `treatments_classified[]`
 
-Built by agent.classify.classify_treatments — deduped + categorised.
+Frozen historical collection. It was built by the retired LLM treatment
+classifier; nothing writes it any more. Existing rows are retained verbatim and
+are still returned by `GET /api/patient/treatment-reconciliation` as
+`legacy_treatments[].generated_classification[]` and
+`unlinked_generated_context[]`, but they are no longer surfaced in the UI.
 
 | Field | Type | Description |
 |-------|------|-------------|

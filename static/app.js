@@ -14573,10 +14573,6 @@
     parent.append(row);
   }
 
-  function treatmentOptionalContext(value) {
-    return value === null ? 'Not recorded' : value;
-  }
-
   function treatmentDatePresentation(value, course, prefix) {
     return `${value === null ? 'Not recorded' : value} · ${precisionLabel(course[`${prefix}_date_precision`])} · ${
       course[`${prefix}_date_kind`] === 'caregiver_entered'
@@ -14803,80 +14799,6 @@
     return card;
   }
 
-  function treatmentMappedGeneratedSection() {
-    const details = treatmentElement('details', 'treatment-generated-disclosure');
-    const rows = treatmentProjection.legacy_treatments.flatMap(row => (
-      row.generated_classification.map(item => ({ item, recordedText: row.raw_text }))
-    ));
-    details.append(treatmentElement(
-      'summary',
-      '',
-      `Mapped automatic compatibility notes (${rows.length})`,
-    ));
-    const body = treatmentElement('div', 'treatment-generated-section');
-    body.append(treatmentElement('p', 'treatment-authority-label', RECORD_SOURCE_COPY.generated));
-    if (!rows.length) {
-      body.append(treatmentElement('p', 'treatment-missing', 'No mapped compatibility notes are recorded.'));
-    } else {
-      const list = treatmentElement('ol');
-      rows.forEach(({ item, recordedText }) => {
-        const entry = treatmentElement('li');
-        entry.append(treatmentElement('strong', '', recordedText));
-        const facts = treatmentElement('dl', 'treatment-facts');
-        treatmentAppendFact(facts, 'Generated wording', item, 'text');
-        treatmentAppendFact(facts, 'Generated label', item, 'label', treatmentOptionalContext);
-        treatmentAppendFact(facts, 'Generated category', item, 'category', value => (
-          value === null ? 'Not recorded' : titleCaseEnum(value)
-        ));
-        treatmentAppendFact(facts, 'Generated date', item, 'date', treatmentOptionalContext);
-        entry.append(facts);
-        list.append(entry);
-      });
-      body.append(list);
-    }
-    details.append(body);
-    return details;
-  }
-
-  function treatmentUnlinkedGeneratedSection() {
-    const section = treatmentElement('details', 'treatment-unlinked-generated-section');
-    const count = treatmentProjection.unlinked_generated_context_count;
-    section.append(
-      treatmentElement('summary', '', `Other automatic compatibility notes (${count})`),
-      treatmentElement(
-        'p',
-        'treatment-authority-label',
-        `${RECORD_SOURCE_COPY.generated}. All ${count} note${count === 1 ? '' : 's'} are retained; none are omitted.`,
-      ),
-    );
-    if (!count) {
-      section.append(treatmentElement(
-        'p',
-        'treatment-missing',
-        'No other automatic compatibility notes are recorded.',
-      ));
-      return section;
-    }
-    const list = treatmentElement('ol', 'treatment-unlinked-generated-list');
-    treatmentProjection.unlinked_generated_context.forEach(item => {
-      const entry = treatmentElement('li', 'treatment-unlinked-generated-card');
-      const facts = treatmentElement('dl', 'treatment-facts');
-      treatmentAppendFact(facts, 'Generated wording', item, 'text');
-      treatmentAppendFact(facts, 'Generated label', item, 'label', treatmentOptionalContext);
-      treatmentAppendFact(facts, 'Generated category', item, 'category', value => (
-        value === null ? 'Not recorded' : titleCaseEnum(value)
-      ));
-      treatmentAppendFact(facts, 'Generated date', item, 'date', treatmentOptionalContext);
-      entry.append(
-        treatmentElement('p', 'treatment-authority-label', RECORD_SOURCE_COPY.generated),
-        facts,
-      );
-      list.append(entry);
-    });
-    section.append(list);
-    return section;
-  }
-
   function treatmentCitationPanel(label, side, kind) {
     const panel = treatmentElement('section', 'treatment-citation-panel');
     panel.append(treatmentElement('h4', '', label));
@@ -15078,11 +15000,6 @@
     const currentCount = treatmentProjection.courses.filter(course => course.status === 'current').length;
     const plannedCount = treatmentProjection.courses.filter(course => course.status === 'planned').length;
     const pastCount = treatmentProjection.courses.filter(course => course.status === 'past').length;
-    const generatedCount = treatmentProjection.legacy_treatments.reduce(
-      (total, row) => total + row.generated_classification.length,
-      0,
-    );
-    const unlinkedGeneratedCount = treatmentProjection.unlinked_generated_context_count;
     const shown = active.slice(0, TREATMENT_TODAY_LIMIT);
     const reviewedComponentIds = treatmentReviewedComponentIds();
     const recordedRows = treatmentProjection.legacy_treatments.map(row => ({
@@ -15182,18 +15099,10 @@
         sourceBody.replaceChildren(row);
       }
     }
-    const legacy = document.getElementById('treatment-legacy-list');
-    if (legacy) {
-      legacy.replaceChildren(
-        treatmentMappedGeneratedSection(),
-        treatmentUnlinkedGeneratedSection(),
-      );
-    }
     const counts = {
       records: treatmentProjection.course_count + treatmentProjection.legacy_treatment_count,
       differences: treatmentProjection.discrepancy_count,
       sources: treatmentProjection.source_fact_count,
-      earlier: generatedCount + unlinkedGeneratedCount,
     };
     Object.entries(counts).forEach(([name, count]) => {
       const node = document.getElementById(`treatment-count-${name}`);
@@ -15231,9 +15140,7 @@
       row.append(cell);
       sources.replaceChildren(row);
     }
-    const legacy = document.getElementById('treatment-legacy-list');
-    if (legacy) legacy.replaceChildren(treatmentElement('div', 'empty-state', message));
-    ['records', 'differences', 'sources', 'earlier'].forEach(name => {
+    ['records', 'differences', 'sources'].forEach(name => {
       const node = document.getElementById(`treatment-count-${name}`);
       if (node) node.textContent = '0';
     });
@@ -15610,14 +15517,14 @@
   }
 
   function selectTreatmentTab(name, options = {}) {
-    if (!['records', 'differences', 'sources', 'earlier'].includes(name)) return;
+    if (!['records', 'differences', 'sources'].includes(name)) return;
     if (name !== treatmentActiveTab) {
       treatmentActiveTab = name;
       treatmentSelectionEpoch += 1;
       clearTreatmentRetry();
       if (treatmentDialogOpen) closeTreatmentDialog(false, true, false);
     }
-    ['records', 'differences', 'sources', 'earlier'].forEach(tabName => {
+    ['records', 'differences', 'sources'].forEach(tabName => {
       const selected = tabName === name;
       const tab = document.getElementById(`treatment-tab-${tabName}`);
       const panel = document.getElementById(`treatment-panel-${tabName}`);
@@ -15632,7 +15539,7 @@
   }
 
   function handleTreatmentTabKeydown(event) {
-    const names = ['records', 'differences', 'sources', 'earlier'];
+    const names = ['records', 'differences', 'sources'];
     const index = names.indexOf(treatmentActiveTab);
     let next = null;
     if (event.key === 'ArrowRight') next = names[(index + 1) % names.length];

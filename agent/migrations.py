@@ -152,7 +152,7 @@ def _m0006_add_stable_treatment_records(data: dict) -> dict:
         occurrences[text] = occurrence + 1
         source_digest = hashlib.sha256(f"{text}:{occurrence}".encode()).hexdigest()[:20]
         source_id = f"txsrc_{source_digest}"
-        from .classify import split_treatment_components
+        from .treatment_identity import split_treatment_components
 
         components = split_treatment_components(text)
         for component_order, component in enumerate(components):

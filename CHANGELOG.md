@@ -8,6 +8,37 @@ incremented when something user-visible or operationally meaningful changes.
 
 ## [Unreleased]
 
+### Removed
+- **Retired the LLM treatment classifier.** Nothing classifies treatments any
+  more. The deterministic identity library it was bundled with survives intact
+  in the new `agent/treatment_identity.py` (with `agent/classify.py` kept as a
+  re-export shim), because `sync_treatment_records` runs it on every document
+  import and the frozen v6 migration replays it. Removing the classifier drops
+  one Claude call per assessment refresh, per document import, and per digest.
+  - **Chat no longer receives treatment status.** The chat prompt now lists the
+    deterministic treatment components with no `active`/`planned`/`completed`
+    category and no date. This also fixes a live defect where a stale
+    classification made chat render a literal `(None)` after each treatment.
+  - **The "Automatic compatibility notes" tab was removed** from
+    **Patient → Treatments**, along with its always-visible count badge and both
+    collapsed sections. Nothing was deleted: the generated rows behind it remain
+    stored in `treatments_classified[]`, are still returned by
+    `GET /api/patient/treatment-reconciliation` as
+    `legacy_treatments[].generated_classification[]` and
+    `unlinked_generated_context[]`, and still bind the legacy row and projection
+    CAS tokens. This is a presentation-only removal, so no token rotates and no
+    in-flight caregiver edit is invalidated.
+  - **Today → Treatment status is unchanged.** It was always driven by
+    caregiver-reviewed courses and raw treatment rows, never by the classifier.
+  - `POST /api/treatments/<treatment_id>` is now a `410` tombstone matching its
+    siblings `/api/treatments/update` and `/api/treatments/delete`; it had no
+    caller in the UI and operated only on generated classification rows.
+  - `/api/status` and the summary job result no longer publish
+    `treatments_classified`, `treatments_fallback`, or
+    `treatments_classification_current`; the frontend never read them.
+  - Removed the `ANTHROPIC_MODEL_CLASSIFY` setting and the
+    `classification_skipped` log line / classification job warning stage.
+
 ### Changed
 - **Caregiver-first Today hierarchy.** Today now leads with access/freshness and
   the expanded latest assessment, key concern, and recommended next steps before

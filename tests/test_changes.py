@@ -175,7 +175,6 @@ def test_digest_records_zero_when_nothing_new_is_found(app_module, monkeypatch, 
     monkeypatch.setattr(app_module, "_update_job", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(app_module.agent, "poll_tracked_trials", lambda _profile: {"changed": []})
     monkeypatch.setattr(app_module.agent, "run_orchestrator", lambda *_args: "report")
-    monkeypatch.setattr(app_module.agent, "classify_treatments", lambda _profile: [])
     monkeypatch.setattr(app_module, "_refresh_summary", lambda _profile, **_kwargs: None)
 
     app_module._run_digest_job("digest-new")
@@ -301,11 +300,6 @@ def test_successful_cli_feed_finalizes_intake_alert_revision(agent, monkeypatch)
 
     monkeypatch.setattr(cli, "run_intake", intake)
     monkeypatch.setattr(cli, "run_orchestrator", lambda *_args, **_kwargs: "report")
-    monkeypatch.setattr(
-        cli,
-        "classify_treatments",
-        lambda _profile: [{"text": "lanreotide", "category": "active"}],
-    )
     monkeypatch.setattr(cli, "_print_and_save_report", lambda *_args: None)
 
     cli.cmd_feed(SimpleNamespace(file=None, text="clinical note"))
@@ -314,27 +308,22 @@ def test_successful_cli_feed_finalizes_intake_alert_revision(agent, monkeypatch)
     alert = saved["alerts"][0]
     assert alert["generation_profile_revision"] == saved["profile_revision"]
     assert agent.active_alerts(saved)[0]["id"] == alert["id"]
-    assert saved["treatments_classification_revision"] == saved["profile_revision"]
 
 
-def test_cli_classification_failure_keeps_precommitted_raw_treatments(agent, monkeypatch):
+def test_cli_feed_keeps_precommitted_raw_treatments_without_classification(agent, monkeypatch):
     from agent import cli
 
     def intake(_text, profile, **_kwargs):
         profile["patient"]["current_treatments"].append("everolimus")
         agent.invalidate_treatment_classification(profile)
+        agent.sync_treatment_records(profile)
         return profile, {"source_document_id": "doc_" + "c" * 32}
 
     monkeypatch.setattr(cli, "run_intake", intake)
     monkeypatch.setattr(cli, "run_orchestrator", lambda *_args, **_kwargs: "report")
-    monkeypatch.setattr(
-        cli,
-        "classify_treatments",
-        lambda _profile: (_ for _ in ()).throw(RuntimeError("classification failed")),
-    )
+    monkeypatch.setattr(cli, "_print_and_save_report", lambda *_args: None)
 
-    with pytest.raises(RuntimeError, match="classification failed"):
-        cli.cmd_feed(SimpleNamespace(file=None, text="clinical note"))
+    cli.cmd_feed(SimpleNamespace(file=None, text="clinical note"))
 
     saved = agent.load_profile()
     assert saved["patient"]["current_treatments"] == ["everolimus"]
@@ -342,7 +331,7 @@ def test_cli_classification_failure_keeps_precommitted_raw_treatments(agent, mon
     assert [item["text"] for item in agent.current_treatment_records(saved)] == ["everolimus"]
 
 
-def test_cli_mixed_surgery_treatment_partial_classification_fails_closed(agent, monkeypatch):
+def test_cli_feed_splits_mixed_surgery_and_medication_deterministically(agent, monkeypatch):
     from agent import cli
 
     def intake(_text, profile, **_kwargs):
@@ -353,40 +342,31 @@ def test_cli_mixed_surgery_treatment_partial_classification_fails_closed(agent, 
 
     monkeypatch.setattr(cli, "run_intake", intake)
     monkeypatch.setattr(cli, "run_orchestrator", lambda *_args, **_kwargs: "report")
-    monkeypatch.setattr(
-        cli,
-        "classify_treatments",
-        lambda _profile: (_ for _ in ()).throw(agent.TreatmentClassificationError("partial")),
-    )
+    monkeypatch.setattr(cli, "_print_and_save_report", lambda *_args: None)
 
-    with pytest.raises(agent.TreatmentClassificationError):
-        cli.cmd_feed(SimpleNamespace(file=None, text="clinical note"))
+    cli.cmd_feed(SimpleNamespace(file=None, text="clinical note"))
 
     saved = agent.load_profile()
     assert saved["patient"]["current_treatments"] == ["hepatectomy and lanreotide"]
     assert saved["treatments_classification_revision"] is None
+    assert [item["text"] for item in agent.current_treatment_records(saved)] == [
+        "hepatectomy",
+        "lanreotide",
+    ]
 
 
-def test_cli_update_profile_binds_successful_classification_to_saved_revision(agent, monkeypatch):
+def test_cli_update_profile_syncs_components_without_classification(agent, monkeypatch):
     from agent import cli
 
     answers = iter(["", "", "", "", "", "capecitabine"])
     monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
-    monkeypatch.setattr(
-        cli,
-        "classify_treatments",
-        lambda profile: [
-            {
-                "text": profile["patient"]["current_treatments"][0],
-                "label": "Capecitabine",
-                "category": "active",
-            }
-        ],
-    )
 
     cli.cmd_update_profile(SimpleNamespace())
 
     saved = agent.load_profile()
     assert saved["patient"]["current_treatments"] == ["capecitabine"]
-    assert saved["treatments_classification_revision"] == saved["profile_revision"]
-    assert saved["treatments_classification_job_id"].startswith("cli-update-")
+    assert saved["treatments_classification_revision"] is None
+    assert saved["treatments_classification_job_id"] is None
+    assert [item["text"] for item in saved["patient"]["current_treatment_records"]] == [
+        "capecitabine"
+    ]

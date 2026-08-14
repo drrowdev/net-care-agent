@@ -261,7 +261,6 @@
             <button class="treatment-tab active" id="treatment-tab-records" role="tab" aria-selected="true" aria-controls="treatment-panel-records" tabindex="0" onclick="selectTreatmentTab('records')">Overview <span id="treatment-count-records">0</span></button>
             <button class="treatment-tab" id="treatment-tab-differences" role="tab" aria-selected="false" aria-controls="treatment-panel-differences" tabindex="-1" onclick="selectTreatmentTab('differences')">Differences to review <span id="treatment-count-differences">0</span></button>
             <button class="treatment-tab" id="treatment-tab-sources" role="tab" aria-selected="false" aria-controls="treatment-panel-sources" tabindex="-1" onclick="selectTreatmentTab('sources')">Mentions in source documents <span id="treatment-count-sources">0</span></button>
-            <button class="treatment-tab" id="treatment-tab-earlier" role="tab" aria-selected="false" aria-controls="treatment-panel-earlier" tabindex="-1" onclick="selectTreatmentTab('earlier')">Automatic compatibility notes <span id="treatment-count-earlier">0</span></button>
           </div>
           <section class="treatment-panel" id="treatment-panel-records" role="tabpanel" aria-labelledby="treatment-tab-records">
             <div class="treatment-panel-toolbar">
@@ -286,10 +285,6 @@
                 <tbody id="treatment-source-table-body"><tr><td colspan="4"><div class="loading-state">Loading document mentions…</div></td></tr></tbody>
               </table>
             </div>
-          </section>
-          <section class="treatment-panel" id="treatment-panel-earlier" role="tabpanel" aria-labelledby="treatment-tab-earlier" hidden>
-            <p class="treatment-authority-note">NET/Care-generated compatibility notes help older app data remain readable. They are not treatment facts and cannot set treatment status.</p>
-            <div class="treatment-legacy-list" id="treatment-legacy-list"><div class="loading-state">Loading compatibility notes…</div></div>
           </section>
           <div class="treatment-retry" id="treatment-retry" hidden>
             <span id="treatment-retry-message">Treatment information needs to be refreshed.</span>

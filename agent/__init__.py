@@ -11,19 +11,12 @@ from .biomarker_series import BiomarkerProjectionError, project_biomarker_series
 
 # Agents
 from .chat import build_chat_system, handle_chat
-from .classify import (
-    TreatmentClassificationError,
-    classify_treatments,
-    treatment_identity_set,
-    treatment_text_is_certifiable,
-)
 
 # Configuration & paths
 from .config import (
     DATA_DIR,
     MODEL,
     MODEL_CHAT,
-    MODEL_CLASSIFY,
     MODEL_EXEC_SUMMARY,
     MODEL_INTAKE,
     MODEL_ORCHESTRATOR,
@@ -164,6 +157,11 @@ from .tools import (
     search_clinical_trials,
     search_pubmed,
 )
+from .treatment_identity import (
+    split_treatment_components,
+    treatment_identity_set,
+    treatment_text_is_certifiable,
+)
 from .treatment_reconciliation import (
     MAX_TREATMENT_ACTIONS,
     TREATMENT_CLIENT_TERMINAL_QUALIFIERS,
@@ -197,7 +195,6 @@ __all__ = [
     "MODEL_ORCHESTRATOR",
     "MODEL_EXEC_SUMMARY",
     "MODEL_QUESTIONS",
-    "MODEL_CLASSIFY",
     "MODEL_CHAT",
     # llm
     "client",
@@ -349,8 +346,7 @@ __all__ = [
     "poll_tracked_trials",
     "verify_references",
     "verification_note",
-    "classify_treatments",
-    "TreatmentClassificationError",
+    "split_treatment_components",
     "treatment_identity_set",
     "treatment_text_is_certifiable",
     "generate_executive_summary",

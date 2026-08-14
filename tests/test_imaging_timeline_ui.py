@@ -843,7 +843,6 @@ def _standard_payloads(projection: dict) -> dict[str, object]:
             "stats": {},
             "alerts": [],
             "treatments_classified": [],
-            "treatments_fallback": [],
             "imaging": [{"findings": "STATUS IMAGING MUST NOT RENDER"}],
         },
         "/api/patient/imaging-series": projection,

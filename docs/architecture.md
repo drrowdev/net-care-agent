@@ -372,11 +372,11 @@ linked components means timing/status not reviewed, all means linked to a
 caregiver-reviewed status record, and partial linkage keeps the row unresolved.
 Only none/partial rows count as needing review. Patient's default Overview orders
 current/planned caregiver courses, every raw row exactly once in stored order,
-then past courses. Differences, source-document mentions, and collapsed automatic
-compatibility notes remain separate. No status is assigned to raw wording.
-Generated classification remains compatibility context rather than a treatment
-fact, and a raw component becomes course authority only through an explicit
-caregiver association.
+then past courses. Differences and source-document mentions remain separate. No
+status is assigned to raw wording. Stored generated classification remains
+compatibility context rather than a treatment fact — it is still projected but
+no longer displayed — and a raw component becomes course authority only through
+an explicit caregiver association.
 
 Before any treatment DOM replacement, the client validates the complete
 projection, exact safety/authority bytes, top-level counts/lists, serialized
@@ -613,19 +613,18 @@ procedures, or transition targets fail closed. Transition narratives are split
 only when each side has one certified identity, and the edit endpoint rechecks
 exclusive component coverage before any destructive mutation.
 
-That fail-closed refusal is bounded to the classification step itself. Because
-classification is derived context rather than primary work, the manual summary,
-feed/import, and digest web jobs treat a `TreatmentClassificationError` — and
-the narrow upstream timeout the classifier re-raises — as a non-fatal warning:
-the stored classification plus its revision/job identity are left untouched (so
-stale/current stays truthful and consumers keep the raw fallback), and the job
-completes its assessment/report work with `status=done`,
-`stage=done_with_warnings`. Only bounded generic warning text reaches the
-protected result/report artifact. One fixed `classification_skipped` line
-records the job ID, exception type, and wrapped cause type (PHI-free class
-names); the pair distinguishes a certification refusal from a failed model call,
-which the classifier wraps in the same error type. A fault raised outside that
-wrapping, such as a corrupt profile read, still fails the job.
+That fail-closed refusal is bounded to the deterministic identity library itself.
+The LLM classification pass that once consumed it was retired: no job calls a
+classifier, `treatments_classified[]` is never refreshed, and its
+revision/job-id provenance stays frozen at whatever the profile already held.
+Stored generated rows are retained verbatim and are still projected by
+`GET /api/patient/treatment-reconciliation` as
+`legacy_treatments[].generated_classification[]` and
+`unlinked_generated_context[]`, where they continue to bind the legacy row and
+projection CAS tokens — but they have no UI surface. The "Automatic
+compatibility notes" tab was removed, so the workspace shows only caregiver
+course authority, recorded raw treatment information, differences, and source
+document mentions.
 
 Schema v7 remediates released legacy alerts: generated source-less rows are
 deterministically sanitized and bound to their migration-time profile snapshot,
@@ -820,7 +819,7 @@ fail-closed evictions.
 | Anthropic API outage | Each agent has a JSON-decode fallback that returns "insufficient_data" rather than 500 |
 | Irrelevant literature pollution | `agent.tools._is_relevant` rule-based filter before persistence |
 | Treatment duplicates | `agent.intake._treatment_similarity` synonym dedup (Somatuline = lanreotide) |
-| Fail-closed treatment classification aborts an entire job | The manual summary, feed/import, and digest web jobs downgrade a `TreatmentClassificationError` and the narrow classifier timeout to a bounded warning: classification and its revision/job identity are left untouched, the assessment/report still completes as `done` / `done_with_warnings`, consumers keep the raw `current_treatments` fallback, the fixed log line carries the wrapped cause's class name so a deliberate refusal stays distinguishable from an unhealthy classifier call, and a fault raised outside that wrapping still fails the job |
+| Retired LLM treatment classifier leaves orphaned data or UI | Nothing refreshes `treatments_classified[]`, but stored rows and their revision/job-id provenance are retained verbatim, still projected as `generated_classification[]` / `unlinked_generated_context[]`, and still bind the legacy row and projection CAS tokens; only the presentation layer was removed, so no token rotates and no in-flight caregiver edit is invalidated |
 | Treatment source correction invalidates a cited comparison | The discrepancy keeps both immutable cited snapshots while its token binds each current source/course side and full private lifecycle authority; correction/removal/undo on either side rotates tokens but never deletes or rewrites courses, discrepancies, confirmations, or links |
 | Partial treatment workflow write or duplicate retry | Serialized full-authority validation, both revisions, scoped mutation ID, canonical request hash, append-only audit, one atomic save, and validated immutable replay response |
 | Oncologist disagreement with AI | `clinical_judgments` injected verbatim into orchestrator + exec summary system prompts as hard constraints |

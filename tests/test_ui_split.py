@@ -187,6 +187,11 @@ def test_today_has_one_contextual_assessment_action_and_shared_update_buttons():
     assert 'id="btn-gen-summary"' not in today
     assert HTML.count('id="freshness-action"') == 1
     assert "action.onclick = generateSummary" in APP_JS
+    freshness_renderer = APP_JS[
+        APP_JS.index("function renderFreshness") : APP_JS.index("function clearFreshnessProjection")
+    ]
+    assert "action.textContent = 'Regenerate assessment'" in freshness_renderer
+    assert "action.textContent = 'Refresh assessment'" in freshness_renderer
     assert (
         "<button"
         not in summary_renderer[

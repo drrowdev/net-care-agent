@@ -1297,6 +1297,20 @@ def test_freshness_retry_is_callable_and_recent_updates_use_true_import_projecti
     assert "appointmentAction.textContent = 'Open Appointments'" in eviction
 
 
+def test_current_assessment_keeps_one_guarded_voluntary_refresh_action():
+    freshness = _function_source("renderFreshness", "clearFreshnessProjection")
+    generate = _function_source("generateSummary", "dismissAction")
+    current = freshness[freshness.index("banner.classList.add('current')") :]
+
+    assert "action.textContent = 'Regenerate assessment'" in current
+    assert "action.onclick = generateSummary" in current
+    assert "action.hidden = false" in current
+    assert freshness.count("action.onclick = generateSummary") == 4
+    assert freshness.count("getElementById('freshness-action')") == 1
+    assert "if (summaryGenerationPending) return" in generate
+    assert "summaryGenerationPending = true" in generate
+
+
 def test_receipt_is_job_scoped_and_has_no_global_review_flow():
     selector = _function_source("selectTask", "formatReport")
     assert "task.receipt_url" in selector

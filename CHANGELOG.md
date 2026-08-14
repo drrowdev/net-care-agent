@@ -52,6 +52,20 @@ incremented when something user-visible or operationally meaningful changes.
   local scrolling at phone width.
 
 ### Fixed
+- **A current assessment can be refreshed again from Today.** Consolidating the
+  three duplicate **Refresh assessment** buttons into the freshness banner left
+  the banner action revealed only on the stale path, so once the assessment was
+  up to date there was no way to rerun it from Today at all. The banner now
+  keeps that single control in the same place when the assessment is current,
+  labelled **Regenerate assessment** so it reads as a voluntary rerun rather
+  than implying new information arrived. Stale wording, the **Generate
+  assessment** and **Retry check** states, the guarded request path, duplicate
+  suppression, the disabled/generating state, and error handling are unchanged,
+  and no second control was added anywhere. To keep the documented Today
+  hierarchy intact at 360px, the up-to-date banner now says only
+  `Updated <time>` instead of repeating what **Up to date** already states, and
+  the phone banner spacing is slightly tighter, so the first recommended next
+  step still lands inside the first phone viewport with a 44px touch target.
 - **Keyboard focus is no longer stranded when Research PHI is evicted.**
   `relocateResearchFocus()` tried to focus the sidebar nav item while the
   research dialog still held the rest of the page `inert`, so the focus call was

@@ -19,10 +19,12 @@ available at every screen size:
 - **Today** — global access/freshness, the expanded latest assessment/key
   concern/recommendations, bounded recorded update times plus active-alert
   count, treatment status, symptoms logged, follow-ups, appointment preparation,
-  then lower-priority tracked research. When an assessment is stale, the
-  freshness banner beside **New information since this assessment** contains the
-  only **Refresh assessment** action; the heading and hidden stale body do not
-  repeat it. Recent-update row actions use the same secondary-button treatment
+  then lower-priority tracked research. The freshness banner holds the only
+  assessment action at every state: **Refresh assessment** beside **New
+  information since this assessment**, **Regenerate assessment** beside **Up to
+  date** for a voluntary rerun, and **Generate assessment** when none exists.
+  The heading and hidden stale body do not repeat it. Recent-update row actions
+  use the same secondary-button treatment
   as the card action at desktop and phone widths. Today creates no unread state.
   Latest document import is selected by ingestion time across all active
   documents, independently of the clinical document date.
@@ -537,7 +539,10 @@ authenticated source spans selected from the server's verified catalog;
 missing/invalid support is labelled rather than invented. A prominent warning
 appears when newer patient data needs assessment and owns the only
 **Refresh assessment** action. The prior generated assessment remains hidden and
-offers no conclusion or action controls until refresh succeeds. Use **Report
+offers no conclusion or action controls until refresh succeeds. When the
+assessment is already up to date, that same banner control stays available as
+**Regenerate assessment**, so a rerun can be requested at any time without a
+second button anywhere else. Use **Report
 something missed or incorrect** to record a prominent `missed` review item. This
 only appends structured feedback; it never edits patient facts or silently
 creates a clinical judgment. Corrected/incorrect/missed feedback on the current

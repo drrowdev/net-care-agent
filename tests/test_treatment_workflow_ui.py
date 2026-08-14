@@ -643,6 +643,7 @@ class _LiveState:
         self.next_mutation_status: int | None = None
         self.abort_next_mutation = False
         self.mismatch_after_mutation = False
+        self.hold_summary_job = False
 
     def _advance(self) -> None:
         self.counter += 1
@@ -867,7 +868,12 @@ def _open_treatment_page(
             route.fulfill(
                 status=200,
                 content_type="application/json",
-                body=json.dumps({"id": "summary-ui-polish", "status": "done"}),
+                body=json.dumps(
+                    {
+                        "id": "summary-ui-polish",
+                        "status": "running" if state.hold_summary_job else "done",
+                    }
+                ),
             )
             return
         if path.startswith("/api/treatment-reconciliation/") and request.method != "GET":
@@ -1138,6 +1144,12 @@ def test_live_today_first_viewport_prioritizes_latest_assessment(
             assert action_box is not None
             assert action_box["y"] < height
             assert page.locator("#freshness-title").inner_text() == "Up to date"
+            regenerate = page.get_by_role("button", name="Regenerate assessment", exact=True)
+            assert regenerate.count() == 1
+            regenerate_box = regenerate.bounding_box()
+            assert regenerate_box is not None
+            assert regenerate_box["y"] + regenerate_box["height"] <= height
+            assert regenerate_box["height"] >= 44
             assert "revision" not in page.locator("#freshness-banner").inner_text().lower()
             assert "revision" not in page.locator("#summary-card").inner_text().lower()
             assert (
@@ -1258,6 +1270,84 @@ def test_live_today_polish_keeps_one_guarded_action_and_consistent_update_button
                 assert page.evaluate("() => activeView") == expected_view
 
             page.locator("#nav-today").click()
+
+            def generate_posts() -> int:
+                return sum(
+                    method == "POST" and path == "/api/summary/generate"
+                    for method, path, _ in state.requests
+                )
+
+            # A current assessment must still expose the one voluntary refresh
+            # control, worded so it does not imply new information arrived.
+            assert page.locator("#freshness-title").inner_text() == "Up to date"
+            regenerate = page.get_by_role("button", name="Regenerate assessment", exact=True)
+            assert regenerate.count() == 1
+            assert regenerate.is_visible()
+            assert regenerate.is_enabled()
+            assert (
+                page.evaluate(
+                    "() => [...document.querySelectorAll('button')].filter("
+                    "b => !b.hidden && (b.onclick === generateSummary"
+                    " || (b.getAttribute('onclick') || '').includes('generateSummary'))"
+                    ").length"
+                )
+                == 1
+            )
+            assert page.get_by_role("button", name="Refresh assessment", exact=True).count() == 0
+            assert page.get_by_role("button", name="Generate assessment", exact=True).count() == 0
+            regenerate.focus()
+            assert page.evaluate("() => document.activeElement.id") == "freshness-action"
+            assert (
+                page.evaluate(
+                    "() => document.documentElement.scrollWidth"
+                    " - document.documentElement.clientWidth"
+                )
+                == 0
+            )
+
+            current_before = generate_posts()
+            page.keyboard.press("Enter")
+            page.wait_for_function("() => summaryGenerationPending === false")
+            assert generate_posts() - current_before == 1
+            assert page.locator("#freshness-title").inner_text() == "Up to date"
+            regenerate = page.get_by_role("button", name="Regenerate assessment", exact=True)
+            assert regenerate.count() == 1
+            assert regenerate.is_enabled()
+
+            duplicate_before = generate_posts()
+            page.evaluate("() => { generateSummary(); generateSummary(); }")
+            page.wait_for_function("() => summaryGenerationPending === false")
+            assert generate_posts() - duplicate_before == 1
+
+            state.hold_summary_job = True
+            inflight_before = generate_posts()
+            page.get_by_role("button", name="Regenerate assessment", exact=True).click()
+            page.wait_for_function("() => summaryGenerationPending === true")
+            assert page.locator("#freshness-action").is_disabled()
+            assert page.locator("#freshness-action").inner_text() == "Generating assessment…"
+            page.evaluate(
+                """() => renderFreshness({
+                  status: 'current',
+                  stale: false,
+                  profile_revision: 3,
+                  summary_revision: 3,
+                  generated_at: '2026-08-12',
+                  generated_at_timestamp: '2026-08-12T09:00:00',
+                  recent_documents: [],
+                })"""
+            )
+            assert page.locator("#freshness-action").is_disabled()
+            assert page.get_by_role("button", name="Regenerate assessment", exact=True).count() == 1
+            page.evaluate("() => { generateSummary(); }")
+            assert generate_posts() - inflight_before == 1
+            state.hold_summary_job = False
+            page.wait_for_function("() => summaryGenerationPending === false")
+            page.wait_for_function("() => !document.getElementById('freshness-action').disabled")
+            assert generate_posts() - inflight_before == 1
+            regenerate = page.get_by_role("button", name="Regenerate assessment", exact=True)
+            assert regenerate.count() == 1
+            assert regenerate.is_enabled()
+
             page.evaluate(
                 """() => renderSummary({
                   status: 'stale',
@@ -1270,26 +1360,25 @@ def test_live_today_polish_keeps_one_guarded_action_and_consistent_update_button
             refresh = page.get_by_role("button", name="Refresh assessment", exact=True)
             assert refresh.count() == 1
             assert refresh.is_visible()
+            assert page.get_by_role("button", name="Regenerate assessment", exact=True).count() == 0
             assert page.locator("#summary-body button").count() == 0
             stale_text = page.locator("#summary-body").inner_text()
             assert "Prior generated assessment is hidden" in stale_text
             assert "using its actions, PRRT screening, or trial suggestion" in stale_text
             assert page.locator("#summary-card .summary-concern").count() == 0
 
+            stale_before = generate_posts()
             refresh.focus()
             page.keyboard.press("Enter")
             page.wait_for_function(
                 "() => document.getElementById('freshness-title').textContent === 'Up to date'"
             )
-            assert (
-                sum(
-                    method == "POST" and path == "/api/summary/generate"
-                    for method, path, _ in state.requests
-                )
-                == 1
-            )
+            assert generate_posts() - stale_before == 1
             assert page.get_by_role("button", name="Refresh assessment", exact=True).count() == 0
             assert page.get_by_role("button", name="Generate assessment", exact=True).count() == 0
+            regenerate = page.get_by_role("button", name="Regenerate assessment", exact=True)
+            assert regenerate.count() == 1
+            assert regenerate.is_visible()
 
             page.evaluate("() => renderSummary({status: 'not_generated'})")
             generate = page.get_by_role("button", name="Generate assessment", exact=True)
@@ -1297,11 +1386,13 @@ def test_live_today_polish_keeps_one_guarded_action_and_consistent_update_button
             assert generate.is_visible()
             assert page.locator("#summary-body button").count() == 0
             assert page.get_by_role("button", name="Refresh assessment", exact=True).count() == 0
+            assert page.get_by_role("button", name="Regenerate assessment", exact=True).count() == 0
 
             page.evaluate("() => renderFreshness(null, new Error('offline'))")
             assert page.get_by_role("button", name="Retry check", exact=True).count() == 1
             assert page.get_by_role("button", name="Generate assessment", exact=True).count() == 0
             assert page.get_by_role("button", name="Refresh assessment", exact=True).count() == 0
+            assert page.get_by_role("button", name="Regenerate assessment", exact=True).count() == 0
             assert (
                 page.evaluate(
                     "() => document.documentElement.scrollWidth"

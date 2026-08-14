@@ -665,10 +665,25 @@ Patient's default Overview combines three kinds of information without inference
 Record or edit only explicit wording,
    optional exact fields, partial/unknown dates, and optional earlier-component
    associations. Blank dates stay blank; the browser does not default today,
-   parse timezones, sort, match medications, copy document/generated text, or
-   infer chronology.
-The Overview preserves every row, duplicate, and stored order. It never promotes,
-merges, deduplicates, or assigns lifecycle. Secondary panels are:
+   parse timezones, match medications, copy document/generated text, or
+   infer timing that was never recorded.
+
+Each of the three groups above is listed newest-first. A status record is placed
+by the date its own status is about: the planned date for a planned record, the
+start date for a current one, and the stop date — or the start date when no stop
+date was recorded — for a finished or past one. A date that names only a year or
+a month is placed at the start of the period it names, so `2026` sits below
+`2026-03-15` but above `2025-12-31`. Records with no usable date always come last
+in their group instead of moving around, and two records with the same date keep
+the same relative order on every render. Rows already in the patient treatment
+record carry no date at all, so they are listed most-recently-recorded first;
+NET/Care never reads a date out of the wording, borrows one from a linked status
+record, or takes one from generated text. The compact **Today → Treatment
+status** card uses the same order, so it shows the most recent entries.
+
+The Overview preserves every row and duplicate. It never promotes,
+merges, deduplicates, changes what is stored, or assigns lifecycle. Secondary
+panels are:
 
 1. **Differences to review** contains explicit caregiver-recorded comparisons.
    Record A is one document mention. Record B is either a distinct document

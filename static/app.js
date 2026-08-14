@@ -13904,6 +13904,74 @@
     return value === '' || treatmentDatePrecision(value) !== null;
   }
 
+  // Display ordering for the treatment workspace is newest-first, by explicit
+  // caregiver request. It is presentation only: every row still renders exactly
+  // once, duplicates are kept, and nothing is merged, hidden, or promoted.
+  // A partial date is ordered at the start of the period it names, so a
+  // year-only 2026 sits below 2026-03-15 but above 2025-12-31, and a
+  // month-only 2026-03 sits below 2026-03-02 but above 2026-02-28.
+  function treatmentDateSortValue(value) {
+    if (typeof value !== 'string') return null;
+    const match = value.match(/^(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?$/);
+    if (!match || treatmentDatePrecision(value) === null) return null;
+    return (
+      Number(match[1]) * 10000
+      + Number(match[2] === undefined ? 0 : match[2]) * 100
+      + Number(match[3] === undefined ? 0 : match[3])
+    );
+  }
+
+  // The date that characterises a course is the one its own status is about:
+  // a planned course by the date it is planned for, a current course by the
+  // date it started, and a past course by the date it stopped, falling back to
+  // its start date when no stop date was recorded. No date is ever inferred.
+  function treatmentCourseSortValue(course) {
+    if (course.status === 'planned') return treatmentDateSortValue(course.planned_date);
+    if (course.status === 'past') {
+      const stopped = treatmentDateSortValue(course.stop_date);
+      return stopped === null ? treatmentDateSortValue(course.start_date) : stopped;
+    }
+    return treatmentDateSortValue(course.start_date);
+  }
+
+  function treatmentCompareIdentity(left, right) {
+    const leftId = String(left);
+    const rightId = String(right);
+    if (leftId === rightId) return 0;
+    return leftId < rightId ? -1 : 1;
+  }
+
+  // Rows without a usable date take a fixed last position instead of floating.
+  function treatmentCompareSortValues(left, right) {
+    if (left === right) return 0;
+    if (left === null) return 1;
+    if (right === null) return -1;
+    return right - left;
+  }
+
+  function treatmentSortedCourses(courses) {
+    return [...courses].sort((left, right) => (
+      treatmentCompareSortValues(treatmentCourseSortValue(left), treatmentCourseSortValue(right))
+      || treatmentCompareIdentity(left.id, right.id)
+    ));
+  }
+
+  // Recorded rows carry no date at all, so the only honest recency signal is
+  // the order in which they were recorded. Nothing reads a date out of the raw
+  // wording, borrows one from a linked course, or uses generated content:
+  // software must never infer treatment timing.
+  function treatmentRecordedSortValue(row) {
+    const value = row.source_order;
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
+  }
+
+  function treatmentSortedRecordedRows(rows) {
+    return [...rows].sort((left, right) => (
+      treatmentCompareSortValues(treatmentRecordedSortValue(left), treatmentRecordedSortValue(right))
+      || treatmentCompareIdentity(left.id, right.id)
+    ));
+  }
+
   function safeTreatmentSourceUrl(value, expectedRef, kind) {
     if (typeof value !== 'string' || typeof expectedRef !== 'string') return '';
     const expected = `/api/patient/treatment-reconciliation/source-facts/${expectedRef}/${kind}`;
@@ -15004,15 +15072,15 @@
 
   function renderTreatmentProjection(owner = treatmentResponseOwner) {
     if (!treatmentResponseOwnerIsCurrent(owner)) return false;
-    const active = treatmentProjection.courses.filter(
+    const active = treatmentSortedCourses(treatmentProjection.courses.filter(
       course => course.status === 'current' || course.status === 'planned',
-    );
+    ));
     const currentCount = treatmentProjection.courses.filter(course => course.status === 'current').length;
     const plannedCount = treatmentProjection.courses.filter(course => course.status === 'planned').length;
     const pastCount = treatmentProjection.courses.filter(course => course.status === 'past').length;
     const shown = active.slice(0, TREATMENT_TODAY_LIMIT);
     const reviewedComponentIds = treatmentReviewedComponentIds();
-    const recordedRows = treatmentProjection.legacy_treatments.map(row => ({
+    const recordedRows = treatmentSortedRecordedRows(treatmentProjection.legacy_treatments).map(row => ({
       row,
       linkage: treatmentRecordedLinkage(row, reviewedComponentIds),
     }));
@@ -15059,31 +15127,29 @@
     }
     const records = document.getElementById('patient-treatment-list');
     if (records) {
-      const currentAndPlanned = treatmentProjection.courses
-        .filter(course => ['current', 'planned'].includes(course.status))
-        .map(course => treatmentCourseCard(course));
+      const currentAndPlanned = active.map(course => treatmentCourseCard(course));
       const recordedInformation = recordedRows.map(
         item => treatmentRecordedCard(item.row, false, item.linkage),
       );
-      const past = treatmentProjection.courses
-        .filter(course => course.status === 'past')
-        .map(course => treatmentCourseCard(course));
+      const past = treatmentSortedCourses(
+        treatmentProjection.courses.filter(course => course.status === 'past'),
+      ).map(course => treatmentCourseCard(course));
       records.replaceChildren(
         treatmentOverviewSection(
           'Current and planned',
-          'Only status records explicitly reviewed by the caregiver appear here.',
+          'Only status records explicitly reviewed by the caregiver appear here, newest first by the date each record is about. Records without that date come last.',
           currentAndPlanned,
           'No treatment has been explicitly recorded as current or planned.',
         ),
         treatmentOverviewSection(
           `Recorded treatment information (${recordedInformation.length})`,
-          'Every recorded treatment entry stays here in stored order. Each card shows whether its explicit components are linked to a caregiver-reviewed status record.',
+          'Every recorded treatment entry stays here, newest recorded first. Each card shows whether its explicit components are linked to a caregiver-reviewed status record.',
           recordedInformation,
           'No additional recorded treatment information is present.',
         ),
         treatmentOverviewSection(
           'Finished or past',
-          'Only status records explicitly reviewed as finished or past appear here.',
+          'Only status records explicitly reviewed as finished or past appear here, newest first by the date each record is about. Records without that date come last.',
           past,
           'No treatment has been explicitly recorded as finished or past.',
         ),

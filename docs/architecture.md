@@ -371,8 +371,19 @@ each raw row's component IDs with explicit `course.legacy_component_ids`: no
 linked components means timing/status not reviewed, all means linked to a
 caregiver-reviewed status record, and partial linkage keeps the row unresolved.
 Only none/partial rows count as needing review. Patient's default Overview orders
-current/planned caregiver courses, every raw row exactly once in stored order,
-then past courses. Differences and source-document mentions remain separate. No
+current/planned caregiver courses, every raw row exactly once, then past courses.
+Inside each of those three groups the SPA sorts newest-first for display only: a
+course by the date its own status is about (`planned_date` when planned,
+`start_date` when current, `stop_date` falling back to `start_date` when past),
+and a raw row by descending `source_order`, the only recency signal a dateless
+row carries. A partial date sorts at the start of the period it names, rows with
+no usable date hold a fixed last position, and equal keys break on row ID, so the
+order is total and identical on every render. No date is parsed from raw wording,
+borrowed from a linked course, or taken from generated content. The server
+projection order, `source_order`, and every row token are untouched, and nothing
+is merged, hidden, deduplicated, or promoted. Today's bounded first set uses the
+same order, so it shows the most recent entries. Differences and source-document
+mentions remain separate. No
 status is assigned to raw wording. Stored generated classification remains
 compatibility context rather than a treatment fact — it is still projected but
 no longer displayed — and a raw component becomes course authority only through
@@ -383,7 +394,8 @@ projection, exact safety/authority bytes, top-level counts/lists, serialized
 bounds, cross-collection IDs/tokens, raw shapes, source links,
 terminal fields, published lifecycle/restart authority, both discrepancy
 citations, outcomes, recurrence graph, and action ownership. It preserves
-server order, duplicates, raw strings, and null/empty/missing distinctions and
+duplicates, raw strings, and null/empty/missing distinctions, changes only the
+display sequence described above, and
 keeps tokens, snapshots, refs, drafts, and serialized retry bytes only in owned
 JavaScript memory. Strict literal same-origin opaque source/evidence routes are
 the only rendered links.

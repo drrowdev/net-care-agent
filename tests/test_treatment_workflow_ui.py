@@ -614,7 +614,15 @@ def test_treatment_module_has_one_authority_and_no_legacy_or_date_inference():
     assert "/api/treatments/" not in APP_JS
     assert "new Date(" not in source
     assert "Date.parse" not in source
-    assert ".sort(" not in source
+    # Newest-first display ordering is an explicit, approved decision, so a
+    # blanket ban on sorting no longer holds. What must still hold is that
+    # sorting only ever runs on a copy, never on accepted authority, and that
+    # it is confined to the two display helpers.
+    assert source.count(".sort(") == 2
+    assert source.count("[...courses].sort(") == 1
+    assert source.count("[...rows].sort(") == 1
+    assert "treatmentProjection.courses.sort(" not in APP_JS
+    assert "treatmentProjection.legacy_treatments.sort(" not in APP_JS
     assert ".dedupe" not in source
     assert "treatments_classified" not in source
     assert "treatments_fallback" not in source
@@ -1025,6 +1033,15 @@ def test_live_recorded_treatments_are_first_class_without_status_inference(
             assert "No treatment is recorded as current." in today.inner_text()
             assert "31 treatment records need timing/status review" in today.inner_text()
             assert page.locator("#today-treatment-list .treatment-recorded-card").count() == 3
+            # Recorded rows carry no date, so Today's bounded set shows the
+            # three most recently recorded entries.
+            assert page.locator(
+                "#today-treatment-list .treatment-recorded-card h3"
+            ).all_inner_texts() == [
+                "Recorded treatment information 30",
+                "Recorded treatment information 29",
+                "Recorded treatment information 28",
+            ]
 
             page.locator("#nav-patient").click()
             overview = page.locator("#treatment-panel-records")
@@ -1032,6 +1049,11 @@ def test_live_recorded_treatments_are_first_class_without_status_inference(
             assert "Recorded treatment information (31)" in overview.inner_text()
             assert "Recorded treatment information 00" in overview.inner_text()
             assert "Recorded treatment information 30" in overview.inner_text()
+            assert page.locator(
+                "#patient-treatment-list .treatment-recorded-card h3"
+            ).all_inner_texts() == [
+                f"Recorded treatment information {index:02d}" for index in range(30, -1, -1)
+            ]
             normalized = overview.inner_text().lower()
             for forbidden in ("legacy", "earlier app", "archived", "historical", "unverified"):
                 assert forbidden not in normalized
@@ -1075,16 +1097,18 @@ def test_live_recorded_treatment_component_linkage_is_none_all_or_partial():
             page.locator("#nav-patient").click()
             cards = page.locator("#patient-treatment-list .treatment-recorded-card")
             assert cards.count() == 3
-            assert "Status not recorded" in cards.nth(0).inner_text()
-            assert "Treatment timing/status not yet reviewed" in cards.nth(0).inner_text()
+            # Recorded rows are listed most recently recorded first, so the
+            # last-recorded "partial" row leads and "none" comes last.
+            assert "Partly linked to reviewed status" in cards.nth(0).inner_text()
+            assert "1 of 2 recorded components are linked" in cards.nth(0).inner_text()
             assert "Linked to reviewed status" in cards.nth(1).inner_text()
             assert "All recorded components are linked" in cards.nth(1).inner_text()
-            assert "Partly linked to reviewed status" in cards.nth(2).inner_text()
-            assert "1 of 2 recorded components are linked" in cards.nth(2).inner_text()
+            assert "Status not recorded" in cards.nth(2).inner_text()
+            assert "Treatment timing/status not yet reviewed" in cards.nth(2).inner_text()
             assert cards.locator("h3").all_inner_texts() == [
-                "None recorded treatment",
-                "All recorded treatment",
                 "Partial recorded treatment",
+                "All recorded treatment",
+                "None recorded treatment",
             ]
             for card in cards.all():
                 assert "Current record" not in card.inner_text()
@@ -2118,7 +2142,10 @@ def test_live_recorded_row_records_status_prefilled_without_status_inference(
         try:
             page.locator("#nav-patient").click()
             cards = page.locator("#patient-treatment-list .treatment-recorded-card")
-            unreviewed = cards.nth(0)
+            # Rows are listed newest-recorded first, so address this row by its
+            # own wording rather than by position.
+            unreviewed = cards.filter(has_text="None recorded treatment")
+            assert unreviewed.count() == 1
             assert "Status not recorded" in unreviewed.inner_text()
             action = unreviewed.get_by_role(
                 "button", name="Record status for None recorded treatment"
@@ -2180,9 +2207,11 @@ def test_live_recorded_row_records_status_prefilled_without_status_inference(
             assert "expected_course_token" not in body
 
             page.locator("#nav-patient").click()
-            refreshed = page.locator("#patient-treatment-list .treatment-recorded-card")
-            assert "Linked to reviewed status" in refreshed.nth(0).inner_text()
-            assert "Status not recorded" not in refreshed.nth(0).inner_text()
+            refreshed = page.locator("#patient-treatment-list .treatment-recorded-card").filter(
+                has_text="None recorded treatment"
+            )
+            assert "Linked to reviewed status" in refreshed.inner_text()
+            assert "Status not recorded" not in refreshed.inner_text()
             assert (
                 "None recorded treatment"
                 in page.locator("#patient-treatment-list .treatment-course-card")
@@ -2213,7 +2242,7 @@ def test_live_recorded_row_status_action_is_keyboard_reachable_and_not_duplicate
             page.locator("#nav-patient").click()
             action = (
                 page.locator("#patient-treatment-list .treatment-recorded-card")
-                .nth(0)
+                .filter(has_text="None recorded treatment")
                 .get_by_role("button", name="Record status for None recorded treatment")
             )
             action.focus()
@@ -2280,9 +2309,9 @@ def test_live_recorded_row_status_conflict_leaves_row_unlinked():
         )
         try:
             page.locator("#nav-patient").click()
-            page.locator("#patient-treatment-list .treatment-recorded-card").nth(0).get_by_role(
-                "button", name="Record status for None recorded treatment"
-            ).click()
+            page.locator("#patient-treatment-list .treatment-recorded-card").filter(
+                has_text="None recorded treatment"
+            ).get_by_role("button", name="Record status for None recorded treatment").click()
             page.locator("#treatment-field-status").select_option("planned")
             state.next_mutation_status = 409
             page.locator("#treatment-submit-button").click()
@@ -2294,7 +2323,10 @@ def test_live_recorded_row_status_conflict_leaves_row_unlinked():
             assert page.evaluate("() => treatmentProjection.courses.length") == 1
             page.locator("#nav-patient").click()
             cards = page.locator("#patient-treatment-list .treatment-recorded-card")
-            assert "Status not recorded" in cards.nth(0).inner_text()
+            assert (
+                "Status not recorded"
+                in cards.filter(has_text="None recorded treatment").inner_text()
+            )
             assert cards.count() == 3
 
             # The preserved draft is still live and belongs to that row, so a
@@ -2322,9 +2354,9 @@ def test_live_recorded_row_reopen_does_not_reassert_removed_component_link():
         )
         try:
             page.locator("#nav-patient").click()
-            page.locator("#patient-treatment-list .treatment-recorded-card").nth(0).get_by_role(
-                "button", name="Record status for None recorded treatment"
-            ).click()
+            page.locator("#patient-treatment-list .treatment-recorded-card").filter(
+                has_text="None recorded treatment"
+            ).get_by_role("button", name="Record status for None recorded treatment").click()
             page.locator("#treatment-field-status").select_option("planned")
             page.locator("#treatment-field-treatment-text").fill("Caregiver wording X")
             # The caregiver explicitly removes the pre-ticked component link.
@@ -2339,9 +2371,9 @@ def test_live_recorded_row_reopen_does_not_reassert_removed_component_link():
             # Reopening the same row restores the caregiver draft, but the row
             # prefill must never re-assert a link the caregiver removed.
             page.locator("#nav-patient").click()
-            page.locator("#patient-treatment-list .treatment-recorded-card").nth(0).get_by_role(
-                "button", name="Record status for None recorded treatment"
-            ).click()
+            page.locator("#patient-treatment-list .treatment-recorded-card").filter(
+                has_text="None recorded treatment"
+            ).get_by_role("button", name="Record status for None recorded treatment").click()
             assert (
                 page.locator("#treatment-field-treatment-text").input_value()
                 == "Caregiver wording X"
@@ -2353,6 +2385,408 @@ def test_live_recorded_row_reopen_does_not_reassert_removed_component_link():
             # The restored status is the caregiver's own earlier choice, never
             # anything the row prefill supplied.
             assert page.locator("#treatment-field-status").input_value() == "planned"
+        finally:
+            context.close()
+            browser.close()
+
+
+# ── Newest-first display ordering ──────────────────────────────────────────
+
+
+def _date_precision(value: str | None) -> str:
+    if value is None:
+        return "unknown"
+    return {4: "year", 7: "month"}.get(len(value), "day")
+
+
+def _dated_course(
+    character: str,
+    text: str,
+    *,
+    status: str,
+    start: str | None = None,
+    stop: str | None = None,
+    planned: str | None = None,
+    qualifier: str | None = None,
+    component_ids: list[str] | None = None,
+) -> dict:
+    course = _course(
+        character, text, status=status, qualifier=qualifier, component_ids=component_ids
+    )
+    for prefix, value in (("start", start), ("stop", stop), ("planned", planned)):
+        course[f"{prefix}_date"] = value
+        course[f"{prefix}_date_precision"] = _date_precision(value)
+        course[f"{prefix}_date_kind"] = "unknown" if value is None else "caregiver_entered"
+    return course
+
+
+def _recorded_row(name: str, source_order: int, raw_text: str, generated_date: str | None) -> dict:
+    row = _legacy()
+    row["id"] = f"txlegacy-{name}"
+    row["token"] = f"legacy-token-{name}"
+    row["raw_text"] = raw_text
+    row["source_order"] = source_order
+    row["components"] = [
+        {"id": f"component-{name}", "text": raw_text, "component_order": 0},
+    ]
+    row["generated_classification"] = [
+        {
+            "id": f"generated-{name}",
+            "text": f"Generated compatibility text {name}",
+            "label": None,
+            "category": None,
+            "date": generated_date,
+            "source_treatment_ids": [f"component-{name}"],
+        }
+    ]
+    return row
+
+
+def _ordering_projection() -> dict:
+    # Stored order is deliberately not the expected display order, so any
+    # renderer that keeps stored order for treatments fails these tests.
+    courses = [
+        _dated_course("a", "Current no date", status="current"),
+        # The planned date, not the misleading start date, places a planned row.
+        _dated_course(
+            "b", "Planned early", status="planned", planned="2024-02-02", start="2098-01-01"
+        ),
+        # The start date, not the misleading planned date, places a current row.
+        _dated_course(
+            "c", "Current mid", status="current", start="2026-03-15", planned="2099-01-01"
+        ),
+        # The newest-dated course of all is linked to the oldest recorded row,
+        # so borrowing a linked course's date would move that row to the top.
+        _dated_course(
+            "d",
+            "Planned late",
+            status="planned",
+            planned="2027-05-04",
+            component_ids=["component-oldest"],
+        ),
+        _dated_course("e", "Past no date", status="past", qualifier="ended"),
+        _dated_course(
+            "f",
+            "Past stopped",
+            status="past",
+            stop="2023-08-09",
+            start="2010-01-01",
+            qualifier="ended",
+        ),
+        # No stop date was recorded, so the start date places this past row.
+        _dated_course(
+            "0", "Past fallback start", status="past", start="2024-06-01", qualifier="ended"
+        ),
+    ]
+    # Generated compatibility dates run opposite to the recorded order; they
+    # must never be read as treatment timing.
+    recorded = [
+        _recorded_row("oldest", 0, "Recorded oldest", "2099-01-01"),
+        _recorded_row("dup-a", 1, "Recorded duplicate wording", "2098-01-01"),
+        _recorded_row("dup-b", 2, "Recorded duplicate wording", "2097-01-01"),
+        _recorded_row("newest", 3, "Recorded newest", "2000-01-01"),
+    ]
+    projection = _projection()
+    projection.update(
+        {
+            "projection_token": "treatment-ordering",
+            "legacy_treatment_count": len(recorded),
+            "course_count": len(courses),
+            "discrepancy_count": 0,
+            "legacy_treatments": recorded,
+            "courses": courses,
+            "discrepancies": [],
+        }
+    )
+    return projection
+
+
+def _run_treatment_ordering(body: str):
+    script = "\n".join(
+        [
+            """
+const document = { baseURI: 'http://app.test/' };
+const window = {
+  location: { href: 'http://app.test/', origin: 'http://app.test' },
+};
+""",
+            _treatment_source(),
+            body,
+        ]
+    )
+    completed = subprocess.run(
+        ["node", "-e", _NODE_STDIN_BOOTSTRAP],
+        input=script,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
+def _sorted_course_ids(courses: list[dict]) -> list[str]:
+    return _run_treatment_ordering(
+        "const courses = JSON.parse("
+        + json.dumps(json.dumps(courses))
+        + ");\n"
+        + "console.log(JSON.stringify(treatmentSortedCourses(courses).map(item => item.id)));\n"
+    )
+
+
+def _sorted_recorded_ids(rows: list[dict]) -> list[str]:
+    return _run_treatment_ordering(
+        "const rows = JSON.parse("
+        + json.dumps(json.dumps(rows))
+        + ");\n"
+        + "console.log(JSON.stringify(treatmentSortedRecordedRows(rows).map(item => item.id)));\n"
+    )
+
+
+def test_courses_order_newest_first_by_the_date_their_own_status_is_about():
+    projection = _ordering_projection()
+    active = [
+        course for course in projection["courses"] if course["status"] in {"current", "planned"}
+    ]
+    past = [course for course in projection["courses"] if course["status"] == "past"]
+
+    # Planned rows are placed by planned_date, current rows by start_date, and
+    # the misleading opposite date on each row must be ignored.
+    assert _sorted_course_ids(active) == [
+        "txc_" + "d" * 32,  # planned 2027-05-04
+        "txc_" + "c" * 32,  # current 2026-03-15
+        "txc_" + "b" * 32,  # planned 2024-02-02
+        "txc_" + "a" * 32,  # no usable date lands last
+    ]
+    # Past rows are placed by stop_date, falling back to start_date only when
+    # no stop date was recorded.
+    assert _sorted_course_ids(past) == [
+        "txc_" + "0" * 32,  # start 2024-06-01, no stop date recorded
+        "txc_" + "f" * 32,  # stop 2023-08-09
+        "txc_" + "e" * 32,  # no usable date lands last
+    ]
+
+
+def test_partial_precision_dates_sort_at_the_start_of_the_period_they_name():
+    courses = [
+        _dated_course("a", "Exact March day", status="current", start="2026-03-15"),
+        _dated_course("b", "March only", status="current", start="2026-03"),
+        _dated_course("c", "Year only", status="current", start="2026"),
+        _dated_course("d", "Exact February day", status="current", start="2026-02-28"),
+        _dated_course("e", "Previous December day", status="current", start="2025-12-31"),
+    ]
+
+    # A partial date is ordered at the start of the period it names: month-only
+    # 2026-03 sits below every March day but above 2026-02-28, and year-only
+    # 2026 sits below every 2026 date but above 2025-12-31.
+    assert _sorted_course_ids(courses) == [
+        "txc_" + "a" * 32,
+        "txc_" + "b" * 32,
+        "txc_" + "d" * 32,
+        "txc_" + "c" * 32,
+        "txc_" + "e" * 32,
+    ]
+
+
+def test_courses_without_a_usable_date_hold_a_fixed_last_position():
+    dated = _dated_course("a", "Dated", status="current", start="2026-03-15")
+    missing = _dated_course("b", "Missing date", status="current")
+    unparsable = _dated_course("c", "Dated", status="current", start="2026-03-15")
+    unparsable["start_date"] = "not-a-date"
+    unparsable["start_date_precision"] = "unknown"
+
+    for order in ([dated, missing, unparsable], [unparsable, missing, dated]):
+        assert _sorted_course_ids(order) == [
+            "txc_" + "a" * 32,
+            "txc_" + "b" * 32,
+            "txc_" + "c" * 32,
+        ]
+
+
+def test_equal_sort_keys_fall_back_to_a_stable_identity_tiebreak():
+    first = _dated_course("a", "Same day one", status="current", start="2026-03-15")
+    second = _dated_course("b", "Same day two", status="current", start="2026-03-15")
+    third = _dated_course("c", "Same day three", status="current", start="2026-03-15")
+    expected = ["txc_" + character * 32 for character in "abc"]
+
+    # Identical keys never leave the order to input arrangement.
+    assert _sorted_course_ids([third, first, second]) == expected
+    assert _sorted_course_ids([first, second, third]) == expected
+    assert _sorted_course_ids([second, third, first]) == expected
+
+    undated = [
+        _dated_course("d", "No date one", status="current"),
+        _dated_course("e", "No date two", status="current"),
+    ]
+    assert _sorted_course_ids(undated) == _sorted_course_ids(list(reversed(undated)))
+
+    # Recorded rows share the same total, content-determined tiebreak.
+    duplicate_order = [
+        _recorded_row("zz", 5, "Same recorded order", None),
+        _recorded_row("aa", 5, "Same recorded order", None),
+    ]
+    assert _sorted_recorded_ids(duplicate_order) == ["txlegacy-aa", "txlegacy-zz"]
+    assert _sorted_recorded_ids(list(reversed(duplicate_order))) == [
+        "txlegacy-aa",
+        "txlegacy-zz",
+    ]
+
+
+def test_recorded_rows_order_newest_recorded_first_without_inventing_a_date():
+    # The recorded sort key may read nothing except the recorded order.
+    start = APP_JS.index("function treatmentRecordedSortValue")
+    end = APP_JS.index("function treatmentSortedRecordedRows", start)
+    key_source = APP_JS[start:end]
+    assert "source_order" in key_source
+    for forbidden in (
+        "raw_text",
+        "components",
+        "generated_classification",
+        "date",
+        "course",
+    ):
+        assert forbidden not in key_source
+
+    rows = _ordering_projection()["legacy_treatments"]
+
+    # source_order descending is the only recency signal; the generated
+    # compatibility dates on these rows run the other way and are ignored.
+    assert _sorted_recorded_ids(rows) == [
+        "txlegacy-newest",
+        "txlegacy-dup-b",
+        "txlegacy-dup-a",
+        "txlegacy-oldest",
+    ]
+
+    # No date is parsed out of raw wording either.
+    worded = [
+        _recorded_row("first", 0, "Lanreotide from 2099-01-01", None),
+        _recorded_row("second", 1, "Everolimus from 2000-01-01", None),
+    ]
+    assert _sorted_recorded_ids(worded) == ["txlegacy-second", "txlegacy-first"]
+
+
+def test_recorded_ordering_never_borrows_a_linked_course_date():
+    projection = _ordering_projection()
+    rows = projection["legacy_treatments"]
+    linked = [course for course in projection["courses"] if course["legacy_component_ids"]]
+    # The linkage the rule is about must actually exist in the fixture.
+    assert [course["treatment_text"] for course in linked] == ["Planned late"]
+    assert linked[0]["planned_date"] == "2027-05-04"
+    assert linked[0]["legacy_component_ids"] == ["component-oldest"]
+    assert rows[0]["id"] == "txlegacy-oldest"
+    assert rows[0]["components"][0]["id"] == "component-oldest"
+
+    # The oldest recorded row is the one linked to the newest-dated course.
+    # Ordering must still be by recorded order, never by that course's date.
+    expected = ["txlegacy-newest", "txlegacy-dup-b", "txlegacy-dup-a", "txlegacy-oldest"]
+    assert _sorted_recorded_ids(rows) == expected
+    assert _sorted_recorded_ids(list(reversed(rows))) == expected
+
+    # Dropping the linkage entirely must not move a single row.
+    unlinked = _ordering_projection()
+    for course in unlinked["courses"]:
+        course["legacy_component_ids"] = []
+    assert _sorted_recorded_ids(unlinked["legacy_treatments"]) == expected
+
+
+def test_ordering_is_presentation_only_and_keeps_every_row_exactly_once():
+    projection = _ordering_projection()
+    course_ids = [course["id"] for course in projection["courses"]]
+    recorded_ids = [row["id"] for row in projection["legacy_treatments"]]
+
+    assert sorted(_sorted_course_ids(projection["courses"])) == sorted(course_ids)
+    assert sorted(_sorted_recorded_ids(projection["legacy_treatments"])) == sorted(recorded_ids)
+
+    duplicates = projection["legacy_treatments"] + [
+        _recorded_row("dup-c", 2, "Recorded duplicate wording", None)
+    ]
+    assert len(_sorted_recorded_ids(duplicates)) == len(duplicates)
+
+
+@pytest.mark.parametrize("width,height", [(1280, 900), (768, 900), (360, 800)])
+def test_live_treatment_workspace_renders_newest_first(width: int, height: int):
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    with playwright_api.sync_playwright() as playwright:
+        if not Path(playwright.chromium.executable_path).exists():
+            pytest.skip("Installed Playwright browser is unavailable")
+        browser, context, page, _ = _open_treatment_page(
+            playwright,
+            width,
+            height,
+            _ordering_projection(),
+        )
+        try:
+            # Today's compact list shows the newest entries.
+            today = page.locator("#today-treatment-list .treatment-course-card")
+            assert [item.locator("h3").inner_text() for item in today.all()] == [
+                "Planned late",
+                "Current mid",
+                "Planned early",
+            ]
+
+            page.locator("#nav-patient").click()
+            sections = page.locator("#patient-treatment-list .treatment-overview-section")
+            assert sections.count() == 3
+            current_and_planned = sections.nth(0).locator(".treatment-course-card")
+            recorded = sections.nth(1).locator(".treatment-recorded-card")
+            past = sections.nth(2).locator(".treatment-course-card")
+
+            assert [item.locator("h3").inner_text() for item in current_and_planned.all()] == [
+                "Planned late",
+                "Current mid",
+                "Planned early",
+                "Current no date",
+            ]
+            assert [item.locator("h3").inner_text() for item in recorded.all()] == [
+                "Recorded newest",
+                "Recorded duplicate wording",
+                "Recorded duplicate wording",
+                "Recorded oldest",
+            ]
+            assert [item.locator("h3").inner_text() for item in past.all()] == [
+                "Past fallback start",
+                "Past stopped",
+                "Past no date",
+            ]
+
+            # Every row still renders exactly once and the counts are unchanged.
+            assert current_and_planned.count() + past.count() == 7
+            assert recorded.count() == 4
+            assert page.locator("#treatment-count-records").inner_text() == "11"
+            assert page.locator("#treatment-count-differences").inner_text() == "0"
+
+            # Reordering is presentation only: the accepted projection, the
+            # recorded row identities, and the Record status action are intact.
+            assert page.evaluate(
+                "() => treatmentProjection.legacy_treatments.map(row => row.source_order)"
+            ) == [0, 1, 2, 3]
+            assert page.evaluate("() => treatmentProjection.courses.map(course => course.id)") == [
+                course["id"] for course in _ordering_projection()["courses"]
+            ]
+            assert page.evaluate(
+                "() => [...document.querySelectorAll("
+                "'#patient-treatment-list [data-treatment-recorded-row]')]"
+                ".map(node => node.dataset.treatmentRecordedRow)"
+            ) == ["txlegacy-newest", "txlegacy-dup-b", "txlegacy-dup-a", "txlegacy-oldest"]
+            assert (
+                recorded.nth(0)
+                .get_by_role("button", name="Record status for Recorded newest")
+                .count()
+                == 1
+            )
+
+            # No treatment timing is invented for rows that carry no date.
+            recorded_text = sections.nth(1).inner_text()
+            assert "2099" not in recorded_text
+            assert "2000-01-01" not in recorded_text
+            assert (
+                page.evaluate(
+                    "() => document.documentElement.scrollWidth"
+                    " - document.documentElement.clientWidth"
+                )
+                == 0
+            )
         finally:
             context.close()
             browser.close()

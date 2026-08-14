@@ -7314,8 +7314,13 @@
       banner.classList.add('current');
       title.textContent = 'Up to date';
       message.textContent = d.generated_at
-        ? `Updated ${fmtDate(d.generated_at_timestamp || d.generated_at)} and aligned with the current record.`
+        ? `Updated ${fmtDate(d.generated_at_timestamp || d.generated_at)}.`
         : 'The summary is aligned with the current patient record.';
+      if (action) {
+        action.textContent = 'Regenerate assessment';
+        action.onclick = generateSummary;
+        action.hidden = false;
+      }
     }
   }
 

@@ -4657,7 +4657,9 @@ body.dialog-open { overflow: hidden; }
 
   .freshness-banner {
     grid-template-columns: auto 1fr;
-    padding: 12px 14px;
+    padding: 10px 14px;
+    margin-bottom: 10px;
+    row-gap: 8px;
   }
   .freshness-banner > .button { grid-column: 2; justify-self: start; }
   .research-snapshot-current-grid,

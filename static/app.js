@@ -14796,6 +14796,16 @@
       components.append(treatmentElement('p', 'treatment-missing', 'No components recorded.'));
     }
     card.append(components);
+    const actions = treatmentElement('div', 'treatment-card-actions');
+    const recordable = treatmentProjectionState === 'current' && treatmentResponseOwnerIsCurrent();
+    const record = treatmentElement('button', 'button secondary', 'Record status');
+    record.type = 'button';
+    record.disabled = !recordable;
+    record.dataset.treatmentRecordedRow = row.id;
+    record.setAttribute('aria-label', `Record status for ${row.raw_text}`);
+    record.addEventListener('click', () => openTreatmentRecordedStatusDialog(record, row.id));
+    actions.append(record);
+    card.append(actions);
     return card;
   }
 
@@ -15645,16 +15655,21 @@
       notes: 'Notes',
     };
     const draft = options.draft || {};
+    const prefilledText = typeof options.prefillTreatmentText === 'string'
+      ? options.prefillTreatmentText.slice(0, TREATMENT_TEXT_LIMITS.treatment_text)
+      : null;
     const required = treatmentTextControl(
       'treatment_text',
       Object.prototype.hasOwnProperty.call(draft, 'treatment_text')
         ? draft.treatment_text
-        : (course?.treatment_text ?? ''),
+        : (course?.treatment_text ?? prefilledText ?? ''),
     );
     grid.append(treatmentFieldLabel(
       labels.treatment_text,
       required,
-      'Required exact caregiver wording. Nothing is copied from document mentions or generated context.',
+      prefilledText === null
+        ? 'Required exact caregiver wording. Nothing is copied from document mentions or generated context.'
+        : 'Copied from the recorded treatment entry you chose. Edit it to the exact wording you want to record.',
     ));
     for (const field of TREATMENT_OPTIONAL_TEXT_FIELDS) {
       const value = Object.prototype.hasOwnProperty.call(draft, field)
@@ -15695,6 +15710,7 @@
       row.components.forEach(component => componentOptions.push(component));
     });
     treatmentSelection.componentOptions = componentOptions;
+    const preselectedComponentIds = new Set(options.preselectedComponentIds || []);
     if (componentOptions.length) {
       const list = treatmentElement('div', 'treatment-component-options');
       componentOptions.forEach((component, index) => {
@@ -15705,7 +15721,8 @@
         input.value = String(index);
         input.checked = options.restart
           ? false
-          : Boolean(course?.legacy_component_ids.includes(component.id));
+          : Boolean(course?.legacy_component_ids.includes(component.id))
+            || preselectedComponentIds.has(component.id);
         label.append(
           input,
           treatmentElement('span', '', component.text),
@@ -16049,6 +16066,7 @@
     });
     treatmentDraft = {
       mode: treatmentDialogMode,
+      recordedRowId: treatmentSelection?.recordedRowId ?? null,
       values,
     };
     return treatmentDraft;
@@ -16087,7 +16105,10 @@
       setTreatmentStatus('Reload the current treatment record before making changes.', 'stale', true);
       return;
     }
-    const preservedDraft = treatmentDraft?.mode === mode ? treatmentDraft : null;
+    const preservedDraft = treatmentDraft?.mode === mode
+      && (treatmentDraft.recordedRowId ?? null) === (selection.recordedRowId ?? null)
+      ? treatmentDraft
+      : null;
     clearTreatmentRetry();
     treatmentSelectionEpoch += 1;
     treatmentDialogEpoch += 1;
@@ -16112,7 +16133,26 @@
     if (mode === 'add') {
       title.textContent = 'Record treatment';
       submit.textContent = 'Save treatment record';
-      body.append(treatmentCourseForm(null, { includeStatus: true }));
+      // A preserved draft always wins over the recorded-row prefill. Component
+      // choices are never restored, so re-asserting them here would silently
+      // reinstate a link the caregiver explicitly removed.
+      const prefillFromRow = Boolean(selection.recordedRowId) && preservedDraft === null;
+      if (selection.recordedRowId) {
+        body.append(treatmentElement(
+          'p',
+          'treatment-authority-note',
+          prefillFromRow
+            ? 'Wording and component links are copied from the recorded treatment entry you chose. '
+              + 'You still choose the record status and any dates; no timing or status is preselected.'
+            : 'Your preserved draft wording is restored. Choose the component links again, and '
+              + 'choose the record status and any dates; no timing or status is preselected.',
+        ));
+      }
+      body.append(treatmentCourseForm(null, {
+        includeStatus: true,
+        prefillTreatmentText: prefillFromRow ? (selection.prefillTreatmentText ?? null) : null,
+        preselectedComponentIds: prefillFromRow ? selection.preselectedComponentIds : [],
+      }));
       renderTreatmentTerminalFields();
     } else if (mode === 'edit') {
       title.textContent = 'Edit recorded treatment details';
@@ -16205,6 +16245,21 @@
 
   function openTreatmentAddDialog(trigger) {
     openTreatmentDialog('add', trigger);
+  }
+
+  function treatmentRecordedRowById(rowId) {
+    return treatmentProjection?.legacy_treatments.find(row => row.id === rowId) ?? null;
+  }
+
+  function openTreatmentRecordedStatusDialog(trigger, rowId) {
+    if (treatmentDialogOpen) return;
+    const row = treatmentRecordedRowById(rowId);
+    if (!row) return;
+    openTreatmentDialog('add', trigger, {
+      recordedRowId: row.id,
+      prefillTreatmentText: row.raw_text,
+      preselectedComponentIds: row.components.map(component => component.id),
+    });
   }
 
   function openTreatmentCourseDialog(mode, trigger, courseId) {

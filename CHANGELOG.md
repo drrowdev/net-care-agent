@@ -283,6 +283,28 @@ incremented when something user-visible or operationally meaningful changes.
   introduced before strict current-revision projections repopulate.
 
 ### Added
+- **Record status directly from a recorded treatment row.** Every card under
+  **Patient → Treatments → Recorded treatment information** now carries one
+  action, **Record status**. It opens the existing status-record dialog
+  (`POST /api/treatment-reconciliation/courses`) pre-filled with that row's
+  treatment wording and that row's components already ticked for linking, so
+  the resulting course carries the right `legacy_component_ids` and the row
+  immediately shows as linked. Previously these rows were entirely read-only:
+  the app told the caregiver a row still needed timing/status review, then
+  offered no way to act on it, leaving **＋ Add status record** and manual
+  retyping as the only path — which is why an ongoing treatment could sit in
+  the record while **Current and planned** stayed empty.
+  - **Nothing clinical is pre-filled.** No record status is preselected, no
+    start/stop/planned date is inferred, and no terminal outcome is chosen; the
+    Save button stays disabled until the caregiver picks a status. Copied
+    wording is fully editable before saving.
+  - Frontend-only, reusing the one existing creation contract: the same
+    expected revisions, projection token, scoped mutation ID, serialized
+    mutation, and 409 conflict semantics apply, and no token digest input
+    changed. Compact **Today → Treatment status** cards stay read-only. A draft
+    preserved from a row's dialog is offered again only from that row, and
+    reopening it restores the wording without re-ticking a component link the
+    caregiver removed.
 - **Shared Today/Research shortlist and disposition workflow.** One atomically
   validated `research-workspace` projection now drives a bounded Today summary
   with exact totals/omissions and a complete Research view preserving every

@@ -650,7 +650,16 @@ Patient's default Overview combines three kinds of information without inference
 1. Explicit caregiver-maintained **Current and planned** courses.
 2. Every row already in the patient treatment record, labelled as unlinked,
    fully linked, or partly linked to an explicit caregiver-reviewed status
-   record. Raw wording never inherits the linked course's lifecycle.
+   record. Raw wording never inherits the linked course's lifecycle. Each of
+   these rows carries exactly one action, **Record status**, which opens the
+   same status-record dialog used by **＋ Add status record**. It copies only
+   that row's wording into the treatment-wording field and pre-ticks only that
+   row's components under *Link recorded treatment components*. It never
+   chooses a record status, never fills a start/stop/planned date, and never
+   picks a terminal outcome, so the dialog cannot be saved until you choose the
+   status yourself. Edit any copied wording freely before saving. Once saved,
+   the row shows as linked to the new status record. The compact **Today →
+   Treatment status** cards stay read-only.
 3. Explicit caregiver-maintained **Finished or past** courses.
 
 Record or edit only explicit wording,
@@ -704,10 +713,13 @@ editing or closing removes that authority. After any valid mutation response,
 only **Retry refresh** can be used. A conflict discards old tokens and
 selections, reloads, and requires explicit review; safe caregiver add/difference
 wording may be restored, but source, component, action, target, and citation
-choices must be selected again. Rejected submitted fields keep the current
-projection and draft. A malformed or hard treatment read clears treatment
-content; authorization loss clears all patient PHI. Normal refresh does not
-move focus.
+choices must be selected again. A draft preserved from a row's **Record
+status** dialog is offered again only from that same row, and reopening that
+row restores the wording but never re-ticks a component link you removed, so
+**＋ Add status record** always starts clean. Rejected submitted fields keep
+the current projection and draft. A malformed or hard treatment read clears
+treatment content; authorization loss clears all patient PHI. Normal refresh
+does not move focus.
 
 If the treatment or symptom workspace reports that records could not be
 verified safely after an upgrade, do not use `/api/status` as a fallback and do

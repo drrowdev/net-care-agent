@@ -2856,8 +2856,12 @@ def api_health():
       | ``"invalid_shape"`` | ``"io_error"``
     - ``stale_job_count``: jobs queued/running for >1 hour
     - ``interrupted_job_count``: jobs marked interrupted
-    - ``newest_snapshot_age_seconds``: float | null
+    - ``newest_snapshot_age_seconds``: float | null (informational only — see
+      the note in the backup freshness block below; never alarm on it)
     - ``newest_backup_age_seconds``: float | null
+    - ``backup_out_of_date``: bool (daily backup missing, or the profile was
+      last saved more than ``BACKUP_MAX_LAG_DAYS`` calendar days after the
+      newest backup was taken)
     - ``jobs_healthy``: bool (False when jobs.json is quarantined or unreadable on load)
     - ``profile_recovery_state``: ``"none"`` | ``"recovered"`` | ``"failed"`` | ``"unknown"``
     - ``profile_recovery_source``: ``"snapshot"`` | ``"daily_backup"`` | ``"manual"`` | null
@@ -2924,18 +2928,51 @@ def api_health():
     feed_active, feed_queued = _get_executor(feed=True).counts()
 
     # ── backup / snapshot ages ────────────────────────────────────────────────
-    snap_age = agent_backups.newest_file_age_seconds(DATA_DIR / "snapshots", "profile_*.json")
-    backup_age = agent_backups.newest_file_age_seconds(DATA_DIR / "backups", "profile_*.json")
+    snap_mtime = agent_backups.newest_file_mtime(DATA_DIR / "snapshots", "profile_*.json")
+    backup_mtime = agent_backups.newest_file_mtime(DATA_DIR / "backups", "profile_*.json")
+    now = time.time()
+    snap_age = None if snap_mtime is None else now - snap_mtime
+    backup_age = None if backup_mtime is None else now - backup_mtime
     try:
-        profile_age = max(0.0, time.time() - agent.PROFILE_PATH.stat().st_mtime)
+        profile_mtime = agent.PROFILE_PATH.stat().st_mtime
+        profile_age = max(0.0, now - profile_mtime)
     except OSError:
+        profile_mtime = None
         profile_age = None
-    # Age alone is not a failure: an unchanged eight-day-old profile with an
-    # eight-day-old backup is protected. Degrade only when the newest backup
-    # materially lags the current profile (or is missing).
-    backup_out_of_date = profile_status == "ok" and (
-        backup_age is None or (profile_age is not None and backup_age > profile_age + 300)
-    )
+
+    # Judge the daily backup against the cadence it is actually written on.
+    #
+    # ``daily_backup`` writes one file per calendar day while the profile is
+    # saved many times a day, so "the backup is older than the profile" is the
+    # ordinary steady state, not a fault. The previous check compared the two
+    # ages with a 5-minute grace, which was structurally true from the second
+    # save of every day until midnight: /api/health reported degraded almost
+    # permanently and masked the real signals.
+    #
+    # Because ``copy2`` preserves mtimes and ``daily_backup`` names the file
+    # after the mtime it copies, the backup's mtime is the mtime of the profile
+    # revision it captured, so comparing calendar days compares like with like.
+    # A lag past the tolerance means the profile was saved on a day that
+    # produced no backup at all, which is a genuine failure of the writer. Pure
+    # age is deliberately not used: a profile left untouched for a week keeps a
+    # week-old backup that protects it perfectly.
+    backup_missing = backup_mtime is None
+    backup_stale = False
+    if backup_mtime is not None and profile_mtime is not None:
+        lag_days = agent_backups.backup_lag_days(profile_mtime, backup_mtime)
+        # An unreadable timestamp is treated as stale rather than raising.
+        backup_stale = lag_days is None or lag_days > agent_backups.BACKUP_MAX_LAG_DAYS
+    backup_out_of_date = profile_status == "ok" and (backup_missing or backup_stale)
+
+    # ``newest_snapshot_age_seconds`` is reported but deliberately NOT alarmed
+    # on. ``rotating_snapshot`` copies the PRE-write profile with
+    # ``shutil.copy2``, which preserves the source mtime, so the newest snapshot
+    # always carries the *previous* profile revision's mtime. It is therefore
+    # older than the profile by construction on every single save, and after an
+    # idle week one save writes a brand-new snapshot still stamped a week old.
+    # Snapshot age measures how old the prior revision is, never whether
+    # snapshotting works, so any threshold on it would false-alarm exactly the
+    # way the backup check did.
 
     # ── recovery state ────────────────────────────────────────────────────────
     recovery_state = get_recovery_state()

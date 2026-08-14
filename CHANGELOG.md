@@ -83,6 +83,48 @@ incremented when something user-visible or operationally meaningful changes.
   local scrolling at phone width.
 
 ### Fixed
+- **`/api/health` no longer reports a permanent false `degraded`.** The backup
+  freshness check compared the once-per-day `backups/profile_YYYYMMDD.json`
+  against the continuously-updated profile with only a 5-minute grace, so
+  `backup_out_of_date` became true at the second save of every day and stayed
+  true until midnight. Production had been reporting `degraded` continuously
+  with everything else healthy, which masked the real signals the field exists
+  to surface. The daily backup is now judged on the cadence it is actually
+  written on: because `shutil.copy2` preserves the source mtime, a backup's
+  mtime is the mtime of the profile revision it captured, so the check compares
+  the **calendar day** of the two mtimes instead of their ages.
+  `backup_out_of_date` is true when the backup is missing, or when the profile's
+  last save falls more than the new `BACKUP_MAX_LAG_DAYS` (default `0`) whole
+  calendar days after the newest backup — meaning a day on which the profile was
+  saved produced no backup at all. Raw age is deliberately not used: a profile
+  left untouched for a week keeps a week-old backup that protects it perfectly,
+  and a backup taken early on a busy day can legitimately age indefinitely once
+  saves stop. The previously-correct behaviours are unchanged: a missing backup
+  still degrades, an untouched eight-day-old profile with an equally old backup
+  still stays `ok`, and the signal is still suppressed unless
+  `profile_status == "ok"`. No response key was added, renamed, or removed, and
+  the `ok`/`degraded`/`error` vocabulary and HTTP status mapping are untouched,
+  so `Scripts/deploy.ps1` is unaffected.
+- **`daily_backup()` names its file after the profile's mtime, not the wall
+  clock.** A save landing at 23:59:59.9 whose `daily_backup()` call ran a tick
+  past midnight claimed tomorrow's filename while carrying yesterday's mtime,
+  which then suppressed the following day's real backup for the whole day.
+  Filename and mtime now always agree, which is what lets the freshness check
+  above run with zero days of tolerance.
+- **Recovering the profile now takes a backup of the restored state.**
+  `restore_from_candidate()` gives the profile a current mtime while the
+  candidate it restored from may be days old, so recovery used to leave
+  `/api/health` reporting the storage as out of date until the caregiver
+  happened to save something. The restored state is also now protected
+  immediately rather than only at the next save. A backup failure is logged and
+  never fails the recovery.
+- **`newest_snapshot_age_seconds` is documented as informational only.** It
+  cannot serve as a freshness alarm: `rotating_snapshot()` copies the pre-write
+  profile with `shutil.copy2`, so the newest snapshot always carries the
+  *previous* revision's mtime and is older than the profile by construction on
+  every save — after an idle week a single save writes a brand-new snapshot
+  still stamped a week old. Regression tests now pin that this never degrades,
+  so the same class of false alarm cannot be reintroduced for snapshots.
 - **Dates, times and numbers now read in Finnish everywhere.** Displayed dates
   used hyphens (`14-08-2026`, `08-2026`) and some surfaces fell back to whatever
   locale the browser happened to have, so the same recorded value could render

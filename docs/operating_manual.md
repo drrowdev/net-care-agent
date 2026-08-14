@@ -887,6 +887,11 @@ print('Restored OK')
 **Never use raw `cp` to restore** — it bypasses the cross-process lock and
 structural validation.
 
+A successful restore also writes a daily backup of the restored state, so the
+recovered profile is protected immediately and `/api/health` does not report the
+storage as out of date (see §10) just because the candidate you restored from
+was several days old.
+
 ## 10. Health check
 
 `GET /api/health` returns a readiness report.  `GET /api/live` is a
@@ -909,15 +914,58 @@ lightweight liveness probe that always returns 200 regardless of profile state.
 | `queued_job_count` | int | Aggregate queued jobs across both executors |
 | `feed_active_count` | int | Active feed jobs |
 | `feed_queued_count` | int | Queued feed jobs |
-| `newest_snapshot_age_seconds` | float\|null | Seconds since last snapshot |
+| `newest_snapshot_age_seconds` | float\|null | Age of the newest pre-save snapshot. **Informational only — never alarm on it**, see below |
 | `newest_backup_age_seconds` | float\|null | Seconds since last daily backup |
 | `profile_age_seconds` | float\|null | Seconds since the current profile write |
-| `backup_out_of_date` | bool | Newest backup materially predates the current profile |
+| `backup_out_of_date` | bool | Daily backup missing, or the profile was last saved more than `BACKUP_MAX_LAG_DAYS` calendar days after the newest backup was taken |
 | `jobs_healthy` | bool | False if jobs.json was quarantined |
+
+**How storage freshness is judged.** The two artifacts are written on different
+cadences, so they are judged differently.
+
+- **Daily backup.** `daily_backup()` runs after every save but writes
+  `backups/profile_YYYYMMDD.json` at most once per local calendar day, while
+  the profile is saved many times a day. The backup being older than the
+  profile is therefore the normal steady state, not a fault, and raw age says
+  nothing useful: a profile left untouched for a week keeps a week-old backup
+  that protects it perfectly. Because `shutil.copy2` preserves the source
+  mtime, a backup's mtime *is* the mtime of the profile revision it captured,
+  so the check compares the **calendar day** of those two mtimes.
+  `backup_out_of_date` is true when the backup is missing outright, or when the
+  profile's last save falls more than `BACKUP_MAX_LAG_DAYS` (default `0`) whole
+  calendar days after the newest backup was taken — meaning a day on which the
+  profile was saved produced no backup at all, which only happens when the
+  writer is broken. `daily_backup()` names the file after the profile's own
+  mtime rather than the wall clock, so filename and mtime always agree and a
+  save landing a hair before midnight cannot fake a day of lag; the tolerance is
+  therefore zero, because a whole day of slack would let a writer that broke
+  yesterday and then saw no further saves sit at a lag of exactly one forever
+  and never be reported. Raise `BACKUP_MAX_LAG_DAYS` to buy quiet without a
+  deploy if some environment change shifts a day boundary under an idle profile.
+- **Snapshots.** `newest_snapshot_age_seconds` is reported for diagnostics but
+  is **not** a freshness signal and nothing degrades on it.
+  `rotating_snapshot()` copies the *pre-write* profile with `shutil.copy2`, so
+  the newest snapshot always carries the **previous** profile revision's mtime
+  and is older than the profile by construction on every save. After an idle
+  week, a single save writes a brand-new snapshot still stamped a week old.
+  Snapshot age measures how old the prior revision is, never whether
+  snapshotting works, so any threshold on it would false-alarm. There is
+  currently no reliable automatic signal for "snapshots stopped being written";
+  check `${DATA_DIR}/snapshots/` directly if you suspect that.
+
+The backup signal is suppressed unless `profile_status == "ok"`, so an
+unreadable profile reports its own error rather than a misleading storage
+complaint.
+
+**Known gap.** Because backups piggy-back on saves, content written after a
+day's first save is not in any daily backup until the next day's first save.
+That window is covered by the pre-save snapshots, not by the daily backup, and
+is by design rather than a fault — `/api/health` does not report it.
 
 **HTTP status codes:**
 - `200 status=ok`: everything normal
-- `200 status=degraded`: minor issues (interrupted jobs, backup behind profile)
+- `200 status=degraded`: minor issues (interrupted jobs, daily backup missing or
+  not written on a day the profile was saved)
 - `503 status=error`: storage not writable, or profile corrupt with no recovery
 
 Configure `/api/health` as the App Service health probe — Azure will recycle

@@ -97,6 +97,10 @@ Environment variables to set as Application Settings:
 - Retention: `JOB_RETENTION_DAYS=365`, `JOB_RETENTION_COUNT=200`,
   `REPORT_RETENTION_DAYS=30`, `REPORT_RETENTION_COUNT=200`,
   `SOURCE_ORPHAN_RETENTION_DAYS=7`, `SOURCE_ORPHAN_RETENTION_COUNT=20`
+- Backups: `BACKUP_RETENTION_DAYS=30`, `PRESAVE_SNAPSHOT_COUNT=20`, and the
+  `/api/health` freshness policy `BACKUP_MAX_LAG_DAYS=0` (how many whole local
+  calendar days the newest daily backup may trail the profile's last save
+  before `/api/health` degrades)
 - Auth: hosted APIs require App Service Easy Auth; the platform injects
   `WEBSITE_AUTH_ENABLED` (do not add that protected setting manually). Generic
   Azure hosting variables never make Easy Auth headers trusted. When the trusted

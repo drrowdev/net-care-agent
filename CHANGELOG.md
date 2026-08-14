@@ -9,6 +9,23 @@ incremented when something user-visible or operationally meaningful changes.
 ## [Unreleased]
 
 ### Added
+- **Mentions in source documents can now start a status record.** Every row in
+  **Patient → Treatments → Mentions in source documents** gained a **Record
+  status** action beside the existing *View exact wording* / *Open source*
+  links. It opens the same **Record treatment** dialog, sends the same guarded
+  `POST /api/treatment-reconciliation/courses` mutation, and carries the same
+  expected revisions, projection/source/course tokens, scoped mutation ID and
+  `409` conflict semantics as the recorded-row action shipped earlier. No second
+  creation path or endpoint exists.
+  - The dialog is prefilled with the mention's exact observed wording and
+    nothing else. **No status, date, terminal qualifier or component link is
+    preselected**, because source facts carry no temporal data and their
+    `operation` field is list-membership, not a clinical event — a mention
+    reading *"Everolimus 10 mg daily was stopped"* is still recorded with
+    `operation: added`. The wording stays editable, and the dialog says so: what
+    you save is a caregiver-entered record in your own words. It is not stored
+    as a quotation and — like every course — it is not linked back to the
+    document; only the wording was copied.
 - **The treatment workspace now names the document behind each mention.**
   **Patient → Treatments → Mentions in source documents** gained a **Document**
   column showing the originating document's filename — or its document type when
@@ -30,6 +47,21 @@ incremented when something user-visible or operationally meaningful changes.
     any caregiver course. Course authorship, `capture_method`, the profile
     schema, and the model-prompt exclusion boundary are all unchanged.
 
+### Changed
+- **The Record treatment dialog is caregiver-sized again.** Only the record
+  status, the treatment wording and the three dates are shown up front. The nine
+  optional wording boxes — type, dose, route, frequency, cycle, schedule,
+  formulation, indication and notes — moved behind one closed-by-default **Add
+  more detail (optional)** disclosure, because the caregiver's own wording
+  ("*Continued Somatuline Autogel (lanreotide) 120 mg subcutaneously every 4
+  weeks*") normally already carries them, and the course card renders that
+  wording as the heading with these fields as a list beneath it.
+  - Nothing is hidden from you. When you edit a record that already has optional
+    wording the disclosure opens by itself, and the summary says how many boxes
+    are filled in whenever any of them hold something — including while the
+    section is folded away, so collapsing it cannot conceal wording that will be
+    saved. It also opens when a restored draft has content.
+
 ### Fixed
 - **Corrected a contradiction in the operating manual.** It stated that
   document-intake treatment rows never "seed a form", while the same document
@@ -38,8 +70,24 @@ incremented when something user-visible or operationally meaningful changes.
   guarantee that actually holds is narrower: those rows never create a course on
   their own, authorize a status, or set treatment timing, and the dialog still
   cannot be saved until the caregiver chooses the status.
+- **The empty "Current and planned" list is no longer a dead end.** It now names
+  the routes that actually exist right now: **＋ Add status record** always, plus
+  **Record status** on a recorded treatment entry or on a mention in source
+  documents only when such rows are present — so it never sends you to a surface
+  that is itself empty. It repeats that you choose the status and any dates. It
+  previously stated only that nothing had been recorded.
 
 ### Removed
+- **Retired the "Record an exact empty string instead of Null" checkboxes.** All
+  nine are gone from the Record treatment dialog. They exposed a storage
+  distinction that no invariant, schema rule or server behaviour depends on: the
+  server accepts and stores both verbatim. An empty box now simply records
+  nothing for that detail.
+  - **Records that already store an exact empty string keep it.** Editing such a
+    record does not silently flip it to null. The box is marked from the *saved*
+    value, so leaving it as rendered — including typing in it and clearing it
+    again — round-trips the stored empty string unchanged. Only a box that was
+    saved as null and left empty is sent as null.
 - **Retired the LLM treatment classifier.** Nothing classifies treatments any
   more. The deterministic identity library it was bundled with survives intact
   in the new `agent/treatment_identity.py` (with `agent/classify.py` kept as a

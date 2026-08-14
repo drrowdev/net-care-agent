@@ -2071,3 +2071,288 @@ def test_live_submission_retry_conflict_draft_and_refresh_retry_are_separate():
         finally:
             context.close()
             browser.close()
+
+
+def test_recorded_treatment_rows_expose_status_recording_without_status_inference():
+    source = _treatment_source()
+    assert "function openTreatmentRecordedStatusDialog(" in source
+    assert "prefillTreatmentText" in source
+    assert "preselectedComponentIds" in source
+    assert "Record status for ${row.raw_text}" in source
+    recorded_dialog = source[
+        source.index("function openTreatmentRecordedStatusDialog(") : source.index(
+            "function openTreatmentCourseDialog("
+        )
+    ]
+    # The in-place affordance may carry wording and component links only. It must
+    # never choose clinical status, timing, or a terminal qualifier for the caregiver.
+    for forbidden in (
+        "status",
+        "start_date",
+        "stop_date",
+        "planned_date",
+        "terminal_qualifier",
+        "terminal_detail",
+    ):
+        assert forbidden not in recorded_dialog
+    assert "'add'" in recorded_dialog
+    # Reuses the one existing creation contract; no second endpoint is introduced.
+    assert source.count("url: '/api/treatment-reconciliation/courses'") == 1
+
+
+@pytest.mark.parametrize("width,height", [(1280, 900), (768, 900), (360, 800)])
+def test_live_recorded_row_records_status_prefilled_without_status_inference(
+    width: int,
+    height: int,
+):
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    with playwright_api.sync_playwright() as playwright:
+        if not Path(playwright.chromium.executable_path).exists():
+            pytest.skip("Installed Playwright browser is unavailable")
+        browser, context, page, state = _open_treatment_page(
+            playwright,
+            width,
+            height,
+            _component_linkage_projection(),
+        )
+        try:
+            page.locator("#nav-patient").click()
+            cards = page.locator("#patient-treatment-list .treatment-recorded-card")
+            unreviewed = cards.nth(0)
+            assert "Status not recorded" in unreviewed.inner_text()
+            action = unreviewed.get_by_role(
+                "button", name="Record status for None recorded treatment"
+            )
+            assert action.count() == 1
+            assert action.is_enabled()
+            # Exactly one affordance per recorded row, and the compact Today cards stay read-only.
+            assert unreviewed.locator(".treatment-card-actions button").count() == 1
+            assert (
+                page.locator("#today-treatment-list .treatment-recorded-card button").count() == 0
+            )
+
+            action.click()
+            assert page.locator("#treatment-dialog-overlay").get_attribute("aria-hidden") == "false"
+            assert (
+                page.locator("#treatment-field-treatment-text").input_value()
+                == "None recorded treatment"
+            )
+            assert page.locator("#treatment-field-status").input_value() == ""
+            for prefix in ("start", "stop", "planned"):
+                assert page.locator(f"#treatment-field-{prefix}-date").input_value() == ""
+            assert page.locator("#treatment-field-terminal-qualifier").input_value() == ""
+            # No status is chosen for the caregiver, so saving stays blocked until they choose.
+            assert page.locator("#treatment-submit-button").is_disabled()
+            checked = page.evaluate(
+                """() => [...document.querySelectorAll(
+                  '#treatment-dialog input[name="treatment-component-choice"]:checked'
+                )].map(input => treatmentSelection.componentOptions[Number(input.value)].id)"""
+            )
+            assert checked == ["none-1"]
+            assert (
+                "You still choose the record status"
+                in page.locator("#treatment-dialog").inner_text()
+            )
+
+            page.locator("#treatment-field-status").select_option("current")
+            assert page.locator("#treatment-submit-button").is_enabled()
+            page.locator("#treatment-submit-button").click()
+            page.wait_for_function("() => !treatmentMutationPending")
+
+            mutations = [
+                item
+                for item in state.requests
+                if item[0] == "POST" and item[1] == "/api/treatment-reconciliation/courses"
+            ]
+            assert len(mutations) == 1
+            body = mutations[0][2]
+            assert body["treatment_text"] == "None recorded treatment"
+            assert body["status"] == "current"
+            assert body["legacy_component_ids"] == ["none-1"]
+            assert body["start_date"] is None
+            assert body["stop_date"] is None
+            assert body["planned_date"] is None
+            assert body["terminal_qualifier"] is None
+            assert body["expected_projection_token"] == "treatment-component-linkage"
+            assert body["expected_profile_revision"] == 5
+            assert body["expected_workflow_revision"] == 3
+            assert body["mutation_id"]
+            assert "expected_course_token" not in body
+
+            page.locator("#nav-patient").click()
+            refreshed = page.locator("#patient-treatment-list .treatment-recorded-card")
+            assert "Linked to reviewed status" in refreshed.nth(0).inner_text()
+            assert "Status not recorded" not in refreshed.nth(0).inner_text()
+            assert (
+                "None recorded treatment"
+                in page.locator("#patient-treatment-list .treatment-course-card")
+                .filter(has_text="None recorded treatment")
+                .inner_text()
+            )
+            overflow = page.evaluate(
+                "() => document.documentElement.scrollWidth - document.documentElement.clientWidth"
+            )
+            assert overflow == 0
+        finally:
+            context.close()
+            browser.close()
+
+
+def test_live_recorded_row_status_action_is_keyboard_reachable_and_not_duplicated():
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    with playwright_api.sync_playwright() as playwright:
+        if not Path(playwright.chromium.executable_path).exists():
+            pytest.skip("Installed Playwright browser is unavailable")
+        browser, context, page, state = _open_treatment_page(
+            playwright,
+            1280,
+            900,
+            _component_linkage_projection(),
+        )
+        try:
+            page.locator("#nav-patient").click()
+            action = (
+                page.locator("#patient-treatment-list .treatment-recorded-card")
+                .nth(0)
+                .get_by_role("button", name="Record status for None recorded treatment")
+            )
+            action.focus()
+            assert (
+                page.evaluate("() => document.activeElement.dataset.treatmentRecordedRow")
+                == "txlegacy-none"
+            )
+            page.keyboard.press("Enter")
+            assert page.evaluate(
+                "() => document.getElementById('treatment-dialog').contains(document.activeElement)"
+            )
+            assert page.evaluate(
+                "() => document.getElementById('treatment-dialog').inert === false"
+            )
+            assert page.evaluate(
+                "() => document.getElementById('treatment-workspace').closest('[inert]') !== null"
+            )
+
+            # Duplicate rapid activation must not rebuild the dialog or discard caregiver edits.
+            epoch = page.evaluate("() => treatmentDialogEpoch")
+            page.locator("#treatment-field-treatment-text").fill("Caregiver edited wording")
+            page.evaluate(
+                """() => openTreatmentRecordedStatusDialog(
+                  document.querySelector(
+                    '#patient-treatment-list .treatment-recorded-card button'
+                  ),
+                  'txlegacy-none',
+                )"""
+            )
+            assert page.evaluate("() => treatmentDialogEpoch") == epoch
+            assert (
+                page.locator("#treatment-field-treatment-text").input_value()
+                == "Caregiver edited wording"
+            )
+
+            page.keyboard.press("Escape")
+            assert page.locator("#treatment-dialog-overlay").get_attribute("aria-hidden") == "true"
+            assert (
+                page.evaluate("() => document.activeElement.dataset.treatmentRecordedRow")
+                == "txlegacy-none"
+            )
+            assert page.evaluate(
+                "() => document.getElementById('treatment-workspace').closest('[inert]') === null"
+            )
+            assert not any(
+                method != "GET" and path.startswith("/api/treatment-reconciliation/")
+                for method, path, _ in state.requests
+            )
+        finally:
+            context.close()
+            browser.close()
+
+
+def test_live_recorded_row_status_conflict_leaves_row_unlinked():
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    with playwright_api.sync_playwright() as playwright:
+        if not Path(playwright.chromium.executable_path).exists():
+            pytest.skip("Installed Playwright browser is unavailable")
+        browser, context, page, state = _open_treatment_page(
+            playwright,
+            1280,
+            900,
+            _component_linkage_projection(),
+        )
+        try:
+            page.locator("#nav-patient").click()
+            page.locator("#patient-treatment-list .treatment-recorded-card").nth(0).get_by_role(
+                "button", name="Record status for None recorded treatment"
+            ).click()
+            page.locator("#treatment-field-status").select_option("planned")
+            state.next_mutation_status = 409
+            page.locator("#treatment-submit-button").click()
+            page.wait_for_function(
+                "() => !treatmentMutationPending && treatmentProjectionState === 'current'"
+            )
+            assert page.evaluate("() => pendingTreatmentRetry === null")
+            assert page.evaluate("() => treatmentDraft.recordedRowId") == "txlegacy-none"
+            assert page.evaluate("() => treatmentProjection.courses.length") == 1
+            page.locator("#nav-patient").click()
+            cards = page.locator("#patient-treatment-list .treatment-recorded-card")
+            assert "Status not recorded" in cards.nth(0).inner_text()
+            assert cards.count() == 3
+
+            # The preserved draft is still live and belongs to that row, so a
+            # plain add must not inherit it.
+            assert page.evaluate("() => treatmentDraft !== null")
+            page.locator("#patient-treatment-add").click()
+            assert page.locator("#treatment-field-treatment-text").input_value() == ""
+            assert page.locator("#treatment-field-status").input_value() == ""
+            assert page.locator('input[name="treatment-component-choice"]:checked').count() == 0
+        finally:
+            context.close()
+            browser.close()
+
+
+def test_live_recorded_row_reopen_does_not_reassert_removed_component_link():
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    with playwright_api.sync_playwright() as playwright:
+        if not Path(playwright.chromium.executable_path).exists():
+            pytest.skip("Installed Playwright browser is unavailable")
+        browser, context, page, state = _open_treatment_page(
+            playwright,
+            1280,
+            900,
+            _component_linkage_projection(),
+        )
+        try:
+            page.locator("#nav-patient").click()
+            page.locator("#patient-treatment-list .treatment-recorded-card").nth(0).get_by_role(
+                "button", name="Record status for None recorded treatment"
+            ).click()
+            page.locator("#treatment-field-status").select_option("planned")
+            page.locator("#treatment-field-treatment-text").fill("Caregiver wording X")
+            # The caregiver explicitly removes the pre-ticked component link.
+            page.locator('input[name="treatment-component-choice"]').first.uncheck()
+            state.next_mutation_status = 409
+            page.locator("#treatment-submit-button").click()
+            page.wait_for_function(
+                "() => !treatmentMutationPending && treatmentProjectionState === 'current'"
+            )
+            assert page.evaluate("() => treatmentDraft.recordedRowId") == "txlegacy-none"
+
+            # Reopening the same row restores the caregiver draft, but the row
+            # prefill must never re-assert a link the caregiver removed.
+            page.locator("#nav-patient").click()
+            page.locator("#patient-treatment-list .treatment-recorded-card").nth(0).get_by_role(
+                "button", name="Record status for None recorded treatment"
+            ).click()
+            assert (
+                page.locator("#treatment-field-treatment-text").input_value()
+                == "Caregiver wording X"
+            )
+            assert page.locator('input[name="treatment-component-choice"]:checked').count() == 0
+            assert (
+                "Choose the component links again" in page.locator("#treatment-dialog").inner_text()
+            )
+            # The restored status is the caregiver's own earlier choice, never
+            # anything the row prefill supplied.
+            assert page.locator("#treatment-field-status").input_value() == "planned"
+        finally:
+            context.close()
+            browser.close()

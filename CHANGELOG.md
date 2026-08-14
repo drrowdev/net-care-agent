@@ -52,6 +52,32 @@ incremented when something user-visible or operationally meaningful changes.
   local scrolling at phone width.
 
 ### Fixed
+- **Dates, times and numbers now read in Finnish everywhere.** Displayed dates
+  used hyphens (`14-08-2026`, `08-2026`) and some surfaces fell back to whatever
+  locale the browser happened to have, so the same recorded value could render
+  as `Aug 14, 2026, 09:26 AM` on one device and something else on another. Every
+  displayed date is now `14.8.2026`, a month-precision date is `8/2026`, a
+  year-precision date stays `2026`, a range stays en-dash joined as
+  `5/2026 – 8/2026`, times are 24-hour `09:26`, a date with a time is
+  `14.8.2026 09:26`, and grouped numbers use the Finnish no-break space.
+  Interface copy stays English, including relative labels such as `5m ago`.
+  Stored values, API payloads, and the ISO dates given to the models are
+  unchanged — this is presentation only.
+- **Partial dates are no longer completed with an invented day.** A source
+  timestamp list, the clinical-notes list, the import-receipt appointment line,
+  and the linked-appointment label showed a month- or year-precision date either
+  as a raw `2026-08` or, worse, expanded to a full date the record never
+  contained. They now display at the precision that was actually recorded.
+- **Recorded times no longer display hours in the past.** The follow-through,
+  alert-resolution, research-history and outcome timestamps read the server's
+  naive ISO stamps as browser-local time while the rest of the interface
+  correctly read them as UTC, so every one of them showed two to three hours
+  earlier than when it actually happened. All timestamp surfaces now share one
+  parser that reads a missing timezone as UTC, matching how the server writes
+  them; a value that already carries `Z` or an offset is honoured as written.
+- **The latest-assessment stamp no longer shows a raw ISO timestamp.** Today's
+  summary header printed `generated_at_timestamp` verbatim (for example
+  `Updated 2026-08-12T09:00:00`). It now renders as `Updated 12.8.2026 12:00`.
 - **A current assessment can be refreshed again from Today.** Consolidating the
   three duplicate **Refresh assessment** buttons into the freshness banner left
   the banner action revealed only on the stale path, so once the assessment was

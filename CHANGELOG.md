@@ -28,8 +28,10 @@ incremented when something user-visible or operationally meaningful changes.
     `unlinked_generated_context[]`, and still bind the legacy row and projection
     CAS tokens. This is a presentation-only removal, so no token rotates and no
     in-flight caregiver edit is invalidated.
-  - **Today → Treatment status is unchanged.** It was always driven by
-    caregiver-reviewed courses and raw treatment rows, never by the classifier.
+  - **Today → Treatment status is unchanged by the classifier removal.** It was
+    always driven by caregiver-reviewed courses and raw treatment rows, never by
+    the classifier. Its display order does change, separately, under _Changed_
+    below.
   - `POST /api/treatments/<treatment_id>` is now a `410` tombstone matching its
     siblings `/api/treatments/update` and `/api/treatments/delete`; it had no
     caller in the UI and operated only on generated classification rows.
@@ -40,6 +42,24 @@ incremented when something user-visible or operationally meaningful changes.
     `classification_skipped` log line / classification job warning stage.
 
 ### Changed
+- **Treatments are listed newest-first.** **Patient → Treatments** and the
+  compact **Today → Treatment status** card no longer show treatments in stored
+  order, which read as random and made records hard to find. Each of the three
+  Overview groups is now ordered newest-first for display: a status record by
+  the date its own status is about (planned date when planned, start date when
+  current, stop date — falling back to the start date when no stop date was
+  recorded — when finished or past), and a row already in the patient treatment
+  record by most recently recorded, because those rows carry no date at all. A
+  date naming only a year or a month is placed at the start of the period it
+  names, so `2026` sits below `2026-03-15` but above `2025-12-31`; records with
+  no usable date hold a fixed last position in their group; and equal keys fall
+  back to row identity, so the order is total and never shuffles between
+  renders. This is presentation only — every row still appears exactly once,
+  duplicates are kept, counts are unchanged, and nothing is merged, hidden,
+  promoted, or reordered on the server. No date is parsed out of raw wording,
+  borrowed from a linked status record, or taken from generated text: NET/Care
+  still never infers treatment timing. Imaging, research, and symptom surfaces
+  keep their existing stored/server order.
 - **Caregiver-first Today hierarchy.** Today now leads with access/freshness and
   the expanded latest assessment, key concern, and recommended next steps before
   bounded recorded update times/active-alert count, treatment status, symptoms,

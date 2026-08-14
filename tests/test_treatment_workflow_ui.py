@@ -45,6 +45,16 @@ def _source(character: str, text: str = "Exact source treatment wording") -> dic
     }
 
 
+def _source_document(character: str, **overrides: object) -> dict:
+    return {
+        "ref": f"txref_{character * 64}",
+        "filename": f"visit-summary-{character}.pdf",
+        "document_type": "doctor_note",
+        "document_date": "2026-08-02",
+        **overrides,
+    }
+
+
 def _lifecycle(status: str, qualifier: str | None = None, *, restart: bool = False) -> dict:
     transitions = {
         "current": [{"status": "past", "terminal_qualifiers": ["ended", "other"]}],
@@ -282,6 +292,10 @@ def _projection() -> dict:
         "course_count": len(courses),
         "discrepancy_count": 0,
         "source_facts": sources,
+        "source_fact_documents": [
+            _source_document("1"),
+            _source_document("2", filename=None, document_date="2026-08"),
+        ],
         "legacy_treatments": [_legacy()],
         "unlinked_generated_context": [_unlinked(index) for index in range(10)],
         "courses": courses,
@@ -367,6 +381,7 @@ def _recorded_only_projection() -> dict:
             "course_count": 0,
             "discrepancy_count": 0,
             "source_facts": [],
+            "source_fact_documents": [],
             "legacy_treatments": recorded,
             "courses": [],
             "discrepancies": [],
@@ -960,6 +975,18 @@ def test_live_shared_projection_totals_authorities_and_accessibility(width: int,
                 .count("Duplicate source wording")
                 == 2
             )
+            # Document identity answers "which document, and when" without
+            # linking the mention to any caregiver course.
+            document_cells = page.locator("#treatment-source-table-body .treatment-source-document")
+            assert document_cells.count() == 2
+            first_document = " ".join(document_cells.nth(0).inner_text().split())
+            second_document = " ".join(document_cells.nth(1).inner_text().split())
+            assert "visit-summary-1.pdf" in first_document
+            assert "2.8.2026" in first_document
+            # A mention with no filename falls back to the document type, and a
+            # month-precision date keeps its recorded precision in Finnish form.
+            assert "doctor_note" in second_document
+            assert "8/2026" in second_document
             overflow = page.evaluate(
                 """() => {
                   const table = [...document.querySelectorAll('.treatment-table-region')]

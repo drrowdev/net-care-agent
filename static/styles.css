@@ -4485,6 +4485,7 @@ body.dialog-open { overflow: hidden; }
 .treatment-recorded-card.compact { padding: 12px; }
 .treatment-recorded-card.compact .treatment-authority-label { margin: 0; }
 .treatment-source-detail { display: block; margin-top: 3px; color: var(--text1); font-size: 11px; }
+.treatment-source-document { overflow-wrap: anywhere; }
 
 .artifact-state-card {
   margin-top: 12px;

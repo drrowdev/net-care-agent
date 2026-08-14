@@ -111,6 +111,15 @@ _UNLINKED_GENERATED_TEXT_LIMITS = {
     "label": 1_000,
     "date": 64,
 }
+# Document identity is projected as a sibling of `source_facts`, never inside
+# them: `_validate_source_fact_snapshot` compares the citation snapshot field set
+# by exact equality, so widening `_SOURCE_FACT_PUBLIC_FIELDS` would invalidate
+# every stored discrepancy snapshot and fail the entire read closed.
+_SOURCE_DOCUMENT_TEXT_LIMITS = {
+    "filename": 500,
+    "document_type": 200,
+    "document_date": 64,
+}
 _DATE_PREFIXES = ("start", "stop", "planned")
 _SOURCE_FACT_PUBLIC_FIELDS = {
     "ref",
@@ -634,8 +643,17 @@ def _source_fact_projection(
         },
     }
     _validate_source_fact_snapshot(public, ref)
+    document_identity = {
+        "ref": ref,
+        **{
+            field: _bounded_text(receipt, field, _SOURCE_DOCUMENT_TEXT_LIMITS)
+            for field in ("filename", "document_type", "document_date")
+        },
+    }
+    _validate_public_value(document_identity)
     return {
         "public": public,
+        "document": document_identity,
         "authority": authority,
         "source_id": source_id,
         "source_text": source_text,
@@ -1484,6 +1502,7 @@ def _build_projection(
         and not action_owner_refs(profile, action.get("id"))
     ]
     public_source = [item["public"] for item in projected_source]
+    source_fact_documents = [item["document"] for item in projected_source]
     legacy, unlinked_generated_context = _legacy_projection(profile, revisions)
     mapped_generated_by_id: dict[str, dict] = {}
     for legacy_row in legacy:
@@ -1555,6 +1574,7 @@ def _build_projection(
     manifest = {
         **revisions,
         "source_facts": [{"ref": item["ref"], "token": item["token"]} for item in public_source],
+        "source_fact_documents": source_fact_documents,
         "legacy": [{"id": item["id"], "token": item["token"]} for item in legacy],
         "unlinked_generated_context": [
             {"id": item["id"], "token": item["token"]} for item in unlinked_generated_context
@@ -1577,6 +1597,7 @@ def _build_projection(
         "course_count": len(public_courses),
         "discrepancy_count": len(public_discrepancies),
         "source_facts": public_source,
+        "source_fact_documents": source_fact_documents,
         "legacy_treatments": legacy,
         "unlinked_generated_context": unlinked_generated_context,
         "courses": public_courses,

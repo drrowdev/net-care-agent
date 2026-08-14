@@ -342,8 +342,10 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
 - Receipt correction/removal/undo may rotate source-fact/projection tokens and
   legacy compatibility state but never deletes or rewrites courses,
   discrepancies, confirmations, or action links. New reconciliation state is
-  excluded from every model prompt; existing raw/classified treatment prompt
-  behavior remains unchanged.
+  excluded from every model prompt. Model-visible treatment context is the
+  deterministic component split of raw `patient.current_treatments[]` and
+  carries no status, category, or date: caregiver lifecycle status is workflow
+  authority and never reaches a prompt.
 - Fixed treatment safety copy is exactly `NET/Care records what you enter but does not verify treatment details or advise starting, stopping, or changing treatment. Confirm treatment decisions with the treating team.` It is static,
   nonconditional, non-PHI, and non-prescriptive.
 - Every Layer 2 mutation is stable-ID/target-token CAS under
@@ -395,19 +397,17 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
 - Clinical mutations commit once at their final effective revision. Summary
   generation/persistence is derived-only and must see alerts tagged to that same
   revision.
-- Treatment classification is current only when its revision equals
-  `profile_revision`. Raw mutation invalidates before save. Output must cover all
-  raw treatment components, contain no extras, and not collapse distinct drugs.
-  Every consumer falls back to raw `current_treatments` when stale/failing.
-  Classification is derived, non-primary context: a web job that hits
-  `TreatmentClassificationError` or the narrow classifier timeout leaves the
-  stored classification and its revision/job identity untouched, completes as
-  `done` / `done_with_warnings` with a bounded generic warning, and never
-  invents, partially promotes, or marks that classification current. A fault
-  raised outside the classifier's own wrapping still fails the job.
+- The LLM treatment classifier is retired. Nothing refreshes
+  `treatments_classified[]`, so its revision/job identity stay whatever the
+  profile already held and `treatment_classification_is_current()` is
+  effectively always false. Stored generated rows are retained verbatim, are
+  still projected by `/api/patient/treatment-reconciliation` as
+  `legacy_treatments[].generated_classification[]` and
+  `unlinked_generated_context[]`, and still bind the legacy row and projection
+  tokens — but they are no longer surfaced in the UI and no migration deletes
+  them.
 - Classification identity is canonical treatment identity, never action/status,
-  dose, route, schedule, or formulation noise. Output identity set must exactly
-  equal raw identity set, with exactly one row per identity. Stable raw component
+  dose, route, schedule, or formulation noise. Stable raw component
   IDs and classified source mappings back ID/token/revision CAS edits; composite
   siblings must survive.
 - Alert dependency kinds are explicit: `durable` ignores unrelated revisions and

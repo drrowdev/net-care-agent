@@ -224,9 +224,12 @@ def test_routine_workspace_omits_generic_capability_disclaimers():
         assert f".{class_name}" not in CSS
 
     assert "Prior generated assessment is hidden" in APP_JS
-    assert "NET/Care-generated compatibility notes" in HTML
     assert "They are not current symptom episodes." in HTML
     assert "Caregiver-entered · unverified" in APP_JS
+    # The automatic compatibility notes surface was removed from the UI; the
+    # stored rows and their server projection are untouched.
+    assert "NET/Care-generated compatibility notes" not in HTML
+    assert "Automatic compatibility notes" not in HTML
 
 
 def test_appointment_controls_are_keyboard_and_phone_accessible():

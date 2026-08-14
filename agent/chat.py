@@ -89,9 +89,7 @@ def build_chat_system(profile: dict) -> str:
     if treatments:
         lines.append("── TREATMENTS ──")
         for t in treatments:
-            lines.append(
-                f"[{t.get('category', '?').upper()}] {t.get('text', '')} ({t.get('date', '')})"
-            )
+            lines.append(f"- {t.get('text', '')}")
         lines.append("")
 
     biomarkers = profile.get("biomarkers", [])

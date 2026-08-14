@@ -60,14 +60,29 @@ def test_exec_summary_contract_keys_present(agent):
         assert enum in tpl
 
 
-def test_questions_and_classify_enums_present(agent):
-    from agent import classify
+def test_questions_enums_present(agent):
     from agent import questions as q_mod
 
     qp = q_mod._build_questions_system_prompt(agent.DEFAULT_PROFILE)
     assert "Treatment|Diagnostics|Symptoms|Trials|Monitoring|Other" in qp
     assert "urgent|high|medium" in qp
-    assert "active|planned|completed" in classify.TREATMENT_CLASSIFIER_SYSTEM_TEMPLATE
+
+
+def test_treatment_identity_library_is_deterministic_and_model_free(agent):
+    """The LLM classifier is retired; only the deterministic library survives."""
+    from agent import treatment_identity
+
+    source = (REPO / "agent" / "treatment_identity.py").read_text(encoding="utf-8")
+    assert "messages.create" not in source
+    assert "from .llm import" not in source
+    assert "from .profile import" not in source
+    assert treatment_identity.split_treatment_components("lanreotide plus everolimus") == [
+        "lanreotide",
+        "everolimus",
+    ]
+    assert treatment_identity.treatment_identity_set("Somatuline 120mg") == {"lanreotide"}
+    assert not hasattr(agent, "classify_treatments")
+    assert not hasattr(agent, "TreatmentClassificationError")
 
 
 def test_intake_schema_keys_present(agent):
@@ -98,7 +113,6 @@ def test_feed_and_digest_jobs_acquire_mutating_lock():
 def test_model_contexts_never_read_unfiltered_documents():
     for relative in (
         "agent/chat.py",
-        "agent/classify.py",
         "agent/questions.py",
         "agent/orchestrator.py",
         "agent/exec_summary.py",

@@ -2525,8 +2525,7 @@ main#main-content {
 }
 .treatment-panel-toolbar p { margin: 0; color: var(--text1); font-size: 12px; }
 .treatment-course-list,
-.treatment-discrepancy-list,
-.treatment-legacy-list {
+.treatment-discrepancy-list {
   display: grid;
   gap: 12px;
   min-width: 0;
@@ -2655,7 +2654,6 @@ main#main-content {
   font-weight: 600;
 }
 .treatment-legacy-section,
-.treatment-generated-section,
 .treatment-outcomes,
 .treatment-linked-follow-up {
   margin-top: 13px;
@@ -2665,11 +2663,9 @@ main#main-content {
   background: var(--bg2);
 }
 .treatment-legacy-section h4,
-.treatment-generated-section h4,
 .treatment-outcomes h4,
 .treatment-linked-follow-up h4 { margin: 0 0 10px; font-size: 13px; }
-.treatment-legacy-section ol,
-.treatment-generated-section ol { display: grid; gap: 10px; margin: 0; padding-left: 22px; }
+.treatment-legacy-section ol { display: grid; gap: 10px; margin: 0; padding-left: 22px; }
 .treatment-legacy-section li { white-space: pre-wrap; overflow-wrap: anywhere; }
 .treatment-component-label { margin-left: 8px; }
 .treatment-authority-label,
@@ -4489,26 +4485,6 @@ body.dialog-open { overflow: hidden; }
 .treatment-recorded-card.compact { padding: 12px; }
 .treatment-recorded-card.compact .treatment-authority-label { margin: 0; }
 .treatment-source-detail { display: block; margin-top: 3px; color: var(--text1); font-size: 11px; }
-.treatment-generated-disclosure,
-.treatment-unlinked-generated-section {
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  background: var(--bg1);
-}
-.treatment-generated-disclosure + .treatment-unlinked-generated-section { margin-top: 12px; }
-.treatment-generated-disclosure > summary,
-.treatment-unlinked-generated-section > summary {
-  min-height: 44px;
-  padding: 11px 13px;
-  display: flex;
-  align-items: center;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.treatment-generated-disclosure > div,
-.treatment-unlinked-generated-section > :not(summary) { margin-inline: 13px; }
-.treatment-unlinked-generated-section > :last-child { margin-bottom: 13px; }
 
 .artifact-state-card {
   margin-top: 12px;
@@ -4797,8 +4773,6 @@ body.dialog-open { overflow: hidden; }
   }
   .symptom-dialog .follow-up-dialog-actions .button { width: 100%; min-height: 44px; justify-content: center; }
   .treatment-overview-section { padding: 14px; }
-  .treatment-generated-disclosure > summary,
-  .treatment-unlinked-generated-section > summary { min-height: 44px; }
   .judgment-form { grid-template-columns: 1fr; align-items: stretch; }
   .judgment-form .button,
   .symptom-workflow-actions .button { justify-self: stretch; }

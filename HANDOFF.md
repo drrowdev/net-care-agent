@@ -91,7 +91,8 @@ net-care-agent/
 │   ├── follow_through.py # Durable actions/visits, validation, CAS + audit
 │   ├── intake.py         # Document → structured JSON (single Claude call)
 │   ├── orchestrator.py   # The only agentic loop; max 12 tool-use iterations
-│   ├── classify.py       # Treatment dedup (Somatuline = lanreotide etc.)
+│   ├── classify.py       # Compat shim → treatment_identity (classifier retired)
+│   ├── treatment_identity.py # Deterministic identity (Somatuline = lanreotide etc.)
 │   ├── exec_summary.py   # JSON executive summary generator
 │   ├── questions.py      # Appointment questions (language configurable via patient.language)
 │   ├── chat.py           # /api/chat handler (pure function, no state)

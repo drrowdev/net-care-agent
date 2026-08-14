@@ -671,10 +671,12 @@ merges, deduplicates, or assigns lifecycle. Secondary panels are:
 2. **Mentions in source documents** contains every source receipt entry, duplicate,
    and exact raw value in server order. These rows are not caregiver lifecycle
    records. Source/evidence links are authenticated opaque routes.
-3. **Automatic compatibility notes** keeps mapped and source-link-unavailable
-   NET/Care-generated context collapsed and read-only. It is explicitly not a
-   treatment fact and cannot appear in lifecycle, discrepancy, outcome, or
-   follow-up controls. Every note and duplicate remains counted and preserved.
+
+The former **Automatic compatibility notes** tab was removed. The NET/Care-generated
+compatibility rows behind it are still stored in the profile and still returned by
+the treatment-reconciliation projection, so nothing was deleted — they simply have
+no UI surface, because they were machine-generated context rather than treatment
+facts and could never set treatment status.
 
 Current lifecycle buttons are exactly those returned by the server. Do not
 interpret their presence as treatment advice. A new Past record or a transition
@@ -1017,25 +1019,12 @@ A job that completes its primary work but skips a non-essential derived step
 finishes `status=done` with `stage=done_with_warnings`. That is a normal
 completion, not an error, and needs no re-submission.
 
-Treatment classification is one such step: it fails closed whenever the model
-output cannot be certified as a lossless mapping of every raw treatment entry.
-The manual assessment, feed/import, and digest jobs treat that refusal — and the
-narrow classifier timeout — as a warning. The assessment/report is still
-generated and saved, the stored classification is left untouched so it stays
-honestly stale, **Today → Treatment status** and **Patient → Treatments** show
-the raw treatment records instead, and the protected result/report artifact
-carries only the bounded notice `Treatment classification could not be
-refreshed; raw treatment records remain available.`
-
-One PHI-free `classification_skipped` line is logged with the job ID, exception
-type, and wrapped cause type — class names only, never patient or model
-content. Read the pair: `type=TreatmentClassificationError cause=none` is the
-certification refusal (a treatment entry probably contains wording the certifier
-does not recognise — correct it through the import receipt or treatment
-workflow, never by relaxing the classifier); the same type with a `cause` class
-means the classifier model call itself failed (check the Anthropic key and
-`MODEL_CLASSIFY`); a timeout type is re-raised unwrapped and so also shows
-`cause=none`. A fault outside that wrapping still fails the job normally.
+Treatment classification is no longer one of those steps. The LLM classifier was
+retired, so no job classifies treatments, nothing is logged as
+`classification_skipped`, and no job reports a classification warning.
+**Today → Treatment status** and **Patient → Treatments** are driven by
+caregiver-reviewed course records and the recorded raw treatment entries, both
+of which were always independent of the classifier.
 
 ## 13. Retention and PHI artifacts
 

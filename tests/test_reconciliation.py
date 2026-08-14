@@ -1526,10 +1526,12 @@ def test_treatment_correction_invalidates_classification_and_chat_falls_back_raw
 
     records = agent.current_treatment_records(profile)
     assert [item["text"] for item in records] == ["lanreotide", "everolimus 10 mg"]
-    assert all(item["category"] == "unclassified" for item in records)
+    assert all("category" not in item for item in records)
     prompt = agent.build_chat_system(profile)
-    assert "[UNCLASSIFIED] lanreotide" in prompt
-    assert "[UNCLASSIFIED] everolimus 10 mg" in prompt
+    assert "- lanreotide" in prompt
+    assert "- everolimus 10 mg" in prompt
+    assert "UNCLASSIFIED" not in prompt
+    assert "(None)" not in prompt
 
     corrected = agent.public_receipt(profile, "treatment-feed")
     agent.undo_import(
@@ -1541,7 +1543,7 @@ def test_treatment_correction_invalidates_classification_and_chat_falls_back_raw
     assert [item["text"] for item in agent.current_treatment_records(profile)] == ["lanreotide"]
 
 
-def test_feed_classification_failure_keeps_raw_treatment_fallback(app_client, agent, monkeypatch):
+def test_feed_job_never_refreshes_stored_classification(app_client, agent, monkeypatch):
     app_module, client = app_client
     profile = agent.load_profile()
     profile["patient"]["current_treatments"] = ["lanreotide"]
@@ -1551,9 +1553,10 @@ def test_feed_classification_failure_keeps_raw_treatment_fallback(app_client, ag
     ]
     profile["treatments_classification_revision"] = profile["profile_revision"]
     agent.save_profile(profile, clinical_change=False)
+    stored_rows = copy.deepcopy(agent.load_profile()["treatments_classified"])
     app_module._jobs = [
         {
-            "id": "classification-failure",
+            "id": "classification-frozen",
             "type": "feed",
             "status": "queued",
             "stage": "queued",
@@ -1562,11 +1565,6 @@ def test_feed_classification_failure_keeps_raw_treatment_fallback(app_client, ag
         }
     ]
     monkeypatch.setattr(agent, "run_orchestrator", lambda *_args, **_kwargs: "report")
-    monkeypatch.setattr(
-        agent,
-        "classify_treatments",
-        lambda _profile: (_ for _ in ()).throw(RuntimeError("classification failed")),
-    )
     payload = {
         "document_type": "doctor_note",
         "date": "2026-08-01",
@@ -1581,191 +1579,16 @@ def test_feed_classification_failure_keeps_raw_treatment_fallback(app_client, ag
         ],
     }
     with patch_llm(agent, lambda **_: llm_text(json.dumps(payload))):
-        app_module._run_feed_job("classification-failure", "Start everolimus")
+        app_module._run_feed_job("classification-frozen", "Start everolimus")
 
     saved = agent.load_profile()
     status = client.get("/api/status").get_json()
     assert saved["treatments_classification_revision"] is None
     assert saved["patient"]["current_treatments"] == ["lanreotide", "everolimus"]
-    assert status["treatments_classified"] == []
-    assert status["treatments_fallback"] == ["lanreotide", "everolimus"]
-    assert status["treatments_classification_current"] is False
-
-
-def test_stale_and_legacy_treatment_edits_are_rejected_without_raw_mutation(
-    app_client, agent, empty_profile
-):
-    _, client = app_client
-    empty_profile["profile_revision"] = 3
-    empty_profile["patient"]["current_treatments"] = ["lanreotide", "everolimus"]
-    empty_profile["treatments_classified"] = [
-        {"text": "lanreotide", "label": "Lanreotide", "category": "active"}
-    ]
-    empty_profile["treatments_classification_revision"] = 2
-    agent.save_profile(empty_profile, clinical_change=False)
-
-    stale_edit = client.post(
-        "/api/treatments/fake-id",
-        json={
-            "action": "complete",
-            "expected_token": "stale-token",
-            "expected_profile_revision": 3,
-        },
-    )
-    assert stale_edit.status_code == 409
-
-    assert client.post("/api/treatments/update", json={"idx": 0}).status_code == 410
-    assert client.post("/api/treatments/delete", json={"text": "everolimus"}).status_code == 410
-    saved = agent.load_profile()
-    assert saved["patient"]["current_treatments"] == ["lanreotide", "everolimus"]
-    assert saved["treatments_classification_revision"] == 2
-
-
-def _seed_current_composite_classification(agent, profile):
-    profile["profile_revision"] = 3
-    profile["patient"]["current_treatments"] = ["lanreotide plus everolimus"]
-    agent.sync_treatment_records(profile)
-    payload = [
-        {"text": "lanreotide", "label": "Lanreotide", "category": "active"},
-        {"text": "everolimus", "label": "Everolimus", "category": "active"},
-    ]
-    with patch_llm(agent, lambda **_: llm_text(json.dumps(payload))):
-        profile["treatments_classified"] = agent.classify_treatments(profile)
-    profile["treatments_classification_revision"] = 3
-    profile["treatments_classification_job_id"] = "seed"
-    agent.save_profile(profile, clinical_change=False)
-
-
-def test_composite_remove_by_id_preserves_sibling_after_reorder(app_client, agent, empty_profile):
-    _, client = app_client
-    _seed_current_composite_classification(agent, empty_profile)
-    status = client.get("/api/status").get_json()
-    lanreotide = next(
-        item for item in status["treatments_classified"] if item["text"] == "lanreotide"
-    )
-
-    reordered = agent.load_profile()
-    reordered["treatments_classified"].reverse()
-    agent.save_profile(reordered, clinical_change=False)
-    response = client.post(
-        f"/api/treatments/{lanreotide['id']}",
-        json={
-            "action": "remove",
-            "expected_token": lanreotide["edit_token"],
-            "expected_profile_revision": status["profile_revision"],
-        },
-    )
-
-    assert response.status_code == 200
-    saved = agent.load_profile()
-    assert saved["patient"]["current_treatments"] == ["everolimus"]
-    assert [item["text"] for item in saved["treatments_classified"]] == ["everolimus"]
-    assert saved["treatments_classification_revision"] == saved["profile_revision"]
-
-
-def test_symbolic_composite_remove_preserves_sibling(app_client, agent, empty_profile):
-    _, client = app_client
-    empty_profile["profile_revision"] = 3
-    empty_profile["patient"]["current_treatments"] = ["lanreotide + everolimus"]
-    agent.sync_treatment_records(empty_profile)
-    payload = [
-        {"text": "lanreotide", "label": "Lanreotide", "category": "active"},
-        {"text": "everolimus", "label": "Everolimus", "category": "active"},
-    ]
-    with patch_llm(agent, lambda **_: llm_text(json.dumps(payload))):
-        empty_profile["treatments_classified"] = agent.classify_treatments(empty_profile)
-    empty_profile["treatments_classification_revision"] = 3
-    empty_profile["treatments_classification_job_id"] = "seed"
-    agent.save_profile(empty_profile, clinical_change=False)
-    status = client.get("/api/status").get_json()
-    lanreotide = next(
-        item for item in status["treatments_classified"] if item["text"] == "lanreotide"
-    )
-
-    response = client.post(
-        f"/api/treatments/{lanreotide['id']}",
-        json={
-            "action": "remove",
-            "expected_token": lanreotide["edit_token"],
-            "expected_profile_revision": status["profile_revision"],
-        },
-    )
-
-    assert response.status_code == 200
-    saved = agent.load_profile()
-    assert saved["patient"]["current_treatments"] == ["everolimus"]
-    assert [item["text"] for item in saved["treatments_classified"]] == ["everolimus"]
-
-
-def test_surgery_and_medication_composite_preserves_surgery_on_remove(
-    app_client, agent, empty_profile
-):
-    _, client = app_client
-    empty_profile["profile_revision"] = 3
-    empty_profile["patient"]["current_treatments"] = ["hepatectomy and lanreotide"]
-    agent.sync_treatment_records(empty_profile)
-    payload = [
-        {"text": "hepatectomy", "label": "Hepatectomy", "category": "completed"},
-        {"text": "lanreotide", "label": "Lanreotide", "category": "active"},
-    ]
-    with patch_llm(agent, lambda **_: llm_text(json.dumps(payload))):
-        empty_profile["treatments_classified"] = agent.classify_treatments(empty_profile)
-    empty_profile["treatments_classification_revision"] = 3
-    empty_profile["treatments_classification_job_id"] = "seed"
-    agent.save_profile(empty_profile, clinical_change=False)
-    status = client.get("/api/status").get_json()
-    lanreotide = next(
-        item for item in status["treatments_classified"] if item["text"] == "lanreotide"
-    )
-
-    response = client.post(
-        f"/api/treatments/{lanreotide['id']}",
-        json={
-            "action": "remove",
-            "expected_token": lanreotide["edit_token"],
-            "expected_profile_revision": 3,
-        },
-    )
-
-    assert response.status_code == 200
-    saved = agent.load_profile()
-    assert saved["patient"]["current_treatments"] == ["hepatectomy"]
-    assert [item["text"] for item in saved["treatments_classified"]] == ["hepatectomy"]
-
-
-@pytest.mark.parametrize("action", ["remove", "complete"])
-def test_treatment_edit_rejects_nonexclusive_uncertified_source_mapping(
-    app_client, agent, empty_profile, action
-):
-    _, client = app_client
-    empty_profile["profile_revision"] = 3
-    empty_profile["patient"]["current_treatments"] = ["Switched from lanreotide to ABC-123"]
-    records = agent.sync_treatment_records(empty_profile)
-    treatment = {
-        "id": "txclass_lanreotide",
-        "text": "lanreotide",
-        "label": "lanreotide",
-        "category": "active",
-        "source_treatment_ids": [records[0]["id"]],
-    }
-    empty_profile["treatments_classified"] = [treatment]
-    empty_profile["treatments_classification_revision"] = 3
-    empty_profile["treatments_classification_job_id"] = "legacy-unsafe"
-    agent.save_profile(empty_profile, clinical_change=False)
-    token = agent.treatment_edit_token(empty_profile, treatment)
-
-    response = client.post(
-        "/api/treatments/txclass_lanreotide",
-        json={
-            "action": action,
-            "expected_token": token,
-            "expected_profile_revision": 3,
-        },
-    )
-
-    assert response.status_code == 409
-    saved = agent.load_profile()
-    assert saved["patient"]["current_treatments"] == ["Switched from lanreotide to ABC-123"]
+    assert saved["treatments_classified"] == stored_rows
+    assert "treatments_classified" not in status
+    assert "treatments_fallback" not in status
+    assert "treatments_classification_current" not in status
 
 
 @pytest.mark.parametrize(
@@ -1800,91 +1623,53 @@ def test_identity_aware_delimiters_create_disjoint_component_records(agent, empt
     assert len({item["id"] for item in records}) == 2
 
 
-def test_composite_complete_by_id_preserves_sibling_component(app_client, agent, empty_profile):
-    _, client = app_client
-    _seed_current_composite_classification(agent, empty_profile)
-    status = client.get("/api/status").get_json()
-    lanreotide = next(
-        item for item in status["treatments_classified"] if item["text"] == "lanreotide"
-    )
-
-    response = client.post(
-        f"/api/treatments/{lanreotide['id']}",
-        json={
-            "action": "complete",
-            "expected_token": lanreotide["edit_token"],
-            "expected_profile_revision": status["profile_revision"],
-        },
-    )
-
-    assert response.status_code == 200
-    saved = agent.load_profile()
-    assert saved["patient"]["current_treatments"] == ["lanreotide [completed] plus everolimus"]
-    by_text = {item["text"]: item for item in saved["treatments_classified"]}
-    assert by_text["lanreotide"]["category"] == "completed"
-    assert by_text["everolimus"]["category"] == "active"
-
-
-def test_treatment_edit_rejects_changed_mapped_component(app_client, agent, empty_profile):
-    _, client = app_client
-    _seed_current_composite_classification(agent, empty_profile)
-    status = client.get("/api/status").get_json()
-    lanreotide = next(
-        item for item in status["treatments_classified"] if item["text"] == "lanreotide"
-    )
-
-    changed = agent.load_profile()
-    mapped_id = lanreotide["source_treatment_ids"][0]
-    next(
-        item for item in changed["patient"]["current_treatment_records"] if item["id"] == mapped_id
-    )["text"] = "changed lanreotide"
-    agent.save_profile(changed, clinical_change=False)
-    response = client.post(
-        f"/api/treatments/{lanreotide['id']}",
-        json={
-            "action": "remove",
-            "expected_token": lanreotide["edit_token"],
-            "expected_profile_revision": status["profile_revision"],
-        },
-    )
-
-    assert response.status_code == 409
-    assert len(agent.load_profile()["treatments_classified"]) == 2
-
-
-def test_transition_treatment_mapping_is_exclusive_and_preserves_destination(
-    app_client, agent, empty_profile
-):
+def test_generated_classification_edit_routes_are_tombstones(app_client, agent, empty_profile):
+    """All three index/text/id treatment edit routes are retired and inert."""
     _, client = app_client
     empty_profile["profile_revision"] = 3
-    empty_profile["patient"]["current_treatments"] = ["Switched from lanreotide to everolimus"]
-    payload = [
-        {"text": "lanreotide", "label": "Lanreotide", "category": "completed"},
-        {"text": "everolimus", "label": "Everolimus", "category": "active"},
+    empty_profile["patient"]["current_treatments"] = ["lanreotide", "everolimus"]
+    empty_profile["treatments_classified"] = [
+        {"text": "lanreotide", "label": "Lanreotide", "category": "active"}
     ]
-    with patch_llm(agent, lambda **_: llm_text(json.dumps(payload))):
-        empty_profile["treatments_classified"] = agent.classify_treatments(empty_profile)
-    empty_profile["treatments_classification_revision"] = 3
-    empty_profile["treatments_classification_job_id"] = "seed"
+    empty_profile["treatments_classification_revision"] = 2
     agent.save_profile(empty_profile, clinical_change=False)
-    status = client.get("/api/status").get_json()
-    lanreotide = next(
-        item for item in status["treatments_classified"] if item["text"] == "lanreotide"
-    )
+    before = agent.load_profile()
 
-    response = client.post(
-        f"/api/treatments/{lanreotide['id']}",
-        json={
-            "action": "remove",
-            "expected_token": lanreotide["edit_token"],
-            "expected_profile_revision": 3,
-        },
+    assert (
+        client.post(
+            "/api/treatments/txclass_lanreotide",
+            json={
+                "action": "complete",
+                "expected_token": "any-token",
+                "expected_profile_revision": 3,
+            },
+        ).status_code
+        == 410
     )
+    assert client.post("/api/treatments/update", json={"idx": 0}).status_code == 410
+    assert client.post("/api/treatments/delete", json={"text": "everolimus"}).status_code == 410
 
-    assert response.status_code == 200
-    saved = agent.load_profile()
-    assert saved["patient"]["current_treatments"] == ["everolimus"]
-    assert [item["text"] for item in saved["treatments_classified"]] == ["everolimus"]
+    assert agent.load_profile() == before
+
+
+def test_component_removal_preserves_composite_siblings_deterministically(agent, empty_profile):
+    """The retired route's only real behaviour, now exercised directly."""
+    empty_profile["patient"]["current_treatments"] = ["lanreotide plus everolimus"]
+    records = agent.sync_treatment_records(empty_profile)
+    assert [item["text"] for item in records] == ["lanreotide", "everolimus"]
+
+    empty_profile["patient"]["current_treatment_records"] = [
+        item for item in records if item["text"] != "lanreotide"
+    ]
+    assert agent.rebuild_raw_treatments(empty_profile) == ["everolimus"]
+
+
+def test_component_completion_marker_preserves_composite_siblings(agent, empty_profile):
+    empty_profile["patient"]["current_treatments"] = ["lanreotide plus everolimus"]
+    records = agent.sync_treatment_records(empty_profile)
+    records[0]["text"] = f"{records[0]['text']} [completed]"
+
+    assert agent.rebuild_raw_treatments(empty_profile) == ["lanreotide [completed] plus everolimus"]
 
 
 def test_generated_questions_are_dynamically_stale_after_profile_revision_change(

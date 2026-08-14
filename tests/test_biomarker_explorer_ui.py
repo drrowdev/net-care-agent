@@ -649,7 +649,6 @@ def _standard_payloads(projection: dict) -> dict[str, object]:
             "stats": {},
             "alerts": [],
             "treatments_classified": [],
-            "treatments_fallback": [],
         },
         "/api/patient/biomarker-series": projection,
         "/api/follow-ups": {

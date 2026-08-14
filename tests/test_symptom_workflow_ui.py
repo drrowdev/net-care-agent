@@ -364,7 +364,6 @@ def _standard_payload(path: str, state: _LiveState) -> object:
             "stats": {},
             "alerts": [],
             "treatments_classified": [],
-            "treatments_fallback": [],
         },
         "/api/patient/biomarker-series": {
             "profile_revision": revision,

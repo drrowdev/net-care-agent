@@ -144,9 +144,6 @@ _SAFE_JOB_ERRORS = {
 _INTERRUPTED_GUIDANCE = (
     "This job was interrupted by a server restart. Re-submit the same request to retry."
 )
-_CLASSIFICATION_SKIPPED_WARNING = (
-    "Treatment classification could not be refreshed; raw treatment records remain available."
-)
 _MAX_LINKABLE_APPOINTMENTS = 100
 _MAX_VISIT_QUESTION_REORDER_ITEMS = 200
 _APPOINTMENT_PROJECTION_FIELDS = (
@@ -1880,42 +1877,6 @@ def _refresh_summary(profile: dict, *, generation_id: str) -> str | None:
     return None
 
 
-def _log_classification_skipped(job_id: str, exc: BaseException) -> None:
-    """Record one fixed PHI-free line; only exception class names are emitted."""
-    cause = exc.__cause__
-    log.warning(
-        "classification_skipped id=%s type=%s cause=%s",
-        job_id,
-        type(exc).__name__,
-        type(cause).__name__ if cause is not None else "none",
-    )
-
-
-def _classify_treatments_or_warn(profile: dict, *, job_id: str) -> tuple[list | None, str | None]:
-    """Classify treatments, downgrading a classifier failure to a warning.
-
-    Returns ``(classified, warning)``. Classification is ancillary derived
-    context — it fails closed on purpose when it cannot certify a lossless
-    mapping — so it must not abort a job whose primary work can still complete.
-    On the warning path the caller leaves the stored classification and its
-    revision/job identity untouched, keeping the raw ``current_treatments``
-    fallback authoritative. The logged type/cause pair distinguishes a
-    certification refusal from a failed model call, which the classifier wraps
-    in the same error type. Faults raised outside that wrapping propagate and
-    still fail the job.
-    """
-    try:
-        return agent.classify_treatments(profile), None
-    except agent.TreatmentClassificationError as exc:
-        _log_classification_skipped(job_id, exc)
-        return None, _CLASSIFICATION_SKIPPED_WARNING
-    except Exception as exc:
-        if not agent.is_timeout_error(exc):
-            raise
-        _log_classification_skipped(job_id, exc)
-        return None, _CLASSIFICATION_SKIPPED_WARNING
-
-
 def _finalize_generated_alert_dependencies(
     profile: dict,
     *,
@@ -2045,15 +2006,7 @@ def _run_feed_job(
             extracted["source_job_id"] = job_id
             extracted["generation_profile_revision"] = int(profile.get("profile_revision") or 0) + 1
             report = agent.run_orchestrator(profile, extracted)
-            _update_job(job_id, {"stage": "classifying"})
-            classified_txs, classification_warning = _classify_treatments_or_warn(
-                profile, job_id=job_id
-            )
             final_revision = int(profile.get("profile_revision") or 0) + 1
-            if classification_warning is None:
-                profile["treatments_classified"] = classified_txs
-                profile["treatments_classification_revision"] = final_revision
-                profile["treatments_classification_job_id"] = job_id
             research_update = agent.record_latest_research_update(
                 profile,
                 job_id=job_id,
@@ -2084,8 +2037,6 @@ def _run_feed_job(
             reports_dir.mkdir(parents=True, exist_ok=True)
             stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             rpath = reports_dir / f"report_feed_{stamp}.txt"
-            if classification_warning:
-                report += f"\n\n## Treatment classification warning\n{classification_warning}"
             if summary_error:
                 report += f"\n\n## Summary refresh warning\n{summary_error}"
             atomic_write_text(rpath, report)
@@ -2094,9 +2045,7 @@ def _run_feed_job(
                 job_id,
                 {
                     "status": "done",
-                    "stage": (
-                        "done_with_warnings" if (summary_error or classification_warning) else "done"
-                    ),
+                    "stage": ("done_with_warnings" if summary_error else "done"),
                     "report_file": _artifact_ref(rpath),
                     "artifact_state": "available",
                     "profile_revision": profile.get("profile_revision"),
@@ -2157,15 +2106,7 @@ def _run_digest_job(job_id: str):
                 "generation_profile_revision": int(profile.get("profile_revision") or 0) + 1,
             }
             report = agent.run_orchestrator(profile, extracted)
-            _update_job(job_id, {"stage": "classifying"})
-            classified_txs, classification_warning = _classify_treatments_or_warn(
-                profile, job_id=job_id
-            )
             final_revision = int(profile.get("profile_revision") or 0) + 1
-            if classification_warning is None:
-                profile["treatments_classified"] = classified_txs
-                profile["treatments_classification_revision"] = final_revision
-                profile["treatments_classification_job_id"] = job_id
             agent.record_latest_research_update(
                 profile,
                 job_id=job_id,
@@ -2188,8 +2129,6 @@ def _run_digest_job(job_id: str):
             reports_dir.mkdir(parents=True, exist_ok=True)
             stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             rpath = reports_dir / f"report_digest_{stamp}.txt"
-            if classification_warning:
-                report += f"\n\n## Treatment classification warning\n{classification_warning}"
             if summary_error:
                 report += f"\n\n## Summary refresh warning\n{summary_error}"
             atomic_write_text(rpath, report)
@@ -2198,9 +2137,7 @@ def _run_digest_job(job_id: str):
                 job_id,
                 {
                     "status": "done",
-                    "stage": (
-                        "done_with_warnings" if (summary_error or classification_warning) else "done"
-                    ),
+                    "stage": ("done_with_warnings" if summary_error else "done"),
                     "report_file": _artifact_ref(rpath),
                     "artifact_state": "available",
                     "profile_revision": profile.get("profile_revision"),
@@ -2308,30 +2245,10 @@ def _run_summary_job(job_id: str) -> None:
         _update_job(job_id, {"status": "running", "stage": "generating", "started_at": now_stamp()})
         with agent.serialized_mutation():
             profile = agent.load_profile()
-            classified_txs, classification_warning = _classify_treatments_or_warn(
-                profile, job_id=job_id
-            )
-            if classification_warning is None:
-                profile["treatments_classified"] = classified_txs
-                profile["treatments_classification_revision"] = profile.get("profile_revision")
-                profile["treatments_classification_job_id"] = job_id
             summary_error = _refresh_summary(profile, generation_id=job_id)
             agent.save_profile(profile, clinical_change=False)
-            classification_current = agent.treatment_classification_is_current(profile)
             result = {
                 "summary": profile["executive_summary"],
-                "treatments_classified": (
-                    list(profile.get("treatments_classified") or [])
-                    if classification_current
-                    else []
-                ),
-                "treatments_fallback": (
-                    []
-                    if classification_current
-                    else profile.get("patient", {}).get("current_treatments", [])
-                ),
-                "treatments_classification_current": classification_current,
-                "classification_warning": classification_warning,
                 "summary_error": summary_error,
                 "profile_revision": profile["profile_revision"],
             }
@@ -2340,10 +2257,7 @@ def _run_summary_job(job_id: str) -> None:
             job_id,
             {
                 "status": "done",
-                # Only the newly non-fatal classification skip changes this stage.
-                # A summary-generation failure keeps its existing stage and is
-                # surfaced through summary staleness exactly as before.
-                "stage": "done_with_warnings" if classification_warning else "done",
+                "stage": "done",
                 "result_file": result_ref,
                 "artifact_state": "available",
                 "profile_revision": profile.get("profile_revision"),
@@ -3098,7 +3012,6 @@ def api_status():
         key=lambda item: item.get("added_at") or "",
         default=None,
     )
-    classification_current = agent.treatment_classification_is_current(profile)
     return jsonify(
         {
             "patient": profile.get("patient", {}),
@@ -3116,20 +3029,6 @@ def api_status():
                 if latest_document_import is not None
                 else None
             ),
-            "treatments_classified": (
-                [
-                    {**item, "edit_token": agent.treatment_edit_token(profile, item)}
-                    for item in profile.get("treatments_classified", [])
-                ]
-                if classification_current
-                else []
-            ),
-            "treatments_fallback": (
-                []
-                if classification_current
-                else profile.get("patient", {}).get("current_treatments", [])
-            ),
-            "treatments_classification_current": classification_current,
             "stats": {
                 "trials_tracked": len(profile.get("trials_tracked", [])),
                 "literature_watched": len(profile.get("literature_watched", [])),
@@ -4827,96 +4726,14 @@ def api_treatments_update():
 
 
 @app.route("/api/treatments/<treatment_id>", methods=["POST"])
-@serialized_profile_mutation
 def api_treatment_edit(treatment_id):
-    data = request.get_json(force=True) or {}
-    action = data.get("action")
-    expected_token = str(data.get("expected_token") or "")
-    expected_revision = data.get("expected_profile_revision")
-    if action not in {"remove", "complete"} or not expected_token or expected_revision is None:
-        return (
-            jsonify(
-                {"error": "action, expected_token, and expected_profile_revision are required"}
-            ),
-            400,
-        )
-    profile = agent.load_profile()
-    classified = profile.get("treatments_classified", [])
-    treatment = next((item for item in classified if item.get("id") == treatment_id), None)
-    if (
-        not agent.treatment_classification_is_current(profile)
-        or str(expected_revision) != str(profile.get("profile_revision"))
-        or treatment is None
-        or agent.treatment_edit_token(profile, treatment) != expected_token
-    ):
-        return (
-            jsonify(
-                {
-                    "error": "The treatment changed or classification is outdated. Reload before editing."
-                }
-            ),
-            409,
-        )
-    source_ids = set(treatment.get("source_treatment_ids") or [])
-    records = profile.get("patient", {}).get("current_treatment_records", [])
-    if not source_ids or not any(item.get("id") in source_ids for item in records):
-        return jsonify({"error": "Mapped raw treatment components are unavailable"}), 409
-    overlapping = [
-        item
-        for item in classified
-        if item.get("id") != treatment_id
-        and source_ids & set(item.get("source_treatment_ids") or [])
-    ]
-    if overlapping:
-        return (
-            jsonify(
-                {
-                    "error": "Treatment source mapping overlaps another treatment. Refresh classification before editing."
-                }
-            ),
-            409,
-        )
-    treatment_identities = agent.treatment_identity_set(
-        treatment.get("text") or treatment.get("label") or ""
-    )
-    selected_records = [item for item in records if item.get("id") in source_ids]
-    if len(treatment_identities) != 1 or any(
-        agent.treatment_identity_set(record.get("text", "")) != treatment_identities
-        or not agent.treatment_text_is_certifiable(record.get("text", ""))
-        for record in selected_records
-    ):
-        return (
-            jsonify(
-                {
-                    "error": "Treatment source coverage is not exclusive. Refresh classification before editing."
-                }
-            ),
-            409,
-        )
-    if action == "remove":
-        profile["patient"]["current_treatment_records"] = [
-            item for item in records if item.get("id") not in source_ids
-        ]
-        profile["treatments_classified"] = [
-            item for item in classified if item.get("id") != treatment_id
-        ]
-    else:
-        for record in records:
-            if record.get("id") in source_ids and "[completed]" not in record.get("text", ""):
-                record["text"] = f"{record.get('text', '').strip()} [completed]"
-        treatment["category"] = "completed"
-    agent.rebuild_raw_treatments(profile)
-    profile["treatments_classification_revision"] = int(profile.get("profile_revision") or 0) + 1
-    profile["treatments_classification_job_id"] = "manual-treatment-edit"
-    agent.save_profile(profile)
-    return jsonify(
-        {
-            "ok": True,
-            "treatments_classified": [
-                {**item, "edit_token": agent.treatment_edit_token(profile, item)}
-                for item in profile.get("treatments_classified", [])
-            ],
-        }
+    return (
+        jsonify(
+            {
+                "error": "Generated-classification treatment edits are no longer supported. Review treatment status in Patient → Treatments."
+            }
+        ),
+        410,
     )
 
 

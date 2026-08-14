@@ -943,7 +943,6 @@ def test_live_shared_projection_totals_authorities_and_accessibility(width: int,
                 "Overview 6",
                 "Differences to review 0",
                 "Mentions in source documents 2",
-                "Automatic compatibility notes 11",
             ]
             page.locator("#treatment-tab-sources").click()
             assert page.locator("#treatment-source-table-body tr").count() == 2
@@ -966,37 +965,22 @@ def test_live_shared_projection_totals_authorities_and_accessibility(width: int,
             )
             assert overflow["document"] == 0
             assert overflow["tableScrolls"] is (width == 360)
+            # The automatic compatibility notes tab was removed. "End" must land
+            # on the last remaining tab, and no generated-context surface may
+            # render even though the projection still carries those rows.
             page.locator("#treatment-tab-sources").focus()
             page.keyboard.press("End")
-            assert page.evaluate("() => document.activeElement.id") == "treatment-tab-earlier"
-            page.locator("#treatment-tab-earlier").click()
-            earlier = page.locator("#treatment-panel-earlier").inner_text()
-            assert "Mapped automatic compatibility notes (1)" in earlier
-            assert "Other automatic compatibility notes (10)" in earlier
-            page.locator(".treatment-generated-disclosure > summary").click()
-            page.locator(".treatment-unlinked-generated-section > summary").click()
-            earlier = page.locator("#treatment-panel-earlier").inner_text()
-            assert "NET/Care-generated context - not a treatment fact" in earlier
-            assert "All 10 notes are retained; none are omitted." in earlier
-            assert "Earlier app component" not in earlier
-            assert page.locator(".treatment-unlinked-generated-card").count() == 10
-            assert (
-                page.locator(".treatment-generated-section").inner_text().count("Not recorded") == 3
-            )
-            assert (
-                page.locator(".treatment-unlinked-generated-card")
-                .first.inner_text()
-                .count("Not recorded")
-                == 3
-            )
-            assert (
-                page.locator(
-                    ".treatment-unlinked-generated-section a, "
-                    ".treatment-unlinked-generated-section button"
-                ).count()
-                == 0
-            )
-            assert GUIDANCE not in page.locator("#treatment-workspace").inner_text()
+            assert page.evaluate("() => document.activeElement.id") == "treatment-tab-sources"
+            page.keyboard.press("Home")
+            assert page.evaluate("() => document.activeElement.id") == "treatment-tab-records"
+            assert page.locator("#treatment-tab-earlier").count() == 0
+            assert page.locator("#treatment-panel-earlier").count() == 0
+            assert page.locator(".treatment-generated-disclosure").count() == 0
+            assert page.locator(".treatment-unlinked-generated-section").count() == 0
+            workspace_text = page.locator("#treatment-workspace").inner_text()
+            assert "compatibility notes" not in workspace_text
+            assert "NET/Care-generated context - not a treatment fact" not in workspace_text
+            assert GUIDANCE not in workspace_text
             treatment_gets = [
                 item
                 for item in state.requests
@@ -1052,12 +1036,11 @@ def test_live_recorded_treatments_are_first_class_without_status_inference(
             for forbidden in ("legacy", "earlier app", "archived", "historical", "unverified"):
                 assert forbidden not in normalized
 
-            page.locator("#treatment-tab-earlier").click()
-            assert page.locator(".treatment-unlinked-generated-section").count() == 1
-            assert not page.locator(".treatment-unlinked-generated-section").evaluate(
-                "node => node.open"
-            )
-            assert page.locator(".treatment-unlinked-generated-card").count() == 10
+            # The unlinked generated context is still carried by the projection
+            # (10 rows) but has no UI surface at all after the tab removal.
+            assert page.locator("#treatment-tab-earlier").count() == 0
+            assert page.locator(".treatment-unlinked-generated-section").count() == 0
+            assert page.locator(".treatment-unlinked-generated-card").count() == 0
             writes = [
                 request
                 for request in state.requests

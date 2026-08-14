@@ -371,7 +371,7 @@ class Alert(_Lenient):
 
 
 class TreatmentClassified(_Lenient):
-    """Built by agent.classify.classify_treatments — deduped + categorised."""
+    """Frozen historical rows from the retired LLM treatment classifier."""
 
     id: str | None = None
     text: str | None = Field(None, description="Canonical merged description")

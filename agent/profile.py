@@ -631,7 +631,7 @@ def sync_treatment_records(profile: dict) -> list[dict]:
         occurrences[text] = occurrence + 1
         source_digest = hashlib.sha256(f"{text}:{occurrence}".encode()).hexdigest()[:20]
         source_id = f"txsrc_{source_digest}"
-        from .classify import split_treatment_components
+        from .treatment_identity import split_treatment_components
 
         components = split_treatment_components(text)
         for component_order, component in enumerate(components):
@@ -685,24 +685,39 @@ def treatment_edit_token(profile: dict, classified: dict) -> str:
 
 
 def treatment_classification_is_current(profile: dict) -> bool:
+    """Whether stored generated classification matches the current revision.
+
+    The LLM classifier that refreshed this was retired, so nothing sets the
+    revision any more and this is effectively always ``False``. It is kept
+    because the stored revision/job-id provenance is still projected as
+    treatment-reconciliation authority.
+    """
     revision = profile.get("treatments_classification_revision")
     return revision is not None and str(revision) == str(profile.get("profile_revision"))
 
 
 def current_treatment_records(profile: dict) -> list[dict]:
-    """Return current classification or a lossless raw-treatment fallback."""
-    if treatment_classification_is_current(profile):
-        return list(profile.get("treatments_classified") or [])
-    return [
-        {
-            "text": text,
-            "label": text,
-            "category": "unclassified",
-            "date": None,
-            "classification_stale": True,
-        }
-        for text in profile.get("patient", {}).get("current_treatments", [])
+    """Return deterministic treatment components for model context.
+
+    Component text comes from the deterministic split maintained by
+    ``sync_treatment_records``; raw entries are the fallback when no component
+    mapping exists yet. No category is inferred and no generated
+    classification is read — treatment status is caregiver workflow authority
+    and is deliberately not exposed to any model prompt.
+    """
+    records = profile.get("patient", {}).get("current_treatment_records") or []
+    texts = [
+        str(record.get("text", "")).strip()
+        for record in records
+        if isinstance(record, dict) and str(record.get("text", "")).strip()
     ]
+    if not texts:
+        texts = [
+            str(text).strip()
+            for text in profile.get("patient", {}).get("current_treatments", [])
+            if str(text).strip()
+        ]
+    return [{"text": text, "label": text} for text in texts]
 
 
 def alert_token(alert: dict) -> str:

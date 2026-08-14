@@ -283,6 +283,16 @@ Schema v12 migration adds only empty `treatment_courses[]` and
 `treatment_discrepancies[]`; it never promotes or rewrites existing treatment,
 component, classification, source, receipt, evidence, duplicate, order, or
 unknown-field authority.
+Each projected source occurrence is paired with a sibling `source_fact_documents[]`
+entry keyed by the same opaque `ref`, carrying only the originating receipt's
+`filename`, `document_type`, and `document_date`. It answers "which document, and
+when" for a mention. It is deliberately a sibling rather than extra fields on the
+source fact, because `_validate_source_fact_snapshot` compares the citation
+snapshot field set by exact equality — widening `_SOURCE_FACT_PUBLIC_FIELDS` would
+invalidate every stored discrepancy snapshot and fail the whole read closed with
+`422`. The pairing is the receipt-to-change parent relationship already present in
+the projection, so it involves no matching, correlation, or inference, and it
+creates no link between a mention and any caregiver course.
 Schema v13 adds one mechanical migration: a pre-extension past course lacking
 terminal authority receives `terminal_qualifier=legacy_unspecified`. It changes
 no status, date, text, ID, order, discrepancy, source/generated/receipt/action

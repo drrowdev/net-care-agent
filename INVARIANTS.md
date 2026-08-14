@@ -320,7 +320,11 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
   no-store complete bounded projection. Both revisions and opaque tokens bind
   full raw/classified/component/source/document/import/receipt/evidence/course/
   terminal/lifecycle/discrepancy/history/action authority for both citation
-  sides. Immutable
+  sides. Source-occurrence document identity (`filename`, `document_type`,
+  `document_date`) is projected only as the sibling `source_fact_documents[]`
+  keyed by the same opaque `ref`, is bound by the projection token, and never
+  widens the source-fact citation snapshot field set. It carries no course
+  linkage, correlation, or inference. Immutable
   snapshots and current lifecycle state are separate; changing either side
   rotates current tokens without snapshot rewrite. Public output exposes no paths,
   offsets, quotes, raw source/import/job/receipt/change IDs, or client-

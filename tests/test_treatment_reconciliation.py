@@ -223,6 +223,103 @@ def test_projection_preserves_source_occurrence_and_hides_internal_coordinates(
     )
 
 
+_SOURCE_FACT_SNAPSHOT_FIELDS = {
+    "ref",
+    "token",
+    "observed_text",
+    "record_value",
+    "operation",
+    "review_state",
+    "receipt_state",
+    "provenance",
+}
+
+
+def test_source_fact_documents_expose_document_identity_as_a_sibling_key(agent, empty_profile):
+    profile = _ingest_treatment(agent, empty_profile)
+
+    projection = agent.project_treatment_reconciliation(profile)
+    source = projection["source_facts"][0]
+    documents = projection["source_fact_documents"]
+
+    assert projection["source_fact_count"] == 1
+    assert len(documents) == projection["source_fact_count"]
+    assert documents[0] == {
+        "ref": source["ref"],
+        "filename": None,
+        "document_type": "doctor_note",
+        "document_date": "2026-08-02",
+    }
+    # Document identity must never widen the citation snapshot field set, or every
+    # stored discrepancy snapshot would stop validating and fail the whole read.
+    assert set(source) == _SOURCE_FACT_SNAPSHOT_FIELDS
+    serialized = json.dumps(projection)
+    assert profile["document_imports"][0]["id"] not in serialized
+    assert profile["source_documents"][0]["id"] not in serialized
+
+
+def test_source_fact_document_identity_keeps_filename_and_exact_date_precision(
+    agent, empty_profile
+):
+    text = "Clinic note: Start lanreotide 120mg q4w."
+    payload = {
+        "document_type": "appointment_summary",
+        "date": "2026-08",
+        "summary": "Treatment discussion.",
+        "treatment_changes": ["Start lanreotide 120mg q4w"],
+        "evidence": [
+            {
+                "field": "treatment_changes",
+                "item_index": 0,
+                "source_quote": "Start lanreotide 120mg q4w",
+            }
+        ],
+    }
+    before = copy.deepcopy(empty_profile)
+    with patch_llm(agent, lambda **_: llm_text(json.dumps(payload))):
+        updated, extracted = agent.run_intake(text, empty_profile, filename="visit-summary.pdf")
+    agent.build_import_record(before, updated, extracted, job_id="doc-identity", text=text)
+
+    document = agent.project_treatment_reconciliation(updated)["source_fact_documents"][0]
+
+    assert document["filename"] == "visit-summary.pdf"
+    assert document["document_type"] == "appointment_summary"
+    # Stored precision is preserved exactly; the browser formats it for display.
+    assert document["document_date"] == "2026-08"
+
+
+def test_document_identity_never_invalidates_stored_discrepancy_source_snapshots(
+    app_client, agent, empty_profile
+):
+    _, client = app_client
+    profile = _ingest_treatment(agent, empty_profile)
+    agent.save_profile(profile, clinical_change=False)
+    course = _create_course(client, status="current", planned_date=None)[0].get_json()["course"]
+    created, _ = _create_discrepancy(client, course)
+    assert created.status_code == 201
+
+    stored = agent.load_profile()["treatment_discrepancies"][0]["source_fact_snapshot"]
+    assert set(stored) == _SOURCE_FACT_SNAPSHOT_FIELDS
+
+    reread = client.get("/api/patient/treatment-reconciliation")
+
+    assert reread.status_code == 200
+    projection = reread.get_json()
+    assert projection["discrepancies"][0]["source_fact"] == stored
+    assert projection["source_fact_documents"][0]["ref"] == stored["ref"]
+
+
+def test_source_fact_document_identity_is_bound_by_the_projection_token(agent, empty_profile):
+    profile = _ingest_treatment(agent, empty_profile)
+    baseline = agent.project_treatment_reconciliation(profile)
+
+    profile["document_imports"][0]["document_date"] = "2026-08-03"
+    rotated = agent.project_treatment_reconciliation(profile)
+
+    assert rotated["source_fact_documents"][0]["document_date"] == "2026-08-03"
+    assert rotated["projection_token"] != baseline["projection_token"]
+
+
 def test_treatment_safety_copy_is_exact_static_contract(agent, empty_profile):
     expected = (
         "NET/Care records what you enter but does not verify treatment details or advise "

@@ -8,6 +8,37 @@ incremented when something user-visible or operationally meaningful changes.
 
 ## [Unreleased]
 
+### Added
+- **The treatment workspace now names the document behind each mention.**
+  **Patient → Treatments → Mentions in source documents** gained a **Document**
+  column showing the originating document's filename — or its document type when
+  no filename was recorded — and the document's own date in Finnish format,
+  keeping the recorded precision (`2.8.2026`, `8/2026`, `2026`). Missing values
+  read *Date not recorded* / *Not recorded* rather than being guessed or
+  substituted. This answers "which document, and when" for a recorded treatment
+  mention, which previously required opening the raw source text.
+  - The identity is served as a new sibling `source_fact_documents[]` key on
+    `GET /api/patient/treatment-reconciliation`, keyed by the same opaque `ref`
+    as the mention and bound by the projection token. It is deliberately *not*
+    extra fields on `source_facts[]`: the citation snapshot validator compares
+    that field set by exact equality, so widening it would invalidate every
+    stored discrepancy source snapshot and fail the entire read closed with
+    `422`. Existing stored snapshots are untouched and still validate.
+  - No inference is involved. The pairing uses the receipt-to-change parent
+    relationship already present in the projection — no matching, correlation,
+    or staleness logic — and it creates no link between a document mention and
+    any caregiver course. Course authorship, `capture_method`, the profile
+    schema, and the model-prompt exclusion boundary are all unchanged.
+
+### Fixed
+- **Corrected a contradiction in the operating manual.** It stated that
+  document-intake treatment rows never "seed a form", while the same document
+  described — and the shipped **Record status** action implements — copying a
+  recorded row's wording and component links into the status-record dialog. The
+  guarantee that actually holds is narrower: those rows never create a course on
+  their own, authorize a status, or set treatment timing, and the dialog still
+  cannot be saved until the caregiver chooses the status.
+
 ### Removed
 - **Retired the LLM treatment classifier.** Nothing classifies treatments any
   more. The deterministic identity library it was bundled with survives intact

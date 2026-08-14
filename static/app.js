@@ -14028,6 +14028,16 @@
     return source.provenance.evidence_url === null;
   }
 
+  function treatmentSourceDocumentIsValid(document_) {
+    return treatmentHasExactKeys(document_, [
+      'ref', 'filename', 'document_type', 'document_date',
+    ])
+      && /^txref_[0-9a-f]{64}$/.test(document_.ref)
+      && treatmentBoundedString(document_.filename, 500, true)
+      && treatmentBoundedString(document_.document_type, 200, true)
+      && treatmentBoundedString(document_.document_date, 64, true);
+  }
+
   function treatmentActionIsValid(action) {
     return treatmentHasExactKeys(action, ['id', 'token', 'text', 'status', 'owner', 'due_date'])
       && treatmentBoundedString(action.id, 200)
@@ -14330,7 +14340,8 @@
         'profile_revision', 'workflow_revision', 'projection_token',
         'source_fact_count', 'legacy_treatment_count', 'unlinked_generated_context_count',
         'course_count',
-        'discrepancy_count', 'source_facts', 'legacy_treatments', 'courses',
+        'discrepancy_count', 'source_facts', 'source_fact_documents', 'legacy_treatments',
+        'courses',
         'unlinked_generated_context', 'discrepancies', 'eligible_actions',
         'safety_guidance',
       ])
@@ -14357,6 +14368,8 @@
       || data.discrepancy_count > 2000
       || !Array.isArray(data.source_facts)
       || data.source_facts.length !== data.source_fact_count
+      || !Array.isArray(data.source_fact_documents)
+      || data.source_fact_documents.length !== data.source_fact_count
       || !Array.isArray(data.legacy_treatments)
       || data.legacy_treatments.length !== data.legacy_treatment_count
       || !Array.isArray(data.unlinked_generated_context)
@@ -14391,6 +14404,15 @@
       sources.set(source.ref, source);
       sourceTokens.add(source.token);
       allIds.add(source.ref);
+    }
+    const sourceDocumentRefs = new Set();
+    for (const document_ of data.source_fact_documents) {
+      if (
+        !treatmentSourceDocumentIsValid(document_)
+        || !sources.has(document_.ref)
+        || sourceDocumentRefs.has(document_.ref)
+      ) return false;
+      sourceDocumentRefs.add(document_.ref);
     }
     const componentIds = new Set();
     const generatedIds = new Map();
@@ -14770,6 +14792,33 @@
     return links;
   }
 
+  function treatmentSourceDocumentByRef(ref) {
+    return treatmentProjection?.source_fact_documents.find(item => item.ref === ref) ?? null;
+  }
+
+  function treatmentSourceDocumentCell(document_) {
+    const cell = treatmentElement('td', 'treatment-source-document');
+    if (!document_) {
+      cell.append(treatmentElement('span', 'treatment-missing', 'Not recorded'));
+      return cell;
+    }
+    const name = document_.filename || document_.document_type;
+    cell.append(treatmentElement('strong', '', name || 'Document identity not recorded'));
+    if (name && document_.filename && document_.document_type) {
+      cell.append(
+        treatmentElement('span', 'treatment-source-detail', document_.document_type),
+      );
+    }
+    cell.append(
+      treatmentElement(
+        'span',
+        'treatment-source-detail',
+        document_.document_date ? fmtDate(document_.document_date) : 'Date not recorded',
+      ),
+    );
+    return cell;
+  }
+
   function treatmentSourceRow(source) {
     const row = treatmentElement('tr');
     const observed = treatmentElement('td');
@@ -14801,7 +14850,13 @@
       provenance.append(treatmentElement('span', 'treatment-source-detail', presentation.detail));
     }
     provenance.append(treatmentSourceLinks(source));
-    row.append(observed, value, state, provenance);
+    row.append(
+      observed,
+      value,
+      treatmentSourceDocumentCell(treatmentSourceDocumentByRef(source.ref)),
+      state,
+      provenance,
+    );
     return row;
   }
 
@@ -15170,7 +15225,7 @@
       } else {
         const row = treatmentElement('tr');
         const cell = treatmentElement('td', 'empty-state', 'No document treatment mentions are recorded.');
-        cell.colSpan = 4;
+        cell.colSpan = 5;
         row.append(cell);
         sourceBody.replaceChildren(row);
       }
@@ -15212,7 +15267,7 @@
     if (sources) {
       const row = treatmentElement('tr');
       const cell = treatmentElement('td', 'empty-state', message);
-      cell.colSpan = 4;
+      cell.colSpan = 5;
       row.append(cell);
       sources.replaceChildren(row);
     }

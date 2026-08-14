@@ -266,9 +266,13 @@ new-record conversation.
 
 Document intake may still produce legacy raw treatment rows and machine-
 generated classifications for compatibility and model context. Those values
-remain separate from the caregiver treatment workflow described below: they do
-not create a course, seed a form, authorize a status, or become a discrepancy
-citation.
+remain separate from the caregiver treatment workflow described below: they
+never create a course on their own, authorize a status, or set treatment timing.
+Machine-generated classifications additionally cannot seed a form or become a
+discrepancy citation. A legacy raw row is the one exception to seeding: its
+**Record status** action copies that row's wording and component links into the
+status-record dialog for you to review, and still refuses to save until you
+choose the status yourself (see *Patient's default Overview* below).
 
 Alert lifetime follows its declared dependency. Ingestion-failure and
 trial-status alerts are durable until resolved. Feed-source alerts deactivate
@@ -694,7 +698,14 @@ panels are:
    citation; it is read-only.
 2. **Mentions in source documents** contains every source receipt entry, duplicate,
    and exact raw value in server order. These rows are not caregiver lifecycle
-   records. Source/evidence links are authenticated opaque routes.
+   records. Source/evidence links are authenticated opaque routes. A **Document**
+   column names the document each mention came from — its filename, or its
+   document type when no filename was recorded — and the document's own date in
+   Finnish format, keeping the recorded precision (`2.8.2026`, `8/2026`, or
+   `2026`). Where nothing was recorded it reads *Date not recorded* or
+   *Not recorded* rather than guessing. This column answers "which document, and
+   when"; it never links a mention to one of your status records and never
+   affects treatment timing or status.
 
 The former **Automatic compatibility notes** tab was removed. The NET/Care-generated
 compatibility rows behind it are still stored in the profile and still returned by

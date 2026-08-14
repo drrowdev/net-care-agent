@@ -899,7 +899,9 @@ def test_live_global_phi_eviction_scrubs_hidden_and_live_research_content():
                   evictClientPhi();
                 }"""
             )
+            page.wait_for_function("() => document.activeElement.id !== 'research-event-note'")
             assert page.evaluate("() => document.activeElement.id") != ("research-event-note")
+            assert page.evaluate("() => document.activeElement.id") == "nav-research"
             assert page.locator("#research-event-note").input_value() == ""
             assert page.locator("#research-dialog-overlay").get_attribute("aria-hidden") == "true"
             visible = " ".join(

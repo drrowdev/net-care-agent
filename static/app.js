@@ -8328,12 +8328,12 @@
       || todayRoot?.contains(document.activeElement)
       || dialog?.contains(document.activeElement)
     ) {
+      document.activeElement?.blur();
       (document.getElementById(`nav-${activeView}`) || document.getElementById('nav-today'))?.focus();
     }
   }
 
   function clearResearchProjection(options = {}) {
-    relocateResearchFocus();
     researchLoadEpoch += 1;
     researchSelectionEpoch += 1;
     researchDialogEpoch += 1;
@@ -8354,6 +8354,7 @@
     pendingResearchCompletion = null;
     researchDraft = null;
     closeResearchDialog(false);
+    relocateResearchFocus();
     setResearchStatus(
       options.message || 'Research authority could not be verified safely. No prior research content remains in this view.',
       'error',

@@ -52,6 +52,17 @@ incremented when something user-visible or operationally meaningful changes.
   local scrolling at phone width.
 
 ### Fixed
+- **Keyboard focus is no longer stranded when Research PHI is evicted.**
+  `relocateResearchFocus()` tried to focus the sidebar nav item while the
+  research dialog still held the rest of the page `inert`, so the focus call was
+  silently ignored. Focus only left the PHI note field later, when the browser
+  asynchronously blurred the hidden dialog, and it landed on `<body>` instead of
+  a real destination — a caregiver navigating by keyboard or screen reader lost
+  their place mid-eviction. The helper now blurs the outgoing element before
+  focusing its destination, matching the symptom, treatment, imaging, and
+  biomarker focus fallbacks, and it runs after the dialog is closed so the nav
+  item is focusable. Focus now moves to the active nav item synchronously.
+  No PHI-scrubbing behaviour changed.
 - **Assessment generation no longer aborts on a treatment-classification
   refusal (production failure).** Manual **Generate/Refresh assessment** ran the
   model successfully and then failed the whole job with

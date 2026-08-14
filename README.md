@@ -378,6 +378,7 @@ state and withholds the prior clinical content.
 ├── .env.example          # Template for local secrets
 ├── tests/                # pytest suite (no network or API key needed)
 │   ├── test_imaging_timeline_ui.py # actual-function Node + live responsive browser coverage
+│   ├── test_date_time_formats_ui.py # exact Finnish date/time/number rendering contract
 │   ├── test_symptom_workflow_ui.py # symptom authority + live lifecycle/responsive coverage
 │   ├── test_symptom_episodes.py # backend identity/lifecycle/replay/projection contract
 │   └── test_treatment_reconciliation.py # treatment authority/lifecycle/replay contract

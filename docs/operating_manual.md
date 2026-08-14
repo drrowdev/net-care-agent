@@ -11,6 +11,29 @@ requires App Service Easy Auth path exclusions. Local APIs are protected unless
 `ALLOW_LOCAL_AUTH_BYPASS=1` is explicitly set in the local environment (as in
 `.env.example`). Do not set that bypass in hosted configuration.
 
+## How dates, times and numbers are displayed
+
+Interface copy is English; every date, time and number is displayed in Finnish
+convention, regardless of the browser's own locale setting:
+
+| Recorded value | Displayed as |
+|---|---|
+| `2026-08-14` | `14.8.2026` |
+| `2026-08` | `8/2026` |
+| `2026` | `2026` |
+| `2026-05 to 2026-08` | `5/2026 – 8/2026` |
+| `2026-08-14T06:26:00` | `14.8.2026 09:26` |
+| `12345` | `12 345` |
+
+Times are always 24-hour, never AM/PM. Partial dates keep the precision that was
+recorded — NET/Care never invents a missing day or month to complete a date.
+Relative labels such as `5m ago` and `2h ago` stay in English.
+
+Stored timestamps are written by the server as naive ISO strings on a UTC host,
+so the interface reads a timestamp without a timezone as UTC and shows it in the
+browser's local zone. A value already carrying `Z` or an offset is honoured as
+written.
+
 ## Interface map
 
 The desktop and phone layouts use the same five views, so every workflow is

@@ -2716,7 +2716,7 @@ def test_malicious_stored_display_fields_are_escaped():
         "escHtml(biomarkerScalar(observation.reference_range))",
         "escHtml(p.sex || '—')",
         "escHtml(alert.priority || '—')",
-        "escHtml(j.date||'')",
+        "escHtml(fmtDate(j.date))",
         "escHtml(taskTypePresentation(t.type))",
         "escHtml(translateCategory(q.category||'Other'))",
         "escHtml(item.event || '')",
@@ -6219,6 +6219,7 @@ function safeClassToken(value, fallback = '') {
   return /^[a-z0-9_-]+$/i.test(token) ? token : fallback;
 }
 function fmtDate(value) { return value || ''; }
+function fmtDateTime(value) { return value || ''; }
 function setFormError(id, message) { element(id).textContent = message || ''; }
 function syncChatRevision() {}
 function reportLoadSuccess() {}
@@ -8332,7 +8333,7 @@ def test_follow_up_surface_is_responsive_keyboard_operable_and_overflow_safe():
             <article class="follow-up-item">
               <div class="follow-up-item-heading">
                 <span class="visit-status-badge open">Open</span>
-                <span class="follow-up-due soon">Due soon · 15-08-2026</span>
+                <span class="follow-up-due soon">Due soon · 15.8.2026</span>
               </div>
               <p class="follow-up-copy">Contact the clinic to confirm a deliberately long follow-up description that must wrap without causing horizontal overflow on a narrow phone viewport.</p>
               <div class="follow-up-actions">

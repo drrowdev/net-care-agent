@@ -1623,15 +1623,17 @@
 
   function relativeTime(iso) {
     if (!iso) return '';
-    // Ensure UTC interpretation by appending Z if missing
-    const ts = iso.endsWith('Z') ? iso : iso + 'Z';
-    const diff = Date.now() - new Date(ts).getTime();
+    // A date-only or partial value carries no time of day. Showing it at its
+    // recorded precision is honest; turning it into "6h ago" would invent one.
+    if (!(iso instanceof Date) && !/\d{2}:\d{2}/.test(String(iso))) return fmtDate(iso);
+    const parsed = parseTimestamp(iso);
+    if (!parsed) return '';
+    const diff = Date.now() - parsed.getTime();
     const s = Math.floor(diff / 1000);
     if (s < 60)  return `${s}s ago`;
     if (s < 3600) return `${Math.floor(s/60)}m ago`;
     if (s < 86400) return `${Math.floor(s/3600)}h ago`;
-    const d = new Date(ts);
-    return `${String(d.getDate()).padStart(2,'0')}-${String(d.getMonth()+1).padStart(2,'0')}-${d.getFullYear()}`;
+    return fiDateParts(parsed);
   }
 
   function duration(t) {
@@ -4983,7 +4985,7 @@
         <span style="font-size:10px;font-weight:600;padding:2px 6px;border-radius:3px;background:var(--bg2);color:${catColor[j.category]||'var(--text2)'};flex-shrink:0;margin-top:1px">${escHtml(catLabel[j.category]||j.category||'Context')}</span>
         <div style="flex:1">
           <div class="judgment-text" style="font-size:12px;color:var(--text0);line-height:1.5">${escHtml(j.text)}</div>
-          <div style="font-size:10px;color:var(--text2);margin-top:2px">${escHtml(j.date||'')} · ${lifecycle}${j.scope ? ` · ${escHtml(j.scope)}` : ''}</div>
+          <div style="font-size:10px;color:var(--text2);margin-top:2px">${escHtml(fmtDate(j.date))} · ${lifecycle}${j.scope ? ` · ${escHtml(j.scope)}` : ''}</div>
         </div>
         <div style="display:flex;gap:4px;flex-shrink:0">
           <button class="judgment-action" data-category="${safeClassToken(j.category, 'context')}" data-status="${safeClassToken(j.status, 'active')}" onclick="startEditJudgment(this)" title="Edit clinical note" aria-label="Edit clinical note">✎</button>
@@ -7314,7 +7316,7 @@
       banner.classList.add('current');
       title.textContent = 'Up to date';
       message.textContent = d.generated_at
-        ? `Updated ${fmtDate(d.generated_at_timestamp || d.generated_at)}.`
+        ? `Updated ${fmtDateTime(d.generated_at_timestamp || d.generated_at)}.`
         : 'The summary is aligned with the current patient record.';
       if (action) {
         action.textContent = 'Regenerate assessment';
@@ -7468,7 +7470,7 @@
     // Revision fields are authoritative; dates support profiles created before revisions.
     const isStale = summaryIsStale(d);
     updated.textContent = d.generated_at
-      ? `Updated ${d.generated_at_timestamp || fmtDate(d.generated_at)}${isStale ? ' · new information available' : ''}`
+      ? `Updated ${fmtDateTime(d.generated_at_timestamp || d.generated_at)}${isStale ? ' · new information available' : ''}`
       : '';
 
     let html = '<section class="summary-primary" aria-labelledby="summary-matters-heading">';
@@ -9421,7 +9423,7 @@
     if (category === 'biomarkers') return `${value.marker || 'Biomarker'}: ${value.value ?? '—'} ${value.unit || ''}`.trim();
     if (category === 'imaging') return `${value.modality || 'Imaging'}: ${value.impression || value.findings || 'Finding recorded'}`;
     if (category === 'symptoms') return `${value.symptom || 'Symptom'}${value.severity ? ` (severity ${value.severity})` : ''}`;
-    if (category === 'appointments') return `${value.date || ''} ${value.description || value.type || 'Appointment'}`.trim();
+    if (category === 'appointments') return `${fmtDate(value.date)} ${value.description || value.type || 'Appointment'}`.trim();
     if (category === 'documents') return value.summary || value.type || 'Document summary';
     if (category === 'alerts') return value.message || 'Safety alert';
     return JSON.stringify(value);
@@ -9983,13 +9985,67 @@
     if (str.includes(' to ')) {
       return str.split(' to ').map(p => fmtDate(p.trim())).join(' – ');
     }
-    // YYYY-MM-DD → DD-MM-YYYY
+    // YYYY-MM-DD → D.M.YYYY. Parsed as text, never through Date, so a stored
+    // day never shifts across a timezone boundary on the way to the screen.
     const m = str.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    if (m) return `${m[3]}-${m[2]}-${m[1]}`;
-    // YYYY-MM → MM-YYYY
+    if (m) return `${Number(m[3])}.${Number(m[2])}.${Number(m[1])}`;
+    // YYYY-MM → M/YYYY
     const m2 = str.match(/^(\d{4})-(\d{2})$/);
-    if (m2) return `${m2[2]}-${m2[1]}`;
+    if (m2) return `${Number(m2[2])}/${m2[1]}`;
+    // Year-only values and anything unrecognised keep their recorded precision.
     return str;
+  }
+
+  // Every displayed date, time and number uses Finnish conventions. Interface
+  // copy stays in English; only the numeric formatting is localised.
+  const FI_LOCALE = 'fi-FI';
+
+  function parseTimestamp(value) {
+    if (!value) return null;
+    if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+    const str = String(value).trim();
+    // The server records timestamps with datetime.now().isoformat(), which is
+    // naive wall-clock time in the host's zone, and the host runs UTC. A missing
+    // timezone designator therefore means UTC, not the browser's local zone.
+    const naive = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(str);
+    const parsed = new Date(naive ? `${str.replace(' ', 'T')}Z` : str);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  // Intl's fi-FI patterns are close but not what the record needs: its time
+  // pattern is "9.26" rather than "09:26". These build the agreed shape from
+  // local calendar fields so every browser and engine renders it identically.
+  function fiDateParts(date) {
+    return `${date.getDate()}.${date.getMonth() + 1}.${date.getFullYear()}`;
+  }
+
+  function fiClockParts(date) {
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    return `${hours}:${minutes}`;
+  }
+
+  function fmtTime(value) {
+    const parsed = parseTimestamp(value);
+    return parsed ? fiClockParts(parsed) : '';
+  }
+
+  function fmtDateTime(value) {
+    if (!value) return '';
+    if (!(value instanceof Date)) {
+      const str = String(value).trim();
+      // Date-only and partial values carry no time; keep their precision.
+      if (!/\d{2}:\d{2}/.test(str)) return fmtDate(str);
+    }
+    const parsed = parseTimestamp(value);
+    if (!parsed) return fmtDate(value);
+    return `${fiDateParts(parsed)} ${fiClockParts(parsed)}`;
+  }
+
+  function fmtNumber(value) {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return '';
+    return num.toLocaleString(FI_LOCALE);
   }
 
   function copyReport() {
@@ -10096,7 +10152,7 @@
   function updateCharCount() {
     const value = document.getElementById('feed-textarea').value;
     const n = value.length;
-    document.getElementById('char-count').textContent = `${n.toLocaleString()} characters`;
+    document.getElementById('char-count').textContent = `${fmtNumber(n)} characters`;
     document.getElementById('btn-feed').disabled = value.trim().length === 0;
     if (value.trim()) {
       const error = document.getElementById('feed-form-error');
@@ -11290,16 +11346,7 @@
   }
 
   function formatActionTimestamp(value) {
-    if (!value) return '';
-    const parsed = new Date(value);
-    if (Number.isNaN(parsed.getTime())) return fmtDate(value);
-    return parsed.toLocaleString([], {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
+    return fmtDateTime(value);
   }
 
   function setFollowUpStatus(message, tone = '') {
@@ -12356,7 +12403,7 @@
         <div class="visit-row-main">
           <div class="visit-row-title">${escHtml(visit.title)}</div>
           <div class="visit-row-meta">${details || 'Visit details not set'}</div>
-          ${source ? `<div class="visit-source-label">Linked imported appointment · ${escHtml(source.description || source.type || source.date || '')}</div>` : ''}
+          ${source ? `<div class="visit-source-label">Linked imported appointment · ${escHtml(source.description || source.type || fmtDate(source.date))}</div>` : ''}
         </div>
         <span class="visit-status-badge ${safeClassToken(visit.status, 'planned')}">${escHtml(visitStatusLabel(visit.status))}</span>
         <button class="button secondary visit-open-button" onclick="openAppointmentWorkspace(this, this.closest('.visit-row').dataset.visitId)">Open appointment</button>
@@ -13658,7 +13705,7 @@
     const sugg = msgs.querySelector('.chat-suggestion');
     if (sugg) sugg.closest('div').remove();
 
-    const now = new Date().toLocaleTimeString('en', {hour:'2-digit', minute:'2-digit'});
+    const now = fmtTime(new Date());
     const div = document.createElement('div');
     div.className = `chat-msg ${role}`;
     const body = role === 'assistant' ? renderMarkdown(text) : escHtml(text).replace(/\n/g,'<br>');

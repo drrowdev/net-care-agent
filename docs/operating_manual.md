@@ -995,17 +995,34 @@ python Scripts\seed_test_profile.py               # populate a fake profile
 
 ### Normal operation
 
-Every `save_profile` call:
-1. Writes a pre-save **rotating snapshot** (`/home/data/snapshots/profile_<timestamp>.json`)
+Every durable change to `patient_profile.json` — whoever makes it — goes through
+one protected write:
+
+1. Writes a pre-write **rotating snapshot** (`/home/data/snapshots/profile_<timestamp>.json`)
    with an optional `.sha256` sidecar.  The last 20 snapshots are kept.
 2. Atomically replaces `patient_profile.json`. This replacement is the mutation
    commit point: write or replace failures are reported and the prior profile
    remains authoritative.
-3. Best-effort maintains `.profile-initialized`. A marker failure is logged with
-   only its error type and does not turn the committed mutation into an API
-   failure. Loading a valid profile repairs an absent marker best-effort.
-4. Writes a **daily backup** (`/home/data/backups/profile_YYYYMMDD.json`) once per
-   calendar day and prunes files older than 30 days.
+3. Writes a **daily backup** (`/home/data/backups/profile_YYYYMMDD.json`) once per
+   calendar day and prunes files older than 30 days. The date comes from the
+   profile's own mtime, so it always agrees with the mtime the copy carries.
+
+Snapshot and backup failures are logged and never block or fail the write — only
+the atomic replace can. A caregiver save additionally best-effort maintains
+`.profile-initialized` after the commit; a marker failure is logged with only its
+error type and does not turn the committed mutation into an API failure. Loading
+a valid profile repairs an absent marker best-effort.
+
+Four things write the profile and **all four are protected**: a caregiver save, a
+schema **migration write-back on load**, the normalised write that follows an
+automated recovery, and an operator restore. The migration write-back matters
+operationally: it fires on the first request after any release that raises the
+schema version, with no caregiver involved. It used to write the profile bare,
+which advanced the profile into a new calendar day whose daily backup never ran,
+so the newest backup trailed the live record until someone happened to save —
+`/api/health` reported `backup_out_of_date` truthfully and there was nothing an
+operator could do but make an edit. If you ever see that state again, an
+unprotected write path has been reintroduced.
 
 If the profile is missing, recovery candidates are checked before the marker.
 Therefore an absent marker never blocks recovery, and a stale marker never
@@ -1061,10 +1078,13 @@ print('Restored OK')
 **Never use raw `cp` to restore** — it bypasses the cross-process lock and
 structural validation.
 
-A successful restore also writes a daily backup of the restored state, so the
-recovered profile is protected immediately and `/api/health` does not report the
-storage as out of date (see §10) just because the candidate you restored from
-was several days old.
+A successful restore also snapshots the profile it replaces and writes a daily
+backup of the restored state. The snapshot means the revision the restore
+discarded is still recoverable — important when you restore an older candidate
+over a profile that was fine. The backup means the recovered profile is
+protected immediately and `/api/health` does not report the storage as out of
+date (see §10) just because the candidate you restored from was several days
+old.
 
 ## 10. Health check
 

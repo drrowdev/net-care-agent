@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 from . import config
+from .io import atomic_write_text
 
 log = logging.getLogger(__name__)
 
@@ -155,6 +156,53 @@ def daily_backup(profile_path: Path | None = None) -> Path | None:
 
     _prune_old(bdir, BACKUP_RETENTION_DAYS, keep=target)
     return written
+
+
+def protected_profile_write(path: Path, content: str, *, snapshot: bool = True) -> None:
+    """Commit new profile bytes with the protection an ordinary save receives.
+
+    This is the single choke point for every durable change to the stored
+    profile — a caregiver save, a migration write-back on load, the normalised
+    write that follows an automated recovery, and an operator restore. Each of
+    those replaces the caregiver's live clinical record, so each must leave the
+    same two artefacts behind:
+
+    - a **pre-write rotating snapshot**, so the revision being replaced stays
+      recoverable, and
+    - a **daily backup** for the calendar day the profile now belongs to.
+
+    Wiring these into ``save_profile`` alone was not enough. Migration-on-load
+    fires on the first request after any ``CURRENT_SCHEMA_VERSION`` bump and
+    rewrites the profile without going through ``save_profile``, which advanced
+    the profile's mtime into a new day while that day's ``daily_backup`` never
+    ran. The newest backup then trailed the live profile indefinitely — the
+    caregiver's current state was genuinely unprotected — until the next
+    ordinary save happened to catch up.
+
+    Pass ``snapshot=False`` only when the bytes being replaced are already known
+    to be unusable, as in automated recovery from a corrupt profile: they can
+    never serve as a recovery candidate, ``quarantine_profile`` has already kept
+    them for forensics, and snapshotting them would spend one of the limited
+    rotating slots that the next incident depends on.
+
+    The atomic replace is the commit point and is the only step allowed to
+    raise. Snapshot and backup failures are logged and swallowed, preserving the
+    existing contract exactly: protection is best-effort and must never block or
+    fail a write that has to land.
+    """
+    target = Path(path)
+    if snapshot:
+        try:
+            rotating_snapshot(target)
+        except Exception as exc:
+            log.warning("rotating_snapshot raised: %s", exc)
+
+    atomic_write_text(target, content)
+
+    try:
+        daily_backup(target)
+    except Exception as exc:  # never let backup failure fail a committed write
+        log.warning("daily_backup raised: %s", exc)
 
 
 def _prune_old(bdir: Path, retention_days: int, keep: Path | None = None) -> None:

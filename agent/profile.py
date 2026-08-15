@@ -315,7 +315,13 @@ def _persist_migration_metadata(path: Path) -> dict:
         authoritative = apply_migrations(authoritative)
         # All clinical/unknown fields are already present in authoritative;
         # apply_migrations adds only schema_version and _migration_log in-place.
-        atomic_write_text(path, json.dumps(authoritative, indent=2, default=str))
+        #
+        # This is a durable change to the caregiver's record even though no
+        # caregiver asked for it, so it goes through the same protected write a
+        # save does. Writing it bare left the profile with a fresh mtime and no
+        # backup for that day, so the newest daily backup trailed the live
+        # profile from the moment a release bumped CURRENT_SCHEMA_VERSION.
+        backups.protected_profile_write(path, json.dumps(authoritative, indent=2, default=str))
 
         authoritative = _coerce_none_fields(authoritative)
         return normalize_profile(authoritative)
@@ -419,7 +425,11 @@ def _quarantine_and_recover(path: Path, raw_bytes: bytes, reason: str) -> dict:
     quarantine_profile(path, reason=authoritative_reason, raw_bytes=re_raw)
 
     try:
-        recovered_data = recover_profile()
+        # The bytes being replaced are the corrupt file that triggered this
+        # recovery. ``quarantine_profile`` above already kept them for forensics,
+        # so snapshotting them would only spend a rotating slot on data that can
+        # never be restored.
+        recovered_data = recover_profile(snapshot_replaced=False)
     except NoRecoveryCandidateError as exc:
         raise CorruptProfileError(
             "Profile is corrupt and no valid snapshot or backup is available for "
@@ -433,9 +443,11 @@ def _quarantine_and_recover(path: Path, raw_bytes: bytes, reason: str) -> dict:
     normalized = normalize_profile(recovered_data)
 
     # Atomically persist the migrated form so disk and the returned dict agree.
-    from .io import atomic_write_text as _atomic_write
-
-    _atomic_write(config.PROFILE_PATH, json.dumps(normalized, indent=2, default=str))
+    # ``restore_from_candidate`` already protected the restored bytes; this
+    # second write changes them again, so it is protected in its own right.
+    backups.protected_profile_write(
+        config.PROFILE_PATH, json.dumps(normalized, indent=2, default=str)
+    )
 
     return normalized
 
@@ -569,23 +581,14 @@ def save_profile(
         except Exception as e:
             log.warning("save_profile: validation issues type=%s", type(e).__name__)
 
-        # P12: pre-write snapshot so any single bad save is recoverable to the
-        # immediately-prior state (never blocks the save on failure).
-        try:
-            backups.rotating_snapshot(config.PROFILE_PATH)
-        except Exception as e:
-            log.warning("rotating_snapshot raised: %s", e)
-
-        atomic_write_text(
+        # P12: the pre-write snapshot, the atomic replace that commits the save,
+        # and the day's backup all happen inside one protected write. Only the
+        # replace may fail the save; snapshot and backup failures are logged.
+        backups.protected_profile_write(
             config.PROFILE_PATH,
             json.dumps(profile, indent=2, default=str),
         )
         _maintain_initialized_marker()
-        # Cheap: only copies once per day, then prunes.
-        try:
-            backups.daily_backup(config.PROFILE_PATH)
-        except Exception as e:  # never let backup failure block a save
-            log.warning("daily_backup raised: %s", e)
 
 
 def active_documents(profile: dict) -> list[dict]:

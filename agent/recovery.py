@@ -50,7 +50,7 @@ import logging
 from pathlib import Path
 from typing import NamedTuple
 
-from . import config
+from . import backups, config
 from .io import atomic_write_bytes, atomic_write_text
 
 log = logging.getLogger(__name__)
@@ -204,7 +204,7 @@ def find_recovery_candidates() -> list[RecoveryCandidate]:
     return sorted(candidates, key=candidate_key, reverse=True)
 
 
-def restore_from_candidate(candidate: RecoveryCandidate) -> dict:
+def restore_from_candidate(candidate: RecoveryCandidate, *, snapshot_replaced: bool = True) -> dict:
     """Validate and atomically restore ``candidate`` to ``config.PROFILE_PATH``.
 
     Returns the validated data dict on success.
@@ -212,6 +212,11 @@ def restore_from_candidate(candidate: RecoveryCandidate) -> dict:
 
     Acquires ``serialized_mutation`` internally — safe to call directly or from
     within an existing ``serialized_mutation`` block (re-entrant lock).
+
+    ``snapshot_replaced=False`` skips the pre-write snapshot and is for
+    automated recovery from a corrupt profile only: those bytes are already
+    quarantined for forensics and could never be restored, so keeping them would
+    only consume a rotating slot the next incident needs.
 
     On success, writes a best-effort metadata-only recovery state sidecar so
     ``get_recovery_state`` and ``/api/health`` can surface the event without PHI.
@@ -224,19 +229,14 @@ def restore_from_candidate(candidate: RecoveryCandidate) -> dict:
             raise ValueError(f"Candidate {candidate.path.name!r} failed validation")
 
         content = json.dumps(data, indent=2, default=str)
-        atomic_write_text(config.PROFILE_PATH, content)
-
-        # Protect the restored state immediately. The restore gives the profile
-        # a current mtime while the candidate it came from may be days old, so
-        # without this the newest daily backup would trail the profile by whole
-        # calendar days and /api/health would report the storage as out of date
-        # until the caregiver happened to save something.
-        try:
-            from . import backups
-
-            backups.daily_backup()
-        except Exception as exc:  # never let a backup failure fail a recovery
-            log.warning("recovery_daily_backup_failed: %s", exc)
+        # A restore replaces the live profile, so the state it discards needs a
+        # snapshot and the restored state needs a backup for the day it now
+        # carries: the restore gives the profile a current mtime while the
+        # candidate it came from may be days old, so without one the newest
+        # daily backup would trail the profile by whole calendar days and
+        # /api/health would report the storage as out of date until the
+        # caregiver happened to save something. Neither can fail the restore.
+        backups.protected_profile_write(config.PROFILE_PATH, content, snapshot=snapshot_replaced)
 
     log.warning(
         "profile_restored source=%s candidate=%s",
@@ -255,7 +255,7 @@ def restore_from_candidate(candidate: RecoveryCandidate) -> dict:
     return data
 
 
-def recover_profile() -> dict:
+def recover_profile(*, snapshot_replaced: bool = True) -> dict:
     """Find the best valid recovery candidate and restore it.
 
     Raises ``NoRecoveryCandidateError`` if no valid snapshot or backup is found.
@@ -263,6 +263,10 @@ def recover_profile() -> dict:
 
     Acquires ``serialized_mutation`` internally — safe to call directly or from
     within an existing ``serialized_mutation`` block (re-entrant lock).
+
+    ``snapshot_replaced`` is forwarded to ``restore_from_candidate``; pass
+    ``False`` when the profile being replaced is the corrupt file that triggered
+    the recovery.
     """
     from .serialize import serialized_mutation
 
@@ -270,7 +274,7 @@ def recover_profile() -> dict:
         candidates = find_recovery_candidates()
         for candidate in candidates:
             try:
-                data = restore_from_candidate(candidate)
+                data = restore_from_candidate(candidate, snapshot_replaced=snapshot_replaced)
                 return data
             except (ValueError, OSError) as exc:
                 log.warning(

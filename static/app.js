@@ -4026,7 +4026,7 @@
     const visits = eligibleAlertVisits();
     followUpSelect.innerHTML = '<option value="">Choose an active follow-up</option>'
       + followUps.map(item => {
-        const label = [item.text, item.owner ? `Owner: ${item.owner}` : 'Owner not set']
+        const label = [followUpDisplayText(item), item.owner ? `Owner: ${item.owner}` : 'Owner not set']
           .filter(Boolean).join(' · ');
         return `<option value="${escHtml(item.id)}">${escHtml(label)}</option>`;
       }).join('');
@@ -4387,7 +4387,7 @@
       const followUp = followUpsById.get(resolution.follow_up_id) || data.follow_up;
       links.push(
         followUp
-          ? `Follow-up · ${followUp.text}`
+          ? `Follow-up · ${followUpDisplayText(followUp)}`
           : 'Follow-up linked'
       );
     }
@@ -7416,23 +7416,26 @@
     );
   }
 
+  // The assessment is generated narrative, so most of its claims legitimately
+  // have no verbatim source span. Announcing that on every recommendation, key
+  // concern and paragraph was a fixed, uninformative sentence repeated down the
+  // whole panel. The affordance is now drawn only when it carries information:
+  // a link to the exact wording, or the genuine anomaly of linked wording that
+  // has gone missing. This is presentation only — which claims count as
+  // verified, and every server-side check behind that, is untouched.
   function renderClaimEvidence(items) {
-    const evidence = Array.isArray(items) && items.length
-      ? items
-      : [{ evidence_status: 'missing', label: 'No exact source span linked' }];
-    return `<div class="claim-evidence">${evidence.map(item => {
-      const status = ['verified', 'missing', 'invalid'].includes(item.evidence_status)
-        ? item.evidence_status
-        : 'missing';
-      if (status === 'verified' && item.evidence_url) {
+    if (!Array.isArray(items) || !items.length) return '';
+    const chips = items.map(item => {
+      if (item.evidence_status === 'verified' && item.evidence_url) {
         return `<a class="claim-evidence-link verified" href="${escHtml(item.evidence_url)}" target="_blank" rel="noopener">View exact wording: ${escHtml(item.label)}</a>`;
       }
-      return `<span class="claim-evidence-link ${status}">${
-        status === 'invalid'
-          ? 'Linked wording is unavailable'
-          : 'No exact wording is linked'
-      }</span>`;
-    }).join('')}</div>`;
+      // 'missing' is the ordinary case for generated prose and stays silent.
+      if (item.evidence_status === 'invalid') {
+        return '<span class="claim-evidence-link invalid">Linked wording is unavailable</span>';
+      }
+      return '';
+    }).join('');
+    return chips ? `<div class="claim-evidence">${chips}</div>` : '';
   }
 
   function renderSummary(d) {
@@ -7485,7 +7488,7 @@
     if (d.key_concern) {
       html += `<div class="summary-concern">
         <div class="summary-concern-label">Key concern</div>
-        ${escHtml(d.key_concern)}
+        ${escHtml(fmtProseDates(d.key_concern))}
         ${renderClaimEvidence(d.claim_evidence?.claims?.key_concern)}
       </div>`;
     }
@@ -7511,11 +7514,11 @@
         html += `<div class="action-item" id="action-${idx}" data-action-text="${escHtml(a.action || '')}" data-summary-revision="${escHtml(d.summary_revision ?? '')}" data-generated-action-source-id="${escHtml(a.id)}" data-generated-action-source-token="${escHtml(a.source_token)}">
           <span class="action-priority ${safeClassToken(a.priority, 'medium')}">${escHtml(a.priority || 'medium')}</span>
           <div class="action-text">
-            <div class="action-main">${escHtml(a.action)}${provBadge}</div>
-            ${a.rationale ? `<div class="action-sub">${escHtml(a.rationale)}</div>` : ''}
+            <div class="action-main">${escHtml(fmtProseDates(a.action))}${provBadge}</div>
+            ${a.rationale ? `<div class="action-sub">${escHtml(fmtProseDates(a.rationale))}</div>` : ''}
             ${renderClaimEvidence(d.claim_evidence?.actions?.[idx])}
           </div>
-          <div class="action-timeframe">${escHtml(a.due_date ? `Due ${fmtDate(a.due_date)}` : (a.timeframe || 'Review with care team'))}</div>
+          <div class="action-timeframe">${escHtml(a.due_date ? `Due ${fmtDate(a.due_date)}` : (fmtProseDates(a.timeframe) || 'Review with care team'))}</div>
           <div class="action-controls">
             <button class="button secondary action-accept-btn" onclick="acceptGeneratedFollowUp(this.closest('.action-item'))" ${accepted ? 'disabled' : ''}>${accepted ? 'Accepted' : 'Add to follow-through'}</button>
             <button onclick="dismissAction(${idx})" aria-label="Review or dismiss this action" title="Review or dismiss" class="icon-button action-dismiss-btn">⋯</button>
@@ -7526,10 +7529,10 @@
     }
 
     if (d.status_rationale) {
-      html += `<div class="summary-rationale primary-rationale">${escHtml(d.status_rationale)}${renderClaimEvidence(d.claim_evidence?.claims?.status_rationale)}</div>`;
+      html += `<div class="summary-rationale primary-rationale">${escHtml(fmtProseDates(d.status_rationale))}${renderClaimEvidence(d.claim_evidence?.claims?.status_rationale)}</div>`;
     }
     if (d.summary) {
-      html += `<div class="summary-narrative">${escHtml(d.summary)}${renderClaimEvidence(d.claim_evidence?.claims?.summary)}</div>`;
+      html += `<div class="summary-narrative">${escHtml(fmtProseDates(d.summary))}${renderClaimEvidence(d.claim_evidence?.claims?.summary)}</div>`;
     }
 
 
@@ -7543,7 +7546,7 @@
           const past = date && date < today ? ' past' : '';
           return `<li class="timeline-entry${past}">
             <time datetime="${escHtml(date)}">${escHtml(fmtDate(date) || 'Date pending')}</time>
-            <span class="timeline-event-copy">${escHtml(item.event || '')}</span>
+            <span class="timeline-event-copy">${escHtml(fmtProseDates(item.event))}</span>
             <span class="timeline-type ${safeClassToken(item.type, 'test')}">${escHtml(translateType(item.type || 'Event'))}</span>
             ${item.provisional ? '<span class="timeline-provisional">Provisional — confirm with the care team</span>' : ''}
           </li>`;
@@ -7566,10 +7569,10 @@
       }
       html += '</div>';
       if (d.cga_trend_detail) {
-        html += `<div class="summary-rationale"><strong>CgA trend:</strong> ${escHtml(d.cga_trend_detail)}${renderClaimEvidence(d.claim_evidence?.claims?.cga_trend_detail)}</div>`;
+        html += `<div class="summary-rationale"><strong>CgA trend:</strong> ${escHtml(fmtProseDates(d.cga_trend_detail))}${renderClaimEvidence(d.claim_evidence?.claims?.cga_trend_detail)}</div>`;
       }
       if (d.prrt_rationale) {
-        html += `<div class="summary-rationale"><strong>PRRT screening context:</strong> ${escHtml(d.prrt_rationale)}${renderClaimEvidence(d.claim_evidence?.claims?.prrt_rationale)}</div>`;
+        html += `<div class="summary-rationale"><strong>PRRT screening context:</strong> ${escHtml(fmtProseDates(d.prrt_rationale))}${renderClaimEvidence(d.claim_evidence?.claims?.prrt_rationale)}</div>`;
       }
       html += '</div></details>';
     }
@@ -10048,6 +10051,51 @@
     return num.toLocaleString(FI_LOCALE);
   }
 
+  // Generated narrative carries dates inside the model's own sentences, where
+  // no field formatter can reach them, so they arrived on screen as ISO while
+  // every dated field beside them read Finnish. Rewriting the pattern at render
+  // time is a deterministic transcription of an unambiguous shape into the
+  // format the record already uses: no word is added, removed or reordered, and
+  // the stored text is never rewritten.
+  //
+  // A digit run is only a date when it stands alone. Anything glued to a word,
+  // path, colon, dot or hyphen is treated as structural — an identifier,
+  // filename, URL or timestamp — and left exactly as written, as is a bare year
+  // or a written-out month. Month and day ranges are checked so a plain numeric
+  // range such as "1234-56" is never mistaken for a date.
+  const PROSE_URL = /\b(?:https?:\/\/|www\.)\S+/gi;
+  const PROSE_ISO_DATE =
+    /(^|[^\w:./-])(\d{4}-(?:0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?)(?![\w/-])(?!\.\w)/g;
+
+  // "2011-12" is the conventional way to write a two-year span, and by shape
+  // alone it is indistinguishable from December 2011. Rewriting a span as a
+  // single month would change the meaning rather than the punctuation, so the
+  // successor form is left exactly as the model wrote it. Only a month-precision
+  // match can collide this way, and only for years ending 00 to 11.
+  function isYearSpan(date) {
+    if (date.length !== 7) return false;
+    return Number(date.slice(5)) === (Number(date.slice(0, 4)) + 1) % 100;
+  }
+
+  function fmtProseDates(text) {
+    if (text == null) return '';
+    const str = String(text);
+    if (!str.includes('-')) return str;
+    const localise = part => part.replace(
+      PROSE_ISO_DATE,
+      (match, prefix, date) => (isYearSpan(date) ? match : `${prefix}${fmtDate(date)}`),
+    );
+    // URLs are copied through untouched, so a dated path segment stays a path.
+    let out = '';
+    let cursor = 0;
+    PROSE_URL.lastIndex = 0;
+    for (let url = PROSE_URL.exec(str); url; url = PROSE_URL.exec(str)) {
+      out += localise(str.slice(cursor, url.index)) + url[0];
+      cursor = url.index + url[0].length;
+    }
+    return out + localise(str.slice(cursor));
+  }
+
   function copyReport() {
     if (!currentReportText) return;
     navigator.clipboard.writeText(currentReportText).then(() => {
@@ -11325,6 +11373,16 @@
     return 'You entered this follow-up';
   }
 
+  // A follow-up saved from a generated recommendation carries that action's
+  // words verbatim, so it is the same generated sentence on a second surface and
+  // has to read the same way. Anything the caregiver wrote stays as typed.
+  function followUpDisplayText(item) {
+    if (item?.origin_snapshot?.kind === 'executive_summary_action') {
+      return fmtProseDates(item.text);
+    }
+    return item?.text || '';
+  }
+
   function followUpOutcomePresentation(outcome) {
     if (!outcome) return null;
     if (outcome.kind === 'clinician_attributed') {
@@ -11435,7 +11493,7 @@
           <span class="visit-status-badge ${safeClassToken(item.status, 'open')}">${escHtml(followUpStatusLabel(item.status))}</span>
           <span class="follow-up-due ${safeClassToken(due.tone)}">${escHtml(due.label)}</span>
         </div>
-        <p class="follow-up-copy">${escHtml(item.text)}</p>
+        <p class="follow-up-copy">${escHtml(followUpDisplayText(item))}</p>
         <p class="follow-up-provenance">${escHtml(followUpOriginLabel(item))}</p>
         <div class="follow-up-metadata">
           <span>${escHtml(item.owner ? `Owner: ${item.owner}` : 'Owner not set')}</span>
@@ -11657,12 +11715,12 @@
       return;
     } else if (followUpDialogMode === 'edit') {
       title.textContent = 'Edit owner or due date';
-      document.getElementById('follow-up-edit-copy').textContent = action.text;
+      document.getElementById('follow-up-edit-copy').textContent = followUpDisplayText(action);
     } else {
       title.textContent = followUpOutcomeStatus === 'completed'
         ? 'Complete follow-up'
         : 'Cancel follow-up';
-      document.getElementById('follow-up-outcome-copy').textContent = action.text;
+      document.getElementById('follow-up-outcome-copy').textContent = followUpDisplayText(action);
       document.getElementById('follow-up-outcome-submit').textContent =
         followUpOutcomeStatus === 'completed' ? 'Complete follow-up' : 'Cancel follow-up';
     }

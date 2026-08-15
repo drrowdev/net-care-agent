@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -343,3 +344,189 @@ def test_metadata_lines_do_not_leak_a_raw_iso_date():
     preparation = _function_source("renderVisitPreparation", "toggleVisitCreateForm")
     assert "fmtDate(source.date)" in preparation
     assert "source.type || source.date || ''" not in preparation
+
+
+def test_iso_dates_written_into_generated_sentences_are_localised_in_place():
+    """A date inside model-written prose is not a field, so no formatter reached it.
+
+    Rewriting it at render time is transcription, not interpretation: the shape
+    is unambiguous and only its punctuation changes.
+    """
+    result = _evaluate(
+        {
+            "day": "fmtProseDates('PET-CT on 2026-04-22 confirmed progression.')",
+            "month": "fmtProseDates('Doses run 2026-05 to 2026-08.')",
+            "leading": "fmtProseDates('2026-05-07 is the first dose.')",
+            "trailing": "fmtProseDates('The first dose is 2026-05-07.')",
+            "bracketed": "fmtProseDates('First dose (2026-05-07) is booked.')",
+            "several": "fmtProseDates('Doses 2026-05-07, 2026-07-02 and 2026-08-27.')",
+        }
+    )
+    assert result == {
+        "day": "PET-CT on 22.4.2026 confirmed progression.",
+        "month": "Doses run 5/2026 to 8/2026.",
+        "leading": "7.5.2026 is the first dose.",
+        "trailing": "The first dose is 7.5.2026.",
+        "bracketed": "First dose (7.5.2026) is booked.",
+        "several": "Doses 7.5.2026, 2.7.2026 and 27.8.2026.",
+    }
+
+
+def test_prose_normalisation_leaves_years_and_written_out_months_alone():
+    result = _evaluate(
+        {
+            "year": "fmtProseDates('Reviewed again in 2026.')",
+            "month_name": "fmtProseDates('Around late August 2026 and in April 2026.')",
+            "no_hyphen": "fmtProseDates('CgA 145 rose to 188 nmol/L.')",
+        }
+    )
+    assert result == {
+        "year": "Reviewed again in 2026.",
+        "month_name": "Around late August 2026 and in April 2026.",
+        "no_hyphen": "CgA 145 rose to 188 nmol/L.",
+    }
+
+
+def test_prose_normalisation_never_touches_a_structural_digit_run():
+    """Anything glued to a word, path, colon, dot or hyphen may be an identifier."""
+    unchanged = {
+        "identifier": "Report doc-2026-05-07-abc is filed.",
+        "underscore": "Key ref_2026-05-07 is stable.",
+        "filename": "See report-2026-05-07.pdf for detail.",
+        "timestamp": "Recorded 2026-05-07T10:30:00 by the server.",
+        "version": "Schema v1.2026-05 shipped.",
+        "keyed": "Stored under key:2026-05-07 today.",
+        "url": "See https://example.org/reports/2026-05-07/summary now.",
+        "www": "See www.example.org/2026-05-07 now.",
+        "query": "See https://example.org/r?d=2026-05-07 now.",
+        "numeric_range": "Lab range 1234-56 is normal.",
+        "bad_month": "Value 2026-13 is not a month.",
+        "bad_day": "Value 2026-05-45 is not a day.",
+        "long_year": "Value 12026-05-07 is not a date.",
+        "long_day": "Value 2026-05-071 is not a date.",
+        "nct": "Trial NCT02726204 remains open.",
+    }
+    result = _evaluate(
+        {key: f"fmtProseDates({json.dumps(value)})" for key, value in unchanged.items()}
+    )
+    assert result == unchanged
+
+
+def test_prose_normalisation_stays_graceful_on_empty_and_odd_input():
+    result = _evaluate(
+        {
+            "null": "fmtProseDates(null)",
+            "undefined": "fmtProseDates(undefined)",
+            "empty": "fmtProseDates('')",
+            "plain": "fmtProseDates('No dates at all here.')",
+            "bare": "fmtProseDates('2026-05-07')",
+        }
+    )
+    assert result == {
+        "null": "",
+        "undefined": "",
+        "empty": "",
+        "plain": "No dates at all here.",
+        "bare": "7.5.2026",
+    }
+
+
+def test_prose_normalisation_leaves_a_hyphenated_year_span_alone():
+    """ "2011-12" is a two-year span, not December 2011; rewriting it changes meaning."""
+    unchanged = {
+        "span": "Treated 2011-12 at Helsinki.",
+        "early_span": "Cohort 2009-10 data was reviewed.",
+        "century_span": "Records from 2000-01 are archived.",
+        "late_span": "The 2010-11 series is complete.",
+    }
+    result = _evaluate(
+        {key: f"fmtProseDates({json.dumps(value)})" for key, value in unchanged.items()}
+    )
+    assert result == unchanged
+    # A day-precision date in the same shape is unambiguous and still localised.
+    assert _evaluate({"day": "fmtProseDates('Scan 2011-12-15 confirmed progression.')"}) == {
+        "day": "Scan 15.12.2011 confirmed progression."
+    }
+
+
+def test_a_saved_recommendation_reads_the_same_on_both_surfaces():
+    """The follow-through copy is the assessment's own sentence, verbatim."""
+    prelude = _function_source("followUpDisplayText", "followUpOutcomePresentation")
+    generated = json.dumps(
+        {
+            "text": "Confirm the dose booked for 2026-09-01.",
+            "origin_snapshot": {"kind": "executive_summary_action"},
+        }
+    )
+    caregiver = json.dumps({"text": "Ask about 2026-09-01.", "origin_snapshot": {"kind": "manual"}})
+    result = _evaluate(
+        {
+            "generated": f"followUpDisplayText({generated})",
+            "caregiver": f"followUpDisplayText({caregiver})",
+            "missing": "followUpDisplayText({text: 'Plain note.'})",
+            "empty": "followUpDisplayText(null)",
+        },
+        prelude=prelude,
+    )
+    assert result == {
+        # Matches the wording rendered in the assessment panel.
+        "generated": "Confirm the dose booked for 1.9.2026.",
+        # The caregiver's own words are shown exactly as typed.
+        "caregiver": "Ask about 2026-09-01.",
+        "missing": "Plain note.",
+        "empty": "",
+    }
+    follow_ups = _function_source("renderFollowUps", "setFollowUpFilter")
+    assert "escHtml(followUpDisplayText(item))" in follow_ups
+    # The caregiver's outcome note is their own text and stays untouched.
+    assert "escHtml(item.outcome.text)" in follow_ups
+    # Every surface that repeats a saved follow-up's wording reads the same way,
+    # so the confirm dialogs cannot disagree with the card that opened them.
+    assert (
+        "document.getElementById('follow-up-edit-copy').textContent = "
+        "followUpDisplayText(action);" in APP_JS
+    )
+    assert (
+        "document.getElementById('follow-up-outcome-copy').textContent = "
+        "followUpDisplayText(action);" in APP_JS
+    )
+    assert "followUpDisplayText(item), item.owner" in APP_JS
+    assert "`Follow-up · ${followUpDisplayText(followUp)}`" in APP_JS
+    # Scoped to the surfaces this test owns: inside them, a follow-up's wording is
+    # only ever read through the shared helper, so a new raw read fails here.
+    for name, next_name in (
+        ("renderAlertResolutionSourceOptions", "renderAlertResolutionDecisionOptions"),
+        ("renderAlertResolutionResult", "evidenceBadge"),
+        ("renderFollowUpDialog", "openFollowUpDialog"),
+        ("renderFollowUps", "setFollowUpFilter"),
+    ):
+        source = _function_source(name, next_name)
+        raw = [
+            line
+            for line in source.splitlines()
+            # The caregiver's own outcome note is deliberately shown as written.
+            if re.search(r"\b(?:item|action|followUp)\.text\b", line)
+            and "followUpDisplayText" not in line
+        ]
+        assert raw == [], f"{name} reads a follow-up's text without followUpDisplayText: {raw}"
+
+
+def test_every_generated_narrative_field_routes_through_the_prose_formatter():
+    """Enumerated so a new generated field cannot quietly ship raw ISO."""
+    summary = _function_source("renderSummary", "researchPlainObject")
+    for field in (
+        "escHtml(fmtProseDates(d.key_concern))",
+        "escHtml(fmtProseDates(a.action))",
+        "escHtml(fmtProseDates(a.rationale))",
+        "fmtProseDates(a.timeframe) || 'Review with care team'",
+        "escHtml(fmtProseDates(d.status_rationale))",
+        "escHtml(fmtProseDates(d.summary))",
+        "escHtml(fmtProseDates(item.event))",
+        "escHtml(fmtProseDates(d.cga_trend_detail))",
+        "escHtml(fmtProseDates(d.prrt_rationale))",
+    ):
+        assert field in summary
+    # The value the dismiss call sends back to the server stays the stored text.
+    assert "data-action-text=\"${escHtml(a.action || '')}\"" in summary
+    # <time datetime> stays machine-readable ISO-8601.
+    assert '<time datetime="${escHtml(date)}">' in summary

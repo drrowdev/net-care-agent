@@ -63,6 +63,39 @@ incremented when something user-visible or operationally meaningful changes.
     saved. It also opens when a restored draft has content.
 
 ### Fixed
+- **Dates the assessment writes into its own sentences now read Finnish.**
+  Every dated *field* was localised earlier, but a date the model wrote inside a
+  sentence — "*three doses every 8 weeks from 2026-05-07*", "*PET-CT on
+  2026-04-22 confirmed progression*" — is just text, so no formatter reached it
+  and it stayed ISO next to fields reading `7.5.2026`. The generated narrative
+  is now normalised as it is drawn: `2026-05-07` becomes `7.5.2026` and
+  `2026-05` becomes `5/2026`, using the same helper as every other date.
+  - It covers exactly the generated prose you read: the key concern, the status
+    rationale, the narrative summary, the CgA-trend and PRRT-screening context
+    lines, each recommended action's text, rationale and timeframe, and each
+    timeline entry's event copy. A recommendation you save to follow-through
+    keeps the assessment's wording on the follow-up card, in the complete,
+    cancel and edit dialogs, and in the alert-resolution picker, so those screens
+    cannot disagree about the same sentence. Follow-ups you wrote yourself are
+    shown exactly as you typed them. The symptom, research and
+    treatment-reconciliation action-linking pickers still show the stored
+    wording: those projections deliberately omit the origin, and adding it to
+    reach them would no longer be a display-only change.
+  - It is transcription, not rewriting. Only the punctuation of an unambiguous
+    pattern changes — no word is added, removed, reordered or summarised. A bare
+    year (`2026`) and a written-out date (*late August 2026*) are left exactly as
+    written, as is any digit run that could be structural: an identifier
+    (`doc-2026-05-07-abc`), a filename (`report-2026-05-07.pdf`), a timestamp
+    (`2026-05-07T10:30:00`), anything inside a URL, and impossible calendar
+    values (`2026-13`, `1234-56`). A hyphenated two-year span (`2011-12`) is also
+    left alone: by shape it cannot be told apart from December 2011, and showing
+    a span as a single month would change the meaning rather than the
+    punctuation.
+  - Nothing stored changes and nothing sent to the model changes. The record
+    keeps the assessment's words verbatim, so this also corrects assessments
+    generated before today. `<time datetime="…">` stays machine-readable
+    ISO-8601, and the concurrency token the dismiss-action call sends back still
+    carries the stored text character-for-character.
 - **Corrected a contradiction in the operating manual.** It stated that
   document-intake treatment rows never "seed a form", while the same document
   described — and the shipped **Record status** action implements — copying a
@@ -78,6 +111,21 @@ incremented when something user-visible or operationally meaningful changes.
   previously stated only that nothing had been recorded.
 
 ### Removed
+- **Retired the "No exact wording is linked" chip.** It appeared under
+  essentially every line of the Today assessment — every recommendation, the key
+  concern, every narrative paragraph. The assessment is generated narrative, so
+  most of its claims legitimately have no verbatim source span, which made the
+  chip a fixed, uninformative sentence repeated down the whole panel rather than
+  a signal.
+  - The evidence affordance is now drawn only when it carries information:
+    **View exact wording: …** still links a claim that is backed by a verified
+    span, and **Linked wording is unavailable** still shows when a linked span
+    has genuinely gone missing — a real anomaly, not the routine case. When a
+    claim has nothing to show, neither a chip nor its container is emitted.
+  - This is presentation only. Which claims count as verified, how spans are
+    anchored and validated, and every server-side evidence check are untouched;
+    the same `verified` / `missing` / `invalid` statuses are still computed and
+    still asserted by their tests.
 - **Retired the "Record an exact empty string instead of Null" checkboxes.** All
   nine are gone from the Record treatment dialog. They exposed a storage
   distinction that no invariant, schema rule or server behaviour depends on: the

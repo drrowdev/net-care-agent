@@ -2614,6 +2614,22 @@ def test_claim_evidence_and_decision_support_wording_are_non_definitive():
     assert "Prior generated assessment is hidden" in summary
 
 
+def test_generated_prose_is_reformatted_before_escaping_never_after():
+    """Order is the whole safety argument for rewriting dates in prose.
+
+    `fmtProseDates` runs on the raw text value and `escHtml` runs on its result,
+    so the rewrite can never introduce markup and never escapes an entity twice.
+    Inverting the order would hand a transformer the escaped string.
+    """
+    assert "fmtProseDates(escHtml(" not in APP_JS
+    assert "escHtml(fmtProseDates(" in APP_JS
+    formatter = _function_source("fmtProseDates", "copyReport")
+    # It only ever hands text to the shared date formatter.
+    assert "fmtDate(date)" in formatter
+    for markup in ("innerHTML", "document.", "<span", "<div", "<a ", "&"):
+        assert markup not in formatter
+
+
 def test_empty_form_handlers_surface_inline_feedback():
     cases = (
         ("addQuestion", "toggleQuestion", "q-form-error"),
@@ -2719,7 +2735,8 @@ def test_malicious_stored_display_fields_are_escaped():
         "escHtml(fmtDate(j.date))",
         "escHtml(taskTypePresentation(t.type))",
         "escHtml(translateCategory(q.category||'Other'))",
-        "escHtml(item.event || '')",
+        # Timeline copy is generated prose: reformatted first, always escaped after.
+        "escHtml(fmtProseDates(item.event))",
         'datetime="${escHtml(date)}"',
     )
     for expression in escaped_expressions:
@@ -6220,6 +6237,7 @@ function safeClassToken(value, fallback = '') {
 }
 function fmtDate(value) { return value || ''; }
 function fmtDateTime(value) { return value || ''; }
+function fmtProseDates(value) { return value == null ? '' : String(value); }
 function setFormError(id, message) { element(id).textContent = message || ''; }
 function syncChatRevision() {}
 function reportLoadSuccess() {}

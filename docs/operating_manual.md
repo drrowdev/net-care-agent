@@ -29,6 +29,23 @@ Times are always 24-hour, never AM/PM. Partial dates keep the precision that was
 recorded — NET/Care never invents a missing day or month to complete a date.
 Relative labels such as `5m ago` and `2h ago` stay in English.
 
+This also applies to dates the generated assessment writes inside its own
+sentences, which are not stored fields and so are not covered by the table
+above. *"Three doses every 8 weeks from 2026-05-07"* is displayed as *"three
+doses every 8 weeks from 7.5.2026"*. Only the punctuation of the date changes:
+no word is added, removed, reordered or summarised, and the stored assessment
+keeps the model's wording exactly as generated. A bare year, a written-out date
+such as *late August 2026*, an identifier or filename that merely contains a
+date, a full timestamp, a hyphenated two-year span such as *2011-12*, and
+anything inside a link are all left as recorded. A recommendation you save to
+follow-through keeps the assessment's own wording on the follow-up card, in the
+complete, cancel and edit dialogs, and in the alert-resolution picker, so those
+screens cannot disagree about the same sentence. A follow-up you typed yourself
+is shown exactly as you wrote it. The action-linking pickers on the symptom,
+research and treatment-reconciliation surfaces still show the stored wording,
+because those lists do not carry the origin needed to tell a generated
+recommendation apart from one you wrote.
+
 Stored timestamps are written by the server as naive ISO strings on a UTC host,
 so the interface reads a timestamp without a timezone as UTC and shows it in the
 browser's local zone. A value already carrying `Z` or an offset is honoured as
@@ -198,6 +215,15 @@ artifacts; structured biomarkers, imaging, symptoms, appointments, and findings
 link back to exact verified quotes where available. The summary's **Evidence**
 links open only authenticated, no-cache source/span endpoints and never reveal a
 filesystem path.
+
+The assessment shows an evidence chip under a claim only when it carries
+information. **View exact wording: …** appears where the claim is backed by a
+verified span from your documents, and **Linked wording is unavailable** appears
+in the genuine anomaly where a linked span can no longer be resolved. The
+assessment is generated narrative, so most of its sentences have no verbatim
+source span and simply carry no chip; the absence of one means nothing more than
+that, and never that a claim was checked and failed. Which claims count as
+verified is decided by the server and is unaffected by whether a chip is drawn.
 
 As soon as intake commits, the selected feed job shows a **Document
 reconciliation** receipt above its research report. This is scoped only to that document—there is no global review inbox or

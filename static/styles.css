@@ -3202,7 +3202,6 @@ body.dialog-open { overflow: hidden; }
 }
 .claim-evidence-link.verified,
 .evidence-badge.verified { border-color: #89b89d; background: #e2f3e9; color: #124b2b; }
-.claim-evidence-link.missing,
 .evidence-badge.missing { border-color: #c7b47a; background: #fff5d9; color: #684800; }
 .claim-evidence-link.invalid,
 .evidence-badge.invalid { border-color: #d49b9b; background: #fae5e5; color: #7b2020; }

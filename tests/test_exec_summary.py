@@ -90,3 +90,66 @@ def test_exec_summary_context_uses_raw_treatments_when_classification_stale(agen
 
     assert "raw sunitinib" in captured["content"]
     assert "stale lanreotide" not in captured["content"]
+
+
+def test_generated_prose_is_stored_and_prompted_exactly_as_the_model_wrote_it(agent, empty_profile):
+    """Finnish dates are a rendering concern and must stay one.
+
+    The interface rewrites ISO dates inside generated sentences on the way to
+    the screen. That must never reach back into what is stored or into what is
+    sent to the model: the record keeps the model's words verbatim, and the
+    prompt asks nothing about date formatting.
+    """
+    prose = {
+        "status_rationale": "PET-CT on 2026-04-22 confirmed progression.",
+        "key_concern": "The interval closes 2026-08-26.",
+        "summary": "Three doses every 8 weeks from 2026-05-07.",
+        "prrt_rationale": "Receptor imaging reviewed 2026-04-22.",
+        "cga_trend_detail": "CgA rose between 2026-02-11 and 2026-04-22.",
+    }
+    payload = {
+        "overall_status": "progressing",
+        "status_confidence": "medium",
+        "prrt_status": "likely_eligible",
+        "cga_trend": "rising",
+        "next_actions": [
+            {
+                "priority": "high",
+                "action": "Confirm the dose booked for 2026-09-01",
+                "timeframe": "before 2026-08-20",
+                "rationale": "The interval closes 2026-08-26.",
+                "provisional": True,
+            }
+        ],
+        "timeline": [{"date": "2026-09-01", "event": "Third dose due 2026-09-01", "type": "scan"}],
+        "best_trial": None,
+        "claim_evidence": {},
+        **prose,
+    }
+    captured = {}
+
+    def handler(**kwargs):
+        captured["content"] = kwargs["messages"][0]["content"]
+        captured["system"] = kwargs.get("system")
+        return llm_text(json.dumps(payload))
+
+    with patch_llm(agent, handler):
+        out = agent.generate_executive_summary(empty_profile)
+
+    for field, text in prose.items():
+        assert out[field] == text
+    assert out["next_actions"][0]["action"] == "Confirm the dose booked for 2026-09-01"
+    assert out["next_actions"][0]["timeframe"] == "before 2026-08-20"
+    assert out["next_actions"][0]["rationale"] == "The interval closes 2026-08-26."
+    assert out["timeline"][0]["event"] == "Third dose due 2026-09-01"
+    assert out["timeline"][0]["date"] == "2026-09-01"
+    # Nothing Finnish-shaped was written into the record.
+    assert "22.4.2026" not in json.dumps(out)
+
+    prompt = json.dumps(captured, default=str)
+    for instruction in ("D.M.YYYY", "Finnish", "dd.mm.yyyy", "day.month.year"):
+        assert instruction not in prompt
+
+    from agent import exec_summary
+
+    assert '"generated_at": "YYYY-MM-DD"' in exec_summary.EXECUTIVE_SUMMARY_SYSTEM_TEMPLATE

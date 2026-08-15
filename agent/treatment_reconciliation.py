@@ -248,6 +248,10 @@ def new_treatment_discrepancy_id() -> str:
     return f"txd_{uuid.uuid4().hex}"
 
 
+def new_treatment_row_disposition_id() -> str:
+    return f"txdisp_{uuid.uuid4().hex}"
+
+
 def treatment_course_provenance() -> dict[str, str]:
     return {"capture_method": "caregiver_entered", "source_verification": "unverified"}
 
@@ -852,6 +856,91 @@ def _legacy_projection(
             "Generated treatment compatibility identity is inconsistent.",
         )
     return result, unlinked_classified
+
+
+def _raw_source_entry_ids(raw_rows: list) -> list[str]:
+    """Per-occurrence identity for each raw row, mirroring ``sync_treatment_records``.
+
+    Position independent by construction, so caregiver workspace state survives a
+    later removal or reordering of *other* rows.
+    """
+    from .profile import raw_treatment_source_entry_ids
+
+    return raw_treatment_source_entry_ids(raw_rows)
+
+
+def _disposition_projection(
+    profile: dict,
+    legacy_rows: list[dict],
+    revisions: dict[str, int],
+) -> tuple[list[dict], int]:
+    """Project caregiver workspace visibility for every raw treatment row.
+
+    Presentation authority only. A hidden row is still projected in full under
+    ``legacy_treatments`` and still reaches every model prompt unchanged; only the
+    caregiver's own workspace collapses it.
+    """
+    stored = profile.get("treatment_row_dispositions")
+    if stored is None:
+        stored = []
+    if not isinstance(stored, list) or any(not isinstance(item, dict) for item in stored):
+        raise TreatmentProjectionError(
+            "treatment_projection_invalid",
+            "Treatment row disposition authority is inconsistent.",
+        )
+    if len(stored) > MAX_LEGACY_TREATMENTS:
+        raise TreatmentProjectionError(
+            "treatment_projection_too_large",
+            "Treatment data exceeds the supported projection limits.",
+        )
+    ids = [item.get("id") for item in stored]
+    keys = [item.get("source_entry_id") for item in stored]
+    if (
+        any(not isinstance(item, str) or not item for item in ids)
+        or len(set(ids)) != len(ids)
+        or any(not isinstance(item, str) or not item for item in keys)
+        or len(set(keys)) != len(keys)
+        or any(not isinstance(item.get("hidden"), bool) for item in stored)
+    ):
+        raise TreatmentProjectionError(
+            "treatment_projection_invalid",
+            "Treatment row disposition authority is inconsistent.",
+        )
+    for item in stored:
+        _validate_nested(item)
+    by_key = {item["source_entry_id"]: item for item in stored}
+    raw_rows = profile.get("patient", {}).get("current_treatments") or []
+    source_keys = _raw_source_entry_ids(raw_rows)
+    result: list[dict] = []
+    hidden_count = 0
+    for row in legacy_rows:
+        order = row.get("source_order")
+        key = (
+            source_keys[order] if isinstance(order, int) and 0 <= order < len(source_keys) else None
+        )
+        # An unknown key simply means no stored disposition, so the row stays
+        # visible. Visibility is the only safe default: a stale or orphaned key
+        # must never hide a row the caregiver never chose to hide.
+        record = by_key.get(key) if key is not None else None
+        hidden = bool(record.get("hidden")) if record is not None else False
+        if hidden:
+            hidden_count += 1
+        public = {
+            "row_id": row["id"],
+            "hidden": hidden,
+            "token": _digest(
+                "txdisposition",
+                {
+                    "row_id": row["id"],
+                    "source_entry_id": key,
+                    "hidden": hidden,
+                    "revisions": revisions,
+                },
+            ),
+        }
+        _validate_public_value(public)
+        result.append(public)
+    return result, hidden_count
 
 
 def _linked_action_public(action: dict) -> dict:
@@ -1504,6 +1593,7 @@ def _build_projection(
     public_source = [item["public"] for item in projected_source]
     source_fact_documents = [item["document"] for item in projected_source]
     legacy, unlinked_generated_context = _legacy_projection(profile, revisions)
+    legacy_dispositions, legacy_hidden_count = _disposition_projection(profile, legacy, revisions)
     mapped_generated_by_id: dict[str, dict] = {}
     for legacy_row in legacy:
         for generated in legacy_row["generated_classification"]:
@@ -1576,6 +1666,7 @@ def _build_projection(
         "source_facts": [{"ref": item["ref"], "token": item["token"]} for item in public_source],
         "source_fact_documents": source_fact_documents,
         "legacy": [{"id": item["id"], "token": item["token"]} for item in legacy],
+        "legacy_treatment_dispositions": legacy_dispositions,
         "unlinked_generated_context": [
             {"id": item["id"], "token": item["token"]} for item in unlinked_generated_context
         ],
@@ -1593,12 +1684,14 @@ def _build_projection(
         "projection_token": _digest("txprojection", manifest),
         "source_fact_count": len(public_source),
         "legacy_treatment_count": len(legacy),
+        "legacy_treatment_hidden_count": legacy_hidden_count,
         "unlinked_generated_context_count": len(unlinked_generated_context),
         "course_count": len(public_courses),
         "discrepancy_count": len(public_discrepancies),
         "source_facts": public_source,
         "source_fact_documents": source_fact_documents,
         "legacy_treatments": legacy,
+        "legacy_treatment_dispositions": legacy_dispositions,
         "unlinked_generated_context": unlinked_generated_context,
         "courses": public_courses,
         "discrepancies": public_discrepancies,

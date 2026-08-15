@@ -262,7 +262,7 @@ def test_summary_auth_eviction_cannot_repaint_freshness_or_accept_late_success(s
 
 def _production_cardinality_projection_payloads() -> dict[str, dict]:
     profile = copy.deepcopy(DEFAULT_PROFILE)
-    profile.update(schema_version=15, profile_revision=0, workflow_revision=0)
+    profile.update(schema_version=16, profile_revision=0, workflow_revision=0)
     profile["biomarkers"] = [
         {
             "id": f"bio-{index:03d}",

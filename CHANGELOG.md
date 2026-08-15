@@ -9,6 +9,88 @@ incremented when something user-visible or operationally meaningful changes.
 ## [Unreleased]
 
 ### Added
+- **You can now hide a recorded treatment statement you don't find useful.**
+  Every row under **Patient → Treatments → Recorded treatment statements** gained
+  a **Not useful in my workspace** action. Some extracted statements are real
+  clinical detail your clinicians act on but that you would never mark as an
+  ongoing treatment — an infusion run at half speed to reduce nausea, say. This
+  collapses such a row out of your Overview.
+  - **Nothing is deleted and nothing is withheld from NET/Care.** The statement
+    keeps its exact wording, order and components in the patient record, stays in
+    the treatment projection, and still reaches the assistant verbatim — so it
+    can still answer "why has he been nauseated?" from it. Hiding changes your
+    page, never what NET/Care knows. The preference itself never enters any
+    prompt.
+  - **It is always disclosed and always reversible.** The recorded section shows
+    a permanent **N hidden by you · show** control containing every hidden row,
+    each with **Show in my workspace**, and states there that nothing was
+    deleted. Today reports the visible count and names the hidden count
+    separately.
+  - **Software never decides relevance.** No keyword list, alias table or model
+    judges which therapies matter; only your explicit action changes visibility.
+    The deterministic identity library already in the tree could have filtered
+    these rows automatically — it deliberately does not, because it would
+    silently hide a real therapy it has never heard of. This is the same
+    boundary that retired the LLM treatment classifier.
+  - Stored as a new `treatment_row_dispositions[]` collection (schema v16) keyed
+    by the position-independent `source_entry_id`, **not** the public projection
+    row ID, which folds in `source_order` and re-keys whenever an earlier row is
+    removed — keying on it would have moved your choice onto a different
+    statement. An unknown or orphaned key resolves to *visible*, so if a hidden
+    statement's wording is later corrected it reappears rather than staying
+    hidden under stale identity.
+  - Served as a sibling `legacy_treatment_dispositions[]` on
+    `GET /api/patient/treatment-reconciliation` (the `source_fact_documents[]`
+    pattern), so no existing snapshot field set widens and no stored citation
+    snapshot is invalidated. Set through
+    `POST /api/treatment-reconciliation/legacy-rows/<row_id>/disposition` under
+    the same guarded contract as every other treatment mutation: both expected
+    revisions, projection and per-row tokens, scoped mutation ID, one audit
+    event, one save, exact replay as a no-op. It is workflow-only, so it advances
+    `workflow_revision` alone and never marks your assessment stale.
+
+### Changed
+- **Recorded treatment rows are no longer presented as unfinished work.** Today
+  previously reported "*N treatment records need timing/status review*" for every
+  raw row not linked to a caregiver status record, and each card read "*Treatment
+  timing/status not yet reviewed*". Those rows are wording the record already
+  contains — including stops and administration detail — not a to-do list, and
+  leaving one unlinked is a legitimate resting state. Today now reports them
+  neutrally ("*3 recorded treatment entries are on file*") and the cards state
+  what is linked without implying anything is overdue. Linkage itself, its three
+  labels, and every stored `legacy_component_ids` value are unchanged.
+- **"Recorded treatment information" is now "Recorded treatment statements".**
+  The section says plainly that these are statements — starts, stops, dose or
+  schedule changes and administration detail — not a list of current treatments,
+  and that no status is assigned to them.
+- **Model prompts no longer label these rows "TREATMENTS".** The chat prompt's
+  `── TREATMENTS ──` heading became `── RECORDED TREATMENT STATEMENTS ──` with a
+  fixed caveat that the list is recorded wording including stops and
+  administration detail, carries no status or date, and must not be read as
+  ongoing therapy. `get_patient_summary` — which reaches the orchestrator,
+  executive summary, deep sweep and question prompts — gained the same
+  correction; it had been labelling the same collection "Treatments:" in five
+  further prompts. **Membership is unchanged**: chat still lists exactly the
+  deterministic component split and the summary still lists exactly the raw
+  entries, so `INVARIANTS.md` §3's model-visible treatment context rule holds
+  verbatim. Only the labelling changed.
+  - `INVARIANTS.md` was corrected to describe both prompt paths. It previously
+    described only the chat component split, which was silently inaccurate about
+    the four `get_patient_summary` consumers.
+
+### Fixed
+- **A dropped connection while hiding a row no longer freezes the treatment
+  workspace.** The ambiguous-transport recovery path arms the *Retry submission*
+  button inside the Record treatment dialog, which is closed for a row-level
+  action — so the retry was unreachable while the mutation stayed open, leaving
+  every treatment control (adding records, editing courses, resolving
+  differences, not just the toggle) disabled until a page reload. Row-level
+  actions now release the mutation and reload the authoritative record instead,
+  and say plainly that it is unknown whether the change saved. Dialog
+  submissions keep the existing retry behaviour, which preserves the exact
+  unchanged request.
+
+### Added
 - **Mentions in source documents can now start a status record.** Every row in
   **Patient → Treatments → Mentions in source documents** gained a **Record
   status** action beside the existing *View exact wording* / *Open source*

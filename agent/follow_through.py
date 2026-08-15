@@ -380,6 +380,7 @@ def iter_audit_events(profile: dict):
         "symptom_episodes",
         "treatment_courses",
         "treatment_discrepancies",
+        "treatment_row_dispositions",
         "research_considerations",
     ):
         for record in profile.get(collection, []) or []:
@@ -698,6 +699,28 @@ def _safe_result_snapshot(
             and isinstance(follow_up.get("text"), str)
             and follow_up.get("status") in ACTION_STATUSES
             and set(follow_up) == {"id", "token", "text", "status", "owner", "due_date"}
+        )
+    if endpoint == "POST /api/treatment-reconciliation/legacy-rows/<row_id>/disposition":
+        disposition = snapshot.get("disposition")
+        hidden_count = snapshot.get("legacy_treatment_hidden_count")
+        return (
+            collection == "treatment_row_dispositions"
+            and set(snapshot)
+            == {
+                "disposition",
+                "legacy_treatment_hidden_count",
+                "workflow_revision",
+                "profile_revision",
+            }
+            and isinstance(disposition, dict)
+            and set(disposition) == {"row_id", "hidden", "token"}
+            and disposition.get("row_id") == target.removeprefix("treatment_row_disposition:")
+            and isinstance(disposition.get("hidden"), bool)
+            and isinstance(disposition.get("token"), str)
+            and bool(disposition["token"])
+            and isinstance(hidden_count, int)
+            and not isinstance(hidden_count, bool)
+            and hidden_count >= 0
         )
     if endpoint in {
         "POST /api/treatment-reconciliation/courses",

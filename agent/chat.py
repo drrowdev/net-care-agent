@@ -87,7 +87,18 @@ def build_chat_system(profile: dict) -> str:
 
     treatments = current_treatment_records(profile)
     if treatments:
-        lines.append("── TREATMENTS ──")
+        # These are recorded statements, not a curated current-treatment list:
+        # starts, stops, dose/schedule changes and administration detail all land
+        # here. Labelling them "TREATMENTS" invited the model to read a stopped or
+        # supportive-care line as ongoing therapy. Membership is unchanged — this
+        # is still exactly the deterministic component split.
+        lines.append("── RECORDED TREATMENT STATEMENTS ──")
+        lines.append(
+            "Recorded wording only, including stops, dose/schedule changes and "
+            "administration detail. This is not a verified list of current "
+            "treatments and carries no status or date; do not assume any entry is "
+            "ongoing."
+        )
         for t in treatments:
             lines.append(f"- {t.get('text', '')}")
         lines.append("")

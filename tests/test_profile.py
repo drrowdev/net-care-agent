@@ -114,7 +114,7 @@ def test_schema14_profile_load_materializes_revision_and_all_projections(app_cli
     symptom_response = client.get("/api/patient/symptom-episodes")
     treatment_response = client.get("/api/patient/treatment-reconciliation")
 
-    assert loaded["schema_version"] == 15
+    assert loaded["schema_version"] == 16
     assert loaded["profile_revision"] == 0
     assert loaded["workflow_revision"] == 6
     assert loaded["clinical_judgments"][0]["source"] == "feedback"

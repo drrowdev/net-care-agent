@@ -78,6 +78,18 @@ incremented when something user-visible or operationally meaningful changes.
     described only the chat component split, which was silently inaccurate about
     the four `get_patient_summary` consumers.
 
+### Fixed
+- **A dropped connection while hiding a row no longer freezes the treatment
+  workspace.** The ambiguous-transport recovery path arms the *Retry submission*
+  button inside the Record treatment dialog, which is closed for a row-level
+  action — so the retry was unreachable while the mutation stayed open, leaving
+  every treatment control (adding records, editing courses, resolving
+  differences, not just the toggle) disabled until a page reload. Row-level
+  actions now release the mutation and reload the authoritative record instead,
+  and say plainly that it is unknown whether the change saved. Dialog
+  submissions keep the existing retry behaviour, which preserves the exact
+  unchanged request.
+
 ### Added
 - **Mentions in source documents can now start a status record.** Every row in
   **Patient → Treatments → Mentions in source documents** gained a **Record

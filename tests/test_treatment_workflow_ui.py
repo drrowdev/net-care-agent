@@ -1231,6 +1231,38 @@ def test_live_hidden_recorded_rows_collapse_without_disappearing():
             browser.close()
 
 
+def test_live_row_visibility_transport_failure_does_not_lock_the_workspace():
+    """A row action has no reachable retry, so it must never hold the mutation open.
+
+    The in-dialog "Retry submission" control is the only recovery affordance for an
+    ambiguous transport failure, and it is unreachable when no dialog is open. If a
+    row-level action kept the mutation pending, every treatment control — not just
+    this toggle — would stay disabled until a page reload.
+    """
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    with playwright_api.sync_playwright() as playwright:
+        if not Path(playwright.chromium.executable_path).exists():
+            pytest.skip("Installed Playwright browser is unavailable")
+        browser, context, page, state = _open_treatment_page(playwright, 1280, 900)
+        try:
+            page.locator("#nav-patient").click()
+            hide = page.locator("button[data-treatment-visibility-row]").first
+            assert hide.is_enabled()
+            state.abort_next_mutation = True
+            hide.click()
+
+            page.wait_for_function("() => !treatmentMutationPending")
+            # No unreachable retry is armed.
+            assert page.evaluate("() => pendingTreatmentRetry === null")
+            # The authoritative record is reloaded, and the workspace stays usable.
+            page.wait_for_function("() => treatmentProjectionState === 'current'")
+            assert page.locator("button[data-treatment-visibility-row]").first.is_enabled()
+            assert page.locator("#patient-treatment-add").is_enabled()
+        finally:
+            context.close()
+            browser.close()
+
+
 @pytest.mark.parametrize("width,height", [(1280, 800), (360, 740)])
 def test_live_today_first_viewport_prioritizes_latest_assessment(
     width: int,

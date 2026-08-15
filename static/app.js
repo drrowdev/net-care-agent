@@ -17213,6 +17213,10 @@
       method: specification.method,
       url: specification.url,
       operation: specification.operation,
+      // Dialog-bound intents can fall back to the in-dialog retry control on an
+      // ambiguous transport failure. Row-level actions cannot, so they must not
+      // hold the mutation open. See the TypeError branch in performTreatmentIntent.
+      dialogBound: specification.dialogBound !== false,
       bodyText: JSON.stringify(canonicalBody),
       mutationOwner,
       controller: treatmentMutationController,
@@ -17341,10 +17345,27 @@
         return null;
       }
       if (error instanceof TypeError) {
-        pendingTreatmentRetry = intent;
         treatmentNetworkAmbiguous = true;
         treatmentProjectionState = 'stale';
         renderTreatmentProjection(treatmentResponseOwner);
+        if (!intent.dialogBound) {
+          // Every retry affordance for an ambiguous submission lives inside the
+          // treatment dialog, which is closed for a row-level action. Holding the
+          // mutation open would leave the entire workspace read-only with no
+          // reachable way out, so release it and reload instead: the write may or
+          // may not have landed, and the authoritative record is the only honest
+          // answer. Re-clicking issues a fresh mutation ID against true state.
+          releaseTreatmentMutation(intent);
+          setTreatmentStatus(
+            'Treatment submission transport is uncertain, so it is unknown whether that change saved. '
+            + 'Reloading the authoritative record — check the entry and choose again if needed.',
+            'stale',
+            false,
+          );
+          await loadTreatmentReconciliation({ force: true });
+          return null;
+        }
+        pendingTreatmentRetry = intent;
         setTreatmentDialogStatus(
           'Submission status is unknown. The exact request can be retried unchanged; editing or closing destroys that retry.',
           'offline',
@@ -17397,6 +17418,7 @@
           url: `/api/treatment-reconciliation/legacy-rows/${encodeURIComponent(rowId)}/disposition`,
           body: { ...meta, expected_disposition_token: disposition.token, hidden },
           operation: 'visibility',
+          dialogBound: false,
         },
         mutationOwner,
       );

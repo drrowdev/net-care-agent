@@ -447,6 +447,14 @@ Three properties are load-bearing and covered by
   disposition can never hide a row the caregiver did not choose to hide — if a
   row's wording is later corrected its key changes and the row reappears.
 
+Because the key is content-addressed per occurrence, two rows holding
+**byte-identical** wording are indistinguishable to it: if an earlier duplicate
+is later removed, the survivor inherits the first occurrence's visibility, and a
+hidden wording that is removed and re-extracted returns visible. Those rows are
+also indistinguishable to the caregiver, and no row with *different* wording can
+ever inherit another's state, so the failure is bounded to text the caregiver
+cannot tell apart.
+
 The UI collapses hidden rows behind a persistent `N hidden by you · show`
 disclosure inside the recorded section, states there that nothing was deleted and
 that NET/Care still uses them, and offers **Show in my workspace** on each. Today

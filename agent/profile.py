@@ -91,6 +91,7 @@ DEFAULT_PROFILE: dict = {
     "symptom_episodes": [],
     "treatment_courses": [],
     "treatment_discrepancies": [],
+    "treatment_row_dispositions": [],
     "clinical_judgments": [],
     "appointment_questions": [],
     "questions_generation_id": None,
@@ -620,6 +621,34 @@ def invalidate_treatment_classification(profile: dict) -> None:
     profile["treatments_classification_job_id"] = None
 
 
+def raw_treatment_source_entry_id(text: str, occurrence: int) -> str:
+    """Stable per-occurrence identity for one raw ``current_treatments[]`` row.
+
+    Deliberately position independent. The public projection row ID folds in
+    ``source_order``, so it re-keys whenever an earlier row is removed; caregiver
+    workflow state must never hang off a positional key or it would silently
+    re-attach to a different row.
+    """
+    digest = hashlib.sha256(f"{text}:{occurrence}".encode()).hexdigest()[:20]
+    return f"txsrc_{digest}"
+
+
+def raw_treatment_source_entry_ids(raw_rows: list) -> list[str]:
+    """Per-occurrence identities for every raw treatment row, in stored order.
+
+    Single source of truth shared by ``sync_treatment_records``, the treatment
+    projection, and the disposition endpoint so the three can never drift.
+    """
+    occurrences: dict[str, int] = {}
+    keys: list[str] = []
+    for raw in raw_rows:
+        text = str(raw)
+        occurrence = occurrences.get(text, 0)
+        occurrences[text] = occurrence + 1
+        keys.append(raw_treatment_source_entry_id(text, occurrence))
+    return keys
+
+
 def sync_treatment_records(profile: dict) -> list[dict]:
     """Deterministically map raw/composite treatment strings to stable components."""
     patient = profile.setdefault("patient", {})
@@ -629,8 +658,7 @@ def sync_treatment_records(profile: dict) -> list[dict]:
         text = str(raw)
         occurrence = occurrences.get(text, 0)
         occurrences[text] = occurrence + 1
-        source_digest = hashlib.sha256(f"{text}:{occurrence}".encode()).hexdigest()[:20]
-        source_id = f"txsrc_{source_digest}"
+        source_id = raw_treatment_source_entry_id(text, occurrence)
         from .treatment_identity import split_treatment_components
 
         components = split_treatment_components(text)
@@ -782,7 +810,14 @@ def get_patient_summary(profile: dict) -> str:
         f"Age / Sex : {p.get('age') or 'unknown'} / {p.get('sex') or 'unknown'}",
         f"Ki-67     : {p.get('ki67_percent', 'unknown')}%",
         f"SSTR      : {p.get('sstr_status', 'unknown')} (score: {p.get('sstr_score', 'unknown')})",
-        f"Treatments: {', '.join(p.get('current_treatments', [])) or 'none documented'}",
+        # Recorded statements, not a curated list: starts, stops, dose/schedule
+        # changes and administration detail all land in current_treatments[].
+        # This reaches the orchestrator, executive summary, deep sweep and
+        # question prompts, so the label must not imply any entry is ongoing.
+        f"Treatment statements: "
+        f"{', '.join(p.get('current_treatments', [])) or 'none documented'}",
+        "  (recorded wording, including stops, dose/schedule changes and "
+        "administration detail — not a verified list of current treatments)",
         f"Center    : {p.get('treating_center', 'not specified')}",
         "",
         "─── Recent biomarkers ───",

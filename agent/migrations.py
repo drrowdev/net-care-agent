@@ -36,7 +36,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 15
+CURRENT_SCHEMA_VERSION: int = 16
 
 # Append-only ordered registry of migrations.  Never reorder entries.
 _REGISTRY: list[dict[str, Any]] = []
@@ -614,6 +614,21 @@ def _m0015_add_profile_revision_authority(data: dict) -> dict:
     if "profile_revision" not in data:
         data["profile_revision"] = 0
     data["schema_version"] = 15
+    return data
+
+
+@_migration("0016_add_treatment_row_disposition_authority", to_version=16)
+def _m0016_add_treatment_row_disposition_authority(data: dict) -> dict:
+    """v15 -> v16: add empty caregiver workspace visibility authority.
+
+    Initializes only a missing/null collection. It never reads, rewrites,
+    reorders, deduplicates or deletes ``patient.current_treatments[]``, and it
+    never infers a disposition for an existing row: every row stays visible
+    until the caregiver says otherwise.
+    """
+    if data.get("treatment_row_dispositions") is None:
+        data["treatment_row_dispositions"] = []
+    data["schema_version"] = 16
     return data
 
 

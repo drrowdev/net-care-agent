@@ -270,6 +270,27 @@ def _discrepancy(
     }
 
 
+def _sync_dispositions(projection: dict, hidden_row_ids: tuple[str, ...] = ()) -> dict:
+    """Attach the disposition sibling collection the projection contract requires.
+
+    Recomputed from the current ``legacy_treatments`` so a fixture that adds or
+    drops rows stays internally consistent.
+    """
+    rows = projection.get("legacy_treatments") or []
+    projection["legacy_treatment_dispositions"] = [
+        {
+            "row_id": row["id"],
+            "hidden": row["id"] in hidden_row_ids,
+            "token": f"disposition-token-{row['id']}",
+        }
+        for row in rows
+    ]
+    projection["legacy_treatment_hidden_count"] = sum(
+        1 for item in projection["legacy_treatment_dispositions"] if item["hidden"]
+    )
+    return projection
+
+
 def _projection() -> dict:
     courses = [
         _course("a", "Current one", component_ids=["legacy-component-one"]),
@@ -282,39 +303,41 @@ def _projection() -> dict:
         _source("1", "Duplicate source wording"),
         _source("2", "Duplicate source wording"),
     ]
-    return {
-        "profile_revision": 5,
-        "workflow_revision": 3,
-        "projection_token": "treatment-projection-5-3",
-        "source_fact_count": len(sources),
-        "legacy_treatment_count": 1,
-        "unlinked_generated_context_count": 10,
-        "course_count": len(courses),
-        "discrepancy_count": 0,
-        "source_facts": sources,
-        "source_fact_documents": [
-            _source_document("1"),
-            _source_document("2", filename=None, document_date="2026-08"),
-        ],
-        "legacy_treatments": [_legacy()],
-        "unlinked_generated_context": [_unlinked(index) for index in range(10)],
-        "courses": courses,
-        "discrepancies": [],
-        "eligible_actions": [
-            {
-                "id": "action-one",
-                "token": "action-token-one",
-                "text": "Ask the treating team to confirm exact wording",
-                "status": "open",
-                "owner": "Caregiver",
-                "due_date": None,
-            }
-        ],
-        "safety_guidance": {
-            "kind": "fixed_non_prescriptive",
-            "text": GUIDANCE,
-        },
-    }
+    return _sync_dispositions(
+        {
+            "profile_revision": 5,
+            "workflow_revision": 3,
+            "projection_token": "treatment-projection-5-3",
+            "source_fact_count": len(sources),
+            "legacy_treatment_count": 1,
+            "unlinked_generated_context_count": 10,
+            "course_count": len(courses),
+            "discrepancy_count": 0,
+            "source_facts": sources,
+            "source_fact_documents": [
+                _source_document("1"),
+                _source_document("2", filename=None, document_date="2026-08"),
+            ],
+            "legacy_treatments": [_legacy()],
+            "unlinked_generated_context": [_unlinked(index) for index in range(10)],
+            "courses": courses,
+            "discrepancies": [],
+            "eligible_actions": [
+                {
+                    "id": "action-one",
+                    "token": "action-token-one",
+                    "text": "Ask the treating team to confirm exact wording",
+                    "status": "open",
+                    "owner": "Caregiver",
+                    "due_date": None,
+                }
+            ],
+            "safety_guidance": {
+                "kind": "fixed_non_prescriptive",
+                "text": GUIDANCE,
+            },
+        }
+    )
 
 
 def _projection_with_discrepancies() -> dict:
@@ -388,7 +411,7 @@ def _recorded_only_projection() -> dict:
             "eligible_actions": [],
         }
     )
-    return projection
+    return _sync_dispositions(projection)
 
 
 def _component_linkage_projection() -> dict:
@@ -433,7 +456,7 @@ def _component_linkage_projection() -> dict:
             "discrepancies": [],
         }
     )
-    return projection
+    return _sync_dispositions(projection)
 
 
 def _run_validator(payloads: list[dict]) -> list[bool]:
@@ -520,6 +543,7 @@ def test_real_treatment_validator_is_atomic_exact_and_canonical():
     second_legacy["components"][0]["id"] = "legacy-component-two"
     duplicate_generated["legacy_treatments"].append(second_legacy)
     duplicate_generated["legacy_treatment_count"] = 2
+    _sync_dispositions(duplicate_generated)
     spanning_generated = copy.deepcopy(duplicate_generated)
     spanning = spanning_generated["legacy_treatments"][0]["generated_classification"][0]
     spanning["source_treatment_ids"] = ["legacy-component-one", "legacy-component-two"]
@@ -652,7 +676,10 @@ def test_treatment_module_has_one_authority_and_no_legacy_or_date_inference():
         "not a treatment record"
     ) in source
     assert "Status not recorded" in source
-    assert "Treatment timing/status not yet reviewed." in source
+    assert "No caregiver status record refers to this wording." in source
+    # Recorded rows are never framed as outstanding caregiver work.
+    assert "need timing/status review" not in source
+    assert "not yet reviewed" not in source
 
 
 class _LiveState:
@@ -953,7 +980,7 @@ def test_live_shared_projection_totals_authorities_and_accessibility(width: int,
             assert page.locator("#today-treatment-list .treatment-course-card").count() == 3
             totals = page.locator("#today-treatment-totals").inner_text()
             assert "2 current and 2 planned status records" in totals
-            assert "All 1 recorded treatment entry is linked" in totals
+            assert "1 recorded treatment entry is on file" in totals
             page.locator("#nav-patient").click()
             assert page.locator("#patient-treatment-list .treatment-course-card").count() == 5
             assert (
@@ -1058,7 +1085,7 @@ def test_live_recorded_treatments_are_first_class_without_status_inference(
         try:
             today = page.locator("#treatment-today-card")
             assert "No treatment is recorded as current." in today.inner_text()
-            assert "31 treatment records need timing/status review" in today.inner_text()
+            assert "31 recorded treatment entries are on file" in today.inner_text()
             assert page.locator("#today-treatment-list .treatment-recorded-card").count() == 3
             # Recorded rows carry no date, so Today's bounded set shows the
             # three most recently recorded entries.
@@ -1073,7 +1100,7 @@ def test_live_recorded_treatments_are_first_class_without_status_inference(
             page.locator("#nav-patient").click()
             overview = page.locator("#treatment-panel-records")
             assert page.locator("#patient-treatment-list .treatment-recorded-card").count() == 31
-            assert "Recorded treatment information (31)" in overview.inner_text()
+            assert "Recorded treatment statements (31)" in overview.inner_text()
             assert "Recorded treatment information 00" in overview.inner_text()
             assert "Recorded treatment information 30" in overview.inner_text()
             assert page.locator(
@@ -1119,7 +1146,8 @@ def test_live_recorded_treatment_component_linkage_is_none_all_or_partial():
         try:
             totals = page.locator("#today-treatment-totals").inner_text()
             assert "1 current and 0 planned status record" in totals
-            assert "2 recorded treatment entries need timing/status review" in totals
+            assert "3 recorded treatment entries are on file" in totals
+            assert "need timing/status review" not in totals
 
             page.locator("#nav-patient").click()
             cards = page.locator("#patient-treatment-list .treatment-recorded-card")
@@ -1131,7 +1159,7 @@ def test_live_recorded_treatment_component_linkage_is_none_all_or_partial():
             assert "Linked to reviewed status" in cards.nth(1).inner_text()
             assert "All recorded components are linked" in cards.nth(1).inner_text()
             assert "Status not recorded" in cards.nth(2).inner_text()
-            assert "Treatment timing/status not yet reviewed" in cards.nth(2).inner_text()
+            assert "No caregiver status record refers to this wording" in cards.nth(2).inner_text()
             assert cards.locator("h3").all_inner_texts() == [
                 "Partial recorded treatment",
                 "All recorded treatment",
@@ -1141,6 +1169,63 @@ def test_live_recorded_treatment_component_linkage_is_none_all_or_partial():
                 assert "Current record" not in card.inner_text()
                 assert "Planned record" not in card.inner_text()
                 assert "Past record" not in card.inner_text()
+        finally:
+            context.close()
+            browser.close()
+
+
+def test_live_hidden_recorded_rows_collapse_without_disappearing():
+    """A hidden row leaves the main list but is always disclosed and restorable."""
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    projection = _component_linkage_projection()
+    hidden_id = next(
+        row["id"]
+        for row in projection["legacy_treatments"]
+        if row["raw_text"] == "None recorded treatment"
+    )
+    _sync_dispositions(projection, (hidden_id,))
+    with playwright_api.sync_playwright() as playwright:
+        if not Path(playwright.chromium.executable_path).exists():
+            pytest.skip("Installed Playwright browser is unavailable")
+        browser, context, page, _ = _open_treatment_page(playwright, 1280, 800, projection)
+        try:
+            totals = page.locator("#today-treatment-totals").inner_text()
+            # The count reflects what is shown, and never conceals the remainder.
+            assert "2 recorded treatment entries are on file" in totals
+            assert "1 hidden in Patient" in totals
+
+            page.locator("#nav-patient").click()
+            visible = page.locator(
+                "#patient-treatment-list .treatment-course-list:not(.treatment-hidden-list)"
+                " > .treatment-recorded-card"
+            )
+            assert visible.count() == 2
+            assert "None recorded treatment" not in visible.nth(0).inner_text()
+            assert "None recorded treatment" not in visible.nth(1).inner_text()
+
+            disclosure = page.locator(".treatment-hidden-disclosure")
+            assert disclosure.count() == 1
+            assert "1 hidden by you · show" in disclosure.locator("summary").inner_text()
+            # The row is present in the DOM behind the disclosure, not removed.
+            hidden_cards = disclosure.locator(".treatment-recorded-card")
+            assert hidden_cards.count() == 1
+            assert "None recorded treatment" in hidden_cards.nth(0).text_content()
+            disclosure.locator("summary").click()
+            assert "None recorded treatment" in hidden_cards.nth(0).inner_text()
+            assert (
+                hidden_cards.nth(0)
+                .get_by_role("button", name="Show None recorded treatment in my workspace")
+                .count()
+                == 1
+            )
+            # It must state plainly that nothing was deleted or withheld.
+            assert "Nothing was deleted" in disclosure.text_content()
+            assert "still uses them when answering your questions" in disclosure.text_content()
+
+            # Today shows only the rows the caregiver kept.
+            page.locator("#nav-today").click()
+            today = page.locator("#today-treatment-list").inner_text()
+            assert "None recorded treatment" not in today
         finally:
             context.close()
             browser.close()
@@ -2180,8 +2265,15 @@ def test_live_recorded_row_records_status_prefilled_without_status_inference(
             )
             assert action.count() == 1
             assert action.is_enabled()
-            # Exactly one affordance per recorded row, and the compact Today cards stay read-only.
-            assert unreviewed.locator(".treatment-card-actions button").count() == 1
+            # Two affordances per recorded row — record a status, or hide the row
+            # from this workspace — and the compact Today cards stay read-only.
+            assert unreviewed.locator(".treatment-card-actions button").count() == 2
+            assert (
+                unreviewed.get_by_role(
+                    "button", name="Hide None recorded treatment from my workspace"
+                ).count()
+                == 1
+            )
             assert (
                 page.locator("#today-treatment-list .treatment-recorded-card button").count() == 0
             )
@@ -2487,7 +2579,7 @@ def test_optional_wording_sits_behind_one_closed_disclosure():
 def test_current_and_planned_empty_state_names_the_recording_action():
     source = _treatment_source()
     start = source.index("const routes = ['use Add status record above'];")
-    empty_state = source[start : source.index("`Recorded treatment information", start)]
+    empty_state = source[start : source.index("'Finished or past',", start)]
     assert "Record status on a recorded treatment entry below" in empty_state
     assert "mention in source documents" in empty_state
     assert "use Add status record above" in empty_state
@@ -2761,6 +2853,7 @@ def test_live_empty_state_only_offers_routes_that_exist():
     bare["discrepancy_count"] = 0
     bare["legacy_treatments"] = []
     bare["legacy_treatment_count"] = 0
+    _sync_dispositions(bare)
     bare["source_facts"] = []
     bare["source_fact_documents"] = []
     bare["source_fact_count"] = 0
@@ -3124,7 +3217,7 @@ def _ordering_projection() -> dict:
             "discrepancies": [],
         }
     )
-    return projection
+    return _sync_dispositions(projection)
 
 
 def _run_treatment_ordering(body: str):

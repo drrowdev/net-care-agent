@@ -14396,9 +14396,11 @@
     if (
       !treatmentHasExactKeys(data, [
         'profile_revision', 'workflow_revision', 'projection_token',
-        'source_fact_count', 'legacy_treatment_count', 'unlinked_generated_context_count',
+        'source_fact_count', 'legacy_treatment_count', 'legacy_treatment_hidden_count',
+        'unlinked_generated_context_count',
         'course_count',
         'discrepancy_count', 'source_facts', 'source_fact_documents', 'legacy_treatments',
+        'legacy_treatment_dispositions',
         'courses',
         'unlinked_generated_context', 'discrepancies', 'eligible_actions',
         'safety_guidance',
@@ -14415,6 +14417,9 @@
       || !Number.isSafeInteger(data.legacy_treatment_count)
       || data.legacy_treatment_count < 0
       || data.legacy_treatment_count > 2000
+      || !Number.isSafeInteger(data.legacy_treatment_hidden_count)
+      || data.legacy_treatment_hidden_count < 0
+      || data.legacy_treatment_hidden_count > data.legacy_treatment_count
       || !Number.isSafeInteger(data.unlinked_generated_context_count)
       || data.unlinked_generated_context_count < 0
       || data.unlinked_generated_context_count > 2000
@@ -14430,6 +14435,8 @@
       || data.source_fact_documents.length !== data.source_fact_count
       || !Array.isArray(data.legacy_treatments)
       || data.legacy_treatments.length !== data.legacy_treatment_count
+      || !Array.isArray(data.legacy_treatment_dispositions)
+      || data.legacy_treatment_dispositions.length !== data.legacy_treatment_count
       || !Array.isArray(data.unlinked_generated_context)
       || data.unlinked_generated_context.length !== data.unlinked_generated_context_count
       || !Array.isArray(data.courses)
@@ -14499,6 +14506,29 @@
       allTokens.add(row.token);
       if (componentIds.size > 4000) return false;
     }
+    // Every raw row carries exactly one disposition, and hidden rows must agree
+    // with the server's own count. A disposition may never name an unknown row.
+    const dispositionRowIds = new Set();
+    let hiddenSeen = 0;
+    for (const disposition of data.legacy_treatment_dispositions) {
+      if (
+        !treatmentHasExactKeys(disposition, ['row_id', 'hidden', 'token'])
+        || typeof disposition.hidden !== 'boolean'
+        || !treatmentBoundedString(disposition.row_id, 200)
+        || !treatmentBoundedString(disposition.token, 200)
+        || !disposition.token
+        || !legacyIds.has(disposition.row_id)
+        || dispositionRowIds.has(disposition.row_id)
+        || allTokens.has(disposition.token)
+      ) return false;
+      dispositionRowIds.add(disposition.row_id);
+      allTokens.add(disposition.token);
+      if (disposition.hidden) hiddenSeen += 1;
+    }
+    if (
+      dispositionRowIds.size !== legacyIds.size
+      || hiddenSeen !== data.legacy_treatment_hidden_count
+    ) return false;
     const componentOwners = new Map();
     const generatedPlacements = new Map();
     const generatedRows = new Map();
@@ -14943,7 +14973,7 @@
     return { state: 'none', linkedCount: 0, totalCount: componentIds.length };
   }
 
-  function treatmentRecordedCard(row, compact = false, linkage = null) {
+  function treatmentRecordedCard(row, compact = false, linkage = null, hidden = false) {
     const reviewLinkage = linkage || treatmentRecordedLinkage(
       row,
       treatmentReviewedComponentIds(),
@@ -14951,7 +14981,7 @@
     const presentation = {
       none: {
         label: 'Status not recorded',
-        detail: 'Treatment timing/status not yet reviewed.',
+        detail: 'No caregiver status record refers to this wording.',
       },
       all: {
         label: 'Linked to reviewed status',
@@ -14959,7 +14989,7 @@
       },
       partial: {
         label: 'Partly linked to reviewed status',
-        detail: `${reviewLinkage.linkedCount} of ${reviewLinkage.totalCount} recorded components are linked; remaining details need timing/status review.`,
+        detail: `${reviewLinkage.linkedCount} of ${reviewLinkage.totalCount} recorded components are linked to a caregiver-reviewed treatment status.`,
       },
     }[reviewLinkage.state];
     const card = treatmentElement(
@@ -14995,6 +15025,25 @@
     record.setAttribute('aria-label', `Record status for ${row.raw_text}`);
     record.addEventListener('click', () => openTreatmentRecordedStatusDialog(record, row.id));
     actions.append(record);
+    // Visibility is the caregiver's own call about his workspace. It asserts
+    // nothing clinical: not that the statement is wrong, stopped, or irrelevant
+    // to care — only that he does not want it on this page.
+    const visibility = treatmentElement(
+      'button',
+      'button secondary',
+      hidden ? 'Show in my workspace' : 'Not useful in my workspace',
+    );
+    visibility.type = 'button';
+    visibility.disabled = !recordable;
+    visibility.dataset.treatmentVisibilityRow = row.id;
+    visibility.setAttribute(
+      'aria-label',
+      hidden
+        ? `Show ${row.raw_text} in my workspace`
+        : `Hide ${row.raw_text} from my workspace`,
+    );
+    visibility.addEventListener('click', () => setTreatmentRowVisibility(visibility, row.id, !hidden));
+    actions.append(visibility);
     card.append(actions);
     return card;
   }
@@ -15202,31 +15251,42 @@
     const pastCount = treatmentProjection.courses.filter(course => course.status === 'past').length;
     const shown = active.slice(0, TREATMENT_TODAY_LIMIT);
     const reviewedComponentIds = treatmentReviewedComponentIds();
-    const recordedRows = treatmentSortedRecordedRows(treatmentProjection.legacy_treatments).map(row => ({
+    const hiddenRowIds = new Set(
+      treatmentProjection.legacy_treatment_dispositions
+        .filter(item => item.hidden)
+        .map(item => item.row_id),
+    );
+    const allRecordedRows = treatmentSortedRecordedRows(treatmentProjection.legacy_treatments).map(row => ({
       row,
       linkage: treatmentRecordedLinkage(row, reviewedComponentIds),
+      hidden: hiddenRowIds.has(row.id),
     }));
-    const recordedNeedingReview = recordedRows.filter(item => item.linkage.state !== 'all');
-    const fullyLinkedCount = recordedRows.length - recordedNeedingReview.length;
+    // Hiding is a workspace preference only: the row stays stored, stays in the
+    // projection, and stays in every model prompt. It is collapsed here, never
+    // removed, and the count below always discloses how many are collapsed.
+    const recordedRows = allRecordedRows.filter(item => !item.hidden);
+    const hiddenRecordedRows = allRecordedRows.filter(item => item.hidden);
     const recordedShown = recordedRows.slice(0, TREATMENT_TODAY_LIMIT);
+    // Recorded rows are reported as a neutral count. They are wording the
+    // record already contains, not caregiver work items: leaving one unlinked
+    // is a legitimate resting state, so nothing here frames them as overdue.
+    const recordedCount = recordedRows.length;
+    const hiddenSuffix = hiddenRecordedRows.length
+      ? ` ${hiddenRecordedRows.length} hidden in Patient.`
+      : '';
+    const recordedSummary = recordedCount
+      ? `${recordedCount} recorded treatment entr${recordedCount === 1 ? 'y is' : 'ies are'} on file.${hiddenSuffix}`
+      : hiddenRecordedRows.length
+        ? `No recorded treatment entries are shown.${hiddenSuffix}`
+        : '';
     const totals = document.getElementById('today-treatment-totals');
     if (totals) {
       if (!active.length && treatmentProjection.legacy_treatment_count) {
-        totals.textContent = `No treatment is recorded as current. ${
-          recordedNeedingReview.length
-            ? `${recordedNeedingReview.length} treatment record${recordedNeedingReview.length === 1 ? ' needs' : 's need'} timing/status review.`
-            : `All ${fullyLinkedCount} recorded treatment entr${fullyLinkedCount === 1 ? 'y is' : 'ies are'} linked to caregiver-reviewed status records.`
-        }`;
+        totals.textContent = `No treatment is recorded as current. ${recordedSummary}`;
       } else if (active.length) {
         totals.textContent = `${currentCount} current and ${plannedCount} planned status record${
           active.length === 1 ? '' : 's'
-        }. ${
-          recordedNeedingReview.length
-            ? `${recordedNeedingReview.length} recorded treatment entr${recordedNeedingReview.length === 1 ? 'y needs' : 'ies need'} timing/status review.`
-            : fullyLinkedCount
-              ? `All ${fullyLinkedCount} recorded treatment entr${fullyLinkedCount === 1 ? 'y is' : 'ies are'} linked to caregiver-reviewed status records.`
-              : 'No additional recorded treatment entries need review.'
-        }`;
+        }.${recordedSummary ? ` ${recordedSummary}` : ''}`;
       } else if (pastCount) {
         totals.textContent = `No treatment is recorded as current. ${pastCount} finished or past status record${
           pastCount === 1 ? ' is' : 's are'
@@ -15267,6 +15327,34 @@
       }
       const lastRoute = routes.pop();
       const routeText = routes.length ? `${routes.join(', ')}, or ${lastRoute}` : lastRoute;
+      const recordedSection = treatmentOverviewSection(
+        `Recorded treatment statements (${recordedInformation.length})`,
+        'Wording already recorded in the patient record, newest recorded first. These are statements — starts, stops, dose or schedule changes and administration detail — not a list of current treatments, and no status is assigned to them. Each card shows whether its explicit components are linked to a caregiver-reviewed status record.',
+        recordedInformation,
+        hiddenRecordedRows.length
+          ? 'Every recorded treatment statement is hidden. Open the hidden list below to show one again.'
+          : 'No additional recorded treatment information is present.',
+      );
+      if (hiddenRecordedRows.length) {
+        const disclosure = treatmentElement('details', 'treatment-hidden-disclosure');
+        const summary = treatmentElement(
+          'summary',
+          '',
+          `${hiddenRecordedRows.length} hidden by you · show`,
+        );
+        disclosure.append(summary);
+        disclosure.append(treatmentElement(
+          'p',
+          'treatment-overview-description',
+          'You marked these as not useful in your workspace. Nothing was deleted or changed: they are still stored, still counted in the record, and NET/Care still uses them when answering your questions. Restore any of them at any time.',
+        ));
+        const hiddenList = treatmentElement('div', 'treatment-course-list treatment-hidden-list');
+        hiddenList.replaceChildren(
+          ...hiddenRecordedRows.map(item => treatmentRecordedCard(item.row, false, item.linkage, true)),
+        );
+        disclosure.append(hiddenList);
+        recordedSection.append(disclosure);
+      }
       records.replaceChildren(
         treatmentOverviewSection(
           'Current and planned',
@@ -15274,12 +15362,7 @@
           currentAndPlanned,
           `No treatment has been explicitly recorded as current or planned. To add one, ${routeText}. You choose the status and any dates.`,
         ),
-        treatmentOverviewSection(
-          `Recorded treatment information (${recordedInformation.length})`,
-          'Every recorded treatment entry stays here, newest recorded first. Each card shows whether its explicit components are linked to a caregiver-reviewed status record.',
-          recordedInformation,
-          'No additional recorded treatment information is present.',
-        ),
+        recordedSection,
         treatmentOverviewSection(
           'Finished or past',
           'Only status records explicitly reviewed as finished or past appear here, newest first by the date each record is about. Records without that date come last.',
@@ -15582,6 +15665,19 @@
         discrepancy?.follow_up?.id !== completion.followUp.id
         || JSON.stringify(semantic(discrepancy.follow_up)) !== JSON.stringify(semantic(completion.followUp))
       ) return false;
+    }
+    if (completion.disposition) {
+      const disposition = treatmentProjection.legacy_treatment_dispositions.find(
+        item => item.row_id === completion.disposition.row_id,
+      );
+      if (
+        !disposition
+        || JSON.stringify(semantic(disposition)) !== JSON.stringify(semantic(completion.disposition))
+      ) return false;
+      // The row itself must survive: hiding is a view preference, never a delete.
+      if (!treatmentProjection.legacy_treatments.some(
+        row => row.id === completion.disposition.row_id,
+      )) return false;
     }
     if (completion.expectUnlinked) {
       const discrepancy = treatmentDiscrepancyById(completion.discrepancy.id);
@@ -17023,6 +17119,26 @@
         optional,
       ) && treatmentCourseIsValid(data.course, componentIds);
     }
+    if (intent.operation === 'visibility') {
+      return treatmentHasExactKeys(
+        data,
+        [
+          'disposition',
+          'legacy_treatment_hidden_count',
+          'workflow_revision',
+          'profile_revision',
+        ],
+        optional,
+      )
+        && treatmentHasExactKeys(data.disposition, ['row_id', 'hidden', 'token'])
+        && data.disposition.row_id === intent.recordedRowId
+        && typeof data.disposition.hidden === 'boolean'
+        && data.disposition.hidden === intent.recordedRowHidden
+        && treatmentBoundedString(data.disposition.token, 200)
+        && Boolean(data.disposition.token)
+        && Number.isSafeInteger(data.legacy_treatment_hidden_count)
+        && data.legacy_treatment_hidden_count >= 0;
+    }
     if (!treatmentHasExactKeys(
       data,
       ['discrepancy', 'course', 'follow_up', 'workflow_revision', 'profile_revision'],
@@ -17121,6 +17237,7 @@
       course: data.course || null,
       discrepancy: data.discrepancy || null,
       followUp: data.follow_up || null,
+      disposition: data.disposition || null,
       expectUnlinked: intent.operation === 'unlink',
       previousCourseId: intent.previousCourseId,
     };
@@ -17259,6 +17376,45 @@
       return null;
     } finally {
       if (!pendingTreatmentRetry && !pendingTreatmentCompletion) releaseTreatmentMutation(intent);
+    }
+  }
+
+  async function setTreatmentRowVisibility(trigger, rowId, hidden) {
+    const mutationOwner = beginTreatmentMutation();
+    if (!mutationOwner) return null;
+    let intent;
+    try {
+      const meta = treatmentMutationMeta();
+      const disposition = treatmentProjection.legacy_treatment_dispositions.find(
+        item => item.row_id === rowId,
+      );
+      if (!disposition) {
+        throw new Error('Reload the authoritative treatment record before saving.');
+      }
+      intent = createTreatmentIntent(
+        {
+          method: 'POST',
+          url: `/api/treatment-reconciliation/legacy-rows/${encodeURIComponent(rowId)}/disposition`,
+          body: { ...meta, expected_disposition_token: disposition.token, hidden },
+          operation: 'visibility',
+        },
+        mutationOwner,
+      );
+      intent.recordedRowId = rowId;
+      intent.recordedRowHidden = hidden;
+      return performTreatmentIntent(intent);
+    } catch (error) {
+      setTreatmentStatus(
+        error.message || 'Reload the authoritative treatment record before saving.',
+        'stale',
+        true,
+      );
+      releaseTreatmentMutation(intent || {
+        mutationOwner,
+        controller: treatmentMutationController,
+      });
+      trigger?.focus();
+      return null;
     }
   }
 

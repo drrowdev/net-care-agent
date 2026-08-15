@@ -34,6 +34,7 @@ All sub-models accept **extra** fields (forward-compat) and treat every document
   'symptom_episodes': list[SymptomEpisode],
   'treatment_courses': list[TreatmentCourse],
   'treatment_discrepancies': list[TreatmentDiscrepancy],
+  'treatment_row_dispositions': list[TreatmentRowDisposition],
   'questions': list[Question],
   'appointment_questions': list[Question],
   'questions_generation_id': str | None,
@@ -289,6 +290,27 @@ Immutable trust boundary for a caregiver-maintained episode.
 |-------|------|-------------|
 | `capture_method` | `'caregiver_entered'` |  |
 | `source_verification` | `'unverified'` |  |
+
+## `treatment_row_dispositions[]`
+
+Caregiver workspace visibility for one raw `patient.current_treatments[]`
+statement. Presentation authority only: it never edits, deletes or reorders the
+statement, never assigns clinical meaning, and never reaches a model prompt — a
+hidden statement still reaches the assistant verbatim.
+
+Keyed by `source_entry_id`, the position-independent per-occurrence identity from
+`profile.raw_treatment_source_entry_id`, **not** by the public projection row ID
+(which folds in `source_order` and re-keys when an earlier row is removed). An
+unknown or orphaned key resolves to visible, so stale state can never hide a row.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `str` | `txdisp_<uuid4 hex>` |
+| `source_entry_id` | `str` | `txsrc_<sha256(text:occurrence)[:20]>` |
+| `hidden` | `bool` | `True` collapses the row in the caregiver's Overview |
+| `created_at` | `str` | |
+| `updated_at` | `str` | |
+| `history` | `list[WorkflowAuditEvent]` | Append-only; `hidden` / `restored` |
 
 ## `questions[]`
 

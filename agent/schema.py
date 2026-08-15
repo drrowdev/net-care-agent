@@ -43,6 +43,7 @@ _COLLECTION_KEYS: tuple[str, ...] = (
     "caregiver_actions",
     "visits",
     "research_considerations",
+    "treatment_row_dispositions",
 )
 
 
@@ -866,12 +867,33 @@ class ResearchConsideration(_Lenient):
     history: list[WorkflowAuditEvent] = Field(default_factory=list)
 
 
+class TreatmentRowDisposition(_Lenient):
+    """Caregiver workspace visibility choice for one raw treatment statement.
+
+    Presentation-only workflow authority. It never edits, deletes or reorders
+    ``patient.current_treatments[]``, never assigns clinical meaning, and never
+    reaches a model prompt — a hidden row stays in model context verbatim.
+
+    Keyed by ``source_entry_id`` (the position-independent per-occurrence
+    identity from ``profile.raw_treatment_source_entry_id``) rather than the
+    public projection row ID, which folds in ``source_order`` and re-keys when an
+    earlier row is removed.
+    """
+
+    id: str
+    source_entry_id: str
+    hidden: bool = False
+    created_at: str
+    updated_at: str
+    history: list[WorkflowAuditEvent] = Field(default_factory=list)
+
+
 # ── top-level model ───────────────────────────────────────────────────────────
 class PatientProfile(_Lenient):
     """The complete patient profile. Lives at ${DATA_DIR}/patient_profile.json."""
 
     schema_version: int = Field(
-        default=15,
+        default=16,
         description="Profile schema version. Incremented when a structural migration runs.",
     )
     profile_revision: StrictInt = 0
@@ -904,6 +926,7 @@ class PatientProfile(_Lenient):
     caregiver_actions: list[CaregiverAction] = Field(default_factory=list)
     visits: list[Visit] = Field(default_factory=list)
     research_considerations: list[ResearchConsideration] = Field(default_factory=list)
+    treatment_row_dispositions: list[TreatmentRowDisposition] = Field(default_factory=list)
     executive_summary: ExecutiveSummary | None = None
     latest_research_update: ResearchUpdate | None = None
 

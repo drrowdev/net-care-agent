@@ -823,9 +823,7 @@ def _prune_retention() -> None:
                 except (TypeError, ValueError):
                     age = age_days * 86400 + 1
                 if index >= max_count or age > age_days * 86400:
-                    job["artifact_state"] = (
-                        "expired" if age > age_days * 86400 else "not_retained"
-                    )
+                    job["artifact_state"] = "expired" if age > age_days * 86400 else "not_retained"
                     refs_to_delete.append(job.pop(field))
                     changed = True
             if changed:
@@ -1752,6 +1750,37 @@ def _discrepancy_record(profile: dict, discrepancy_id: str) -> dict:
     if discrepancy is None:
         raise _TreatmentNotFoundError("Treatment discrepancy not found.")
     return discrepancy
+
+
+def _raw_row_source_entry_id(profile: dict, row: dict) -> str:
+    """Resolve a projected raw row to its position-independent stored identity.
+
+    The public row ID folds in ``source_order``, so it re-keys whenever an earlier
+    row is removed. Workspace state is stored against the occurrence identity
+    instead, which only changes when that row's own wording changes.
+    """
+    raw_rows = profile.get("patient", {}).get("current_treatments") or []
+    keys = agent.raw_treatment_source_entry_ids(raw_rows)
+    order = row.get("source_order")
+    if isinstance(order, bool) or not isinstance(order, int) or not 0 <= order < len(keys):
+        raise _TreatmentNotFoundError("Recorded treatment entry not found.")
+    return keys[order]
+
+
+def _treatment_row_disposition_response(profile: dict, row_id: str) -> dict:
+    projection = _treatment_projection(profile)
+    disposition = next(
+        (item for item in projection["legacy_treatment_dispositions"] if item["row_id"] == row_id),
+        None,
+    )
+    if disposition is None:
+        raise RuntimeError("Recorded treatment entry disappeared before response generation.")
+    return {
+        "disposition": disposition,
+        "legacy_treatment_hidden_count": projection["legacy_treatment_hidden_count"],
+        "workflow_revision": projection["workflow_revision"],
+        "profile_revision": projection["profile_revision"],
+    }
 
 
 def _treatment_mutation_response(
@@ -6166,6 +6195,119 @@ def api_restart_treatment_course(course_id):
                 ),
             )
         return jsonify(result), 201
+    except (agent.FollowThroughError, ValueError, TypeError) as exc:
+        return _treatment_mutation_error(exc)
+
+
+@app.route(
+    "/api/treatment-reconciliation/legacy-rows/<row_id>/disposition",
+    methods=["POST"],
+)
+def api_set_treatment_row_disposition(row_id):
+    """Set the caregiver's workspace visibility for one raw treatment statement.
+
+    Workflow authority only. Nothing is deleted, no stored wording changes, no
+    clinical meaning is assigned, and the row keeps reaching every model prompt
+    unchanged — so this advances ``workflow_revision`` alone and never
+    invalidates generated clinical context.
+    """
+    try:
+        data = _workflow_request()
+        _reject_unsupported_fields(
+            data,
+            _TREATMENT_META_FIELDS | {"hidden", "expected_disposition_token"},
+            "Unsupported treatment row disposition field.",
+        )
+        mutation_id = agent.validate_mutation_id(data.get("mutation_id"))
+        hidden = data.get("hidden")
+        if not isinstance(hidden, bool):
+            raise ValueError("hidden must be true or false.")
+        expected_token = data.get("expected_disposition_token")
+        if not isinstance(expected_token, str) or not expected_token:
+            raise ValueError("expected_disposition_token is required.")
+        endpoint = "POST /api/treatment-reconciliation/legacy-rows/<row_id>/disposition"
+        operation = "hidden" if hidden else "restored"
+        target = f"treatment_row_disposition:{row_id}"
+        with agent.serialized_mutation():
+            profile = agent.load_profile()
+            replay = _idempotent_result(
+                profile,
+                mutation_id,
+                data,
+                endpoint=endpoint,
+                operation=operation,
+                target=target,
+            )
+            if replay is not None:
+                return jsonify(replay)
+            projection = _treatment_projection(profile)
+            _require_treatment_revisions(profile, data)
+            _require_treatment_projection_token(projection, data)
+            row = next(
+                (item for item in projection["legacy_treatments"] if item["id"] == row_id),
+                None,
+            )
+            if row is None:
+                raise _TreatmentNotFoundError("Recorded treatment entry not found.")
+            current = next(
+                (
+                    item
+                    for item in projection["legacy_treatment_dispositions"]
+                    if item["row_id"] == row_id
+                ),
+                None,
+            )
+            if current is None:
+                raise _TreatmentNotFoundError("Recorded treatment entry not found.")
+            if not hmac.compare_digest(expected_token, current["token"]):
+                raise _TreatmentConflictError(
+                    "That recorded treatment entry changed. Refresh and try again."
+                )
+            if bool(current["hidden"]) == hidden:
+                raise ValueError("That recorded treatment entry already has this visibility.")
+            source_entry_id = _raw_row_source_entry_id(profile, row)
+            timestamp = now_stamp()
+            records = profile.setdefault("treatment_row_dispositions", [])
+            record = next(
+                (
+                    item
+                    for item in records
+                    if isinstance(item, dict) and item.get("source_entry_id") == source_entry_id
+                ),
+                None,
+            )
+            before_token = current["token"]
+            if record is None:
+                record = {
+                    "id": agent.new_treatment_row_disposition_id(),
+                    "source_entry_id": source_entry_id,
+                    "hidden": hidden,
+                    "created_at": timestamp,
+                    "updated_at": timestamp,
+                    "history": [],
+                }
+                records.append(record)
+            else:
+                record["hidden"] = hidden
+                record["updated_at"] = timestamp
+            event = agent.append_history(
+                record,
+                endpoint=endpoint,
+                operation=operation,
+                target=target,
+                mutation_id=mutation_id,
+                payload=data,
+                before_token=before_token,
+                changes={"hidden": {"before": not hidden, "after": hidden}},
+            )
+            result = _save_workflow_mutation(
+                profile,
+                clinical_change=False,
+                reason="A caregiver treatment workspace preference changed.",
+                event=event,
+                response_factory=lambda: _treatment_row_disposition_response(profile, row_id),
+            )
+        return jsonify(result)
     except (agent.FollowThroughError, ValueError, TypeError) as exc:
         return _treatment_mutation_error(exc)
 

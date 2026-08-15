@@ -670,11 +670,13 @@ caregiver-maintained episodes remain excluded from all model prompts.
 ## 5b. Record and reconcile treatment information
 
 **Today → Treatment status** shows explicitly reviewed Current/Planned records
-when present. Each recorded raw row is also checked only against explicit
-caregiver course-component links: fully linked rows are not counted as unresolved,
-partly linked rows remain unresolved, and unlinked rows still need timing/status
-review. If no treatment is recorded current, Today says so and shows a bounded
-first set with honest unresolved counts. **Review treatment status** opens the
+when present. Recorded raw rows are also checked against explicit caregiver
+course-component links and labelled unlinked, partly linked, or fully linked.
+That label describes what is linked; it is not a to-do. Leaving a recorded row
+unlinked is a perfectly normal resting state, so NET/Care counts recorded entries
+neutrally ("*3 recorded treatment entries are on file*") and never tells you that
+any of them need review. If no treatment is recorded current, Today says so and
+shows a bounded first set. **Review treatment status** opens the
 complete **Patient → Treatments** Overview. Today and Patient use the same
 accepted projection; neither uses `/api/status` treatment data.
 
@@ -686,17 +688,22 @@ Patient's default Overview combines three kinds of information without inference
    a recorded treatment entry or on a mention in source documents only when such
    rows are actually present, so it never sends you to an empty surface. It
    repeats that you choose the status and any dates. Nothing is created for you.
-2. Every row already in the patient treatment record, labelled as unlinked,
-   fully linked, or partly linked to an explicit caregiver-reviewed status
-   record. Raw wording never inherits the linked course's lifecycle. Each of
-   these rows carries exactly one action, **Record status**, which opens the
+2. Every row already in the patient treatment record, under **Recorded treatment
+   statements**, labelled as unlinked, fully linked, or partly linked to an
+   explicit caregiver-reviewed status record. These are *statements* copied from
+   your records — starts, stops, dose or schedule changes, and administration
+   detail such as an infusion rate — not a list of what is being taken now, and
+   no status is assigned to them. Raw wording never inherits the linked course's
+   lifecycle. Each of
+   these rows carries two actions. **Record status** opens the
    same status-record dialog used by **＋ Add status record**. It copies only
    that row's wording into the treatment-wording field and pre-ticks only that
    row's components under *Link recorded treatment components*. It never
    chooses a record status, never fills a start/stop/planned date, and never
    picks a terminal outcome, so the dialog cannot be saved until you choose the
    status yourself. Edit any copied wording freely before saving. Once saved,
-   the row shows as linked to the new status record. The compact **Today →
+   the row shows as linked to the new status record. **Not useful in my
+   workspace** is described in §5b-1 below. The compact **Today →
    Treatment status** cards stay read-only.
 3. Explicit caregiver-maintained **Finished or past** courses.
 
@@ -706,7 +713,37 @@ Record or edit only explicit wording,
    parse timezones, match medications, copy document/generated text, or
    infer timing that was never recorded.
 
+### 5b-1. Hiding a recorded statement you don't find useful
+
+Some extracted statements are real clinical detail that your clinicians act on
+but that you would never mark as an ongoing treatment — an infusion run at half
+speed to reduce nausea, for example. **Not useful in my workspace** on any
+recorded treatment statement collapses it out of your Overview.
+
+What that does, exactly:
+
+- **Nothing is deleted.** The statement stays in the patient record, keeps its
+  wording, its order and its components, and still appears in the treatment
+  projection. It is collapsed, not removed.
+- **NET/Care still uses it.** A hidden statement still reaches the assistant
+  exactly as before, so asking "why has he been nauseated?" can still draw on
+  it. Hiding changes your page, never what NET/Care knows.
+- **It is always disclosed.** The recorded section shows a permanent
+  **N hidden by you · show** control listing every hidden statement, each with
+  **Show in my workspace**. Today names the hidden count separately. Nothing is
+  ever silently suppressed.
+- **It is entirely reversible**, as often as you like.
+- **It says nothing clinical.** Hiding does not record that the treatment
+  stopped, that the wording is wrong, or that it does not matter to your
+  clinicians. It records only that you don't want it on this page. NET/Care
+  never decides this for you: no keyword, list, or model marks a statement
+  irrelevant, and nothing is hidden until you say so.
+
+If a hidden statement's wording is later corrected, it becomes visible again
+rather than staying hidden under stale identity.
+
 ### The Record treatment dialog
+
 
 The dialog shows only what you have to decide: the **record status**, the
 **treatment wording**, and the **start**, **stop** and **planned** dates. The
@@ -743,8 +780,9 @@ record, or takes one from generated text. The compact **Today → Treatment
 status** card uses the same order, so it shows the most recent entries.
 
 The Overview preserves every row and duplicate. It never promotes,
-merges, deduplicates, changes what is stored, or assigns lifecycle. Secondary
-panels are:
+merges, deduplicates, changes what is stored, or assigns lifecycle. A statement
+you hid is still preserved and still shown on the page — inside the permanent
+hidden disclosure rather than the main list. Secondary panels are:
 
 1. **Differences to review** contains explicit caregiver-recorded comparisons.
    Record A is one document mention. Record B is either a distinct document

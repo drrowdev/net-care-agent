@@ -377,11 +377,14 @@ render a bounded Today summary and the complete Patient workspace; no
 `/api/status` treatment row can render, edit, transition, or remove a record.
 Today shows current/planned caregiver courses when present; otherwise it shows a
 bounded first set of recorded raw rows. A presentation-only linkage check compares
-each raw row's component IDs with explicit `course.legacy_component_ids`: no
-linked components means timing/status not reviewed, all means linked to a
-caregiver-reviewed status record, and partial linkage keeps the row unresolved.
-Only none/partial rows count as needing review. Patient's default Overview orders
-current/planned caregiver courses, every raw row exactly once, then past courses.
+each raw row's component IDs with explicit `course.legacy_component_ids` and
+labels the row as unlinked, partly linked, or linked to a caregiver-reviewed
+status record. That label is descriptive only: an unlinked row is a legitimate
+resting state and is never counted or worded as outstanding caregiver work,
+because a recorded statement is wording the record already contains rather than a
+task. Patient's default Overview orders
+current/planned caregiver courses, every raw row exactly once — in the visible
+list, or in the always-disclosed hidden set described below — then past courses.
 Inside each of those three groups the SPA sorts newest-first for display only: a
 course by the date its own status is about (`planned_date` when planned,
 `start_date` when current, `stop_date` falling back to `start_date` when past),
@@ -391,13 +394,63 @@ no usable date hold a fixed last position, and equal keys break on row ID, so th
 order is total and identical on every render. No date is parsed from raw wording,
 borrowed from a linked course, or taken from generated content. The server
 projection order, `source_order`, and every row token are untouched, and nothing
-is merged, hidden, deduplicated, or promoted. Today's bounded first set uses the
+is merged, deduplicated, or promoted. Today's bounded first set uses the
 same order, so it shows the most recent entries. Differences and source-document
 mentions remain separate. No
 status is assigned to raw wording. Stored generated classification remains
 compatibility context rather than a treatment fact — it is still projected but
 no longer displayed — and a raw component becomes course authority only through
 an explicit caregiver association.
+
+### Caregiver workspace visibility for raw rows
+
+`patient.current_treatments[]` accumulates every extracted treatment *statement*,
+including stops and administration detail such as an infusion-rate note. Those
+can be real clinical context and are never deleted, but the caregiver may decide
+one does not belong on his own treatment page. `treatment_row_dispositions[]` is
+that decision and nothing more.
+
+Each entry is `{id, source_entry_id, hidden, created_at, updated_at, history[]}`.
+It is keyed by `source_entry_id` — the position-independent per-occurrence
+identity from `profile.raw_treatment_source_entry_id`, the same value
+`sync_treatment_records` already stores on each component — and deliberately
+**not** by the public projection row ID, which folds in `source_order` and
+re-keys whenever an earlier row is removed. Keying on the public ID would move a
+caregiver's choice onto a different statement.
+
+The projection exposes a sibling `legacy_treatment_dispositions[]`, one entry per
+raw row as `{row_id, hidden, token}`, plus `legacy_treatment_hidden_count`. This
+mirrors the `source_fact_documents[]` pattern: a sibling keyed by the same
+reference, bound by the projection token, so no existing snapshot field set
+widens and no stored citation snapshot is invalidated. Rows themselves are
+projected unchanged whether hidden or not.
+
+`POST /api/treatment-reconciliation/legacy-rows/<row_id>/disposition` sets it,
+under the same contract as every other treatment mutation: both expected
+revisions, the projection token, a per-row `expected_disposition_token`, a scoped
+`mutation_id` under `serialized_mutation`, one appended audit event, one save,
+and exact-replay as a no-op. Setting the visibility a row already has is
+rejected. It is workflow authority, so it advances `workflow_revision` only and
+never invalidates generated clinical context.
+
+Three properties are load-bearing and covered by
+`tests/test_treatment_row_dispositions.py`:
+
+- **Nothing is deleted.** The raw row, its components, its wording and its order
+  are untouched; only rendering changes.
+- **Nothing is hidden from the assistant.** A hidden row still reaches the chat
+  prompt and `get_patient_summary` verbatim, so hiding never decides what
+  NET/Care knows. The disposition itself never enters any model prompt.
+- **Software never decides relevance.** No alias table, keyword list, or model
+  judges which therapies matter; only an explicit caregiver mutation changes
+  visibility. An unknown or orphaned key resolves to *visible*, so a stale
+  disposition can never hide a row the caregiver did not choose to hide — if a
+  row's wording is later corrected its key changes and the row reappears.
+
+The UI collapses hidden rows behind a persistent `N hidden by you · show`
+disclosure inside the recorded section, states there that nothing was deleted and
+that NET/Care still uses them, and offers **Show in my workspace** on each. Today
+reports the visible count and names the hidden count separately.
 
 Before any treatment DOM replacement, the client validates the complete
 projection, exact safety/authority bytes, top-level counts/lists, serialized

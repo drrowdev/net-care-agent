@@ -346,10 +346,30 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
 - Receipt correction/removal/undo may rotate source-fact/projection tokens and
   legacy compatibility state but never deletes or rewrites courses,
   discrepancies, confirmations, or action links. New reconciliation state is
-  excluded from every model prompt. Model-visible treatment context is the
-  deterministic component split of raw `patient.current_treatments[]` and
-  carries no status, category, or date: caregiver lifecycle status is workflow
-  authority and never reaches a prompt.
+  excluded from every model prompt. Model-visible treatment context carries no
+  status, category, or date, and caregiver lifecycle status is workflow
+  authority that never reaches a prompt. Two prompt paths exist and both are raw
+  wording only: the chat prompt lists the deterministic component split of raw
+  `patient.current_treatments[]`, and `get_patient_summary` — reaching the
+  orchestrator, executive summary, deep sweep, and questions — lists the raw
+  joined `patient.current_treatments[]`. Both label that content as recorded
+  treatment *statements* rather than current treatments, because stops and
+  administration detail land in the same collection.
+- Caregiver treatment workspace visibility (`treatment_row_dispositions[]`) is
+  presentation authority only. It never deletes, edits, reorders, or removes a
+  raw row from the projection; it carries no clinical meaning; and it never
+  filters, reaches, or is named in any model prompt — a hidden row stays in
+  model context verbatim, so hiding never decides what a model knows. It is
+  keyed by the position-independent `source_entry_id`, never by the public
+  projection row ID, and an unknown or orphaned key resolves to visible so stale
+  state can never hide a row the caregiver did not hide. Only an explicit
+  caregiver mutation may change it: no alias table, keyword rule, heuristic, or
+  model may infer which therapies are relevant. It advances only
+  `workflow_revision`, and the UI must always disclose the hidden count and
+  offer restore.
+- A recorded raw row is never presented as outstanding caregiver work. Component
+  linkage state is descriptive only; an unlinked row is a legitimate resting
+  state and must not be counted, worded, or badged as needing review.
 - Fixed treatment safety copy is exactly `NET/Care records what you enter but does not verify treatment details or advise starting, stopping, or changing treatment. Confirm treatment decisions with the treating team.` It is static,
   nonconditional, non-PHI, and non-prescriptive.
 - Every Layer 2 mutation is stable-ID/target-token CAS under

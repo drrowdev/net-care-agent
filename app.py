@@ -3432,10 +3432,20 @@ def _retained_feed_job(job_id: str) -> dict | None:
 
 def _receipt_error_response(profile: dict, job_id: str, exc: Exception):
     status = 409 if isinstance(exc, agent.ImportConflict) else 400
+    if isinstance(exc, agent.TreatmentLinkConflict):
+        code = "treatment_course_link_conflict"
+    elif isinstance(exc, agent.TreatmentProjectionRegression):
+        code = "treatment_projection_regression"
+    elif status == 409:
+        code = "import_conflict"
+    else:
+        code = "invalid_receipt_change"
     payload = {
         "error": str(exc),
-        "code": "import_conflict" if status == 409 else "invalid_receipt_change",
+        "code": code,
     }
+    if isinstance(exc, agent.TreatmentLinkConflict):
+        payload["blocking_courses"] = exc.courses
     if status == 409:
         try:
             payload["receipt"] = agent.public_receipt(profile, job_id)

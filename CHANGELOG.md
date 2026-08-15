@@ -79,6 +79,36 @@ incremented when something user-visible or operationally meaningful changes.
     the four `get_patient_summary` consumers.
 
 ### Fixed
+- **Correcting an imported treatment value can no longer permanently darken the
+  Treatments workspace.** If one of your status records linked the components of
+  a raw treatment row, correcting, removing or undoing that row through the
+  **document import receipt** left the course pointing at components that no
+  longer existed. The complete treatment projection then failed closed with
+  `422`, so **Patient → Treatments** and the **Today → Treatment status** cards
+  went blank — and could not be repaired from the UI, because every treatment
+  mutation needs tokens only that projection issues. This was reachable through
+  ordinary use: **Record status** pre-ticks the row's components, so a linked
+  course is the normal outcome of the primary workflow.
+  - The receipt now refuses the edit instead, with a `409` that **names the
+    blocking course** and says what to do next: open that course, clear the
+    linked recorded entry, then retry. Nothing is written when it refuses — no
+    partial correction, removal or undo — and whole-document undo is checked
+    before any of its changes are applied.
+  - **Nothing is unlinked for you.** Your explicit selection remains the only
+    thing that changes a link, so the fix blocks rather than silently rewriting
+    workflow state. Stored legacy facts are untouched.
+  - A second, advisory check re-projects after the write and restores the
+    in-memory record if a projection that had been valid became invalid. Neither
+    check refuses an edit because a link is *already* broken — that would be
+    unrecoverable, because clearing the link in the workspace needs the very
+    projection that is failing — so a record in that state stays repairable.
+  - Documented in `docs/operating_manual.md` §1 (*Blocked: a treatment course
+    still links that wording*) with the recovery steps.
+- **Removing one imported treatment entry no longer deletes identical rows from
+  other documents.** Receipt removal filtered out every raw treatment row equal
+  to the target, but identical rows legitimately recur — the record counts
+  occurrences precisely because they do. A single receipt entry now drops
+  exactly one occurrence.
 - **A dropped connection while hiding a row no longer freezes the treatment
   workspace.** The ambiguous-transport recovery path arms the *Retry submission*
   button inside the Record treatment dialog, which is closed for a row-level

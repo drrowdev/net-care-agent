@@ -360,6 +360,26 @@ validate each referenced artifact once per projection. Public JSON contains no
 path, source/import/job/receipt/change ID, quote, or offset. Corrupt,
 inconsistent, duplicate-ID, tampered, or oversized authority fails the complete
 read with a bounded `422`; incomplete/manual/unverified facts remain visible.
+
+A course's `legacy_component_ids` must resolve against the live component set,
+and component identity is re-derived per raw-row occurrence, so a receipt
+correction, removal, or undo of an imported treatment value would strand the
+link and fail that bounded `422` for the whole projection — an unrecoverable
+state, because every treatment mutation needs tokens the projection no longer
+issues. The receipt therefore refuses that mutation up front: it projects the
+prospective rows in memory, and if any caregiver course would be left linking a
+component the edit deletes or re-keys, it returns `409` naming the blocking
+course before anything is written. That gate is a delta, not an absolute check:
+it compares the live component set with the prospective one and blocks only on a
+link that resolves now and would stop resolving. An advisory second check
+re-validates the projection after the write and rolls the in-memory profile back
+if a previously valid projection became invalid. Neither check weakens the
+fail-closed read: authority that was already inconsistent still fails `422`, and
+a link that already dangles never blocks a receipt edit — that is load-bearing,
+because the in-app repair needs a projection that is already failing closed,
+leaving the receipt as the only way back. Links are never dropped implicitly;
+only explicit caregiver selection changes linkage.
+
 Each discrepancy exposes immutable snapshots separately from both citations'
 current lifecycle state. Discrepancy and projection tokens bind both sides'
 complete private source/receipt/import/document/evidence/history authority,
@@ -916,6 +936,8 @@ fail-closed evictions.
 | Client constructs an imaging evidence span | Imaging source/evidence routes accept only an opaque stable derived record reference and resolve the preserved row plus current source/span server-side; no projection URL contains a raw legacy ID, source ID, path, quote, or offset. |
 | Biomarker browser response races or lost authority | The explorer accepts only the current request/selection/PHI epochs, both monotonic revisions, and exact projection/analyte/series tokens. Network ambiguity retains a labelled read-only snapshot; online recovery reloads authority; auth/hard failure centrally scrubs state, DOM, focus, controllers, and late responses. |
 | Stale import correction or undo | Target-level compare-and-swap fingerprints and later-claim checks return atomic `409`; no whole-profile snapshot is restored |
+| Receipt edit strands a caregiver course link and darkens the treatment workspace | Correct/remove/undo of an imported treatment value projects the prospective rows first and returns `409` naming the blocking course when a `legacy_component_ids` entry that resolves today would be deleted or re-keyed, before any write; an advisory post-write projection check rolls the in-memory profile back on regression. Nothing is auto-unlinked, and the gate compares before against after, so a link that already dangles stays repairable through the receipt |
+| Receipt removal deletes identical raw treatment rows another document contributed | Removal drops exactly one occurrence of the targeted value; occurrence-keyed component identity makes the surviving ID set independent of which physical duplicate is dropped |
 | Incorrect import removed from active care context | Direct facts are reversed, the document is marked excluded from clinical prompts, and immutable source/audit history remains visible |
 | Invented summary evidence link | Only server-built evidence catalog IDs resolve; unknown IDs are visibly `invalid` and absent IDs are `missing` |
 | Stale generated conclusions after correction | Revision-aware summary hiding, question generation IDs, source-dependent alert invalidation, and hidden feed reports retain audit artifacts without presenting them as current |

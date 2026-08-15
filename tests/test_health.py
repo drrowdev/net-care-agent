@@ -405,6 +405,39 @@ def test_backup_newer_than_profile_after_restore_is_healthy(agent, client):
     assert body["status"] == "ok"
 
 
+def test_migration_write_after_a_deploy_leaves_the_backup_current(agent, client):
+    """The exact production incident: a schema bump rewrote the profile silently.
+
+    A container restart after a release whose ``CURRENT_SCHEMA_VERSION`` moved
+    migrates the stored profile on the first load. That write gives the profile
+    a fresh mtime, so unless it is protected like a save the newest daily backup
+    is left a whole calendar day behind and ``/api/health`` correctly, but
+    unfixably, reports the caregiver's current state as unprotected.
+    """
+    import agent.config as cfg
+    from agent.migrations import CURRENT_SCHEMA_VERSION
+
+    agent.save_profile({"patient": {"diagnosis": "NET"}})
+
+    stored = json.loads(cfg.PROFILE_PATH.read_text(encoding="utf-8"))
+    stored["schema_version"] = CURRENT_SCHEMA_VERSION - 1
+    cfg.PROFILE_PATH.write_text(json.dumps(stored, indent=2), encoding="utf-8")
+    _restamp_backup(cfg.DATA_DIR / "backups", 1, 4, 26)
+    _stamp(cfg.PROFILE_PATH, 1, 4, 26)
+
+    degraded = client.get("/api/health").get_json()
+    assert degraded["backup_out_of_date"] is False, "pre-migration state should be healthy"
+
+    agent.load_profile()  # the first request after the deploy
+
+    body = client.get("/api/health").get_json()
+
+    assert body["profile_status"] == "ok"
+    assert body["profile_age_seconds"] < 60
+    assert body["backup_out_of_date"] is False
+    assert body["status"] == "ok"
+
+
 def test_unreadable_backup_timestamp_degrades_without_crashing(agent, client, monkeypatch):
     """A timestamp that is not a representable date must degrade, not 500."""
     from agent import backups

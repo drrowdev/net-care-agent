@@ -79,6 +79,24 @@ incremented when something user-visible or operationally meaningful changes.
     the four `get_patient_summary` consumers.
 
 ### Fixed
+- **Every change to the stored record is now backed up, not just the ones you
+  make.** All patient state lives in one `patient_profile.json`, protected by a
+  pre-write snapshot and one backup per calendar day. Both were wired into the
+  caregiver save path alone, so a write that reached the file any other way left
+  the current record with no same-day backup and no snapshot of the revision it
+  replaced. Schema migration on load is exactly such a write, and it runs on the
+  first request after any release that raises the schema version — no caregiver
+  involved. Production `/api/health` caught the real consequence after the last
+  release: the profile was rewritten that morning while the newest backup and
+  newest snapshot both still belonged to the previous day, and nothing short of
+  an ordinary edit could have closed the gap. All four writers — a save, the
+  migration write-back, the normalised write after an automated recovery, and an
+  operator restore — now go through one protected write that snapshots, replaces
+  atomically, and takes the day's backup. A restore additionally keeps the
+  revision it discards, which it previously destroyed outright. The atomic
+  replace remains the only step that can fail a write: snapshot and backup
+  failures are logged and swallowed exactly as before, so protection can never
+  block a save.
 - **A dropped connection while hiding a row no longer freezes the treatment
   workspace.** The ambiguous-transport recovery path arms the *Retry submission*
   button inside the Record treatment dialog, which is closed for a row-level

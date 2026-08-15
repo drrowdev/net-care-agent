@@ -867,16 +867,20 @@ def test_migration_concurrency_no_downgrade_future_version(tmp_path, monkeypatch
 
     monkeypatch.setattr(Path, "read_bytes", _patched)
 
-    # Track any atomic_write_text calls targeting PROFILE_PATH.
+    # Track any atomic_write_text call targeting PROFILE_PATH. Profile commits
+    # go through ``backups.protected_profile_write``, which holds its own
+    # reference to ``atomic_write_text``, so both bindings must be watched or a
+    # regression that rewrites disk would slip past this assertion unseen.
     writes_to_profile: list[str] = []
     original_atomic = prof_mod.atomic_write_text
 
-    def _track_write(path, content):
+    def _track_write(path, content, encoding="utf-8"):
         if Path(path) == cfg.PROFILE_PATH:
             writes_to_profile.append(content)
-        return original_atomic(path, content)
+        return original_atomic(path, content, encoding)
 
     monkeypatch.setattr(prof_mod, "atomic_write_text", _track_write)
+    monkeypatch.setattr(bk, "atomic_write_text", _track_write)
 
     result = load_profile()
 
@@ -938,12 +942,13 @@ def test_migration_concurrency_no_downgrade_current_version(tmp_path, monkeypatc
     writes_to_profile: list[str] = []
     original_atomic = prof_mod.atomic_write_text
 
-    def _track_write(path, content):
+    def _track_write(path, content, encoding="utf-8"):
         if Path(path) == cfg.PROFILE_PATH:
             writes_to_profile.append(content)
-        return original_atomic(path, content)
+        return original_atomic(path, content, encoding)
 
     monkeypatch.setattr(prof_mod, "atomic_write_text", _track_write)
+    monkeypatch.setattr(bk, "atomic_write_text", _track_write)
 
     result = load_profile()
 

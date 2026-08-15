@@ -22,6 +22,23 @@ class ImportConflict(ReconciliationError):
     """The imported target changed after the receipt was created."""
 
 
+class TreatmentLinkConflict(ImportConflict):
+    """A caregiver treatment course still links a component this edit would strand.
+
+    Blocking is deliberate. Only explicit caregiver selection may change course
+    linkage, so the receipt refuses rather than silently unlinking, and it names
+    every blocking course so the caregiver can unlink first.
+    """
+
+    def __init__(self, message: str, courses: list[dict]):
+        super().__init__(message)
+        self.courses = courses
+
+
+class TreatmentProjectionRegression(ImportConflict):
+    """This receipt edit would leave the treatment workspace unreadable."""
+
+
 _EDITABLE_FIELDS = {
     "biomarkers": [
         "date",
@@ -944,6 +961,121 @@ def _exclude_document_context(profile: dict, record: dict) -> None:
         document_change["effective_value"] = _clone(document)
 
 
+_MAX_NAMED_COURSES = 3
+
+
+def _course_link_index(profile: dict) -> list[dict]:
+    """Caregiver courses that carry at least one explicit legacy component link."""
+    return [
+        course
+        for course in profile.get("treatment_courses") or []
+        if isinstance(course, dict)
+        and isinstance(course.get("legacy_component_ids"), list)
+        and course["legacy_component_ids"]
+    ]
+
+
+def _prospective_component_ids(rows: list) -> set[str]:
+    """Component IDs a raw treatment list would produce, without touching the profile.
+
+    Component identity folds in the per-occurrence source entry ID, so removing or
+    rewording a row silently drops or re-keys its components. Deriving the IDs from
+    a throwaway probe is the only way to know which links a receipt edit would
+    strand before the edit is applied.
+    """
+    from .profile import sync_treatment_records
+
+    probe: dict = {"patient": {"current_treatments": [str(item) for item in rows]}}
+    return {record["id"] for record in sync_treatment_records(probe)}
+
+
+def _course_label(course: dict) -> str:
+    """Exact stored course wording; caregiver text is never rewritten, even in errors."""
+    text = course.get("treatment_text")
+    return text if isinstance(text, str) and text.strip() else "Untitled treatment course"
+
+
+def _guard_treatment_links(profile: dict, next_rows: list, *, blocked: str, retry: str) -> None:
+    """Refuse a receipt edit that would strand an explicit caregiver course link."""
+    courses = _course_link_index(profile)
+    if not courses:
+        return
+    surviving = _prospective_component_ids(next_rows)
+    live = _prospective_component_ids(profile.get("patient", {}).get("current_treatments") or [])
+    # Delta, not absolute. Only a link that resolves today and would stop
+    # resolving may block. A course whose links already dangle must keep every
+    # receipt path open: its projection is already failing closed, so the
+    # in-app repair this error points at is unreachable and the receipt is the
+    # only remaining way to put the record back together.
+    stranded = live - surviving
+    blocking = [
+        course
+        for course in courses
+        if any(item in stranded for item in course["legacy_component_ids"])
+    ]
+    if not blocking:
+        return
+    labels = [_course_label(course) for course in blocking]
+    named = ", ".join(f'"{label}"' for label in labels[:_MAX_NAMED_COURSES])
+    if len(labels) > _MAX_NAMED_COURSES:
+        named = f"{named} and {len(labels) - _MAX_NAMED_COURSES} more"
+    subject = "Treatment course" if len(labels) == 1 else "Treatment courses"
+    target = "that treatment course" if len(labels) == 1 else "each treatment course"
+    raise TreatmentLinkConflict(
+        f"{subject} {named} is still linked to recorded treatment components that {blocked} "
+        f"would remove or rewrite, so the course would point at entries that no longer exist. "
+        f"Open Treatments, edit {target}, clear the linked recorded treatment entry, "
+        f"then {retry}.",
+        [
+            {"id": course.get("id"), "treatment_text": course.get("treatment_text")}
+            for course in blocking
+        ],
+    )
+
+
+def _treatment_change(change: dict) -> bool:
+    return (change.get("target") or {}).get("kind") == "treatment"
+
+
+def _projection_is_valid(profile: dict) -> bool | None:
+    """Whether the treatment projection renders; ``None`` when it cannot be judged."""
+    from .treatment_reconciliation import (
+        TreatmentProjectionError,
+        project_treatment_reconciliation,
+    )
+
+    try:
+        project_treatment_reconciliation(profile)
+    except TreatmentProjectionError:
+        return False
+    except Exception:
+        # Never let an unrelated failure in the advisory preflight block a
+        # receipt edit; the explicit link guard above is the primary defence.
+        return None
+    return True
+
+
+def _projection_snapshot(profile: dict, changes: list[dict]) -> dict | None:
+    """Snapshot the profile when a treatment edit could break a working projection."""
+    if not any(_treatment_change(change) for change in changes):
+        return None
+    if _projection_is_valid(profile) is not True:
+        return None
+    return _clone(profile)
+
+
+def _restore_on_projection_regression(profile: dict, snapshot: dict | None) -> None:
+    """Roll back in memory rather than persist a workspace nobody can read."""
+    if snapshot is None or _projection_is_valid(profile) is not False:
+        return
+    profile.clear()
+    profile.update(snapshot)
+    raise TreatmentProjectionRegression(
+        "This receipt edit would leave the treatment workspace unreadable, so nothing was "
+        "changed. Open Treatments, resolve the affected treatment course, then try again."
+    )
+
+
 def correct_change(
     profile: dict,
     job_id: str,
@@ -964,6 +1096,7 @@ def correct_change(
     )
     target = change.get("target") or {}
     kind = target.get("kind")
+    snapshot = _projection_snapshot(profile, [change])
     if kind == "collection":
         allowed = set(change.get("editable_fields") or [])
         if not allowed or not isinstance(replacement, dict):
@@ -1047,7 +1180,16 @@ def correct_change(
         treatments = profile.get("patient", {}).get("current_treatments", [])
         if updated != current and updated in treatments:
             raise ReconciliationError("That treatment is already recorded")
-        treatments[treatments.index(current)] = updated
+        index = treatments.index(current)
+        next_rows = list(treatments)
+        next_rows[index] = updated
+        _guard_treatment_links(
+            profile,
+            next_rows,
+            blocked="correcting this imported treatment value",
+            retry="correct it again",
+        )
+        treatments[index] = updated
         from .profile import invalidate_treatment_classification, sync_treatment_records
 
         invalidate_treatment_classification(profile)
@@ -1063,6 +1205,7 @@ def correct_change(
     record["receipt_revision"] = int(record.get("receipt_revision") or 0) + 1
     _update_status(record)
     _mark_summary_stale(profile)
+    _restore_on_projection_regression(profile, snapshot)
 
 
 def _remove_effect(profile: dict, change: dict, *, event: str) -> None:
@@ -1087,7 +1230,25 @@ def _remove_effect(profile: dict, change: dict, *, event: str) -> None:
         _set_scalar(profile, target.get("path") or [], after)
     elif kind == "treatment":
         treatments = profile.get("patient", {}).get("current_treatments", [])
-        profile["patient"]["current_treatments"] = [item for item in treatments if item != current]
+        next_rows = list(treatments)
+        if current in next_rows:
+            # Exactly one occurrence. Identical rows recur legitimately and are
+            # counted per occurrence, so dropping every equal string would delete
+            # rows other documents contributed. ``list.remove`` drops the first
+            # match, which is the same occurrence ``_target_value`` resolved and
+            # the correction path rewrites.
+            next_rows.remove(current)
+        _guard_treatment_links(
+            profile,
+            next_rows,
+            blocked=(
+                "undoing this document import"
+                if event == "undone"
+                else "removing this imported treatment value"
+            ),
+            retry=("undo the document again" if event == "undone" else "remove it again"),
+        )
+        profile["patient"]["current_treatments"] = next_rows
         from .profile import invalidate_treatment_classification, sync_treatment_records
 
         invalidate_treatment_classification(profile)
@@ -1121,6 +1282,7 @@ def remove_change(
         receipt_revision=receipt_revision,
         target_token=target_token,
     )
+    snapshot = _projection_snapshot(profile, [change])
     _remove_effect(profile, change, event="removed")
     _exclude_document_context(profile, record)
     _invalidate_source_dependencies(profile, record)
@@ -1128,6 +1290,7 @@ def remove_change(
     record["receipt_revision"] = int(record.get("receipt_revision") or 0) + 1
     _update_status(record)
     _mark_summary_stale(profile)
+    _restore_on_projection_regression(profile, snapshot)
 
 
 def undo_import(
@@ -1149,6 +1312,22 @@ def undo_import(
         if change.get("state") in {"active", "corrected"}
         and change.get("operation") not in {"unchanged", "derived"}
     ]
+    # Preflight every treatment row this undo would drop, before anything mutates,
+    # so a blocked undo leaves the profile exactly as it was.
+    remaining_rows = list(profile.get("patient", {}).get("current_treatments", []))
+    for change in changes:
+        if not _treatment_change(change):
+            continue
+        row = _target_value(profile, change)
+        if row in remaining_rows:
+            remaining_rows.remove(row)
+    _guard_treatment_links(
+        profile,
+        remaining_rows,
+        blocked="undoing this document import",
+        retry="undo the document again",
+    )
+    snapshot = _projection_snapshot(profile, changes)
     for change in changes:
         if (
             change.get("category") == "alerts"
@@ -1169,3 +1348,4 @@ def undo_import(
     record["receipt_revision"] = int(record.get("receipt_revision") or 0) + 1
     record["status"] = "undone"
     _mark_summary_stale(profile)
+    _restore_on_projection_regression(profile, snapshot)

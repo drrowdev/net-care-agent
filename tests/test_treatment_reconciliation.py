@@ -2223,3 +2223,372 @@ def test_terminal_authority_is_excluded_from_status_and_existing_model_contexts(
     assert terminal_secret not in agent.get_patient_summary(agent.load_profile())
     assert terminal_secret not in agent.build_chat_system(agent.load_profile())
     assert terminal_secret not in json.dumps(client.get("/api/status").get_json())
+
+
+def _retain_treatment_feed_job(app_module, profile, job_id="treatment-feed-001"):
+    record = next(item for item in profile["document_imports"] if item["job_id"] == job_id)
+    app_module._jobs = [
+        {
+            "id": item["job_id"],
+            "type": "feed",
+            "status": "done",
+            "stage": "done",
+            "created_at": "2026-08-01T12:00:00",
+            "source_document_id": item["source_document_id"],
+            "error": None,
+        }
+        for item in profile["document_imports"]
+    ]
+    return record
+
+
+def _linked_course(client, projection=None, *, mutation_id="course-link-001"):
+    """Create a course linked to the first recorded component, as Record status does."""
+    projection = projection or _projection(client)
+    component = projection["legacy_treatments"][0]["components"][0]["id"]
+    response, _ = _create_course(
+        client,
+        mutation_id=mutation_id,
+        status="current",
+        planned_date=None,
+        legacy_component_ids=[component],
+    )
+    assert response.status_code == 201, response.get_json()
+    return response.get_json()["course"], component
+
+
+def _treatment_change(receipt):
+    return next(item for item in receipt["changes"] if item["category"] == "treatments")
+
+
+def test_receipt_removal_of_a_linked_row_is_refused_and_names_the_course(
+    app_client, agent, empty_profile
+):
+    app_module, client = app_client
+    profile = _ingest_treatment(agent, empty_profile)
+    agent.save_profile(profile, clinical_change=False)
+    course, component = _linked_course(client)
+    _retain_treatment_feed_job(app_module, agent.load_profile())
+    receipt = client.get("/api/jobs/treatment-feed-001/receipt").get_json()
+    change = _treatment_change(receipt)
+    before = agent.load_profile()
+
+    response = client.post(
+        f"/api/jobs/treatment-feed-001/receipt/changes/{change['id']}/remove",
+        json={
+            "receipt_revision": receipt["receipt_revision"],
+            "target_token": change["target_token"],
+        },
+    )
+
+    body = response.get_json()
+    assert response.status_code == 409, body
+    assert body["code"] == "treatment_course_link_conflict"
+    assert course["treatment_text"] in body["error"]
+    assert "Open Treatments" in body["error"]
+    assert body["blocking_courses"] == [
+        {"id": course["id"], "treatment_text": course["treatment_text"]}
+    ]
+    assert agent.load_profile() == before
+    projection = _projection(client)
+    assert projection["courses"][0]["legacy_component_ids"] == [component]
+    assert projection["legacy_treatment_count"] == 1
+
+
+def test_receipt_correction_of_a_linked_row_is_refused_and_names_the_course(
+    app_client, agent, empty_profile
+):
+    app_module, client = app_client
+    profile = _ingest_treatment(agent, empty_profile)
+    agent.save_profile(profile, clinical_change=False)
+    course, component = _linked_course(client)
+    _retain_treatment_feed_job(app_module, agent.load_profile())
+    receipt = client.get("/api/jobs/treatment-feed-001/receipt").get_json()
+    change = _treatment_change(receipt)
+    before = agent.load_profile()
+
+    response = client.post(
+        f"/api/jobs/treatment-feed-001/receipt/changes/{change['id']}/correct",
+        json={
+            "receipt_revision": receipt["receipt_revision"],
+            "target_token": change["target_token"],
+            "replacement": "Start lanreotide 120mg q6w",
+        },
+    )
+
+    body = response.get_json()
+    assert response.status_code == 409, body
+    assert body["code"] == "treatment_course_link_conflict"
+    assert course["treatment_text"] in body["error"]
+    assert body["blocking_courses"][0]["id"] == course["id"]
+    assert agent.load_profile() == before
+    assert _projection(client)["courses"][0]["legacy_component_ids"] == [component]
+
+
+def test_receipt_undo_of_a_linked_row_is_refused_without_partial_mutation(
+    app_client, agent, empty_profile
+):
+    app_module, client = app_client
+    profile = _ingest_treatment(agent, empty_profile)
+    agent.save_profile(profile, clinical_change=False)
+    course, _ = _linked_course(client)
+    _retain_treatment_feed_job(app_module, agent.load_profile())
+    receipt = client.get("/api/jobs/treatment-feed-001/receipt").get_json()
+    before = agent.load_profile()
+
+    response = client.post(
+        "/api/jobs/treatment-feed-001/receipt/undo",
+        json={
+            "receipt_revision": receipt["receipt_revision"],
+            "undo_token": receipt["undo_token"],
+        },
+    )
+
+    body = response.get_json()
+    assert response.status_code == 409, body
+    assert body["code"] == "treatment_course_link_conflict"
+    assert course["treatment_text"] in body["error"]
+    assert agent.load_profile() == before
+    assert _projection(client)["profile_revision"] == before["profile_revision"]
+
+
+def test_unlinking_the_course_lets_the_blocked_receipt_removal_proceed(
+    app_client, agent, empty_profile
+):
+    app_module, client = app_client
+    profile = _ingest_treatment(agent, empty_profile)
+    agent.save_profile(profile, clinical_change=False)
+    course, _ = _linked_course(client)
+    projection = _projection(client)
+    unlink = client.patch(
+        f"/api/treatment-reconciliation/courses/{course['id']}",
+        json={
+            **_meta(projection, "course-unlink-001"),
+            "expected_course_token": next(
+                item["token"] for item in projection["courses"] if item["id"] == course["id"]
+            ),
+            "legacy_component_ids": [],
+        },
+    )
+    assert unlink.status_code == 200, unlink.get_json()
+    _retain_treatment_feed_job(app_module, agent.load_profile())
+    receipt = client.get("/api/jobs/treatment-feed-001/receipt").get_json()
+    change = _treatment_change(receipt)
+
+    response = client.post(
+        f"/api/jobs/treatment-feed-001/receipt/changes/{change['id']}/remove",
+        json={
+            "receipt_revision": receipt["receipt_revision"],
+            "target_token": change["target_token"],
+        },
+    )
+
+    assert response.status_code == 200, response.get_json()
+    projection = _projection(client)
+    assert projection["legacy_treatment_count"] == 0
+    assert projection["courses"][0]["legacy_component_ids"] == []
+
+
+def test_unrelated_receipt_removal_and_correction_still_succeed(app_client, agent, empty_profile):
+    app_module, client = app_client
+    profile = _ingest_treatment(agent, empty_profile, job_id="linked-doc")
+    profile = _ingest_treatment(
+        agent,
+        profile,
+        job_id="unrelated-doc",
+        treatment_change="Start everolimus 10mg daily",
+    )
+    agent.save_profile(profile, clinical_change=False)
+    projection = _projection(client)
+    linked_row = next(
+        row for row in projection["legacy_treatments"] if "lanreotide" in row["raw_text"]
+    )
+    response, _ = _create_course(
+        client,
+        status="current",
+        planned_date=None,
+        legacy_component_ids=[linked_row["components"][0]["id"]],
+    )
+    assert response.status_code == 201, response.get_json()
+    _retain_treatment_feed_job(app_module, agent.load_profile(), job_id="unrelated-doc")
+    receipt = client.get("/api/jobs/unrelated-doc/receipt").get_json()
+    change = _treatment_change(receipt)
+
+    corrected = client.post(
+        f"/api/jobs/unrelated-doc/receipt/changes/{change['id']}/correct",
+        json={
+            "receipt_revision": receipt["receipt_revision"],
+            "target_token": change["target_token"],
+            "replacement": "Start everolimus 5mg daily",
+        },
+    )
+    assert corrected.status_code == 200, corrected.get_json()
+    receipt = corrected.get_json()["receipt"]
+    change = _treatment_change(receipt)
+    removed = client.post(
+        f"/api/jobs/unrelated-doc/receipt/changes/{change['id']}/remove",
+        json={
+            "receipt_revision": receipt["receipt_revision"],
+            "target_token": change["target_token"],
+        },
+    )
+
+    assert removed.status_code == 200, removed.get_json()
+    projection = _projection(client)
+    assert [row["raw_text"] for row in projection["legacy_treatments"]] == [linked_row["raw_text"]]
+    assert projection["courses"][0]["legacy_component_ids"] == [linked_row["components"][0]["id"]]
+
+
+def test_receipt_removal_drops_exactly_one_duplicate_raw_treatment_row(agent, empty_profile):
+    profile = _ingest_treatment(agent, empty_profile)
+    duplicated = profile["patient"]["current_treatments"][0]
+    profile["patient"]["current_treatments"].append(duplicated)
+    agent.sync_treatment_records(profile)
+    receipt = agent.public_receipt(profile, "treatment-feed-001")
+    change = _treatment_change(receipt)
+
+    agent.remove_change(
+        profile,
+        "treatment-feed-001",
+        change["id"],
+        receipt_revision=receipt["receipt_revision"],
+        target_token=change["target_token"],
+    )
+
+    assert profile["patient"]["current_treatments"] == [duplicated]
+    assert len(profile["patient"]["current_treatment_records"]) == 1
+    assert agent.project_treatment_reconciliation(profile)["legacy_treatment_count"] == 1
+
+
+def test_duplicate_row_removal_keeps_a_course_linked_to_the_surviving_component(
+    agent, empty_profile
+):
+    profile = _ingest_treatment(agent, empty_profile)
+    duplicated = profile["patient"]["current_treatments"][0]
+    profile["patient"]["current_treatments"].append(duplicated)
+    agent.sync_treatment_records(profile)
+    surviving = profile["patient"]["current_treatment_records"][0]["id"]
+    profile["treatment_courses"] = [
+        {
+            "id": agent.new_treatment_course_id(),
+            "status": "current",
+            "treatment_text": "Linked to the surviving duplicate",
+            "legacy_component_ids": [surviving],
+            "start_date": None,
+            "start_date_precision": "unknown",
+            "start_date_kind": "unknown",
+            "stop_date": None,
+            "stop_date_precision": "unknown",
+            "stop_date_kind": "unknown",
+            "planned_date": None,
+            "planned_date_precision": "unknown",
+            "planned_date_kind": "unknown",
+            "terminal_qualifier": None,
+            "terminal_detail": None,
+            "previous_course_id": None,
+            "provenance": agent.treatment_course_provenance(),
+            "created_at": "2026-08-10T10:00:00",
+            "updated_at": "2026-08-10T10:00:00",
+            "history": [],
+        }
+    ]
+    receipt = agent.public_receipt(profile, "treatment-feed-001")
+    change = _treatment_change(receipt)
+
+    agent.remove_change(
+        profile,
+        "treatment-feed-001",
+        change["id"],
+        receipt_revision=receipt["receipt_revision"],
+        target_token=change["target_token"],
+    )
+
+    assert profile["patient"]["current_treatments"] == [duplicated]
+    projection = agent.project_treatment_reconciliation(profile)
+    assert projection["courses"][0]["legacy_component_ids"] == [surviving]
+
+
+def _course_row(agent, text, component_ids):
+    return {
+        "id": agent.new_treatment_course_id(),
+        "status": "current",
+        "treatment_text": text,
+        "legacy_component_ids": list(component_ids),
+        "start_date": None,
+        "start_date_precision": "unknown",
+        "start_date_kind": "unknown",
+        "stop_date": None,
+        "stop_date_precision": "unknown",
+        "stop_date_kind": "unknown",
+        "planned_date": None,
+        "planned_date_precision": "unknown",
+        "planned_date_kind": "unknown",
+        "terminal_qualifier": None,
+        "terminal_detail": None,
+        "previous_course_id": None,
+        "provenance": agent.treatment_course_provenance(),
+        "created_at": "2026-08-10T10:00:00",
+        "updated_at": "2026-08-10T10:00:00",
+        "history": [],
+    }
+
+
+def test_blocked_receipt_calls_leave_the_in_memory_profile_untouched(agent, empty_profile):
+    """The HTTP tests read from disk, which cannot see a partial in-memory mutation."""
+    import copy
+
+    base = _ingest_treatment(agent, empty_profile)
+    component = base["patient"]["current_treatment_records"][0]["id"]
+    base["treatment_courses"] = [_course_row(agent, "Linked course", [component])]
+    receipt = agent.public_receipt(base, "treatment-feed-001")
+    change = _treatment_change(receipt)
+
+    for call in (
+        lambda profile: agent.remove_change(
+            profile,
+            "treatment-feed-001",
+            change["id"],
+            receipt_revision=receipt["receipt_revision"],
+            target_token=change["target_token"],
+        ),
+        lambda profile: agent.correct_change(
+            profile,
+            "treatment-feed-001",
+            change["id"],
+            receipt_revision=receipt["receipt_revision"],
+            target_token=change["target_token"],
+            replacement="Start lanreotide 120mg q6w",
+        ),
+        lambda profile: agent.undo_import(
+            profile,
+            "treatment-feed-001",
+            receipt_revision=receipt["receipt_revision"],
+            undo_token=receipt["undo_token"],
+        ),
+    ):
+        profile = copy.deepcopy(base)
+        expected = copy.deepcopy(base)
+        with pytest.raises(agent.TreatmentLinkConflict):
+            call(profile)
+        assert profile == expected
+
+
+def test_an_already_dangling_course_link_never_blocks_a_receipt_edit(agent, empty_profile):
+    """A darkened workspace must stay repairable: the guard compares before with after."""
+    profile = _ingest_treatment(agent, empty_profile)
+    profile["treatment_courses"] = [_course_row(agent, "Already broken", ["missing-component"])]
+    with pytest.raises(agent.TreatmentProjectionError):
+        agent.project_treatment_reconciliation(profile)
+    receipt = agent.public_receipt(profile, "treatment-feed-001")
+    change = _treatment_change(receipt)
+
+    agent.remove_change(
+        profile,
+        "treatment-feed-001",
+        change["id"],
+        receipt_revision=receipt["receipt_revision"],
+        target_token=change["target_token"],
+    )
+
+    assert profile["patient"]["current_treatments"] == []
+    assert profile["treatment_courses"][0]["legacy_component_ids"] == ["missing-component"]

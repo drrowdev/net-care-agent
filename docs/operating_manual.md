@@ -316,6 +316,31 @@ anything and the receipt shows the conflict. Reload the receipt and review the
 newer source; do not retry blindly. Whole-document undo is all-or-nothing—one
 conflicting target means no part of the document is rolled back.
 
+### Blocked: a treatment course still links that wording
+
+Correcting, removing, or undoing an imported **treatment** value is refused with
+`409` while one of your own status records still links that wording's
+components. The receipt names the blocking course, for example *Treatment course
+"Lanreotide 120 mg q28d" is still linked to recorded treatment components that
+removing this imported treatment value would remove or rewrite…* Nothing is
+changed when this happens — no part of the correction, removal, or undo is
+applied, and you can retry after clearing the link.
+
+This is expected, not a fault. **Record status** pre-ticks the row's components
+(§5b), so a status record you created from a raw row is normally linked to it.
+The receipt refuses rather than silently unlinking your course, because your
+explicit selection is the only thing that may change a link.
+
+To proceed:
+
+1. Go to **Patient → Treatments** and open the named course.
+2. Under *Link recorded treatment components*, clear the recorded entry that
+   comes from the wording you are about to correct or remove. Save the course.
+3. Return to the receipt and retry the correction, removal, or undo.
+
+If you would rather keep the link, keep the imported wording as it is; the
+course and its link are unaffected.
+
 Receipt access follows normal feed-job retention. Its audit record remains in
 `patient_profile.json` and backups, but legacy imports created before schema v2
 do not receive retroactive editable receipts.
@@ -702,7 +727,10 @@ Patient's default Overview combines three kinds of information without inference
    chooses a record status, never fills a start/stop/planned date, and never
    picks a terminal outcome, so the dialog cannot be saved until you choose the
    status yourself. Edit any copied wording freely before saving. Once saved,
-   the row shows as linked to the new status record. **Not useful in my
+   the row shows as linked to the new status record. While that link exists, the
+   document import receipt refuses to correct, remove, or undo the wording the
+   row came from and names this course (see §1); clear the link on the course
+   first if you need to edit the import. **Not useful in my
    workspace** is described in §5b-1 below. The compact **Today →
    Treatment status** cards stay read-only.
 3. Explicit caregiver-maintained **Finished or past** courses.

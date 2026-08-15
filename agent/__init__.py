@@ -111,6 +111,8 @@ from .questions import generate_appointment_questions, generate_questions_for_pr
 from .reconciliation import (
     ImportConflict,
     ReconciliationError,
+    TreatmentLinkConflict,
+    TreatmentProjectionRegression,
     add_derived_research,
     build_import_record,
     correct_change,
@@ -328,6 +330,8 @@ __all__ = [
     "undo_import",
     "ReconciliationError",
     "ImportConflict",
+    "TreatmentLinkConflict",
+    "TreatmentProjectionRegression",
     "get_recovery_state",
     "mutating_lock",
     "serialized_mutation",

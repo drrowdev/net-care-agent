@@ -274,7 +274,7 @@ def validate_treatment_terminal_authority(
     """Validate exact client-entered terminal authority without inference."""
     if status != "past":
         if qualifier is not None or detail is not None:
-            raise ValueError("Current and planned courses cannot have terminal authority.")
+            raise ValueError("Only a past treatment record can say how it ended.")
         return None, None
     if prior_status == "current":
         allowed = _CURRENT_TO_PAST_QUALIFIERS
@@ -283,18 +283,19 @@ def validate_treatment_terminal_authority(
     else:
         allowed = _DIRECT_PAST_QUALIFIERS
     if qualifier not in allowed:
-        allowed_text = ", ".join(allowed)
-        raise ValueError(f"terminal_qualifier must be one of: {allowed_text}.")
+        raise ValueError("Choose how the treatment ended from the listed options.")
     if qualifier == "other":
         if not isinstance(detail, str) or not detail.strip():
-            raise ValueError("terminal_detail is required when terminal_qualifier is other.")
+            raise ValueError("Add more detail about how it ended when you choose Something else.")
         if len(detail) > _COURSE_TEXT_LIMITS["terminal_detail"]:
-            raise ValueError("terminal_detail is too long.")
+            raise ValueError("The detail about how it ended is too long.")
         if any(ord(char) < 32 and char not in "\n\t" for char in detail):
-            raise ValueError("terminal_detail contains unsupported control characters.")
+            raise ValueError(
+                "The detail about how it ended contains characters that cannot be saved."
+            )
         return qualifier, detail
     if detail is not None:
-        raise ValueError("terminal_detail is only allowed when terminal_qualifier is other.")
+        raise ValueError("Extra detail can only be added when you choose Something else.")
     return qualifier, None
 
 
@@ -1088,7 +1089,7 @@ def _validate_course(course: dict, component_ids: set[str], courses_by_id: dict[
     ):
         raise TreatmentProjectionError(
             "treatment_projection_invalid",
-            "Treatment course terminal authority is inconsistent.",
+            "This treatment record's ending details are inconsistent.",
         )
     previous = course.get("previous_course_id")
     if previous is not None and (previous == course["id"] or previous not in courses_by_id):

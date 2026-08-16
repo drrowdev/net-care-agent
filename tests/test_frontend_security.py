@@ -4681,6 +4681,9 @@ function visitStatusLabel(status) {
 """,
             _function_source("caregiverProvenancePresentation", "precisionLabel"),
             _function_source("recapPlainText", "buildVisitRecapText"),
+            # Wave 1: the recap now prints visit and due dates through the shared
+            # Finnish formatter, so the sandbox needs the real fmtDate source.
+            _function_source("fmtDate", "parseTimestamp"),
             _function_source("buildVisitRecapText", "recapSectionMarkup"),
             """
 const recap = {

@@ -137,11 +137,11 @@ def validate_date(value: object, field: str) -> str | None:
     if value in (None, ""):
         return None
     if not isinstance(value, str):
-        raise FollowThroughError(f"{field} must be YYYY-MM-DD")
+        raise FollowThroughError(f"{field} must be a full date like 2026-08-14")
     try:
         parsed = datetime.date.fromisoformat(value)
     except ValueError as exc:
-        raise FollowThroughError(f"{field} must be YYYY-MM-DD") from exc
+        raise FollowThroughError(f"{field} must be a full date like 2026-08-14") from exc
     return parsed.isoformat()
 
 

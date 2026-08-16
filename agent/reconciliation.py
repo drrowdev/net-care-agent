@@ -647,7 +647,7 @@ def _date_text(value: Any, label: str = "Date") -> str:
     try:
         datetime.date.fromisoformat(cleaned)
     except ValueError as exc:
-        raise ReconciliationError(f"{label} must use YYYY-MM-DD") from exc
+        raise ReconciliationError(f"{label} must be a full date like 2026-08-14") from exc
     return cleaned
 
 
@@ -656,7 +656,7 @@ def _partial_date_text(value: Any, label: str) -> str | None:
         return None
     cleaned = _required_text(value, label, maximum=10)
     if derive_date_precision(cleaned) == "unknown":
-        raise ReconciliationError(f"{label} must use YYYY-MM-DD, YYYY-MM, or YYYY")
+        raise ReconciliationError(f"{label} must be a date like 2026, 2026-08 or 2026-08-14")
     return cleaned
 
 

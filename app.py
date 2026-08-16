@@ -1393,10 +1393,10 @@ def _episode_date(value: Any, field: str) -> tuple[str | None, str]:
     if value in (None, ""):
         return None, "unknown"
     if not isinstance(value, str):
-        raise ValueError(f"{field} must be a YYYY, YYYY-MM, or YYYY-MM-DD date.")
+        raise ValueError(f"{field} must be a date like 2026, 2026-08 or 2026-08-14.")
     precision = derive_date_precision(value)
     if precision == "unknown":
-        raise ValueError(f"{field} must be a valid YYYY, YYYY-MM, or YYYY-MM-DD date.")
+        raise ValueError(f"{field} must be a real date like 2026, 2026-08 or 2026-08-14.")
     return value, precision
 
 
@@ -1642,10 +1642,10 @@ def _treatment_date(value: Any, field: str) -> tuple[str | None, str, str]:
     if value is None:
         return None, "unknown", "unknown"
     if not isinstance(value, str):
-        raise ValueError(f"{field} must be a YYYY, YYYY-MM, or YYYY-MM-DD date or null.")
+        raise ValueError(f"{field} must be a date like 2026, 2026-08 or 2026-08-14, or left empty.")
     precision = derive_date_precision(value)
     if precision == "unknown":
-        raise ValueError(f"{field} must be a valid YYYY, YYYY-MM, or YYYY-MM-DD date.")
+        raise ValueError(f"{field} must be a real date like 2026, 2026-08 or 2026-08-14.")
     return value, precision, "caregiver_entered"
 
 
@@ -5361,7 +5361,7 @@ def api_judgments_add():
             try:
                 datetime.date.fromisoformat(data[field])
             except (TypeError, ValueError):
-                return jsonify({"error": f"{field} must be YYYY-MM-DD"}), 400
+                return jsonify({"error": f"{field} must be a full date like 2026-08-14"}), 400
     timestamp = now_stamp()
     judgment = {
         "id": f"j_{_new_id()}",
@@ -5418,7 +5418,7 @@ def api_judgments_edit(jid):
             try:
                 datetime.date.fromisoformat(data[field])
             except (TypeError, ValueError):
-                return jsonify({"error": f"{field} must be YYYY-MM-DD"}), 400
+                return jsonify({"error": f"{field} must be a full date like 2026-08-14"}), 400
     profile = agent.load_profile()
     for j in profile.get("clinical_judgments", []):
         if j.get("id") == jid:
@@ -6894,7 +6894,7 @@ def api_symptoms_add():
     today = datetime.date.today().isoformat()
     clinical_date = data.get("date") or today
     if derive_date_precision(clinical_date) == "unknown":
-        return jsonify({"error": "Date must be YYYY, YYYY-MM, or YYYY-MM-DD"}), 400
+        return jsonify({"error": "Enter the date as 2026, 2026-08 or 2026-08-14"}), 400
     symptom = {
         "id": agent.new_workflow_id("sym"),
         "date": clinical_date,
@@ -6941,7 +6941,7 @@ def api_symptoms_edit(sid):
                 s["related_treatment"] = (data.get("related_treatment") or "").strip() or None
             if "date" in data and data["date"]:
                 if derive_date_precision(data["date"]) == "unknown":
-                    return jsonify({"error": "Date must be YYYY, YYYY-MM, or YYYY-MM-DD"}), 400
+                    return jsonify({"error": "Enter the date as 2026, 2026-08 or 2026-08-14"}), 400
                 s["date"] = data["date"]
                 s["date_precision"] = derive_date_precision(data["date"])
                 s["date_kind"] = "clinical"

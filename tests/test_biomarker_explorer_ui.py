@@ -311,6 +311,9 @@ function evictClientPhi(error) {
             _executable_function_source("readJsonResponse", "readJobSubmission"),
             _function_source("shouldEvictClientPhi", "restoreDialogFocus"),
             _function_source("escHtml", "fmtDate"),
+            # Wave 1: biomarkerDate routes stored dates through the shared
+            # Finnish formatter, so the sandbox needs the real fmtDate source.
+            _function_source("fmtDate", "parseTimestamp"),
             _biomarker_function_source(),
             """
 function response(status, data) {
@@ -424,10 +427,10 @@ console.log(JSON.stringify({
     assert result["second"]["ownerToken"] == projection["analytes"][1]["token"]
     assert result["workflowAdvance"]["accepted"] is True
     assert result["workflowAdvance"]["state"] == "stale"
-    assert result["workflowAdvance"]["freshness"] == "Stale snapshot"
-    assert "workflow changed" in result["workflowAdvance"]["status"]
+    assert result["workflowAdvance"]["freshness"] == "Out of date"
+    assert "Your saved work changed" in result["workflowAdvance"]["status"]
     assert result["workflowAdvance"]["ownerCurrent"] is True
-    assert result["emptyScalar"] == 'Empty string ("")'
+    assert result["emptyScalar"] == "Recorded as blank"
     assert result["missingScalar"] == "Not recorded"
 
 
@@ -851,7 +854,7 @@ def test_live_biomarker_late_response_offline_recovery_and_hard_eviction():
             page.evaluate("() => { window.fetch = window.__realFetch; }")
             context.set_offline(True)
             page.evaluate("() => window.dispatchEvent(new Event('offline'))")
-            assert "Stale snapshot" in page.locator("#biomarker-freshness").inner_text()
+            assert "Out of date" in page.locator("#biomarker-freshness").inner_text()
             stale_table = page.locator("#biomarker-table-body").inner_text()
             assert "27" in stale_table
             assert "read-only" in page.locator("#biomarker-status").inner_text()

@@ -8,6 +8,82 @@ incremented when something user-visible or operationally meaningful changes.
 
 ## [Unreleased]
 
+### Changed
+- **The app now says how a treatment ended, instead of "terminal outcome".**
+  In an app about metastatic cancer, "terminal" read as a statement about the
+  patient's prognosis; in the code it only ever meant "end state". The whole
+  vocabulary was rewritten as one set: the fieldset legend is now
+  **How did this treatment end?**, the field is **How it ended**, the action is
+  **Record how it ended**, and the four choices read **It started and then
+  stopped**, **It never started**, **The plan was cancelled before it started**
+  and **Something else**. Legacy rows show **How it ended was not recorded**.
+  Two API messages that surfaced the word `terminal` — and one that printed the
+  raw field name `terminal_qualifier` — were rewritten too. Stored values,
+  wire field names, element ids and the `treatment_projection_invalid` reason
+  code are unchanged; only what you read changed.
+- **The assessment badge no longer shouts a verdict.** The status pill on
+  **Today → Latest assessment** showed `STABLE` / `RESPONDING` / `PROGRESSING` /
+  `DATA PENDING` in capitals. It now reads **Assessment: stable**,
+  **Assessment: responding**, **Assessment: progression** and
+  **Assessment pending**, which keeps it as the generated assessment's own
+  language rather than the app appearing to decide progression itself. All four
+  are worded the same way, so the badge does not soften only the adverse status,
+  and confidence stays where it already was — reported separately. The raw
+  stored status is no longer used as a display fallback.
+- **The assistant no longer sounds like it triages.** The empty chat panel said
+  "Ask anything about the patient's data, research findings, or treatment
+  options" and offered "What are the most urgent actions right now?". It now
+  says what it is grounded in, states plainly that it is not medical advice, and
+  suggests **What follow-ups are still open?** instead.
+- **Stored codes stopped being dressed up as labels.** A helper title-cased raw
+  database values, so `caregiver_record_corrected` reached the screen as
+  "Caregiver Record Corrected" and `source_clarification_needed` as "Source
+  Clarification Needed". Those now read **You corrected the record** and
+  **Needs checking with the treating team**. A value that is not in the lookup
+  is shown exactly as it was recorded, so a lab's own printed flag is never
+  re-cased and never replaced by "Not recorded". The four label helpers that
+  previously returned their input unchanged now use explicit lookup tables.
+- **Blank values are described in words.** Summary rows showed
+  `Empty string ("")` and "Empty string recorded"; they now read **Recorded as
+  blank**. The forensic "exact stored value" views in the treatment differences
+  and research tabs still distinguish a stored null from a stored empty string
+  on purpose and are unchanged.
+- **Stale and reload messages stopped narrating the internals.** Twelve variants
+  of "X is read-only until the authoritative record reloads" and about thirteen
+  of "could not be verified safely" were replaced with one consistent
+  vocabulary: **Out of date**, "Refresh X before making changes", and "could not
+  be loaded safely". Two success messages that claimed the app had *verified*
+  something now say **Treatment changes saved.** and **Saved. Research has been
+  refreshed.**, because the app verifies a reload, never treatment or research
+  facts.
+- **"Record recurrence" became "Record this difference again".** It only ever
+  meant that a recorded difference had reappeared.
+- **Date fields no longer instruct in `YYYY-MM-DD`.** Twenty placeholders,
+  helper sentences and validation messages across the UI and the API showed
+  machine notation. They now show real examples. Defensive helper text such as
+  "Exact partial date; no date is inferred or defaulted" now reads "Enter as
+  much of the date as you know. Nothing is filled in for you." One message also
+  stopped leaking the field name `occurred_on` and the word `null`.
+
+### Fixed
+- **Timeline chips showed "Event" for the three most common entry types.** The
+  timeline on **Today → Latest assessment** renders types produced by the
+  executive summary (`appointment`, `scan`, `test`, `milestone`, `trial`,
+  `deadline`). `milestone`, `trial` and `deadline` had no label and fell through
+  to the generic "Event" — including the red **Deadline** chip, which is the one
+  most worth reading. All six now have labels.
+- **Nine places printed a stored date raw while the rest of the app showed
+  Finnish format.** Biomarker document and observation dates, the biomarker
+  chart labels, imaging study and document dates, symptom onset and resolution
+  dates, treatment course dates, treatment confirmation dates, difference
+  follow-up due dates, research event dates, and the visit recap's visit date
+  and follow-up due dates, and the symptom source-document date, all bypassed
+  the shared formatter, so a stored `2026-08-14` appeared instead of
+  `14.8.2026`. They now route through the same
+  helper as everything else. The existing guard test only covered three
+  functions, which is how these slipped through; it has been extended and a
+  dedicated contract added in `tests/test_plain_language_copy.py`.
+
 ### Added
 - **You can now hide a recorded treatment statement you don't find useful.**
   Every row under **Patient → Treatments → Recorded treatment statements** gained

@@ -249,10 +249,10 @@ def validate_research_date(value: object) -> tuple[str | None, str]:
     if value is None:
         return None, "unknown"
     if not isinstance(value, str) or not value:
-        raise ValueError("occurred_on must be YYYY, YYYY-MM, YYYY-MM-DD, or null")
+        raise ValueError("Enter the date as 2026, 2026-08 or 2026-08-14, or leave it empty")
     precision = derive_date_precision(value)
     if precision == "unknown":
-        raise ValueError("occurred_on must be YYYY, YYYY-MM, YYYY-MM-DD, or null")
+        raise ValueError("Enter the date as 2026, 2026-08 or 2026-08-14, or leave it empty")
     return value, precision
 
 

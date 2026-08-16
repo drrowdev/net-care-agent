@@ -345,6 +345,18 @@ def test_metadata_lines_do_not_leak_a_raw_iso_date():
     assert "fmtDate(source.date)" in preparation
     assert "source.type || source.date || ''" not in preparation
 
+    # The copy audit found this guard only covered the three functions above,
+    # which is exactly how the sites below kept printing a stored 2026-08-14
+    # while the rest of the record showed 14.8.2026. The full contract now lives
+    # in tests/test_plain_language_copy.py; these are the shared helpers.
+    for name, next_name in [
+        ("biomarkerDate", "biomarkerProjectionPayloadIsValid"),
+        ("imagingDate", "setImagingFreshness"),
+        ("symptomDate", "symptomDatePresentation"),
+    ]:
+        helper = _function_source(name, next_name)
+        assert "fmtDate(String(value))" in helper, f"{name} bypasses the formatter"
+
 
 def test_iso_dates_written_into_generated_sentences_are_localised_in_place():
     """A date inside model-written prose is not a field, so no formatter reached it.

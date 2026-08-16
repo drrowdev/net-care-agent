@@ -662,8 +662,10 @@ In **Patient → Symptoms**:
 
 The episode form accepts exact symptom wording; optional
 Mild/Moderate/Severe selection and exact detail; reported subject; timing,
-frequency, triggers, and notes; and an optional `YYYY`, `YYYY-MM`, or
-`YYYY-MM-DD` onset. Resolution date is also optional and starts blank. The
+frequency, triggers, and notes; and an optional onset date entered as a year,
+a year and month, or a full date (`2026`, `2026-08`, `2026-08-14`). Resolution
+date is also optional and starts blank. Dates are stored exactly as entered and
+are displayed in Finnish format (`8/2026`, `14.8.2026`). The
 browser does not fill today's date, parse dates into another timezone, compare
 chronology, score severity, or infer urgency. Empty, missing, partial, and
 unknown server values remain visibly distinct.
@@ -725,7 +727,8 @@ Patient's default Overview combines three kinds of information without inference
    that row's wording into the treatment-wording field and pre-ticks only that
    row's components under *Link recorded treatment components*. It never
    chooses a record status, never fills a start/stop/planned date, and never
-   picks a terminal outcome, so the dialog cannot be saved until you choose the
+   picks how the treatment ended, so the dialog cannot be saved until you choose
+   the
    status yourself. Edit any copied wording freely before saving. Once saved,
    the row shows as linked to the new status record. While that link exists, the
    document import receipt refuses to correct, remove, or undo the wording the
@@ -834,7 +837,7 @@ hidden disclosure rather than the main list. Secondary panels are:
    status-record dialog and uses the same single creation contract as the
    recorded rows above — there is no second way to create a course. It copies
    only that mention's exact observed wording into the treatment-wording field.
-   It preselects no status, no date, no terminal outcome and no component link,
+   It preselects no status, no date, no ending detail and no component link,
    because a mention carries no timing at all, and because the `added` /
    `removed` marking on a mention is only about which list it appeared in — a
    sentence reading *"Everolimus 10 mg daily was stopped"* is still recorded as
@@ -851,11 +854,12 @@ facts and could never set treatment status.
 
 Current lifecycle buttons are exactly those returned by the server. Do not
 interpret their presence as treatment advice. A new Past record or a transition
-to Past requires a neutral recorded outcome offered by the server. **Did not
-start** and **Plan cancelled before starting** do not imply exposure.
-**Other recorded outcome** requires exact bounded caregiver detail.
-**Earlier record; ending detail not recorded** is display-only legacy authority.
-Past is terminal. **Create linked new record** appears only when the server
+to Past requires one of the endings offered by the server, under the heading
+**How did this treatment end?**. **It never started** and **The plan was
+cancelled before it started** do not imply exposure.
+**Something else** requires exact bounded caregiver detail.
+**How it ended was not recorded** is display-only legacy authority.
+Past is a final state. **Create linked new record** appears only when the server
 authorizes restart; it creates a blank new Current or Planned course and leaves
 the prior course unchanged.
 

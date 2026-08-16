@@ -39,7 +39,7 @@ function Get-AuthHeaders {
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($token)) {
         throw "Unable to obtain an Azure access token."
     }
-    return @{ Authorization = "******" }
+    return @{ Authorization = "Bearer $($token.Trim())" }
 }
 
 function Assert-HttpSuccess {

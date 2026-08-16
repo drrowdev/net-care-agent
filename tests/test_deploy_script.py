@@ -1,12 +1,15 @@
 """Source-level deployment safety regressions (the deploy script is never executed here).
 
-The one exception is ``test_deployment_state_behaviour_harness_passes``, which runs
-Scripts/Test-DeployState.ps1. That harness exercises the real state functions against
-throwaway directories; it performs no network access and never touches Azure.
+Two exceptions run PowerShell without deploying anything:
+``test_deployment_state_behaviour_harness_passes`` runs Scripts/Test-DeployState.ps1,
+and ``test_auth_header_is_built_from_the_real_token_at_runtime`` evaluates the extracted
+``Get-AuthHeaders`` definition against a stubbed ``az``. Both perform no network access
+and never touch Azure.
 """
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -21,6 +24,10 @@ GITIGNORE = (ROOT / ".gitignore").read_text(encoding="utf-8")
 
 ROLLBACK_BLOCK = SCRIPT[SCRIPT.index("if ($Rollback) {") : SCRIPT.index("# All gates")]
 DEPLOY_BLOCK = SCRIPT[SCRIPT.index("# All gates") :]
+
+# An obviously fake, human-readable stand-in. It is only ever written to a
+# pytest tmp_path, never committed as data and never sent anywhere.
+STUB_TOKEN = "stub-not-a-real-token-for-tests"
 
 
 def _function(source: str, name: str) -> str:
@@ -37,6 +44,135 @@ def _function(source: str, name: str) -> str:
             depth -= 1
         index += 1
     return source[start : index - 1]
+
+
+def _definition(source: str, name: str) -> str:
+    """Return the complete ``function <name> { ... }`` text, ready to be re-evaluated."""
+    return "function " + name + " {" + _function(source, name) + "}"
+
+
+def _authorization_value(source: str) -> str:
+    """The single header value literal assigned inside Get-AuthHeaders."""
+    body = _function(source, "Get-AuthHeaders")
+    literals = re.findall(r'Authorization[ \t]*=[ \t]*"([^"\n]*)"', body)
+    assert len(literals) == 1, f"expected exactly one Authorization literal, got {len(literals)}"
+    return literals[0]
+
+
+# A scrubber redaction was once committed over this literal, so every Kudu request
+# carried a masked header and neither deploying nor rolling back was possible. The
+# artefact is invisible when the file is displayed, so assert on measurable
+# properties of the value rather than trusting a reading of it.
+def test_auth_header_is_a_well_formed_bearer_header():
+    value = _authorization_value(SCRIPT)
+    assert "*" not in value, "the Authorization value contains masking characters"
+    assert not re.search(r"(?i)[<\[]\s*redacted\s*[>\]]", value)
+    assert value.startswith("Bearer ")
+
+    credential = value[len("Bearer ") :]
+    assert credential, "the header carries no credential at all"
+    # It must interpolate the token that was just fetched, not a constant.
+    assert "$token" in credential
+
+    # The fetch and validation in front of it are unchanged.
+    body = _function(SCRIPT, "Get-AuthHeaders")
+    assert "az account get-access-token" in body
+    assert "[string]::IsNullOrWhiteSpace($token)" in body
+    assert "Unable to obtain an Azure access token." in body
+
+    # The token never leaves the function that turns it into a header, so no
+    # logging or error path anywhere else in the script can echo it.
+    assert SCRIPT.count("$token") == body.count("$token")
+
+
+AUTH_PROBE = """
+$ErrorActionPreference = "Stop"
+Remove-Item Alias:az -ErrorAction SilentlyContinue
+
+$script:Calls = New-Object System.Collections.ArrayList
+$script:Exit = 0
+$script:Output = "  __TOKEN__  "
+
+function az {
+    [void]$script:Calls.Add((@($args) -join " "))
+    $global:LASTEXITCODE = $script:Exit
+    return $script:Output
+}
+
+__DEFINITION__
+
+Write-Output ("AZ_IS_FUNCTION=" + ((Get-Command az).CommandType -eq "Function"))
+
+# Happy path. The sentinel exit code proves the stub really ran: if it did not,
+# the function's own validation throws and this script fails loudly.
+$global:LASTEXITCODE = 97
+$headers = Get-AuthHeaders
+$value = [string]$headers["Authorization"]
+Write-Output ("CALLS=" + $script:Calls.Count)
+Write-Output ("ARGS_OK=" + ($script:Calls[0] -like "*account get-access-token*"))
+Write-Output ("KEYS=" + $headers.Keys.Count)
+Write-Output ("STARS=" + ([regex]::Matches($value, "\\*").Count))
+Write-Output ("LEN=" + $value.Length)
+Write-Output ("EXACT=" + ($value -ceq ("Bearer " + "__TOKEN__")))
+
+# A failed token fetch must still abort rather than send a junk header.
+$script:Exit = 3
+$script:Output = "__TOKEN__"
+try { Get-AuthHeaders | Out-Null; Write-Output "THROWS_ON_EXIT=False" }
+catch { Write-Output "THROWS_ON_EXIT=True" }
+
+$script:Exit = 0
+$script:Output = "   "
+try { Get-AuthHeaders | Out-Null; Write-Output "THROWS_ON_BLANK=False" }
+catch { Write-Output "THROWS_ON_BLANK=True" }
+"""
+
+
+def test_auth_header_is_built_from_the_real_token_at_runtime(tmp_path):
+    """Evaluate the real Get-AuthHeaders against a stubbed ``az`` — no Azure, no network.
+
+    Source text alone cannot prove the header is well formed, so this builds one and
+    measures it. Only booleans and lengths are emitted; the stand-in value is never
+    printed, exactly as the deploy script never echoes a real token.
+    """
+    powershell = shutil.which("pwsh")
+    if powershell is None:  # pragma: no cover - depends on the host toolchain
+        pytest.skip("pwsh is not available on this host")
+
+    probe = AUTH_PROBE.replace("__DEFINITION__", _definition(SCRIPT, "Get-AuthHeaders")).replace(
+        "__TOKEN__", STUB_TOKEN
+    )
+    script = tmp_path / "auth_probe.ps1"
+    script.write_text(probe, encoding="utf-8")
+
+    completed = subprocess.run(
+        [powershell, "-NoProfile", "-NonInteractive", "-File", str(script)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=str(tmp_path),
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+    results = dict(
+        line.split("=", 1) for line in completed.stdout.splitlines() if "=" in line.strip()
+    )
+
+    # The stub, not the real Azure CLI, answered — and it answered exactly once.
+    assert results["AZ_IS_FUNCTION"] == "True"
+    assert results["CALLS"] == "1"
+    assert results["ARGS_OK"] == "True"
+
+    # The header itself: one entry, no masking, and the fetched token carried through.
+    assert results["KEYS"] == "1"
+    assert results["STARS"] == "0"
+    assert results["EXACT"] == "True", "Authorization is not 'Bearer <the fetched token>'"
+    assert int(results["LEN"]) == len("Bearer ") + len(STUB_TOKEN)
+
+    # Failure paths still abort instead of sending a malformed header.
+    assert results["THROWS_ON_EXIT"] == "True"
+    assert results["THROWS_ON_BLANK"] == "True"
 
 
 def test_quality_and_secret_gates_fail_closed():

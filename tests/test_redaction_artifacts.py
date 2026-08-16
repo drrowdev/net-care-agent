@@ -48,8 +48,17 @@ PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("asterisk-run", re.compile(r"\*{3,}")),
     # Bullet/block glyph masking used by other scrubbers.
     ("glyph-run", re.compile(r"[\u2022\u25cf\u25a0\u25ae\u2588]{3,}")),
-    # Explicit bracketed placeholders, in any case.
-    ("bracketed-placeholder", re.compile(r"[<\[]\s*redacted\s*[>\]]", re.IGNORECASE)),
+    # Explicit bracketed placeholders, in any case. Bracketing is what makes these
+    # unambiguous: the same words appear in ordinary prose all over this repository.
+    # "hidden" is deliberately absent — `[hidden]` is the HTML attribute selector and
+    # is used legitimately throughout static/styles.css.
+    (
+        "bracketed-placeholder",
+        re.compile(
+            r"[<\[]\s*(?:redacted|masked|sanitized|scrubbed|secret|elided)\s*[>\]]",
+            re.IGNORECASE,
+        ),
+    ),
     # Shouted placeholder words standing alone.
     (
         "shouted-placeholder",

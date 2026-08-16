@@ -71,7 +71,9 @@ def test_auth_header_is_a_well_formed_bearer_header():
 
     credential = value[len("Bearer ") :]
     assert credential, "the header carries no credential at all"
-    # It must interpolate the token that was just fetched, not a constant.
+    # It must interpolate the token that was just fetched, not a constant, and must
+    # be nothing but that expression: no literal prefix may sit in front of it.
+    assert credential.startswith("$")
     assert "$token" in credential
 
     # The fetch and validation in front of it are unchanged.

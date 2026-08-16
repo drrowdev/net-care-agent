@@ -473,8 +473,10 @@ def test_live_symptom_projection_is_separate_exact_accessible_and_overflow_safe(
             assert "Source observations are read-only mentions" in observation_text
             page.locator("#symptom-tab-current").click()
             episode_text = page.locator("#patient-current-symptom-list").inner_text()
-            assert "Moderate · Empty string recorded" in episode_text
-            assert "2026-08 · Month and year" in episode_text
+            assert "Moderate · Recorded as blank" in episode_text
+            # Wave 1: the onset date now renders through the shared Finnish
+            # formatter, so a stored 2026-08 shows as 8/2026 like everywhere else.
+            assert "8/2026 · Month and year" in episode_text
             assert "You entered this" in episode_text
             assert GUIDANCE not in page.locator("#symptom-workspace").inner_text()
             assert not any(path == "/api/symptoms" for _, path, _ in state.requests)

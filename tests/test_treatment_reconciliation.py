@@ -2110,8 +2110,11 @@ def test_malformed_terminal_authority_fails_whole_projection_with_bounded_422(
     response = client.get("/api/patient/treatment-reconciliation")
 
     assert response.status_code == 422
+    # Wave 1 copy change: the human-readable message no longer says "terminal",
+    # which reads as a prognosis in an oncology app. The bounded PHI-free shape
+    # and the `treatment_projection_invalid` reason code are unchanged.
     assert response.get_json() == {
-        "error": "Treatment course terminal authority is inconsistent.",
+        "error": "This treatment record's ending details are inconsistent.",
         "code": "treatment_projection_invalid",
     }
     assert agent.load_profile() == before

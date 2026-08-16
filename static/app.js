@@ -173,21 +173,64 @@
   const failedLoads = new Map();
 
   // ── UI label localization ───────────────────────────────────────────────
-  // Returns input as-is by default (English). To add a locale, replace the
-  // body of translateCategory/translateStatus/translateStage/translateType
-  // with a lookup table keyed off the language configured in
+  // Each lookup returns wording written for the caregiver. Unknown values fall
+  // back to a plain word rather than reaching the screen as a stored code. To
+  // add a locale, key these tables off the language configured in
   // patient.language on the profile.
+
+  // Stored codes the caregiver may see, written out in his words. A value that
+  // is not listed is left exactly as it was recorded, because the remaining
+  // callers pass either a known code or free text copied from a document.
+  // Declared before its readers so no call can outrun its initialization.
+  const ENUM_LABELS = Object.freeze({
+    open: 'Open',
+    in_progress: 'In progress',
+    completed: 'Done',
+    cancelled: 'Cancelled',
+    resolved: 'Resolved',
+    feed: 'Feed',
+    digest: 'Digest',
+    confirmed_as_recorded: 'Confirmed as recorded',
+    caregiver_record_corrected: 'You corrected the record',
+    source_clarification_needed: 'Needs checking with the treating team',
+    no_change_documented: 'No change recorded',
+  });
+
+  const QUESTION_CATEGORY_LABELS = Object.freeze({
+    Treatment: 'Treatment',
+    Diagnostics: 'Tests',
+    Symptoms: 'Symptoms',
+    Trials: 'Trials',
+    Monitoring: 'Monitoring',
+    Other: 'Other',
+  });
+
+  const TIMELINE_TYPE_LABELS = Object.freeze({
+    appointment: 'Appointment',
+    scan: 'Scan',
+    test: 'Test',
+    milestone: 'Milestone',
+    trial: 'Trial',
+    deadline: 'Deadline',
+  });
+
+  function lookupLabel(table, value, fallback) {
+    if (value == null || value === '') return fallback;
+    const key = String(value);
+    return Object.prototype.hasOwnProperty.call(table, key) ? table[key] : fallback;
+  }
+
   function translateCategory(cat) {
-    return cat;
+    return lookupLabel(QUESTION_CATEGORY_LABELS, cat, 'Other');
   }
   function translateStatus(s) {
-    return s;
+    return lookupLabel(ENUM_LABELS, s, 'Not recorded');
   }
   function translateStage(s) {
-    return s;
+    return lookupLabel(ENUM_LABELS, s, 'Not recorded');
   }
   function translateType(t) {
-    return t;
+    return lookupLabel(TIMELINE_TYPE_LABELS, t, 'Event');
   }
 
   // ── Formatting helpers ──────────────────────────────────────────────────
@@ -272,13 +315,15 @@
       day: 'Exact date',
       month: 'Month and year',
       year: 'Year only',
-      unknown: 'Date precision not recorded',
-    }[value] || 'Date precision not recorded';
+      unknown: 'Date detail not recorded',
+    }[value] || 'Date detail not recorded';
   }
 
-  function titleCaseEnum(value, fallback = 'Not recorded') {
+  function enumLabel(value, fallback = 'Not recorded') {
     if (value == null || value === '') return fallback;
-    return String(value).replaceAll('_', ' ').replace(/\b\w/g, character => character.toUpperCase());
+    const key = String(value);
+    if (Object.prototype.hasOwnProperty.call(ENUM_LABELS, key)) return ENUM_LABELS[key];
+    return key;
   }
 
   function revisionIsOlder(candidate, current) {
@@ -459,7 +504,7 @@
     phiEpoch += 1;
     if (typeof markBiomarkerProjectionStale === 'function') {
       markBiomarkerProjectionStale(
-        'The patient record changed. Reload biomarker history before relying on this snapshot.',
+        'The patient record changed. Refresh biomarker history before relying on what is shown.',
         {
           abortRequest: options.preserveBiomarkerRequest !== true,
           ownerPhiEpoch: phiEpoch,
@@ -471,7 +516,7 @@
       && typeof markImagingProjectionStale === 'function'
     ) {
       markImagingProjectionStale(
-        'The patient record changed. Imaging is read-only until the authoritative record reloads.',
+        'The patient record changed. Refresh imaging before making changes.',
         {
           abortRequest: options.preserveImagingRequest !== true,
           ownerPhiEpoch: phiEpoch,
@@ -483,7 +528,7 @@
       && typeof markSymptomProjectionStale === 'function'
     ) {
       markSymptomProjectionStale(
-        'The patient record changed. Symptoms are read-only until the authoritative record reloads.',
+        'The patient record changed. Refresh symptoms before making changes.',
         {
           abortRequest: options.preserveSymptomRequest !== true,
           ownerPhiEpoch: phiEpoch,
@@ -496,7 +541,7 @@
       && typeof markTreatmentProjectionStale === 'function'
     ) {
       markTreatmentProjectionStale(
-        'The patient record changed. Treatment information is read-only until the authoritative record reloads.',
+        'The patient record changed. Refresh treatments before making changes.',
         {
           abortRequest: options.preserveTreatmentRequest !== true,
           ownerPhiEpoch: phiEpoch,
@@ -516,7 +561,7 @@
       && typeof markResearchProjectionStale === 'function'
     ) {
       markResearchProjectionStale(
-        'The patient record changed. Research is read-only until the authoritative workspace reloads.',
+        'The patient record changed. Refresh research before making changes.',
       );
       if (typeof loadResearchWorkspace === 'function') {
         Promise.resolve().then(() => loadResearchWorkspace({ force: true }));
@@ -680,7 +725,7 @@
         && typeof markBiomarkerProjectionStale === 'function'
       ) {
         markBiomarkerProjectionStale(
-          'The patient workflow changed. Reload biomarker history before relying on this snapshot.',
+          'Your saved work changed. Refresh biomarker history before relying on what is shown.',
         );
         if (
           typeof activeView !== 'undefined'
@@ -709,7 +754,7 @@
         && typeof markImagingProjectionStale === 'function'
       ) {
         markImagingProjectionStale(
-          'The patient workflow changed. Imaging is read-only until the authoritative record reloads.',
+          'Your saved work changed. Refresh imaging before making changes.',
         );
         if (
           typeof activeView !== 'undefined'
@@ -739,7 +784,7 @@
         && typeof markSymptomProjectionStale === 'function'
       ) {
         markSymptomProjectionStale(
-          'The patient workflow changed. Symptoms are read-only until the authoritative record reloads.',
+          'Your saved work changed. Refresh symptoms before making changes.',
         );
         if (typeof ensureSymptomEpisodes === 'function') {
           Promise.resolve().then(() => ensureSymptomEpisodes());
@@ -765,7 +810,7 @@
         && typeof markTreatmentProjectionStale === 'function'
       ) {
         markTreatmentProjectionStale(
-          'The patient workflow changed. Treatment information is read-only until the authoritative record reloads.',
+          'Your saved work changed. Refresh treatments before making changes.',
         );
         if (typeof ensureTreatmentReconciliation === 'function') {
           Promise.resolve().then(() => ensureTreatmentReconciliation());
@@ -791,7 +836,7 @@
         && typeof markResearchProjectionStale === 'function'
       ) {
         markResearchProjectionStale(
-          'The caregiver workflow changed. Research is read-only until the authoritative workspace reloads.',
+          'Your saved work changed. Refresh research before making changes.',
         );
         if (typeof loadResearchWorkspace === 'function') {
           Promise.resolve().then(() => loadResearchWorkspace({ force: true }));
@@ -1675,7 +1720,14 @@
 
   function biomarkerScalar(value, fallback = 'Not recorded') {
     if (value == null) return fallback;
-    return value === '' ? 'Empty string ("")' : String(value);
+    return value === '' ? 'Recorded as blank' : String(value);
+  }
+
+  // Dates go through the shared formatter so a stored 2026-08-14 never reaches
+  // the screen as written while the rest of the record shows 14.8.2026.
+  function biomarkerDate(value, fallback = 'Not recorded') {
+    if (value == null) return fallback;
+    return value === '' ? 'Recorded as blank' : fmtDate(String(value));
   }
 
   function biomarkerProjectionPayloadIsValid(data) {
@@ -1968,7 +2020,7 @@
     const date = observation.date || {};
     const sourceDate = date.source_document_date == null
       ? ''
-      : `<span>Document date: ${escHtml(biomarkerScalar(date.source_document_date))} · ${escHtml(precisionLabel(date.source_document_date_precision))}</span>`;
+      : `<span>Document date: ${escHtml(biomarkerDate(date.source_document_date))} · ${escHtml(precisionLabel(date.source_document_date_precision))}</span>`;
     const unit = observation.unit == null || observation.unit === ''
       ? ''
       : ` ${escHtml(observation.unit)}`;
@@ -1990,7 +2042,7 @@
       : `${observation.duplicate_count} recorded entries`;
     return `<tr data-observation-id="${escHtml(observation.id)}">
       <td>
-        <strong>${escHtml(biomarkerScalar(date.value))}</strong>
+        <strong>${escHtml(biomarkerDate(date.value))}</strong>
         <span>${escHtml(precisionLabel(date.precision))}</span>
         <span>${escHtml({
           collection: 'Collection date',
@@ -2016,7 +2068,7 @@
         ${rangeComparison}
       </td>
       <td>
-        <strong>${escHtml(titleCaseEnum(observation.reported_flag))}</strong>
+        <strong>${escHtml(biomarkerScalar(observation.reported_flag))}</strong>
         <span>${escHtml({
           source_reported: 'Flag printed in the document',
           caregiver_corrected: 'You corrected this flag',
@@ -2085,10 +2137,10 @@
       }`;
       return `<g>
         <circle cx="${x}" cy="${pointY}" r="6">
-          <title>${escHtml(`${biomarkerScalar(point.date.value)} · ${displayResult}`)}</title>
+          <title>${escHtml(`${biomarkerDate(point.date.value)} · ${displayResult}`)}</title>
         </circle>
         <text class="biomarker-chart-value" x="${x}" y="${Math.max(16, pointY - 12)}" text-anchor="middle">${escHtml(displayResult)}</text>
-        <text class="biomarker-chart-date" x="${x}" y="${height - 26}" text-anchor="middle">${escHtml(biomarkerScalar(point.date.value))}</text>
+        <text class="biomarker-chart-date" x="${x}" y="${height - 26}" text-anchor="middle">${escHtml(biomarkerDate(point.date.value))}</text>
       </g>`;
     }).join('');
     return `<figure class="biomarker-chart-card" data-series-id="${escHtml(series.id)}">
@@ -2159,7 +2211,7 @@
     }
 
     if (biomarkerProjectionState === 'stale') {
-      setBiomarkerFreshness('stale', 'Stale snapshot');
+      setBiomarkerFreshness('stale', 'Out of date');
     } else {
       setBiomarkerFreshness('current', 'Current');
       setBiomarkerStatus(
@@ -2203,7 +2255,7 @@
       renderBiomarkerUnavailable(
         message || 'The prior biomarker snapshot is empty.',
         'stale',
-        'Stale snapshot',
+        'Out of date',
         true,
       );
       return;
@@ -2216,7 +2268,7 @@
       options.ownerPhiEpoch ?? phiEpoch,
     );
     if (!renderBiomarkerProjection(biomarkerResponseOwner)) return;
-    setBiomarkerFreshness('stale', 'Stale snapshot');
+    setBiomarkerFreshness('stale', 'Out of date');
     setBiomarkerStatus(
       message || 'Offline snapshot · read-only. Reload before relying on it.',
       'stale',
@@ -2278,7 +2330,7 @@
       const data = await readJsonResponse(response, requestIsCurrent);
       if (!requestIsCurrent()) return null;
       if (!biomarkerProjectionPayloadIsValid(data)) {
-        const invalid = new Error('Biomarker history could not be verified safely.');
+        const invalid = new Error('Biomarker history could not be loaded safely.');
         invalid.status = 422;
         invalid.data = { code: 'biomarker_projection_invalid_response' };
         throw invalid;
@@ -2635,7 +2687,14 @@
 
   function imagingScalar(value) {
     if (value == null) return 'Not recorded';
-    return value === '' ? 'Empty string recorded' : String(value);
+    return value === '' ? 'Recorded as blank' : String(value);
+  }
+
+  // Dates go through the shared formatter so a stored 2026-08-14 never reaches
+  // the screen as written while the rest of the record shows 14.8.2026.
+  function imagingDate(value) {
+    if (value == null) return 'Not recorded';
+    return value === '' ? 'Recorded as blank' : fmtDate(String(value));
   }
 
   function setImagingFreshness(state, text) {
@@ -2667,7 +2726,7 @@
       authority = date.value == null ? 'Study date not recorded' : 'Date authority unknown';
     }
     return {
-      value: imagingScalar(date.value),
+      value: imagingDate(date.value),
       context: `${authority} · ${precisionLabel(date.precision)}`,
     };
   }
@@ -2707,7 +2766,7 @@
       'p',
       '',
       `Source document date (not used for study chronology): ${
-        imagingScalar(record.date.source_document_date)
+        imagingDate(record.date.source_document_date)
       } · ${precisionLabel(record.date.source_document_date_precision)}`,
     );
     const actions = imagingElement('div', 'imaging-source-actions');
@@ -2827,7 +2886,7 @@
     const status = document.getElementById('imaging-selection-status');
     if (status) {
       if (!current && imagingProjection) {
-        status.textContent = 'Stale snapshot · selection and comparison changes are read-only until imaging reloads.';
+        status.textContent = 'Out of date · refresh imaging before changing the selection or comparison.';
       } else if (imagingProjectionState === 'empty') {
         status.textContent = 'No imaging records are available to select or compare.';
       } else if (selected.size === 2) {
@@ -2981,7 +3040,7 @@
       }
     }
     if (imagingProjectionState === 'stale') {
-      setImagingFreshness('stale', 'Stale snapshot');
+      setImagingFreshness('stale', 'Out of date');
     } else if (imagingProjection.records.length) {
       imagingProjectionState = 'current';
       setImagingFreshness('current', 'Current');
@@ -3066,9 +3125,9 @@
       imagingProjection,
       options.ownerPhiEpoch ?? phiEpoch,
     );
-    setImagingFreshness('stale', 'Stale snapshot');
+    setImagingFreshness('stale', 'Out of date');
     setImagingStatus(
-      message || 'Stale snapshot · read-only until imaging reloads.',
+      message || 'Out of date · refresh imaging before making changes.',
       'stale',
       true,
     );
@@ -3156,7 +3215,7 @@
       const data = await readJsonResponse(response, () => false);
       if (!requestIsCurrent()) return null;
       if (!imagingProjectionPayloadIsValid(data)) {
-        const invalid = new Error('Imaging history could not be verified safely.');
+        const invalid = new Error('Imaging history could not be loaded safely.');
         invalid.status = 422;
         invalid.data = { code: 'imaging_projection_invalid_response' };
         throw invalid;
@@ -3233,12 +3292,12 @@
         state: corrupt ? 'corrupt' : 'error',
         statusLabel: corrupt ? 'Record unavailable' : 'Load failed',
         message: corrupt
-          ? 'Imaging history is unavailable because the authoritative response could not be verified safely.'
+          ? 'Imaging history is unavailable because it could not be loaded safely.'
           : 'Imaging history could not be loaded. No prior imaging facts remain in this view.',
       });
       const safeError = new Error(
         corrupt
-          ? 'Imaging history could not be verified safely.'
+          ? 'Imaging history could not be loaded safely.'
           : 'Imaging history could not be loaded.',
       );
       safeError.status = error?.status;
@@ -3745,7 +3804,7 @@
       {
         label: 'Latest research run',
         value: research?.completed_at
-          ? `${relativeTime(research.completed_at)} · ${titleCaseEnum(research.trigger, 'Research update')}`
+          ? `${relativeTime(research.completed_at)} · ${enumLabel(research.trigger, 'Research update')}`
           : 'No research-run time is available.',
         action: 'research',
       },
@@ -5503,7 +5562,14 @@
 
   function symptomScalar(value) {
     if (value == null) return 'Not recorded';
-    return value === '' ? 'Empty string recorded' : String(value);
+    return value === '' ? 'Recorded as blank' : String(value);
+  }
+
+  // Dates go through the shared formatter so a stored 2026-08-14 never reaches
+  // the screen as written while the rest of the record shows 14.8.2026.
+  function symptomDate(value) {
+    if (value == null) return 'Not recorded';
+    return value === '' ? 'Recorded as blank' : fmtDate(String(value));
   }
 
   function symptomDatePresentation(date, label) {
@@ -5513,7 +5579,7 @@
       legacy_unknown: 'Older record - date context was not retained',
       unknown: `${label} type not recorded`,
     }[date.kind] || `${label} type not recorded`;
-    return `${symptomScalar(date.value)} · ${precisionLabel(date.precision)} · ${kind}`;
+    return `${symptomDate(date.value)} · ${precisionLabel(date.precision)} · ${kind}`;
   }
 
   function symptomSeverityPresentation(episode) {
@@ -5627,7 +5693,7 @@
         symptomElement(
           'span',
           '',
-          `${titleCaseEnum(episode.follow_up.status)} · ${symptomScalar(episode.follow_up.owner)} · due ${symptomScalar(episode.follow_up.due_date)}`,
+          `${enumLabel(episode.follow_up.status)} · ${symptomScalar(episode.follow_up.owner)} · due ${symptomDate(episode.follow_up.due_date)}`,
         ),
       );
       card.append(followUp);
@@ -5681,7 +5747,7 @@
         'p',
         '',
         `Source document date (not symptom chronology): ${
-          symptomScalar(observation.date.source_document_date)
+          symptomDate(observation.date.source_document_date)
         } · ${precisionLabel(observation.date.source_document_date_precision)}`,
       ),
     );
@@ -5828,9 +5894,9 @@
       if (node) node.textContent = String(count);
     });
     if (symptomProjectionState === 'stale') {
-      setSymptomFreshness('stale', 'Stale snapshot');
+      setSymptomFreshness('stale', 'Out of date');
       setSymptomStatus(
-        'Stale snapshot · read-only until the authoritative symptom record reloads.',
+        'Out of date · refresh symptoms before making changes.',
         'stale',
         true,
       );
@@ -6038,7 +6104,7 @@
     );
     renderSymptomProjection(symptomResponseOwner);
     setSymptomStatus(
-      message || 'Stale snapshot · read-only until the authoritative symptom record reloads.',
+      message || 'Out of date · refresh symptoms before making changes.',
       'stale',
       true,
     );
@@ -6145,7 +6211,7 @@
       const data = await readJsonResponse(response, () => false);
       if (!requestIsCurrent()) return null;
       if (!symptomProjectionPayloadIsValid(data)) {
-        const invalid = new Error('Symptom records could not be verified safely.');
+        const invalid = new Error('Symptom records could not be loaded safely.');
         invalid.status = 422;
         throw invalid;
       }
@@ -6216,12 +6282,12 @@
         state: corrupt ? 'corrupt' : 'error',
         statusLabel: corrupt ? 'Record unavailable' : 'Load failed',
         message: corrupt
-          ? 'Symptom records are unavailable because the authoritative response could not be verified safely.'
+          ? 'Symptom records are unavailable because they could not be loaded safely.'
           : 'Symptom records could not be loaded. No prior symptom facts remain in this view.',
       });
       const safeError = new Error(
         corrupt
-          ? 'Symptom records could not be verified safely.'
+          ? 'Symptom records could not be loaded safely.'
           : 'Symptom records could not be loaded.',
       );
       safeError.status = error?.status;
@@ -6803,10 +6869,10 @@
       const editResolved = document.getElementById('symptom-edit-resolved-date')?.value || '';
       if (!text) throw new Error('Enter the symptom description.');
       if (!symptomDateInputIsValid(onset)) {
-        throw new Error('Use YYYY, YYYY-MM, or YYYY-MM-DD for the onset date.');
+        throw new Error('Enter the onset date as 2026, 2026-08 or 2026-08-14.');
       }
       if (!symptomDateInputIsValid(editResolved)) {
-        throw new Error('Use YYYY, YYYY-MM, or YYYY-MM-DD for the resolution date.');
+        throw new Error('Enter the resolution date as 2026, 2026-08 or 2026-08-14.');
       }
       const body = symptomDetailsBody();
       const creating = symptomDialogMode === 'add';
@@ -6842,7 +6908,7 @@
         throw new Error('Confirm that this episode can be resolved.');
       }
       if (!symptomDateInputIsValid(date)) {
-        throw new Error('Use YYYY, YYYY-MM, or YYYY-MM-DD for the resolution date.');
+        throw new Error('Enter the resolution date as 2026, 2026-08 or 2026-08-14.');
       }
       const body = {
         ...symptomMutationMeta(),
@@ -6980,7 +7046,7 @@
       clearSymptomProjection({
         state: 'corrupt',
         statusLabel: 'Record unavailable',
-        message: 'Symptom records were cleared because a mutation response could not be verified safely.',
+        message: 'Symptom records were cleared because the reply to your change could not be loaded safely.',
       });
       return false;
     }
@@ -7462,12 +7528,13 @@
       return;
     }
 
-    // Status pill in header
+    // Status pill in header. The wording keeps this as the generated assessment's
+    // own language: NET/Care does not decide progression, stability or response.
     const statusLabels = {
-      stable: 'STABLE', responding: 'RESPONDING',
-      progressing: 'PROGRESSING', insufficient_data: 'DATA PENDING'
+      stable: 'Assessment: stable', responding: 'Assessment: responding',
+      progressing: 'Assessment: progression', insufficient_data: 'Assessment pending'
     };
-    inline.innerHTML = `<span class="s-pill status-${safeClassToken(d.overall_status, 'insufficient_data')}">${escHtml(statusLabels[d.overall_status] || d.overall_status || 'DATA PENDING')}</span>`;
+    inline.innerHTML = `<span class="s-pill status-${safeClassToken(d.overall_status, 'insufficient_data')}">${escHtml(statusLabels[d.overall_status] || 'Assessment pending')}</span>`;
 
     // Updated timestamp
     // Revision fields are authoritative; dates support profiles created before revisions.
@@ -8169,7 +8236,7 @@
         </div>
         <section class="research-events-section"><h3>Your recorded events</h3>
           ${consideration.events.length ? `<ol class="research-history-list">${consideration.events.map(event => `<li>
-            <div class="research-history-heading"><strong>${escHtml(RESEARCH_EVENT_LABELS[event.event_type])}</strong><span>${escHtml(event.occurred_on === null ? 'No event date entered' : event.occurred_on)}</span></div>
+            <div class="research-history-heading"><strong>${escHtml(RESEARCH_EVENT_LABELS[event.event_type])}</strong><span>${escHtml(event.occurred_on === null ? 'No event date entered' : fmtDate(event.occurred_on))}</span></div>
             <p class="research-attribution">${escHtml(caregiverProvenancePresentation(event.provenance.label))}</p>
             <div class="research-event-note">${researchValueMarkup(event.note)}</div>
             <dl class="research-event-meta"><div><dt>Who</dt><dd>${researchValueMarkup(event.who)}</dd></div><div><dt>Context</dt><dd>${researchValueMarkup(event.context)}</dd></div><div><dt>Recorded</dt><dd>${researchValueMarkup(event.recorded_at)}</dd></div></dl>
@@ -8322,7 +8389,7 @@
       researchRequestController = null;
       researchLoadEpoch += 1;
     }
-    setResearchStatus(message || 'Research is read-only until the authoritative workspace reloads.', 'stale');
+    setResearchStatus(message || 'Refresh research before making changes.', 'stale');
     document.getElementById('research-retry').hidden = false;
     document.getElementById('research-retry-message').textContent = message || 'Research needs a fresh authoritative workspace.';
     document.getElementById('today-research-retry-refresh').hidden = false;
@@ -8366,7 +8433,7 @@
     closeResearchDialog(false);
     relocateResearchFocus();
     setResearchStatus(
-      options.message || 'Research authority could not be verified safely. No prior research content remains in this view.',
+      options.message || 'Research could not be loaded safely. Nothing from the earlier view is still shown.',
       'error',
     );
     const retry = options.retry !== false;
@@ -8461,7 +8528,7 @@
         clearResearchProjection({
           state: 'error',
           message: error?.status === 422
-            ? 'Research authority could not be verified safely. The research workspace was cleared.'
+            ? 'Research could not be loaded safely. The research view was cleared.'
             : 'Research could not be loaded. The research workspace was cleared.',
           retry: true,
         });
@@ -8904,7 +8971,7 @@
     pendingResearchCompletion = null;
     researchDraft = null;
     closeResearchDialog();
-    setResearchStatus('Saved and verified against the complete authoritative research workspace.', 'current');
+    setResearchStatus('Saved. Research has been refreshed.', 'current');
     return true;
   }
 
@@ -9729,17 +9796,18 @@
   function artifactStateMarkup(task) {
     const artifact = normalizedTaskArtifact(task);
     const noun = artifact.kind === 'result' ? 'result' : 'report';
+    const Noun = artifact.kind === 'result' ? 'Result' : 'Report';
     const copy = {
       expired: {
-        title: `${titleCaseEnum(noun)} expired`,
+        title: `${Noun} expired`,
         detail: `The ${noun} passed its retention period. The activity record remains, but the generated content is no longer retained.`,
       },
       not_retained: {
-        title: `${titleCaseEnum(noun)} not retained`,
+        title: `${Noun} not retained`,
         detail: `The ${noun} is no longer retained under the configured storage limit.`,
       },
       unavailable: {
-        title: `${titleCaseEnum(noun)} unavailable`,
+        title: `${Noun} unavailable`,
         detail: `The saved ${noun} could not be read. This does not mean it is still stored elsewhere.`,
       },
       legacy_unknown: {
@@ -10588,7 +10656,7 @@
     const visit = recap.visit || {};
     const detailRows = [
       ['Title', visit.title],
-      ['Date', visit.date],
+      ['Date', visit.date ? fmtDate(visit.date) : visit.date],
       ['Time', visit.time],
       ['Clinician', visit.clinician],
       ['Location', visit.location],
@@ -10626,7 +10694,7 @@
         `Lifecycle: ${recapPlainText(String(item.status).replaceAll('_', ' '))}`,
       ];
       if (item.owner) result.push(`Owner: ${recapPlainText(item.owner)}`);
-      if (item.due_date) result.push(`Due date: ${recapPlainText(item.due_date)}`);
+      if (item.due_date) result.push(`Due date: ${recapPlainText(fmtDate(item.due_date))}`);
       if (item.outcome) {
         result.push(`Outcome: ${recapPlainText(item.outcome.text)}`);
         result.push(`Outcome source: ${recapPlainText(caregiverProvenancePresentation(item.outcome.provenance_label))}`);
@@ -13630,9 +13698,9 @@
     chatHistory = [];
     const msgs = document.getElementById('chat-messages');
     msgs.innerHTML = `<div style="font-size:12px;color:var(--text2);text-align:center;padding:20px 0">
-      Ask anything about the patient's data, research findings, or treatment options.
+      Ask about the patient record or the research saved here. This is not medical advice.
       <div style="margin-top:12px;display:flex;flex-direction:column;gap:6px">
-        <button class="chat-suggestion" onclick="sendSuggestion(this)">What are the most urgent actions right now?</button>
+        <button class="chat-suggestion" onclick="sendSuggestion(this)">What follow-ups are still open?</button>
         <button class="chat-suggestion" onclick="sendSuggestion(this)">Summarise the biomarker trends over time</button>
         <button class="chat-suggestion" onclick="sendSuggestion(this)">Why is PRRT still being considered given the renal concerns?</button>
         <button class="chat-suggestion" onclick="sendSuggestion(this)">What do the tracked trials have in common?</button>
@@ -13880,11 +13948,11 @@
     past: 'Past record',
   };
   const TREATMENT_TERMINAL_LABELS = {
-    ended: 'Ended after it had started',
-    not_started: 'Did not start',
-    cancelled: 'Plan cancelled before starting',
-    other: 'Other recorded outcome',
-    legacy_unspecified: 'Ending detail not recorded',
+    ended: 'It started and then stopped',
+    not_started: 'It never started',
+    cancelled: 'The plan was cancelled before it started',
+    other: 'Something else',
+    legacy_unspecified: 'How it ended was not recorded',
   };
   const TREATMENT_RESTART_REASONS = {
     course_not_terminal: 'This record is not past.',
@@ -14752,7 +14820,7 @@
   }
 
   function treatmentDatePresentation(value, course, prefix) {
-    return `${value === null ? 'Not recorded' : value} · ${precisionLabel(course[`${prefix}_date_precision`])} · ${
+    return `${value === null ? 'Not recorded' : fmtDate(String(value))} · ${precisionLabel(course[`${prefix}_date_precision`])} · ${
       course[`${prefix}_date_kind`] === 'caregiver_entered'
         ? 'You entered this date'
         : 'Date source not recorded'
@@ -14800,11 +14868,11 @@
       if (course.status === 'past') {
         treatmentAppendFact(
           facts,
-          'Recorded terminal outcome',
+          'How it ended',
           { value: TREATMENT_TERMINAL_LABELS[course.terminal_qualifier] },
           'value',
         );
-        treatmentAppendFact(facts, 'Other recorded detail', course, 'terminal_detail');
+        treatmentAppendFact(facts, 'More detail about how it ended', course, 'terminal_detail');
       }
       if (course.previous_course_id !== null) {
         treatmentAppendFact(
@@ -14828,7 +14896,7 @@
         const button = treatmentElement(
           'button',
           'button secondary',
-          transition.status === 'current' ? 'Record as current' : 'Record terminal outcome',
+          transition.status === 'current' ? 'Record as current' : 'Record how it ended',
         );
         button.type = 'button';
         button.disabled = !editable;
@@ -15106,13 +15174,15 @@
         const outcome = treatmentElement('article', 'treatment-outcome');
         outcome.append(
           treatmentElement('p', 'treatment-confirmation-label', RECORD_SOURCE_COPY.clinician),
-          treatmentElement('strong', '', titleCaseEnum(confirmation.outcome)),
+          treatmentElement('strong', '', enumLabel(confirmation.outcome)),
         );
         const facts = treatmentElement('dl', 'treatment-facts');
         treatmentAppendFact(facts, 'Caregiver note', confirmation, 'note');
         treatmentAppendFact(facts, 'Clinician attribution', confirmation, 'clinician_text');
         treatmentAppendFact(facts, 'Context', confirmation, 'context_text');
-        treatmentAppendFact(facts, 'Date', confirmation, 'date');
+        treatmentAppendFact(facts, 'Date', confirmation, 'date', value => (
+          value == null ? value : fmtDate(String(value))
+        ));
         outcome.append(facts);
         outcomes.append(outcome);
       });
@@ -15123,7 +15193,7 @@
     if (discrepancy.follow_up) {
       followUp.append(
         treatmentElement('p', '', discrepancy.follow_up.text),
-        treatmentElement('p', '', `${titleCaseEnum(discrepancy.follow_up.status)} · owner ${discrepancy.follow_up.owner ?? 'Not recorded'} · due ${discrepancy.follow_up.due_date ?? 'Not recorded'}`),
+        treatmentElement('p', '', `${enumLabel(discrepancy.follow_up.status)} · owner ${discrepancy.follow_up.owner ?? 'Not recorded'} · due ${discrepancy.follow_up.due_date == null ? 'Not recorded' : fmtDate(discrepancy.follow_up.due_date)}`),
       );
     } else {
       followUp.append(treatmentElement('p', 'treatment-missing', 'No follow-up linked.'));
@@ -15146,7 +15216,7 @@
       actions.append(reopen);
     }
     if (discrepancy.eligibility.recur) {
-      const recur = treatmentElement('button', 'button secondary', 'Record recurrence');
+      const recur = treatmentElement('button', 'button secondary', 'Record this difference again');
       recur.type = 'button';
       recur.disabled = !mutable;
       recur.addEventListener('click', () => openTreatmentDiscrepancyDialog('recur', recur, discrepancy.id));
@@ -15562,7 +15632,7 @@
     );
     renderTreatmentProjection(treatmentResponseOwner);
     setTreatmentStatus(
-      message || 'Stale snapshot · read-only until the authoritative treatment record reloads.',
+      message || 'Out of date · refresh treatments before making changes.',
       'stale',
       true,
     );
@@ -15712,7 +15782,7 @@
       const data = await readJsonResponse(response, () => false);
       if (!current()) return null;
       if (!treatmentProjectionPayloadIsValid(data)) {
-        const invalid = new Error('Treatment information could not be verified safely.');
+        const invalid = new Error('Treatment information could not be loaded safely.');
         invalid.status = 422;
         throw invalid;
       }
@@ -15805,7 +15875,7 @@
       clearTreatmentProjection({
         state: 'corrupt',
         statusLabel: 'Record unavailable',
-        message: 'Treatment information was cleared because the authoritative projection could not be verified safely.',
+        message: 'Treatment information was cleared because it could not be loaded safely.',
         retry: true,
       });
       reportLoadError('treatment-reconciliation', error);
@@ -15987,7 +16057,7 @@
       input.name = field;
       input.maxLength = 10;
       input.inputMode = 'numeric';
-      input.placeholder = 'YYYY, YYYY-MM, or YYYY-MM-DD';
+      input.placeholder = '2026, 2026-08 or 2026-08-14';
       input.value = Object.prototype.hasOwnProperty.call(draft, field)
         ? draft[field]
         : (course?.[field] ?? '');
@@ -15995,7 +16065,7 @@
       grid.append(treatmentFieldLabel(
         `${prefix[0].toUpperCase()}${prefix.slice(1)} date`,
         input,
-        'Exact partial date; no date is inferred or defaulted.',
+        'Enter as much of the date as you know. Nothing is filled in for you.',
       ));
     }
     fragment.append(grid);
@@ -16069,12 +16139,12 @@
     if (options.includeStatus && !options.restart) {
       const terminal = treatmentElement('fieldset', 'treatment-terminal-fieldset');
       terminal.id = 'treatment-terminal-fields';
-      terminal.append(treatmentElement('legend', '', 'Neutral terminal outcome'));
+      terminal.append(treatmentElement('legend', '', 'How did this treatment end?'));
       const qualifier = treatmentElement('select');
       qualifier.id = 'treatment-field-terminal-qualifier';
       qualifier.name = 'terminal_qualifier';
       qualifier.dataset.caregiverField = 'true';
-      const blank = treatmentElement('option', '', 'Choose an outcome');
+      const blank = treatmentElement('option', '', 'Choose how it ended');
       blank.value = '';
       qualifier.append(blank);
       ['ended', 'not_started', 'cancelled', 'other'].forEach(value => {
@@ -16091,12 +16161,12 @@
         }
         updateTreatmentFormValidity();
       });
-      terminal.append(treatmentFieldLabel('Recorded terminal outcome', qualifier));
+      terminal.append(treatmentFieldLabel('How it ended', qualifier));
       const detail = treatmentTextControl('terminal_detail', '');
       const detailWrap = treatmentFieldLabel(
-        'Other recorded outcome detail',
+        'More detail about how it ended',
         detail,
-        'Required only for Other recorded outcome; the wording is not interpreted.',
+        'Only needed if you chose Something else. Write it however you like.',
       );
       detailWrap.id = 'treatment-terminal-detail-wrap';
       detailWrap.hidden = true;
@@ -16259,7 +16329,7 @@
     const date = treatmentElement('input');
     date.id = 'treatment-field-resolution-date';
     date.maxLength = 10;
-    date.placeholder = 'YYYY, YYYY-MM, or YYYY-MM-DD';
+    date.placeholder = '2026, 2026-08 or 2026-08-14';
     date.dataset.caregiverField = 'true';
     fragment.append(
       treatmentFieldLabel('Outcome', outcome),
@@ -16363,7 +16433,7 @@
     const due = treatmentElement('input');
     due.id = 'treatment-follow-up-due';
     due.maxLength = 10;
-    due.placeholder = 'YYYY, YYYY-MM, or YYYY-MM-DD';
+    due.placeholder = '2026, 2026-08 or 2026-08-14';
     due.dataset.caregiverField = 'true';
     inlinePanel.append(
       treatmentFieldLabel('Manual follow-up text', text),
@@ -16513,7 +16583,7 @@
       body.append(treatmentCourseForm(null, { includeStatus: true, restart: true }));
     } else if (mode === 'transition') {
       title.textContent = selection.targetStatus === 'past'
-        ? 'Record terminal outcome'
+        ? 'Record how it ended'
         : 'Record as current';
       submit.textContent = 'Save status change';
       body.append(treatmentElement(
@@ -16525,7 +16595,7 @@
         const qualifier = treatmentElement('select');
         qualifier.id = 'treatment-field-terminal-qualifier';
         qualifier.dataset.caregiverField = 'true';
-        const blank = treatmentElement('option', '', 'Choose an outcome');
+        const blank = treatmentElement('option', '', 'Choose how it ended');
         blank.value = '';
         qualifier.append(blank);
         selection.qualifiers.forEach(value => {
@@ -16540,9 +16610,9 @@
           if (qualifier.value !== 'other' && detailInput) detailInput.value = '';
           updateTreatmentFormValidity();
         });
-        body.append(treatmentFieldLabel('Recorded terminal outcome', qualifier));
+        body.append(treatmentFieldLabel('How it ended', qualifier));
         const detail = treatmentTextControl('terminal_detail', '');
-        const wrap = treatmentFieldLabel('Other recorded outcome detail', detail);
+        const wrap = treatmentFieldLabel('More detail about how it ended', detail);
         wrap.id = 'treatment-terminal-detail-wrap';
         wrap.hidden = true;
         body.append(wrap);
@@ -16847,7 +16917,7 @@
     for (const prefix of ['start', 'stop', 'planned']) {
       const value = body[`${prefix}_date`] || '';
       if (!treatmentDateInputIsValid(value)) {
-        throw new Error(`Use YYYY, YYYY-MM, or YYYY-MM-DD for the ${prefix} date.`);
+        throw new Error(`Enter the ${prefix} date as 2026, 2026-08 or 2026-08-14.`);
       }
     }
     return body;
@@ -16938,7 +17008,7 @@
       if (treatmentSelection.qualifiers.length) {
         const qualifier = document.getElementById('treatment-field-terminal-qualifier')?.value;
         if (!treatmentSelection.qualifiers.includes(qualifier)) {
-          throw new Error('Choose one server-authorized terminal outcome.');
+          throw new Error('Choose how the treatment ended.');
         }
         body.terminal_qualifier = qualifier;
         body.terminal_detail = qualifier === 'other'
@@ -17068,7 +17138,7 @@
           const dueDate = document.getElementById('treatment-follow-up-due')?.value || null;
           if (!text.trim()) throw new Error('Enter manual follow-up text.');
           if (dueDate !== null && !treatmentDateInputIsValid(dueDate)) {
-            throw new Error('Use YYYY, YYYY-MM, or YYYY-MM-DD for the follow-up due date.');
+            throw new Error('Enter the follow-up due date as 2026, 2026-08 or 2026-08-14.');
           }
           body.follow_up = {
             text,
@@ -17253,7 +17323,7 @@
     clearTreatmentRetry();
     closeTreatmentDialog(false, true, false);
     releaseTreatmentMutation(completion.intent);
-    setTreatmentStatus('Treatment reconciliation saved and verified.', 'current', false);
+    setTreatmentStatus('Treatment changes saved.', 'current', false);
     reportLoadSuccess('treatment-mutation');
     const target = document.getElementById(
       activeView === 'patient' ? 'treatments-heading' : 'today-treatment-heading',
@@ -17288,7 +17358,7 @@
       clearTreatmentProjection({
         state: 'corrupt',
         statusLabel: 'Record unavailable',
-        message: 'Treatment information was cleared because a mutation response could not be verified safely.',
+        message: 'Treatment information was cleared because the reply to your change could not be loaded safely.',
         retry: true,
       });
       return false;

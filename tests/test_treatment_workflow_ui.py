@@ -1807,13 +1807,16 @@ def test_live_add_and_server_authorized_transition_use_full_reload():
             new_card = page.locator("#patient-treatment-list .treatment-course-card").filter(
                 has_text="Exact new wording"
             )
-            new_card.get_by_role("button", name="Record terminal outcome").click()
+            # Wave 1: the recorded-outcome vocabulary no longer uses "terminal",
+            # which reads as a prognosis in an oncology app. The stored enum
+            # values (not_started, cancelled, other) are unchanged.
+            new_card.get_by_role("button", name="Record how it ended").click()
             options = page.locator("#treatment-field-terminal-qualifier option").all_inner_texts()
             assert options == [
-                "Choose an outcome",
-                "Did not start",
-                "Plan cancelled before starting",
-                "Other recorded outcome",
+                "Choose how it ended",
+                "It never started",
+                "The plan was cancelled before it started",
+                "Something else",
             ]
             page.locator("#treatment-field-terminal-qualifier").select_option("not_started")
             page.locator("#treatment-submit-button").click()
@@ -1821,7 +1824,7 @@ def test_live_add_and_server_authorized_transition_use_full_reload():
             new_card = page.locator("#patient-treatment-list .treatment-course-card").filter(
                 has_text="Exact new wording"
             )
-            assert "Did not start" in new_card.inner_text()
+            assert "It never started" in new_card.inner_text()
             mutations = [
                 item
                 for item in state.requests
@@ -1891,10 +1894,10 @@ def test_live_server_authority_discrepancies_restart_outcomes_and_followups():
             legacy = page.locator(".treatment-course-card").filter(
                 has_text="Earlier terminal authority"
             )
-            assert "Ending detail not recorded" in legacy.inner_text()
+            assert "How it ended was not recorded" in legacy.inner_text()
             assert legacy.get_by_role("button", name="Create linked new record").count() == 0
             no_transition = page.locator(".treatment-course-card").filter(has_text="Current three")
-            assert no_transition.get_by_role("button", name="Record terminal outcome").count() == 0
+            assert no_transition.get_by_role("button", name="Record how it ended").count() == 0
 
             page.locator("#treatment-tab-differences").click()
             cards = page.locator(".treatment-discrepancy-card")
@@ -1913,7 +1916,7 @@ def test_live_server_authority_discrepancies_restart_outcomes_and_followups():
             resolved = cards.nth(1)
             assert "You recorded this from the clinician" in resolved.inner_text()
             assert resolved.get_by_role("button", name="Reopen difference").count() == 1
-            assert resolved.get_by_role("button", name="Record recurrence").count() == 1
+            assert resolved.get_by_role("button", name="Record this difference again").count() == 1
             assert resolved.get_by_role("button", name="Record treating-team outcome").count() == 0
 
             incomplete = cards.nth(2)
@@ -1962,7 +1965,7 @@ def test_live_server_authority_discrepancies_restart_outcomes_and_followups():
             }
             page.evaluate("() => closeTreatmentDialog(false, true, false)")
 
-            resolved.get_by_role("button", name="Record recurrence").click()
+            resolved.get_by_role("button", name="Record this difference again").click()
             page.locator("#treatment-field-category").select_option("other")
             page.locator("#treatment-field-comparison").fill("Exact recurrence wording")
             recurrence_body = page.evaluate("() => treatmentBodyForDialog().body")

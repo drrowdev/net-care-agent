@@ -370,6 +370,9 @@ function evictClientPhi(error) {
             _function_source("patientRequestIsCurrent", "requestClinicalConvergence"),
             _function_source("authorizePatientResponse", "setAppointmentMessage"),
             _executable_function_source("readJsonResponse", "readJobSubmission"),
+            # Wave 1: imagingDate routes stored dates through the shared Finnish
+            # formatter, so the sandbox needs the real fmtDate source.
+            _function_source("fmtDate", "parseTimestamp"),
             _imaging_function_source(),
             """
 function response(status, data) {
@@ -506,7 +509,8 @@ console.log(JSON.stringify({
     }
     assert result["rendered"] is True
     assert result["rowCount"] == result["checkboxCount"] == 4
-    assert result["tableText"].index("2026-04") < result["tableText"].index("2026-03-15")
+    # Wave 1: stored dates now render through the shared Finnish formatter.
+    assert result["tableText"].index("4/2026") < result["tableText"].index("15.3.2026")
     assert result["tableText"].count("Target liver lesion increased") == 2
     assert "Older record - date context was not retained" in result["tableText"]
     assert "Source document date (not used for study chronology)" in result["tableText"]
@@ -786,7 +790,7 @@ globalThis.fetch = async () => {
     assert result["workflowChanged"]["accepted"] is True
     assert result["workflowChanged"]["state"] == "stale"
     assert result["workflowChanged"]["disabled"] is True
-    assert "workflow changed" in result["workflowChanged"]["status"]
+    assert "Your saved work changed" in result["workflowChanged"]["status"]
 
 
 def test_actual_empty_imaging_projection_is_current_not_stale():
@@ -933,7 +937,7 @@ def test_live_imaging_is_exact_semantic_responsive_and_overflow_safe():
                 rows = page.locator("#imaging-table-body tr")
                 assert rows.count() == 4
                 dates = rows.locator("td:nth-child(2) > strong").all_inner_texts()
-                assert dates == ["2026-04", "2026-03-15", "Not recorded", "2026-03-15"]
+                assert dates == ["4/2026", "15.3.2026", "Not recorded", "15.3.2026"]
                 table_text = page.locator("#imaging-table-body").inner_text()
                 assert table_text.count("Target liver lesion increased") == 2
                 assert "Older record - date context was not retained" in table_text
@@ -1061,7 +1065,7 @@ def test_live_imaging_transport_recovery_hard_boundary_and_hidden_phi_scrub():
             )
             page.evaluate("() => loadImagingSeries({ force: true })")
             page.wait_for_function("() => imagingProjectionState === 'stale'")
-            assert "Stale snapshot" in page.locator("#imaging-freshness").inner_text()
+            assert "Out of date" in page.locator("#imaging-freshness").inner_text()
             assert (
                 "Stored partial-date wording"
                 in page.locator("#imaging-comparison-grid").inner_text()

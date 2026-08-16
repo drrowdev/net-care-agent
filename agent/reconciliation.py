@@ -36,7 +36,7 @@ class TreatmentLinkConflict(ImportConflict):
 
 
 class TreatmentProjectionRegression(ImportConflict):
-    """This receipt edit would leave the treatment workspace unreadable."""
+    """This receipt edit would make the treatment record impossible to show."""
 
 
 _EDITABLE_FIELDS = {
@@ -1069,8 +1069,8 @@ def _restore_on_projection_regression(profile: dict, snapshot: dict | None) -> N
     profile.clear()
     profile.update(snapshot)
     raise TreatmentProjectionRegression(
-        "This receipt edit would leave the treatment workspace unreadable, so nothing was "
-        "changed. Open Treatments, resolve the affected treatment course, then try again."
+        "This edit would make the treatment record impossible to show safely, so nothing "
+        "was changed. Open Treatments, fix the affected treatment entry, then try again."
     )
 
 

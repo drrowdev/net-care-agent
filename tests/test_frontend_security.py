@@ -1410,7 +1410,7 @@ def test_routine_record_renderers_do_not_print_internal_ids_or_raw_provenance():
     assert "observation.provenance.status}" not in symptom
     assert "Linked decision: ${recapPlainText(item.decision_id)}" not in recap
     assert "Linked follow-up: ${recapPlainText(item.follow_up_id)}" not in recap
-    assert "View exact wording" in biomarker + imaging + symptom
+    assert "View source text" in biomarker + imaging + symptom
 
 
 def test_open_task_is_revalidated_and_copy_state_cleared():
@@ -1489,7 +1489,7 @@ def test_submitted_task_activation_reserves_and_checks_selection_epoch():
 def test_chat_history_is_bound_to_profile_revision_and_visibly_cleared():
     sync = _function_source("syncChatRevision", "toggleChat")
     assert "chatHistoryRevision" in sync
-    assert "Patient record changed. Prior chat history was cleared" in sync
+    assert "The patient record changed, so the previous chat was cleared" in sync
     sender = APP_JS[APP_JS.index("function sendChat") :]
     assert "history_revision: chatHistoryRevision" in sender
     assert "const authority = authorizePatientResponse(request, data)" in sender
@@ -1891,7 +1891,8 @@ def test_alert_resolution_conflict_offline_and_eviction_fail_closed():
     assert "alertProjectionStale = true" in conflict
     assert "alertLinkSourcesStale = true" in conflict
     assert "pendingAlertResolutionIntent = intent" in performer
-    assert "Retrying the unchanged request" in performer
+    # Wave 3 wording: the retry still re-sends the request already saved.
+    assert "Sending the same details again" in performer
     assert "alertResolutionDrafts = new Map()" in eviction
     assert "pendingAlertResolutionIntent.body = {}" in eviction
     assert "activeAlertResolutionIntent.body = {}" in eviction
@@ -2617,7 +2618,7 @@ def test_claim_evidence_and_decision_support_wording_are_non_definitive():
     assert "PRRT: ELIGIBLE" not in APP_JS
     assert "renderClaimEvidence" in summary
     assert "d.claim_evidence?.claims?.cga_trend_detail" in summary
-    assert "Prior generated assessment is hidden" in summary
+    assert "Previous assessment hidden" in summary
 
 
 def test_generated_prose_is_reformatted_before_escaping_never_after():
@@ -7940,7 +7941,7 @@ def test_generated_action_staleness_redacts_text_token_and_control():
     assert result["revisionless"] is False
     assert result["dataset"] == {}
     assert result["className"] == "action-item unavailable"
-    assert "Generated action unavailable" in result["html"]
+    assert "Recommended step unavailable" in result["html"]
     assert "SECRET" not in result["html"]
     assert "Add to follow-through" not in result["html"]
 

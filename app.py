@@ -147,7 +147,7 @@ _SAFE_JOB_ERRORS = {
     "pdf_text_limit": "PDF could not be processed within safety limits.",
 }
 _INTERRUPTED_GUIDANCE = (
-    "This job was interrupted by a server restart. Re-submit the same request to retry."
+    "This task stopped when the server restarted. Send the same request again to retry."
 )
 _MAX_LINKABLE_APPOINTMENTS = 100
 _MAX_VISIT_QUESTION_REORDER_ITEMS = 200
@@ -277,7 +277,7 @@ def _load_jobs() -> bool:
                 j["finished_at"] = j.get("finished_at") or now_str
                 j["stage"] = "interrupted"
                 j["error_code"] = "job_interrupted"
-                j["error"] = "The job was interrupted by a server restart."
+                j["error"] = "This task stopped when the server restarted."
                 j["retry_guidance"] = _INTERRUPTED_GUIDANCE
                 j["artifact_state"] = "none"
                 needs_save = True
@@ -332,7 +332,7 @@ def _clean_job(job: dict) -> dict:
         clean["error"] = _SAFE_JOB_ERRORS[code]
     elif status == "interrupted":
         clean["error_code"] = "job_interrupted"
-        clean["error"] = "The job was interrupted by a server restart."
+        clean["error"] = "This task stopped when the server restarted."
         clean["retry_guidance"] = _INTERRUPTED_GUIDANCE
     else:
         clean.pop("error_code", None)
@@ -1717,7 +1717,7 @@ def _require_complete_discrepancy_citations(row: dict) -> None:
     authority = row.get("citation_authority")
     if not isinstance(authority, dict) or authority.get("state") != "complete":
         raise _TreatmentConflictError(
-            "This legacy discrepancy does not have two cited authorities and is read-only."
+            "This older difference does not have both of its linked records, so it cannot be changed here."
         )
 
 
@@ -4904,7 +4904,7 @@ def _require_research_authority(profile: dict, projection: dict, data: dict) -> 
     if not isinstance(expected_projection, str) or not expected_projection:
         raise ValueError("expected_projection_token is required.")
     if not hmac.compare_digest(expected_projection, projection["projection_token"]):
-        raise agent.FollowThroughConflict("The research workspace changed. Refresh and try again.")
+        raise agent.FollowThroughConflict("The research list changed. Reload it and try again.")
 
 
 def _research_row(profile: dict, record_id: str, expected_token: object) -> tuple[str, dict]:
@@ -5128,7 +5128,7 @@ def _set_research_status(consideration_id: str, status: str):
         expected = "open" if status == "closed" else "closed"
         if current != expected:
             raise agent.FollowThroughConflict(
-                "The research consideration is not eligible for this lifecycle change."
+                "This research item can no longer be changed that way. Reload the list and try again."
             )
         timestamp = now_stamp()
         consideration["status"] = status
@@ -6321,7 +6321,7 @@ def api_set_treatment_row_disposition(row_id):
             result = _save_workflow_mutation(
                 profile,
                 clinical_change=False,
-                reason="A caregiver treatment workspace preference changed.",
+                reason="A recorded treatment entry was hidden or restored.",
                 event=event,
                 response_factory=lambda: _treatment_row_disposition_response(profile, row_id),
             )

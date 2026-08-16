@@ -62,9 +62,9 @@ TREATMENT_UNLINKED_GENERATED_AUTHORITY_LABEL = (
     "not a treatment record"
 )
 TREATMENT_SAFETY_GUIDANCE = (
-    "NET/Care records what you enter but does not verify treatment details or advise "
-    "starting, stopping, or changing treatment. Confirm treatment decisions with the "
-    "treating team."
+    "NET/Care records what you enter. It does not check whether treatment details are "
+    "correct or give advice about starting, stopping, or changing treatment. Confirm "
+    "treatment decisions with the treating team."
 )
 
 _COURSE_TEXT_LIMITS = {

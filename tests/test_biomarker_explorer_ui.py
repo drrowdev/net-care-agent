@@ -413,7 +413,7 @@ console.log(JSON.stringify({
     assert "2 recorded entries" in result["first"]["table"]
     assert "row-obs-cga-1-0" not in result["first"]["table"]
     assert "evidence-obs-cga-1" not in result["first"]["table"]
-    assert "View exact wording" in result["first"]["table"]
+    assert "View source text" in result["first"]["table"]
     assert "From your document" in result["first"]["table"]
     assert result["first"]["charts"].count("<circle") == 2
     assert "series-cga-isolated" not in result["first"]["charts"]
@@ -422,7 +422,10 @@ console.log(JSON.stringify({
     assert result["first"]["ownerToken"] == projection["projection_token"]
     assert result["second"]["selected"] == "analyte-nse"
     assert str(14) in result["second"]["table"]
-    assert "fewer than two observations" in result["second"]["charts"].lower()
+    assert (
+        "fewer than two results here were recorded in the same way"
+        in result["second"]["charts"].lower()
+    )
     assert result["second"]["selectionEpoch"] == 2
     assert result["second"]["ownerToken"] == projection["analytes"][1]["token"]
     assert result["workflowAdvance"]["accepted"] is True
@@ -738,7 +741,7 @@ def test_live_biomarker_explorer_is_semantic_responsive_and_overflow_safe():
                 assert page.locator("#biomarker-table-body tr").count() == 1
                 assert "NSE" in page.locator("#biomarker-table-caption").inner_text()
                 assert (
-                    "fewer than two observations"
+                    "fewer than two results here were recorded in the same way"
                     in page.locator("#biomarker-chart-region").inner_text().lower()
                 )
 

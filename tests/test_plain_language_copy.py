@@ -17,6 +17,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from tests._copy_scan import html_visible_strings, javascript_string_literals, strip_markup
+
 APP_JS = Path("static/app.js").read_text(encoding="utf-8")
 INDEX_HTML = Path("static/index.html").read_text(encoding="utf-8")
 APP_PY = Path("app.py").read_text(encoding="utf-8")
@@ -270,9 +272,8 @@ def test_label_helpers_are_no_longer_identity_stubs():
 def test_blank_values_are_described_in_words_not_in_database_terms():
     """The three summary scalar helpers stopped speaking in database terms.
 
-    The forensic "exact stored value" displays in the treatment differences and
-    research tabs still distinguish a stored null from a stored empty string on
-    purpose, so they are deliberately left for a later pass.
+    Wave 3 finished the job in the forensic value views as well; see
+    `test_no_forensic_type_names_survive_anywhere`.
     """
     for start, end in [
         ("function biomarkerScalar", "function biomarkerProjectionPayloadIsValid"),
@@ -313,26 +314,88 @@ def test_the_app_never_claims_it_verified_treatment_or_research():
     assert "'Treatment changes saved.'" in APP_JS
 
 
-def test_the_pinned_safety_paragraphs_are_untouched_by_this_wave():
-    """Wave 1 changed no byte of the fixed safety paragraphs.
+def test_the_three_fixed_safety_paragraphs_say_the_same_things_in_plainer_words():
+    """Wave 3 reworded all three. Every promise in them had to survive.
 
-    Rewording these needs their pinning tests and INVARIANTS.md updated in the
-    same commit, so they are deliberately left for a later pass.
+    These were byte-pinned and deliberately deferred by waves 1 and 2. They are
+    reworded here together with `INVARIANTS.md` and their other pinning tests,
+    which is the condition the earlier waves set for touching them. Each
+    assertion below names a promise rather than a phrase, so a future rewrite
+    that quietly narrows one of them fails here.
     """
     from agent.research_disposition import RESEARCH_SAFETY_GUIDANCE
+    from agent.symptom_episodes import SYMPTOM_SAFETY_GUIDANCE
     from agent.treatment_reconciliation import TREATMENT_SAFETY_GUIDANCE
 
     assert TREATMENT_SAFETY_GUIDANCE == (
-        "NET/Care records what you enter but does not verify treatment details or "
-        "advise starting, stopping, or changing treatment. Confirm treatment "
-        "decisions with the treating team."
+        "NET/Care records what you enter. It does not check whether treatment details "
+        "are correct or give advice about starting, stopping, or changing treatment. "
+        "Confirm treatment decisions with the treating team."
     )
     assert RESEARCH_SAFETY_GUIDANCE == (
-        "NET/Care records research you choose to follow but does not determine "
-        "relevance, eligibility, enrollment, or treatment suitability. Confirm "
-        "clinical questions with the treating team and trial details with the "
-        "study site."
+        "NET/Care records the research you choose to follow. It does not decide "
+        "whether research is relevant, whether someone is eligible for or enrolled in "
+        "a study, or whether a treatment is suitable. Confirm clinical questions with "
+        "the treating team and trial details with the study site."
     )
+    assert SYMPTOM_SAFETY_GUIDANCE == (
+        "NET/Care records what you enter. It does not decide how urgent symptoms are "
+        "or monitor them. Contact the treating team about symptoms or concerns. If you "
+        "think this may be a medical emergency, contact local emergency services."
+    )
+
+    # INVARIANTS.md:384 - records, does not verify, does not advise, confirm.
+    assert "records what you enter" in TREATMENT_SAFETY_GUIDANCE
+    assert "does not check whether treatment details are correct" in TREATMENT_SAFETY_GUIDANCE
+    assert (
+        "give advice about starting, stopping, or changing treatment" in TREATMENT_SAFETY_GUIDANCE
+    )
+    assert "Confirm treatment decisions with the treating team." in TREATMENT_SAFETY_GUIDANCE
+
+    # INVARIANTS.md:270-273 - all four disclaimed capabilities are still named.
+    for promise in ["relevant", "eligible", "enrolled", "suitable"]:
+        assert promise in RESEARCH_SAFETY_GUIDANCE, f"research copy dropped: {promise}"
+    assert "does not decide" in RESEARCH_SAFETY_GUIDANCE
+    assert (
+        "Confirm clinical questions with the treating team and trial details with the study site."
+    ) in RESEARCH_SAFETY_GUIDANCE
+
+    # INVARIANTS.md:208-214 - urgency, monitoring, treating team, emergency services.
+    assert "does not decide how urgent symptoms are or monitor them" in SYMPTOM_SAFETY_GUIDANCE
+    assert "Contact the treating team about symptoms or concerns." in SYMPTOM_SAFETY_GUIDANCE
+    assert "contact local emergency services." in SYMPTOM_SAFETY_GUIDANCE
+    # Non-personalized: the fixed copy never names or refers to the patient.
+    for pronoun in [" she ", " her ", " his wife"]:
+        assert pronoun not in SYMPTOM_SAFETY_GUIDANCE
+        assert pronoun not in RESEARCH_SAFETY_GUIDANCE
+        assert pronoun not in TREATMENT_SAFETY_GUIDANCE
+
+    # The client validates the server copy byte for byte, so both must agree.
+    assert f"const TREATMENT_SAFETY_GUIDANCE = '{TREATMENT_SAFETY_GUIDANCE}';" in APP_JS
+    assert f"const RESEARCH_SAFETY_GUIDANCE = '{RESEARCH_SAFETY_GUIDANCE}';" in APP_JS
+    assert SYMPTOM_SAFETY_GUIDANCE in APP_JS.replace("'\n    + '", "")
+
+
+def test_the_old_stiffer_safety_wording_is_gone_from_every_file():
+    """A regression to the old paragraphs must fail loudly, not silently."""
+    retired = [
+        "does not verify treatment details or advise",
+        "does not determine relevance, eligibility, enrollment, or treatment suitability",
+        "does not assess urgency or monitor symptoms",
+    ]
+    for source, name in [
+        (APP_JS, "static/app.js"),
+        (INDEX_HTML, "static/index.html"),
+        (Path("INVARIANTS.md").read_text(encoding="utf-8"), "INVARIANTS.md"),
+        (RESEARCH_PY, "agent/research_disposition.py"),
+        (TREATMENT_PY, "agent/treatment_reconciliation.py"),
+        (
+            Path("agent/symptom_episodes.py").read_text(encoding="utf-8"),
+            "agent/symptom_episodes.py",
+        ),
+    ]:
+        for phrase in retired:
+            assert phrase not in source, f"{name} still carries the old wording: {phrase}"
 
 
 def test_the_caregiver_entered_and_unverified_distinction_survives():
@@ -493,3 +556,370 @@ def test_accessible_names_match_the_visible_button():
     assert "from my workspace" not in APP_JS
     assert "`Show ${row.raw_text} again`" in APP_JS
     assert "`Mark ${row.raw_text} as not useful to me`" in APP_JS
+
+
+# ── wave 3: the medium and low findings, and the deferred stragglers ─────────
+
+
+def _js_copy() -> list[tuple[int, str]]:
+    """Every readable string in `static/app.js`, markup plumbing removed."""
+    return [(line, strip_markup(text)) for line, text in javascript_string_literals(APP_JS)]
+
+
+def _html_copy() -> list[tuple[int, str]]:
+    return html_visible_strings(INDEX_HTML)
+
+
+_CSS_DECLARATION = re.compile(r"[\w-]+\s*:\s*[^;\s][^;]*;")
+_CSS_SELECTOR_CHARS = re.compile(r"[#.\w\s,>:+~\[\]='\"()*-]+")
+_TWO_WORDS = re.compile(r"[A-Za-z]{2,} [A-Za-z]{2,}")
+
+
+def looks_like_a_sentence(text: str) -> bool:
+    """Is this a phrase he reads, rather than a token the code needs?
+
+    `static/app.js` is one file holding copy, CSS selectors, inline styles,
+    element ids, API paths and `typeof` comparisons. The reliable separator is
+    that copy has words with spaces between them. A single token is therefore
+    outside this guard on purpose: `'object'` in a `typeof` check and
+    `'treatment-workspace'` as a class name are not copy, and single-word
+    labels are pinned individually by the per-family tests below instead.
+    """
+    stripped = text.strip()
+    if stripped.startswith("/"):
+        return False
+    if _CSS_DECLARATION.search(stripped):
+        return False
+    # A selector list has spaces but no prose: it is all ids, classes and tags.
+    if ("#" in stripped or stripped.startswith(".")) and _CSS_SELECTOR_CHARS.fullmatch(stripped):
+        return False
+    return bool(_TWO_WORDS.search(stripped))
+
+
+# Two research labels and two treatment labels are wire-integrity values, not
+# copy: the client compares them field for field and never prints them (see
+# static/app.js validateResearchProjection, treatmentLegacyRowIsValid and
+# treatmentUnlinkedGeneratedRowIsValid). Rewording them would be a protocol
+# change with nothing to show for it, so they are named here rather than
+# quietly skipped.
+WIRE_ONLY_LABELS = (
+    "Research discovery provenance",
+    "Caregiver-maintained shortlist and disposition workflow",
+    "Machine-generated compatibility context",
+    "Legacy/generated · not caregiver lifecycle authority",
+    "External registry or bibliographic facts",
+)
+
+# Words that belong to the database or the source tree, never to the screen.
+BANNED_VOCABULARY = (
+    "array",
+    "object",
+    "boolean",
+    "enum",
+    "null",
+    "fed",
+    "working visit",
+    "follow-through task",
+    "provenance",
+    "durable",
+    "superseded",
+    "disposition",
+    "workspace",
+    "snapshot",
+    "endpoint",
+    "read-only",
+    "immutable",
+)
+_BANNED = re.compile(
+    "|".join(rf"\b{re.escape(word)}\b" for word in BANNED_VOCABULARY),
+    re.IGNORECASE,
+)
+
+
+def test_no_developer_vocabulary_survives_in_anything_he_reads():
+    """The words that made the app sound like a database must stay gone.
+
+    This scans real string literals — including multi-line template literals
+    and the accessible names hiding inside them — plus HTML text nodes and the
+    attributes a screen reader speaks. An earlier guard used a single-line
+    regex and missed exactly those places.
+    """
+    offences: list[str] = []
+    for label, entries in [("static/app.js", _js_copy()), ("static/index.html", _html_copy())]:
+        for line, text in entries:
+            if not looks_like_a_sentence(text):
+                continue
+            if any(wire in text for wire in WIRE_ONLY_LABELS):
+                continue
+            match = _BANNED.search(text)
+            if match:
+                offences.append(f"{label}:{line} [{match.group(0)}] {text.strip()[:110]}")
+    assert not offences, "developer vocabulary reached the screen:\n" + "\n".join(offences)
+
+
+def test_the_scanner_would_actually_catch_a_regression():
+    """A guard that cannot fail is not a guard.
+
+    `strip_markup` removes class names and data attributes, which is exactly
+    what could make this test blind, so prove it still sees a real sentence, a
+    banned word inside a multi-line template, and an accessible name that a
+    single-line regex would have walked straight past.
+    """
+    literals = javascript_string_literals(
+        "const a = 'plain copy here';\n"
+        "// 'not copy at all'\n"
+        "const b = /'[a-z]'/;\n"
+        'const c = `<p class="x-object">\n  documents you have fed in\n</p>`;\n'
+        'const d = `<button aria-label="Show exact array">go</button>`;\n'
+        "const e = 'font-size:11px;padding:4px 6px';\n"
+        "const f = `<h3>${t === null ? 'Title is null here' : t}</h3>`;\n"
+        "function g() { return /['\"]/; }\n"
+        "const h = 'workspace in copy here';\n"
+    )
+    texts = [strip_markup(text) for _, text in literals]
+    copy = [text for text in texts if looks_like_a_sentence(text)]
+    assert "plain copy here" in copy
+    # Comments, regex literals and inline styles are not copy.
+    assert not any("not copy at all" in text for text in texts)
+    assert not any("[a-z]" in text for text in texts)
+    assert not any("font-size" in text for text in copy)
+    # A banned word inside a multi-line template is caught, and the class name
+    # that contains "object" is not mistaken for one.
+    caught = [text for text in copy if _BANNED.search(text)]
+    assert any("fed in" in text for text in caught)
+    assert not any("x-object" in text for text in caught)
+    # An accessible name inside a tag survives markup stripping.
+    assert any("Show exact array" in text for text in caught)
+    # Conditional copy inside a `${...}` expression is copy too. The saved
+    # research card hid "Title is null" in exactly this shape, and an earlier
+    # version of this scanner threw those literals away.
+    assert any("Title is null here" in text for text in caught)
+    # A regex after `return` is a regex, not division. Reading it as division
+    # swallows the following string literal and blinds the guard silently.
+    assert any("workspace in copy here" in text for text in caught)
+
+
+def test_the_forensic_value_views_stopped_naming_javascript_types():
+    """`Boolean:` and `Number:` were the last stored-type prefixes on screen."""
+    node = _slice("function treatmentScalarNode", "function treatmentAppendFact")
+    assert "Boolean:" not in node
+    assert "Number:" not in node
+    assert "Show exact array" not in node
+    assert "Show exact object" not in node
+    assert "Show exact text" not in node
+    assert "value ? 'Yes' : 'No'" in node
+    assert "'Show full details'" in node
+    assert "'Show full wording'" in node
+    # The distinction wave 1 kept on purpose is still there.
+    assert "'Nothing recorded'" in node
+    assert "'Recorded as blank'" in node
+    assert "'Not in the record'" in node
+
+
+def test_no_forensic_type_names_survive_anywhere():
+    """Research values used a second, separate vocabulary for the same idea."""
+    research = _slice("function researchValueMarkup", "function researchAuthorityMarkup")
+    assert "Show exact object" not in research
+    assert "Show exact content" not in research
+    assert "Empty object" not in research
+    assert ">Show full details<" in research
+    assert ">Show full wording<" in research
+    assert ">Recorded as empty<" in research
+
+    title = _slice("function researchItemTitle", "function appendResearchControl")
+    for phrase in [
+        "Title is null",
+        "Title is empty",
+        "Title field missing",
+        "External identifier is null",
+        "External identifier is empty",
+        "External identifier missing",
+    ]:
+        # The saved-consideration card had its own copy of this wording, so the
+        # check is against the whole file rather than one helper.
+        assert phrase not in APP_JS, f"forensic wording survived: {phrase}"
+    assert "'No title recorded'" in title
+    assert "'No source ID recorded'" in title
+    # Saved consideration cards render the snapshot title on a second path.
+    card = _slice("function renderResearchConsideration", "const actions = document")
+    assert "'Title not in the record'" in card
+    assert "'No title recorded'" in card
+    assert "'Title recorded as blank'" in card
+
+
+def test_research_field_names_are_written_out_not_de_underscored():
+    """`registry_last_update` reached the screen as "registry last update"."""
+    markup = _slice("function researchAuthorityMarkup", "function researchItemTitle")
+    assert "replaceAll('_', ' ')" not in markup
+    assert "researchFieldLabel(key)" in markup
+
+    result = _run_node(
+        _slice("const RESEARCH_FIELD_LABELS", "function researchItemTitle")
+        + """
+process.stdout.write(JSON.stringify({
+  registry: researchFieldLabel('registry_last_update'),
+  excerpt: researchFieldLabel('eligibility_excerpt'),
+  nct: researchFieldLabel('nct_id'),
+  added: researchFieldLabel('date_added'),
+  unmapped: researchFieldLabel('some_new_field'),
+}));
+"""
+    )
+    assert result["registry"] == "Registry last updated"
+    assert result["excerpt"] == "Who the trial is looking for"
+    assert result["nct"] == "Trial number"
+    assert result["added"] == "Added on"
+    # An unmapped key keeps its recorded spelling rather than being re-cased
+    # into something that only looks like a label.
+    assert result["unmapped"] == "some_new_field"
+
+
+def test_appointments_are_appointments_not_working_visits():
+    for phrase in [
+        "No working visit is set up yet",
+        "A working visit is ready for preparation",
+        "follow-through tasks",
+        "Create without imported appointment",
+        "Linked imported appointment",
+        "Enter a manual caregiver question",
+    ]:
+        assert phrase not in APP_JS, f"still on screen: {phrase}"
+    assert (
+        "'No appointment has been set up yet. Add the next appointment and collect questions for it.'"
+        in APP_JS
+    )
+    assert "'An appointment is ready to prepare.'" in APP_JS
+    assert "active: 'No active follow-ups.'," in APP_JS
+    assert "'Enter the question you want to ask.'" in APP_JS
+
+
+def test_visit_answers_stay_the_caregivers_record_of_the_clinician():
+    """INVARIANTS.md:99-100 - clinician-attributed, caregiver-entered, unverified."""
+    assert "Clinician answer explicitly unknown" not in APP_JS
+    assert "Clinician-attributed answer" not in APP_JS
+    assert "No clinician-attributed decisions captured." not in APP_JS
+    assert "'Clinician said the answer is not known'" in APP_JS
+    assert "Answer you heard from the clinician" in APP_JS
+    assert "No decisions from the clinician have been recorded yet." in APP_JS
+    # The attribution labels that carry the actual safety meaning are untouched,
+    # and the answer card still shows one next to the recorded answer.
+    assert "clinician: 'You recorded this from the clinician'," in APP_JS
+    assert "RECORD_SOURCE_COPY.clinician" in _slice(
+        "function renderVisitQuestions", "function toggleVisitAnswerText"
+    )
+    # The static eyebrow keeps the "as you recorded it" tail wave 2 established.
+    assert "From the clinician, as you recorded it" in INDEX_HTML
+
+
+def test_retry_copy_still_says_the_request_is_unchanged():
+    """Load-bearing: a retry re-sends the saved body, and an edit cancels it."""
+    assert "Retrying the unchanged request" not in APP_JS
+    assert APP_JS.count("'Sending the same details again…'") == 6
+    assert ("'The details changed. Review the latest follow-up and send it again.',") in APP_JS
+    assert "submit it as a new request" not in APP_JS
+
+
+def test_difference_copy_still_forbids_every_inference_it_used_to():
+    """The helper listed four forbidden inferences; all four survive."""
+    helper = _slice(
+        "'What difference did you notice?'", "function renderTreatmentDifferenceVariant"
+    )
+    for forbidden in [
+        "which came first",
+        "which is preferred",
+        "what caused the difference",
+        "which is correct",
+    ]:
+        assert forbidden in helper, f"difference helper dropped: {forbidden}"
+    assert "Caregiver comparison wording" not in APP_JS
+    # Linking components still refuses both equivalence and source confirmation.
+    link_helper = _slice("Link recorded treatment components", "const componentOptions")
+    assert "does not confirm that they mean the same thing" in link_helper
+    assert "does not confirm the source" in link_helper
+
+
+def test_hidden_treatment_rows_still_disclose_the_count_and_offer_restore():
+    """INVARIANTS.md:368-369 survived the wording change."""
+    assert "`${hiddenRecordedRows.length} hidden by you · show list`," in APP_JS
+    assert "Nothing was deleted or changed" in APP_JS
+    assert "NET/Care still uses them when answering your questions" in APP_JS
+
+
+def test_recorded_treatment_rows_are_never_worded_as_outstanding_work():
+    """INVARIANTS.md:370-372 - an unlinked row is a legitimate resting state."""
+    card = _slice("function treatmentRecordedCard", "const card = treatmentElement(")
+    assert "Linked to reviewed status" not in card
+    assert "Linked to a treatment status you entered" in card
+    assert "No treatment status you entered refers to this wording." in card
+    for badge in ["needs review", "outstanding", "incomplete", "action required"]:
+        assert badge not in card.lower()
+
+
+def test_imaging_copy_never_claims_the_app_compared_the_scans():
+    """INVARIANTS.md:153 - no interval change, no progression label."""
+    assert "NET/Care does not infer chronology or change" not in APP_JS
+    assert "NET/Care does not decide whether anything has changed." in APP_JS
+    assert "NET/Care does not draw a trend line." in APP_JS
+    assert "Confirm this exact pair" not in APP_JS
+    assert "'Two reports selected. Show them side by side.'" in APP_JS
+    assert "Select two imaging reports to compare the recorded findings." in INDEX_HTML
+
+
+def test_backend_messages_stopped_speaking_about_jobs_and_workspaces():
+    for phrase in [
+        "This job was interrupted by a server restart",
+        "The research workspace changed",
+        "not eligible for this lifecycle change",
+        "A caregiver treatment workspace preference changed",
+        "does not have two cited authorities",
+    ]:
+        assert phrase not in APP_PY, f"app.py still says: {phrase}"
+    assert "This task stopped when the server restarted." in APP_PY
+    assert "The research list changed. Reload it and try again." in APP_PY
+    # The legacy-difference message must not claim both records are sources:
+    # record B may be a caregiver treatment record instead.
+    assert "two linked source statements" not in APP_PY
+    assert "does not have both of its linked records" in APP_PY
+    assert "treatment workspace unreadable" not in RECONCILIATION_PY
+
+    # The PHI-free reason codes behind these messages are untouched.
+    assert '"treatment_projection_invalid"' in TREATMENT_PY
+    assert '"research_projection_too_large"' in RESEARCH_PY
+
+
+def test_labels_rebuilt_in_js_still_match_the_static_markup():
+    """Wave 3 changed five more labels that live in both files."""
+    pairs = [
+        ("What do you want to do with the follow-up?", 2, 2),
+        ("Choose what kind of update this is.", 1, 1),
+        ("Your treatment record", 1, 1),
+        ("Create a new appointment", 1, 2),
+        ("Administrative note, not clinical evidence", 2, 1),
+    ]
+    for phrase, html_count, js_count in pairs:
+        assert INDEX_HTML.count(phrase) == html_count, f"index.html count changed: {phrase}"
+        assert APP_JS.count(phrase) == js_count, f"app.js count changed: {phrase}"
+    # The retired wording must be gone from both layers, not just one.
+    for retired in [
+        "Follow-up operation",
+        "Choose an allowed event type",
+        "You enter and review this",
+        "Create without imported appointment",
+        "Administrative note - not clinical evidence",
+    ]:
+        assert retired not in INDEX_HTML, f"index.html still shows: {retired}"
+        assert retired not in APP_JS, f"static/app.js still shows: {retired}"
+
+
+def test_the_imaging_selection_status_is_not_rewritten_with_the_old_wording():
+    """`updateImagingSelectionControls` overwrites the static text on render.
+
+    The static markup was rewritten first and the render path still put the old
+    sentence back, which is the same inert-change trap wave 2 hit.
+    """
+    assert "Select exactly two current records" not in APP_JS
+    assert "Select exactly two current records" not in INDEX_HTML
+    assert "Select two imaging reports to compare the recorded findings." in INDEX_HTML
+    controls = _slice("function updateImagingSelectionControls", "function selectImagingRecord")
+    assert "Select two imaging reports to compare the recorded findings." in controls
+    assert "raw report facts" not in controls

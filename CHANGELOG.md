@@ -39,6 +39,108 @@ incremented when something user-visible or operationally meaningful changes.
   whole day up front.
 
 ### Changed
+- **The last of the database vocabulary left the screen.** This finishes the
+  copy rewrite started two releases ago; every remaining item in the audit is
+  now done. A **working visit** is an **appointment** ("No appointment has been
+  set up yet"), **follow-through tasks** are **follow-ups**, **Create without
+  imported appointment** is **Create a new appointment**, and **Enter a manual
+  caregiver question** is **Enter the question you want to ask**. The source
+  history no longer says documents have been **fed**.
+- **The forensic value panels stopped naming JavaScript types.** In the
+  treatment differences and source panels, `Boolean: true` now reads **Yes**,
+  `Number: 3` reads **3**, `Show exact array` and `Show exact object` are both
+  **Show full details**, and `Show exact text (412 characters)` is **Show full
+  wording**. In the research panels, `Show exact object` is **Show full
+  details**, `Show exact content` is **Show full wording**, `Empty object` is
+  **Recorded as empty**, `Title is null` is **No title recorded** and `External
+  identifier is null` is **No source ID recorded**. The deliberate distinction
+  between a stored blank and nothing at all is still there.
+- **Research details are labelled in words, not schema keys.** The research
+  authority panels printed stored field names with their underscores swapped for
+  spaces, so `registry_last_update` read as "registry last update" and
+  `eligibility_excerpt` as "eligibility excerpt". They now read **Registry last
+  updated**, **Who the trial is looking for**, **Trial number**, **PubMed
+  number**, **Search that found it** and **Added on**. A field with no written
+  label keeps its recorded spelling rather than being re-cased into something
+  that only looks like a label.
+- **Treatment cards and forms stopped repeating "wording".** *Type wording*,
+  *Dose wording*, *Route wording* and their siblings are now **Type**, **Dose**
+  and **Route**; *Indication wording* is **Reason for treatment**. *Recorded
+  components* is **Parts of this wording**, *Observed wording* is **Wording in
+  the document**, *Recorded value* is **Saved from that wording**, and *Record
+  treating-team outcome* is **Record what the treating team said**.
+- **Appointment answers are written the way you would say them.** *Clinician
+  answer explicitly unknown* is **Clinician said the answer is not known**,
+  *Clinician-attributed answer* is **Answer you heard from the clinician**, and
+  *No clinician-attributed decisions captured* is **No decisions from the
+  clinician have been recorded yet**. The attribution line beside them is
+  unchanged: it still says you recorded it and that it is unverified.
+- **Retry messages say what is being sent.** *Retrying the unchanged request…*
+  is **Sending the same details again…**, and *The draft changed. Review the
+  latest action and submit it as a new request.* is **The text changed. Review
+  the latest follow-up and send it again.** Both still mean exactly what they
+  did: a retry re-sends the request already saved, and editing the text cancels
+  that retry.
+- **Section kickers say what is under them.** *Snapshot* is **At a glance**,
+  *Secondary view* is **Charts**, *Needs review* is **Alerts to check**,
+  *Session details* is **Appointment details**, *Appointment working mode* is
+  **During the appointment**, *Current visit record* is **This visit**,
+  *Activity report* is **Report details**, and *Grounded in the patient record*
+  is **Uses the patient record**.
+- **Offline and load-failure messages stopped mentioning snapshots and
+  endpoints.** "The imaging endpoint could not be reached and no prior snapshot
+  is available" now reads **Imaging could not be reached and no earlier version
+  is available**, and the fourteen "Research … authority is invalid" errors now
+  each name what could not be shown, in words.
+- **"Eligible" stopped describing the app's filtering.** *Link one current
+  eligible action*, *Choose an eligible follow-up* and *Select a currently
+  eligible action* are all now about the thing itself: **Link a follow-up you
+  already have**, **Choose a follow-up to link**.
+- **Five API messages stopped describing the data model.** "This job was
+  interrupted by a server restart" is **This task stopped when the server
+  restarted**; "The research workspace changed" is **The research list
+  changed**; "A caregiver treatment workspace preference changed" is **A
+  recorded treatment entry was hidden or restored**. The message about an older
+  difference was also wrong as well as opaque — it said the record needed "two
+  cited authorities", when the second record may be a treatment record you
+  entered rather than a second source. It now says the difference **does not
+  have both of its linked records**. The fixed PHI-free reason codes behind all
+  of these are unchanged.
+
+### Safety wording
+- **The three byte-pinned safety paragraphs were reworded, and each keeps its
+  meaning exactly.** They were deliberately deferred by the two previous waves
+  because changing them requires updating `INVARIANTS.md` and their pinning
+  tests in the same commit; that is what this release does.
+  - Treatment (`INVARIANTS.md:387`) now reads **NET/Care records what you enter.
+    It does not check whether treatment details are correct or give advice about
+    starting, stopping, or changing treatment. Confirm treatment decisions with
+    the treating team.**
+  - Research (`INVARIANTS.md:269-276`) now reads **NET/Care records the research
+    you choose to follow. It does not decide whether research is relevant,
+    whether someone is eligible for or enrolled in a study, or whether a
+    treatment is suitable. Confirm clinical questions with the treating team and
+    trial details with the study site.** All four things NET/Care does not
+    decide are still named, and the copy is still non-personalized.
+  - Symptom episodes (`INVARIANTS.md:208-214`) now read **NET/Care records what
+    you enter. It does not decide how urgent symptoms are or monitor them.**
+    The two sentences that route symptoms to the treating team and possible
+    emergencies to emergency services are unchanged, to the byte.
+- Two research labels and two treatment labels named in the audit were left
+  alone on purpose. `Research discovery provenance`, `Caregiver-maintained
+  shortlist and disposition workflow`, `Machine-generated compatibility context
+  · source linkage unavailable · not a treatment record` and `Legacy/generated ·
+  not caregiver lifecycle authority` are never printed: the browser compares
+  them field for field to check the response is the one it expects. Rewording
+  them would change a protocol value and show nothing to anyone.
+- A guard test now scans real string literals — including multi-line template
+  literals and accessible names inside them — plus HTML text and the attributes
+  a screen reader speaks, and fails if `array`, `object`, `Boolean:`, `Number:`,
+  `fed`, `working visit`, `follow-through task`, `provenance`, `durable`,
+  `superseded`, `disposition`, `workspace`, `snapshot`, `endpoint`, `read-only`
+  or `immutable` reappears in anything readable.
+
+### Changed
 - **"Workspace" is gone from everything you read.** It appeared 59 times, in
   headings, buttons, status messages and screen-reader labels. **Research
   workspace** is now just **Research**, **Appointment workspace** is
@@ -114,7 +216,8 @@ each is now pinned by a test naming the invariant it protects.
   rows are still counted, and that NET/Care still uses them
   (`INVARIANTS.md:358-369`).
 
-The three byte-pinned safety paragraphs were again left untouched.
+The three byte-pinned safety paragraphs were left untouched by that wave; they
+are reworded in this release, above.
 
 ### Changed
 - **The app now says how a treatment ended, instead of "terminal outcome".**

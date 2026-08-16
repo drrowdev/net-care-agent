@@ -23,9 +23,10 @@ from .schema import (
 )
 
 RESEARCH_SAFETY_GUIDANCE = (
-    "NET/Care records research you choose to follow but does not determine relevance, "
-    "eligibility, enrollment, or treatment suitability. Confirm clinical questions with "
-    "the treating team and trial details with the study site."
+    "NET/Care records the research you choose to follow. It does not decide whether "
+    "research is relevant, whether someone is eligible for or enrolled in a study, or "
+    "whether a treatment is suitable. Confirm clinical questions with the treating team "
+    "and trial details with the study site."
 )
 CAREGIVER_ATTRIBUTION = "Caregiver-entered · unverified"
 CLINICIAN_ATTRIBUTION = "Caregiver-entered · attributed to clinician · unverified"

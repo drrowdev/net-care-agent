@@ -188,21 +188,21 @@ def test_verified_evidence_still_links_to_the_exact_wording():
     html = _render_claim_evidence([_VERIFIED])
     assert 'class="claim-evidence"' in html
     assert 'href="/api/evidence/doc-1?start=10&amp;end=24"' in html
-    assert "View exact wording: CgA 234 ng/mL" in html
+    assert "View source text: CgA 234 ng/mL" in html
     assert 'rel="noopener"' in html
 
 
 def test_invalid_evidence_stays_visible_because_it_is_a_real_anomaly():
     html = _render_claim_evidence([_INVALID])
     assert 'class="claim-evidence"' in html
-    assert "Linked wording is unavailable" in html
+    assert "Source text unavailable" in html
 
 
 def test_missing_entries_drop_out_of_a_mixed_list_without_dropping_the_rest():
     html = _render_claim_evidence([_MISSING, _VERIFIED, _MISSING, _INVALID])
     assert html.count('class="claim-evidence"') == 1
-    assert "View exact wording: CgA 234 ng/mL" in html
-    assert "Linked wording is unavailable" in html
+    assert "View source text: CgA 234 ng/mL" in html
+    assert "Source text unavailable" in html
     assert "No exact wording is linked" not in html
 
 
@@ -262,7 +262,7 @@ def test_a_verified_claim_inside_a_full_assessment_keeps_its_link():
         )
     )
     assert rendered["body"].count('class="claim-evidence"') == 1
-    assert "View exact wording: CgA 234 ng/mL" in rendered["body"]
+    assert "View source text: CgA 234 ng/mL" in rendered["body"]
 
 
 # ── ISO dates inside generated prose ─────────────────────────────────────────

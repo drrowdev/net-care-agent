@@ -12,10 +12,15 @@ import pytest
 APP_JS = Path("static/app.js").read_text(encoding="utf-8")
 INDEX_HTML = Path("static/index.html").read_text(encoding="utf-8")
 CSS = Path("static/styles.css").read_text(encoding="utf-8")
+# Reworded copy: wave 3 reworded the three byte-pinned safety paragraphs into plain
+# English. INVARIANTS.md and every pin moved in the same commit; the
+# meaning is unchanged and tests/test_plain_language_copy.py asserts each
+# promise the paragraph makes, not just its bytes.
 GUIDANCE = (
-    "NET/Care records research you choose to follow but does not determine relevance, "
-    "eligibility, enrollment, or treatment suitability. Confirm clinical questions with "
-    "the treating team and trial details with the study site."
+    "NET/Care records the research you choose to follow. It does not decide whether "
+    "research is relevant, whether someone is eligible for or enrolled in a study, or "
+    "whether a treatment is suitable. Confirm clinical questions with the treating team "
+    "and trial details with the study site."
 )
 GENERATED_LABEL = (
     "Machine-generated compatibility context · not relevance, eligibility, enrollment, "
@@ -599,7 +604,7 @@ def test_live_events_lifecycle_and_atomic_follow_up_use_full_reloads():
 
             card.get_by_role("button", name="Close consideration").click()
             assert (
-                "does not mean this research is irrelevant"
+                "does not mean the research is irrelevant"
                 in page.locator("#research-lifecycle-copy").inner_text()
             )
             page.locator("#research-lifecycle-submit").click()

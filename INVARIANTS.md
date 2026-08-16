@@ -206,12 +206,12 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
   history, or revision. Actions retain visit/decision/alert provenance, may
   link to at most one episode, and never cascade lifecycle in either direction.
 - Fixed episode safety copy is non-personalized: NET/Care records entries but
-  does not assess urgency or monitor symptoms; contact the treating team about
-  symptoms/concerns, and contact local emergency services if the caregiver
-  thinks it may be a medical emergency. No model/rules triage or treatment
-  recommendation is permitted. Episodes never enter chat, orchestrator,
-  questions, or executive-summary prompts; legacy `symptoms[]` behavior stays
-  compatible.
+  does not decide how urgent symptoms are or monitor them; contact the treating
+  team about symptoms/concerns, and contact local emergency services if the
+  caregiver thinks it may be a medical emergency. No model/rules triage or
+  treatment recommendation is permitted. Episodes never enter chat,
+  orchestrator, questions, or executive-summary prompts; legacy `symptoms[]`
+  behavior stays compatible.
 - Schema v14 gives every trial and paper occurrence a private stable
   `research_record_id` without normalizing, merging, deduplicating, reordering,
   relabeling, scoring, or deleting any legacy row, duplicate, external ID,
@@ -266,11 +266,14 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
 - Internal research IDs and all shortlist/disposition snapshots, events, notes,
   links, and histories are excluded from chat, orchestrator, questions,
   executive summary, deep sweep, and generic model serialization. Existing
-  model-visible source research content stays unchanged. The fixed workspace
-  safety copy is: `NET/Care records research you choose to follow but does not
-  determine relevance, eligibility, enrollment, or treatment suitability.
-  Confirm clinical questions with the treating team and trial details with the
-  study site.`
+  model-visible source research content stays unchanged. The fixed research
+  safety copy is: `NET/Care records the research you choose to follow. It does
+  not decide whether research is relevant, whether someone is eligible for or
+  enrolled in a study, or whether a treatment is suitable. Confirm clinical
+  questions with the treating team and trial details with the study site.` It
+  is static, non-personalized, and must keep naming all four things NET/Care
+  does not decide: relevance, eligibility, enrolment, and treatment
+  suitability.
 - Treatment receipt occurrences, legacy `patient.current_treatments[]` plus
   raw component/mapped generated classification mappings, pre-v6 unlinked
   generated compatibility context, caregiver-maintained `treatment_courses[]`,
@@ -381,7 +384,7 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
 - A recorded raw row is never presented as outstanding caregiver work. Component
   linkage state is descriptive only; an unlinked row is a legitimate resting
   state and must not be counted, worded, or badged as needing review.
-- Fixed treatment safety copy is exactly `NET/Care records what you enter but does not verify treatment details or advise starting, stopping, or changing treatment. Confirm treatment decisions with the treating team.` It is static,
+- Fixed treatment safety copy is exactly `NET/Care records what you enter. It does not check whether treatment details are correct or give advice about starting, stopping, or changing treatment. Confirm treatment decisions with the treating team.` It is static,
   nonconditional, non-PHI, and non-prescriptive.
 - Every Layer 2 mutation is stable-ID/target-token CAS under
   `serialized_mutation`, appends one request-hash audit event, increments each

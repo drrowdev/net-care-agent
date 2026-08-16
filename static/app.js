@@ -190,6 +190,7 @@
     resolved: 'Resolved',
     active: 'Active',
     needs_confirmation: 'Needs confirmation',
+    needs_review: 'Needs review',
     superseded: 'Replaced',
     retracted: 'Withdrawn',
     feed: 'Feed',
@@ -255,13 +256,13 @@
   const RECORD_SOURCE_COPY = Object.freeze({
     document: 'From your document',
     exact: 'Exact wording available',
-    linked: 'Document linked - exact wording unavailable',
+    linked: 'Document attached, exact wording not available',
     none: 'No document linked',
     entered: 'You entered this',
     clinician: 'You recorded this from the clinician',
     corrected: 'You corrected this',
     older: 'Source details were not retained for this older record',
-    administrative: 'Administrative note - not clinical evidence',
+    administrative: 'Administrative note, not clinical evidence',
     generated: 'NET/Care-generated context - not a treatment fact',
   });
 
@@ -1095,7 +1096,7 @@
     setAppointmentMutationBusy(true);
     setFollowUpMutationBusy(true);
     if (!explicitRetry) clearWorkflowRetry();
-    setAppointmentMessage(explicitRetry ? 'Retrying the unchanged request…' : 'Saving…', 'saving');
+    setAppointmentMessage(explicitRetry ? 'Sending the same details again…' : 'Saving…', 'saving');
     try {
       const response = await fetch(intent.url, {
         method: intent.method,
@@ -1505,7 +1506,7 @@
       markBiomarkerProjectionStale(
         biomarkerProjection
           ? 'Offline. Showing the last version that loaded. Reconnect to get the current biomarker record.'
-          : 'Biomarker history is offline and no prior snapshot is available.',
+          : 'Biomarker history is offline and no earlier version is available.',
       );
     }
     if (typeof markVisitRecapStale === 'function') {
@@ -1994,7 +1995,7 @@
       const sourceUrl = safeBiomarkerEvidenceUrl(item.source_url);
       return `<li>
         <span class="biomarker-evidence-actions">
-          ${evidenceUrl ? `<a href="${escHtml(evidenceUrl)}" target="_blank" rel="noopener">View exact wording</a>` : ''}
+          ${evidenceUrl ? `<a href="${escHtml(evidenceUrl)}" target="_blank" rel="noopener">View source text</a>` : ''}
           ${sourceUrl ? `<a href="${escHtml(sourceUrl)}" target="_blank" rel="noopener">Open source</a>` : ''}
           ${!evidenceUrl && !sourceUrl ? '<span class="biomarker-missing">No document link is available.</span>' : ''}
         </span>
@@ -2161,7 +2162,7 @@
           aria-labelledby="${chartId}-title ${chartId}-description"
         >
           <title id="${chartId}-title">${escHtml(`${analyte.display_name}: ${series.label}`)}</title>
-          <desc id="${chartId}-description">Isolated recorded points in one exact server-declared comparable group. No connecting line or trend is inferred. Complete values are in the table above.</desc>
+          <desc id="${chartId}-description">Recorded points that can be shown together. NET/Care does not draw a trend line. Complete values are in the table above.</desc>
           <line class="biomarker-chart-axis" x1="${left}" y1="${height - bottom}" x2="${width - right}" y2="${height - bottom}"></line>
           ${pointMarkup}
         </svg>
@@ -2210,7 +2211,7 @@
         return biomarkerSeriesChart(analyte, series, index);
       }).filter(Boolean).join('');
       charts.innerHTML = chartMarkup || `<div class="empty-state">
-        No chart is shown because this biomarker has fewer than two observations in any exact server-declared comparable group. Every recorded observation remains in the table.
+        No chart is shown because fewer than two results here were recorded in the same way. Every recorded result is still in the table.
       </div>`;
     }
 
@@ -2245,7 +2246,7 @@
     biomarkerProjectionState = 'stale';
     if (!biomarkerProjection) {
       renderBiomarkerUnavailable(
-        message || 'Biomarker history is offline and no prior snapshot is available.',
+        message || 'Biomarker history is offline and no earlier version is available.',
         'stale',
         'Offline',
         true,
@@ -2257,7 +2258,7 @@
       || null;
     if (!analyte) {
       renderBiomarkerUnavailable(
-        message || 'The prior biomarker snapshot is empty.',
+        message || 'The last biomarker history that loaded is empty.',
         'stale',
         'Out of date',
         true,
@@ -2385,7 +2386,7 @@
         }
         const charts = document.getElementById('biomarker-chart-region');
         if (charts) charts.innerHTML = '<div class="empty-state">No comparable chart is available.</div>';
-        setBiomarkerFreshness('current', 'Current · empty');
+        setBiomarkerFreshness('current', 'Current · no results recorded');
         setBiomarkerStatus(
           'Biomarker history is up to date. No biomarker results are recorded.',
           'current',
@@ -2421,7 +2422,7 @@
         markBiomarkerProjectionStale(
           biomarkerProjection
             ? 'Offline. Showing the last version that loaded. Reconnect to get the current biomarker record.'
-            : 'Biomarker history is offline and no prior snapshot is available.',
+            : 'Biomarker history is offline and no earlier version is available.',
           { abortRequest: false },
         );
         reportLoadError('biomarkers', error);
@@ -2725,9 +2726,9 @@
     if (date.kind === 'study') {
       authority = 'Study date';
     } else if (date.kind === 'legacy_unknown') {
-      authority = 'Older record - date context was not retained';
+      authority = 'Older record, date type not recorded';
     } else {
-      authority = date.value == null ? 'Study date not recorded' : 'Date authority unknown';
+      authority = date.value == null ? 'Study date not recorded' : 'Date type not recorded';
     }
     return {
       value: imagingDate(date.value),
@@ -2769,13 +2770,13 @@
     const sourceDate = imagingElement(
       'p',
       '',
-      `Source document date (not used for study chronology): ${
+      `Document date, not the scan date: ${
         imagingDate(record.date.source_document_date)
       } · ${precisionLabel(record.date.source_document_date_precision)}`,
     );
     const actions = imagingElement('div', 'imaging-source-actions');
     if (evidenceUrl) {
-      const link = imagingElement('a', '', 'View exact wording');
+      const link = imagingElement('a', '', 'View source text');
       link.href = evidenceUrl;
       link.target = '_blank';
       link.rel = 'noopener';
@@ -2822,7 +2823,7 @@
     imagingAppendFact(facts, 'Findings (report wording)', record.findings, 'report-wording');
     imagingAppendFact(
       facts,
-      'Impression, including any report-authored comparison wording',
+      'Impression from the report, including any comparison written there',
       record.impression,
       'report-wording',
     );
@@ -2894,9 +2895,9 @@
       } else if (imagingProjectionState === 'empty') {
         status.textContent = 'No imaging records are available to select or compare.';
       } else if (selected.size === 2) {
-        status.textContent = 'Two records selected. Confirm this exact pair to show their raw report facts side by side.';
+        status.textContent = 'Two reports selected. Show them side by side.';
       } else {
-        status.textContent = `${selected.size} of 2 records selected. Select exactly two current records.`;
+        status.textContent = `${selected.size} of 2 selected. Select two imaging reports to compare the recorded findings.`;
       }
     }
   }
@@ -3024,7 +3025,7 @@
     if (summary) {
       summary.textContent = `${imagingProjection.records.length} recorded report${
         imagingProjection.records.length === 1 ? '' : 's'
-      }. Each report remains separate; NET/Care does not infer chronology or change.`;
+      }. Each report stays separate. NET/Care does not decide whether anything has changed.`;
     }
     const caption = document.getElementById('imaging-table-caption');
     if (caption) {
@@ -3055,7 +3056,7 @@
       );
     } else {
       imagingProjectionState = 'empty';
-      setImagingFreshness('current', 'Current · empty');
+      setImagingFreshness('current', 'Current · no reports recorded');
       setImagingStatus(
         'Imaging history is up to date. No imaging reports are recorded.',
         'current',
@@ -3280,12 +3281,12 @@
         return null;
       }
       if (error instanceof TypeError) {
-        const safeError = new TypeError('The imaging endpoint could not be reached.');
+        const safeError = new TypeError('Imaging could not be reached.');
         imagingNetworkAmbiguous = true;
         markImagingProjectionStale(
           imagingProjection
             ? 'The connection dropped. You are seeing the last version that loaded, and it is out of date.'
-            : 'The imaging endpoint could not be reached and no prior snapshot is available.',
+            : 'Imaging could not be reached and no earlier version is available.',
           { abortRequest: false },
         );
         reportLoadError('imaging', safeError);
@@ -3365,7 +3366,7 @@
     if (patient) patient.textContent = 'Patient profile unavailable';
     if (patientMeta) patientMeta.innerHTML = '';
     if (alerts && !alerts.querySelector('[data-alerts-load-failure]')) {
-      alerts.innerHTML = '<div class="load-failure" role="alert" data-alerts-load-failure><strong>Alerts unavailable</strong><span>Nothing was removed. Retry when the connection is available.</span><button class="button secondary" onclick="loadStatus()">Retry</button></div>';
+      alerts.innerHTML = '<div class="load-failure" role="alert" data-alerts-load-failure><strong>Alerts unavailable</strong><span>Your saved alerts are still there. Retry when the connection is available.</span><button class="button secondary" onclick="loadStatus()">Retry</button></div>';
     }
     const updates = document.getElementById('recent-updates-list');
     if (updates && !updates.querySelector('[data-recent-updates-failure]')) {
@@ -3385,7 +3386,7 @@
       if (authStatus === 403) {
         return `${subject} held by this browser was cleared because access to the patient record was denied. Stored patient records were not deleted.`;
       }
-      return `${subject} was cleared because current patient authority is unavailable.`;
+      return `${subject} was cleared from this browser because the app could not confirm access to the patient record.`;
     };
     if (typeof cancelJobSubmissions === 'function') cancelJobSubmissions();
     if (typeof pollingInterval !== 'undefined' && pollingInterval) {
@@ -3612,7 +3613,7 @@
     const sourceSelector = document.getElementById('visit-source-appointment');
     if (sourceSelector) {
       sourceSelector.innerHTML =
-        '<option value="">Create without imported appointment</option>';
+        '<option value="">Create a new appointment</option>';
       sourceSelector.value = '';
     }
     const decisionSelector = document.getElementById('visit-followup-decision');
@@ -3809,7 +3810,7 @@
         label: 'Latest research run',
         value: research?.completed_at
           ? `${relativeTime(research.completed_at)} · ${enumLabel(research.trigger, 'Research update')}`
-          : 'No research-run time is available.',
+          : 'No recent research check is recorded.',
         action: 'research',
       },
       {
@@ -4474,7 +4475,7 @@
         : '<span>No follow-up or visit link recorded.</span>';
     document.getElementById('alert-resolution-message').textContent = '';
     document.getElementById('alert-resolution-action').textContent = '';
-    setAlertResolutionStatus('Resolution saved and current patient views reloaded.', 'success');
+    setAlertResolutionStatus('Resolution saved. The patient record has been refreshed.', 'success');
   }
 
   async function handleAlertResolutionConflict(error, intent) {
@@ -4599,7 +4600,7 @@
     setAlertResolutionBusy(true);
     if (!explicitRetry) clearAlertResolutionRetry();
     setAlertResolutionStatus(
-      explicitRetry ? 'Retrying the unchanged request…' : 'Saving resolution…',
+      explicitRetry ? 'Sending the same details again…' : 'Saving resolution…',
       'saving',
     );
     try {
@@ -4642,7 +4643,7 @@
           alertLinkSourcesStale = true;
           setAlertResolutionProjectionReadOnly(true);
           setAlertResolutionStatus(
-            'The resolution was saved, but current patient views could not be verified. Reload before continuing.',
+            'The resolution was saved, but this screen may not be up to date. Reload before continuing.',
             'offline',
           );
           renderAlerts();
@@ -4773,8 +4774,8 @@
     const label = normalized === 'verified'
       ? RECORD_SOURCE_COPY.exact
       : normalized === 'invalid'
-        ? 'Linked wording is unavailable'
-        : 'Document linked - exact wording unavailable';
+        ? 'Source text unavailable'
+        : RECORD_SOURCE_COPY.linked;
     return `<span class="evidence-badge ${normalized}">${label}</span>`;
   }
 
@@ -4821,7 +4822,7 @@
           </article>`;
         }).join('')}
         ${history.length > 5 ? `<button class="history-toggle" onclick="toggleSourceHistory()">${sourceHistoryExpanded ? 'Show recent sources only' : `Show all ${history.length} sources`}</button>` : ''}`
-      : '<div class="empty-state">No source documents have been fed yet.</div>';
+      : '<div class="empty-state">No documents have been added yet.</div>';
   }
 
   function toggleSourceHistory() {
@@ -4890,7 +4891,7 @@
     // Build quick feedback options
     const feedbackHtml = `
       <div id="dismiss-dialog-${idx}" class="action-feedback" style="margin-top:8px;padding:10px;background:var(--bg2);border-radius:6px;border:0.5px solid var(--border)">
-        <div style="font-size:11px;color:var(--text2);margin-bottom:8px;font-weight:500">Why removing? (optional — feeds back into agent)</div>
+        <div style="font-size:11px;color:var(--text2);margin-bottom:8px;font-weight:500">Reason for removing this, if you want to add one</div>
         <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px">
           ${['Doctor advised against','Not applicable now','Already being done','Renal constraints','Done at last appointment'].map(opt =>
             `<button onclick="quickDismiss(${idx},'${opt}','constraint')" style="font-size:11px;padding:3px 8px;border:0.5px solid var(--border2);border-radius:4px;background:var(--bg1);color:var(--text1);cursor:pointer">${opt}</button>`
@@ -4980,7 +4981,7 @@
     );
     setFollowUpMutationBusy(true);
     try {
-      const note = prompt('What was missed or incorrect? This records review feedback only; it will not change clinical facts.');
+      const note = prompt('What was missed or incorrect? This adds a note for review; it does not edit the patient record.');
       if (!note || !note.trim()) return;
       const response = await fetch('/api/feedback', {
         method: 'POST',
@@ -5041,7 +5042,7 @@
     const html = judgments.length ? judgments.map(j => {
       const effective = j.effective_status || j.status || 'active';
       const lifecycle = effective !== 'active'
-        ? `<span style="font-size:9px;color:var(--amber);font-weight:600">NEEDS REVIEW${j.review_reason ? ` · ${escHtml(j.review_reason)}` : ''}</span>`
+        ? `<span style="font-size:9px;color:var(--amber);font-weight:600">Review this note${j.review_reason ? ` · ${escHtml(j.review_reason)}` : ''}</span>`
         : '<span style="font-size:9px;color:var(--green)">ACTIVE</span>';
       return `
       <div class="judgment-row" data-judgment-id="${escHtml(j.id)}" style="display:flex;align-items:flex-start;gap:8px;padding:8px 0;border-bottom:0.5px solid var(--border)">
@@ -5083,7 +5084,7 @@
       <div style="display:flex;gap:6px;align-items:center">
         <select class="judgment-edit-category" style="font-size:11px;padding:4px 6px;border:0.5px solid var(--border);border-radius:4px;background:var(--bg1);color:var(--text1);cursor:pointer">${catOptions}</select>
         <select class="judgment-edit-status" style="font-size:11px;padding:4px 6px;border:0.5px solid var(--border);border-radius:4px;background:var(--bg1);color:var(--text1);cursor:pointer">
-          ${['active','needs_review','superseded'].map(s => `<option value="${s}"${s===currentStatus?' selected':''}>${s.replace('_',' ')}</option>`).join('')}
+          ${['active','needs_review','superseded'].map(s => `<option value="${s}"${s===currentStatus?' selected':''}>${enumLabel(s)}</option>`).join('')}
         </select>
         <button onclick="saveEditJudgment(this)" style="font-size:11px;padding:4px 10px;border:0.5px solid var(--accent);border-radius:4px;background:var(--accent-dim);color:var(--accent);cursor:pointer;font-weight:500">Save</button>
         <button onclick="cancelEditJudgment(this)" style="font-size:11px;padding:4px 10px;border:0.5px solid var(--border);border-radius:4px;background:none;color:var(--text2);cursor:pointer">Cancel</button>
@@ -5162,9 +5163,9 @@
 
   // ── Symptom episodes and source observations ─────────────────────────────
   const SYMPTOM_SAFETY_GUIDANCE =
-    'NET/Care records what you enter but does not assess urgency or monitor symptoms. '
-    + 'Contact the treating team about symptoms or concerns. If you think this may be a '
-    + 'medical emergency, contact local emergency services.';
+    'NET/Care records what you enter. It does not decide how urgent symptoms are or '
+    + 'monitor them. Contact the treating team about symptoms or concerns. If you '
+    + 'think this may be a medical emergency, contact local emergency services.';
   const SYMPTOM_MAX_OBSERVATIONS = 2000;
   const SYMPTOM_MAX_EPISODES = 1000;
   const SYMPTOM_MAX_ACTIONS = 500;
@@ -5580,7 +5581,7 @@
     const kind = {
       caregiver_entered: `${label} entered by you`,
       clinical: 'Recorded symptom date',
-      legacy_unknown: 'Older record - date context was not retained',
+      legacy_unknown: 'Older record, date type not recorded',
       unknown: `${label} type not recorded`,
     }[date.kind] || `${label} type not recorded`;
     return `${symptomDate(date.value)} · ${precisionLabel(date.precision)} · ${kind}`;
@@ -5668,17 +5669,17 @@
     );
     const title = symptomElement('h3', '', episode.symptom_text);
     const summary = symptomElement('dl', 'symptom-episode-summary');
-    symptomAppendFact(summary, 'Severity entered by caregiver', symptomSeverityPresentation(episode));
+    symptomAppendFact(summary, 'Severity you recorded', symptomSeverityPresentation(episode));
     symptomAppendFact(
       summary,
-      'Reported subject entered by caregiver',
+      'Who the symptom was about',
       symptomReportedSubjectLabel(episode.reported_subject),
     );
     symptomAppendFact(summary, 'Where the onset date came from', symptomDatePresentation(episode.onset, 'Onset date'));
     if (episode.resolution) {
       symptomAppendFact(
         summary,
-        'Resolution date authority',
+        'Where the resolution date came from',
         symptomDatePresentation(episode.resolution, 'Resolution date'),
       );
     }
@@ -5704,7 +5705,7 @@
     }
     if (!compact) {
       const actions = symptomElement('div', 'symptom-episode-actions');
-      const edit = symptomElement('button', 'button secondary', 'Edit episode facts');
+      const edit = symptomElement('button', 'button secondary', 'Edit episode details');
       edit.type = 'button';
       edit.disabled = symptomProjectionState !== 'current';
       edit.addEventListener('click', () => openSymptomEditDialog(edit, episode.id));
@@ -5750,14 +5751,14 @@
       symptomElement(
         'p',
         '',
-        `Source document date (not symptom chronology): ${
+        `Document date: ${
           symptomDate(observation.date.source_document_date)
         } · ${precisionLabel(observation.date.source_document_date_precision)}`,
       ),
     );
     const links = symptomElement('div', 'symptom-source-actions');
     if (evidenceUrl) {
-      const link = symptomElement('a', '', 'View exact wording');
+      const link = symptomElement('a', '', 'View source text');
       link.href = evidenceUrl;
       link.target = '_blank';
       link.rel = 'noopener';
@@ -5909,7 +5910,7 @@
         || symptomProjection.observations.length
         ? 'current'
         : 'empty';
-      setSymptomFreshness('current', symptomProjectionState === 'empty' ? 'Current · empty' : 'Current');
+      setSymptomFreshness('current', symptomProjectionState === 'empty' ? 'Current · no symptoms recorded' : 'Current');
       setSymptomStatus(
         symptomProjectionState === 'empty'
           ? 'Symptom records are up to date. No symptoms are logged.'
@@ -6272,12 +6273,12 @@
         markSymptomProjectionStale(
           symptomProjection
             ? 'The connection dropped. You are seeing the last version that loaded, and it is out of date.'
-            : 'The symptom endpoint could not be reached and no prior snapshot is available.',
+            : 'The symptom record could not be reached and no earlier version is available.',
           { abortRequest: false, preserveMutation: options.preserveMutation === true },
         );
         reportLoadError(
           'symptom-episodes',
-          new TypeError('The symptom endpoint could not be reached.'),
+          new TypeError('The symptom record could not be reached.'),
         );
         return null;
       }
@@ -6402,7 +6403,7 @@
     if (!select) return;
     select.replaceChildren();
     if (!symptomProjection?.eligible_actions.length) {
-      const option = symptomElement('option', '', 'No eligible actions available');
+      const option = symptomElement('option', '', 'No follow-up items available to link');
       option.value = '';
       select.append(option);
       select.disabled = true;
@@ -6413,7 +6414,7 @@
       const option = symptomElement(
         'option',
         '',
-        `${action.text} · ${action.status} · ${symptomScalar(action.owner)} · due ${symptomScalar(action.due_date)}`,
+        `${action.text} · ${enumLabel(action.status)} · ${symptomScalar(action.owner)} · due ${symptomScalar(action.due_date)}`,
       );
       option.value = action.id;
       select.append(option);
@@ -6481,8 +6482,8 @@
       scrubSymptomDialog();
       return;
     } else if (symptomDialogMode === 'edit') {
-      title.textContent = 'Edit symptom episode facts';
-      document.getElementById('symptom-details-submit').textContent = 'Save episode facts';
+      title.textContent = 'Edit symptom episode details';
+      document.getElementById('symptom-details-submit').textContent = 'Save episode details';
       restoreSymptomDetailsForm(episode);
     } else if (symptomDialogMode === 'resolve') {
       title.textContent = 'Resolve symptom episode';
@@ -6850,7 +6851,7 @@
         const action = symptomProjection.eligible_actions.find(
           item => item.id === document.getElementById('symptom-create-existing-action').value,
         );
-        if (!action) throw new Error('Select a currently eligible action.');
+        if (!action) throw new Error('Choose a follow-up to link.');
         body.caregiver_action_id = action.id;
         body.expected_action_token = action.token;
         selectedSymptomActionId = action.id;
@@ -6962,14 +6963,14 @@
       const action = symptomProjection.eligible_actions.find(
         item => item.id === document.getElementById('symptom-existing-action').value,
       );
-      if (!action) throw new Error('Select a currently eligible action.');
+      if (!action) throw new Error('Choose a follow-up to link.');
       body.caregiver_action_id = action.id;
       body.expected_action_token = action.token;
       selectedSymptomActionId = action.id;
       selectedSymptomActionToken = action.token;
     } else {
       const text = (document.getElementById('symptom-follow-up-text')?.value || '').trim();
-      if (!text) throw new Error('Enter the manual follow-up text.');
+      if (!text) throw new Error('Enter the follow-up you want to add.');
       body.follow_up = {
         text,
         owner: symptomOptionalText('symptom-follow-up-owner'),
@@ -7111,12 +7112,12 @@
       'conflict',
     );
     setSymptomStatus(
-      'The symptom record changed. Reloading current authority for review.',
+      'The symptom record changed. Reloading it for review.',
       'stale',
       false,
     );
     markSymptomProjectionStale(
-      'The symptom record changed. Reloading current authority for review.',
+      'The symptom record changed. Reloading it for review.',
       { preserveMutation: true },
     );
     releaseSymptomMutation(intent);
@@ -7128,7 +7129,7 @@
     if (!symptomIntentOwnsMutation(intent, intent.requestPhiEpoch)) return null;
     activeSymptomIntent = intent;
     setSymptomDialogStatus(
-      explicitRetry ? 'Retrying the unchanged request…' : 'Saving…',
+      explicitRetry ? 'Sending the same details again…' : 'Saving…',
       'saving',
     );
     try {
@@ -7184,14 +7185,14 @@
         );
         reportLoadError(
           'symptom-mutation',
-          new TypeError('The symptom endpoint could not be reached.'),
+          new TypeError('The symptom record could not be reached.'),
         );
         return null;
       }
       clearSymptomProjection({
         state: error?.status === 422 ? 'corrupt' : 'error',
         statusLabel: 'Record unavailable',
-        message: 'Symptom records were cleared because the request failed without safe retry authority.',
+        message: 'Symptom records were cleared because the request failed and could not be safely retried.',
       });
       const safeError = new Error('The symptom request could not be saved safely.');
       safeError.status = error?.status;
@@ -7465,7 +7466,7 @@
       row.removeAttribute('data-generated-action-source-id');
       row.removeAttribute('data-generated-action-source-token');
       row.className = 'action-item unavailable';
-      row.innerHTML = '<div class="summary-action-unavailable"><strong>Generated action unavailable</strong><span>Reload the current assessment before using this action.</span></div>';
+      row.innerHTML = '<div class="summary-action-unavailable"><strong>Recommended step unavailable</strong><span>Reload the current assessment before using this action.</span></div>';
     });
   }
 
@@ -7500,11 +7501,11 @@
     if (!Array.isArray(items) || !items.length) return '';
     const chips = items.map(item => {
       if (item.evidence_status === 'verified' && item.evidence_url) {
-        return `<a class="claim-evidence-link verified" href="${escHtml(item.evidence_url)}" target="_blank" rel="noopener">View exact wording: ${escHtml(item.label)}</a>`;
+        return `<a class="claim-evidence-link verified" href="${escHtml(item.evidence_url)}" target="_blank" rel="noopener">View source text: ${escHtml(item.label)}</a>`;
       }
       // 'missing' is the ordinary case for generated prose and stays silent.
       if (item.evidence_status === 'invalid') {
-        return '<span class="claim-evidence-link invalid">Linked wording is unavailable</span>';
+        return '<span class="claim-evidence-link invalid">Source text unavailable</span>';
       }
       return '';
     }).join('');
@@ -7529,7 +7530,7 @@
       inline.innerHTML = '<span class="s-pill status-insufficient_data">ASSESSMENT NEEDS REFRESH</span>';
       updated.textContent = 'New information was recorded after this assessment.';
       body.innerHTML = `<div class="summary-empty stale-summary-hidden">
-        <strong>Prior generated assessment is hidden</strong>
+        <strong>Previous assessment hidden</strong>
         <div>The patient record changed after it was generated. Refresh the assessment before using its actions, PRRT screening, or trial suggestion.</div>
       </div>`;
       return;
@@ -7577,7 +7578,7 @@
       d.next_actions.forEach((a, idx) => {
         if (!summaryActionIsCurrent(a, d)) {
           html += `<div class="action-item unavailable">
-            <div class="summary-action-unavailable"><strong>Generated action unavailable</strong><span>Reload the current assessment before using this action.</span></div>
+            <div class="summary-action-unavailable"><strong>Recommended step unavailable</strong><span>Reload the current assessment before using this action.</span></div>
           </div>`;
           return;
         }
@@ -7651,7 +7652,7 @@
       html += '</div></details>';
     }
 
-    html += `<div class="summary-feedback"><button class="btn-digest summary-feedback-button" onclick="reportMissedSummary()">⚑ Report something missed or incorrect</button>${d.feedback_pending ? ` <span>${escHtml(d.feedback_pending)} review item(s) recorded</span>` : ''}</div>`;
+    html += `<div class="summary-feedback"><button class="btn-digest summary-feedback-button" onclick="reportMissedSummary()">⚑ Report something missed or incorrect</button>${d.feedback_pending ? ` <span>${escHtml(d.feedback_pending)} review notes recorded</span>` : ''}</div>`;
 
     body.innerHTML = html;
     refreshGeneratedActionControls();
@@ -7659,7 +7660,7 @@
   }
 
   // ── Research shortlist and disposition workspace ─────────────────────────
-  const RESEARCH_SAFETY_GUIDANCE = 'NET/Care records research you choose to follow but does not determine relevance, eligibility, enrollment, or treatment suitability. Confirm clinical questions with the treating team and trial details with the study site.';
+  const RESEARCH_SAFETY_GUIDANCE = 'NET/Care records the research you choose to follow. It does not decide whether research is relevant, whether someone is eligible for or enrolled in a study, or whether a treatment is suitable. Confirm clinical questions with the treating team and trial details with the study site.';
   const RESEARCH_AUTHORITY_LABELS = {
     external_facts: 'External registry or bibliographic facts',
     generated_context: 'Machine-generated compatibility context · not relevance, eligibility, enrollment, suitability, or recommendation',
@@ -7688,6 +7689,34 @@
     trial: new Set(['date_added']),
     paper: new Set(['query', 'date_added']),
   };
+  // Stored field names written for a reader. A name that is not listed keeps
+  // its recorded spelling rather than reaching the screen as a schema key
+  // with its underscores swapped for spaces.
+  const RESEARCH_FIELD_LABELS = {
+    nct_id: 'Trial number',
+    pmid: 'PubMed number',
+    title: 'Title',
+    status: 'Recruitment status',
+    phase: 'Phase',
+    phases: 'Phases',
+    countries: 'Countries',
+    brief_summary: 'Summary from the registry',
+    eligibility_excerpt: 'Who the trial is looking for',
+    registry_last_update: 'Registry last updated',
+    authors: 'Authors',
+    journal: 'Journal',
+    date: 'Date',
+    eligibility_notes: 'Generated notes on who the trial is looking for',
+    relevance_notes: 'Generated notes on why this came up',
+    query: 'Search that found it',
+    date_added: 'Added on',
+  };
+
+  function researchFieldLabel(key) {
+    return Object.prototype.hasOwnProperty.call(RESEARCH_FIELD_LABELS, key)
+      ? RESEARCH_FIELD_LABELS[key]
+      : String(key);
+  }
   const RESEARCH_EVENT_TYPES = {
     trial: ['caregiver_note', 'next_step_recorded', 'treating_team_communication', 'trial_site_communication'],
     paper: ['caregiver_note', 'next_step_recorded', 'treating_team_communication'],
@@ -7730,16 +7759,16 @@
     while (stack.length) {
       const [current, depth] = stack.pop();
       nodes += 1;
-      if (nodes > 200000 || depth > 16) throw new Error('Research authority exceeds the supported limits.');
+      if (nodes > 200000 || depth > 16) throw new Error('Research is too large to show safely.');
       if (typeof current === 'string') {
-        if (current.length > 100000) throw new Error('Research authority exceeds the supported limits.');
+        if (current.length > 100000) throw new Error('Research is too large to show safely.');
       } else if (Array.isArray(current)) {
-        if (current.length > 20000) throw new Error('Research authority exceeds the supported limits.');
+        if (current.length > 20000) throw new Error('Research is too large to show safely.');
         current.forEach(item => stack.push([item, depth + 1]));
       } else if (researchPlainObject(current)) {
         const keys = Object.keys(current);
         if (keys.length > 5000 || keys.some(key => key.length > 500)) {
-          throw new Error('Research authority exceeds the supported limits.');
+          throw new Error('Research is too large to show safely.');
         }
         keys.forEach(key => stack.push([current[key], depth + 1]));
       } else if (
@@ -7747,14 +7776,14 @@
         && typeof current !== 'boolean'
         && !(typeof current === 'number' && Number.isFinite(current))
       ) {
-        throw new Error('Research authority contains an unsupported value.');
+        throw new Error('Research contains a value that cannot be shown safely.');
       }
     }
   }
 
   function validateResearchAllowedFields(value, allowed) {
     if (!researchPlainObject(value) || Object.keys(value).some(key => !allowed.has(key))) {
-      throw new Error('Research authority contains unsupported fields.');
+      throw new Error('Research contains details that cannot be shown safely.');
     }
     validateResearchNested(value);
   }
@@ -7817,7 +7846,7 @@
 
   function validateResearchAction(action, eligible = false) {
     if (!researchExactKeys(action, ['id', 'token', 'text', 'status', 'owner', 'due_date'])) {
-      throw new Error('Research follow-up authority is invalid.');
+      throw new Error('A research follow-up could not be shown safely.');
     }
     if (
       !researchNonemptyString(action.id)
@@ -7827,13 +7856,13 @@
       || (action.owner !== null && typeof action.owner !== 'string')
       || (action.due_date !== null && typeof action.due_date !== 'string')
       || (eligible && !['open', 'in_progress'].includes(action.status))
-    ) throw new Error('Research follow-up authority is invalid.');
+    ) throw new Error('A research follow-up could not be shown safely.');
     validateResearchNested(action);
   }
 
   function validateResearchEvent(event, itemType) {
     if (!researchExactKeys(event, ['id', 'token', 'event_type', 'note', 'who', 'context', 'occurred_on', 'occurred_on_precision', 'provenance', 'recorded_at'])) {
-      throw new Error('Research event authority is invalid.');
+      throw new Error('A research update could not be shown safely.');
     }
     const allowed = RESEARCH_EVENT_TYPES[itemType];
     if (
@@ -7848,18 +7877,18 @@
       || researchPartialDatePrecision(event.occurred_on) !== event.occurred_on_precision
       || !researchNonemptyString(event.recorded_at)
       || researchCanonical(event.provenance) !== researchCanonical(researchExpectedProvenance(event.event_type))
-    ) throw new Error('Research event authority is invalid.');
+    ) throw new Error('A research update could not be shown safely.');
   }
 
   function validateResearchSnapshot(snapshot, itemType, recordId, sourceKey) {
     if (!researchExactKeys(snapshot, ['item_type', 'research_record_id', 'source_key', 'external_facts', 'generated_context', 'discovery_provenance'])) {
-      throw new Error('Research snapshot authority is invalid.');
+      throw new Error('A saved copy of a research item could not be shown safely.');
     }
     if (
       snapshot.item_type !== itemType
       || snapshot.research_record_id !== recordId
       || snapshot.source_key !== sourceKey
-    ) throw new Error('Research snapshot identity is invalid.');
+    ) throw new Error('A saved copy of a research item could not be identified.');
     validateResearchAllowedFields(snapshot.external_facts, RESEARCH_EXTERNAL_FIELDS[itemType]);
     validateResearchAllowedFields(snapshot.generated_context, RESEARCH_GENERATED_FIELDS[itemType]);
     validateResearchAllowedFields(snapshot.discovery_provenance, RESEARCH_DISCOVERY_FIELDS[itemType]);
@@ -7868,15 +7897,15 @@
     if (
       !(itemType === 'trial' ? /^NCT\d{8}$/.test(externalId) : /^[1-9]\d{0,8}$/.test(externalId))
       || sourceKey !== expectedSource
-    ) throw new Error('Research snapshot source identity is invalid.');
+    ) throw new Error('A saved copy of a research item has no usable source ID.');
     if (new TextEncoder().encode(JSON.stringify(snapshot)).length > 1500000) {
-      throw new Error('Research snapshot exceeds the supported limits.');
+      throw new Error('A saved copy of a research item is too large to show safely.');
     }
   }
 
   function validateResearchConsideration(consideration) {
     if (!researchExactKeys(consideration, ['id', 'token', 'item_type', 'research_record_id', 'source_key', 'status', 'snapshot', 'current_state', 'events', 'history', 'follow_up', 'eligibility', 'created_at', 'updated_at', 'closed_at'])) {
-      throw new Error('Research consideration authority is invalid.');
+      throw new Error('A saved research item could not be shown safely.');
     }
     const itemType = consideration.item_type;
     if (
@@ -7889,7 +7918,7 @@
       || !researchNonemptyString(consideration.created_at)
       || !researchNonemptyString(consideration.updated_at)
       || (consideration.closed_at !== null && !researchNonemptyString(consideration.closed_at))
-    ) throw new Error('Research consideration authority is invalid.');
+    ) throw new Error('A saved research item could not be shown safely.');
     validateResearchSnapshot(
       consideration.snapshot,
       itemType,
@@ -7902,11 +7931,11 @@
       || ['external_facts', 'generated_context', 'discovery_provenance'].some(key => (
         !['unchanged', 'changed', 'unavailable'].includes(consideration.current_state[key])
       ))
-    ) throw new Error('Research current-state authority is invalid.');
+    ) throw new Error('The current details of a research item could not be shown safely.');
     if (
       consideration.current_state.occurrence === 'missing'
       && ['external_facts', 'generated_context', 'discovery_provenance'].some(key => consideration.current_state[key] !== 'unavailable')
-    ) throw new Error('Research missing-current authority is invalid.');
+    ) throw new Error('A research item is missing its current details.');
     if (!Array.isArray(consideration.events) || consideration.events.length > 5000) {
       throw new Error('Research events exceed the supported limits.');
     }
@@ -7943,7 +7972,7 @@
       || eligibility.resume.eligible !== (consideration.status === 'closed')
       || eligibility.close.reason !== (consideration.status === 'open' ? null : 'closed')
       || eligibility.resume.reason !== (consideration.status === 'closed' ? null : 'already_open')
-    ) throw new Error('Research eligibility authority is invalid.');
+    ) throw new Error('The actions available for a research item could not be shown safely.');
     validateResearchNested(consideration);
     return consideration;
   }
@@ -7981,7 +8010,7 @@
     const itemIds = new Set();
     data.items.forEach(item => {
       if (!researchExactKeys(item, ['id', 'token', 'item_type', 'source_identity', 'external_facts', 'generated_context', 'discovery_provenance', 'external_url', 'latest_batch_member', 'shortlist', 'consideration_id'])) {
-        throw new Error('Research occurrence authority is invalid.');
+        throw new Error('A research entry could not be shown safely.');
       }
       const itemType = item.item_type;
       if (
@@ -7997,7 +8026,7 @@
         || typeof item.shortlist.eligible !== 'boolean'
         || !['already_shortlisted', 'missing_or_invalid_source_id', 'snapshot_too_large', null].includes(item.shortlist.reason)
         || item.shortlist.eligible !== (item.shortlist.reason === null)
-      ) throw new Error('Research occurrence authority is invalid.');
+      ) throw new Error('A research entry could not be shown safely.');
       itemIds.add(item.id);
       validateResearchAllowedFields(item.external_facts, RESEARCH_EXTERNAL_FIELDS[itemType]);
       validateResearchAllowedFields(item.generated_context, RESEARCH_GENERATED_FIELDS[itemType]);
@@ -8101,13 +8130,13 @@
       return `<ol class="research-value-list">${value.map(item => `<li>${researchValueMarkup(item)}</li>`).join('')}</ol>`;
     }
     if (researchPlainObject(value)) {
-      if (!Object.keys(value).length) return '<span class="research-empty-value">Empty object</span>';
+      if (!Object.keys(value).length) return '<span class="research-empty-value">Recorded as empty</span>';
       const exact = JSON.stringify(value, null, 2);
-      return `<details class="research-exact-details"><summary>Show exact object</summary><pre>${escHtml(exact)}</pre></details>`;
+      return `<details class="research-exact-details"><summary>Show full details</summary><pre>${escHtml(exact)}</pre></details>`;
     }
     const text = String(value);
     if (text.length > 240 || text.includes('\n')) {
-      return `<details class="research-exact-details"><summary>Show exact content</summary><div class="research-long-value">${escHtml(text)}</div></details>`;
+      return `<details class="research-exact-details"><summary>Show full wording</summary><div class="research-long-value">${escHtml(text)}</div></details>`;
     }
     return `<span>${escHtml(text)}</span>`;
   }
@@ -8115,24 +8144,24 @@
   function researchAuthorityMarkup(label, value, allowedFields) {
     const rows = [...allowedFields].map(key => {
       const present = Object.prototype.hasOwnProperty.call(value, key);
-      return `<div class="research-fact-row"><dt>${escHtml(key.replaceAll('_', ' '))}</dt><dd>${present ? researchValueMarkup(value[key]) : '<span class="research-missing-value">Not in the record</span>'}</dd></div>`;
+      return `<div class="research-fact-row"><dt>${escHtml(researchFieldLabel(key))}</dt><dd>${present ? researchValueMarkup(value[key]) : '<span class="research-missing-value">Not in the record</span>'}</dd></div>`;
     }).join('');
     return `<section class="research-authority-section"><h4>${escHtml(label)}</h4><dl class="research-fact-list">${rows}</dl></section>`;
   }
 
   function researchItemTitle(item) {
     const title = item.external_facts.title;
-    if (!Object.prototype.hasOwnProperty.call(item.external_facts, 'title')) return 'Title field missing';
-    if (title === null) return 'Title is null';
-    if (title === '') return 'Title is empty';
+    if (!Object.prototype.hasOwnProperty.call(item.external_facts, 'title')) return 'Title not in the record';
+    if (title === null) return 'No title recorded';
+    if (title === '') return 'Title recorded as blank';
     return String(title);
   }
 
   function researchIdentityLabel(item) {
     const externalId = item.source_identity.external_id;
-    if (externalId === null) return 'External identifier is null';
-    if (externalId === '') return 'External identifier is empty';
-    return externalId == null ? 'External identifier missing' : String(externalId);
+    if (externalId === null) return 'No source ID recorded';
+    if (externalId === '') return 'Source ID recorded as blank';
+    return externalId == null ? 'Source ID not in the record' : String(externalId);
   }
 
   function appendResearchControl(container, label, authority, tone = 'secondary') {
@@ -8168,7 +8197,7 @@
         </div>
         ${item.latest_batch_member ? '<span class="research-latest-badge">Latest batch</span>' : ''}
       </header>
-      ${canonical ? `<p><a class="research-external-link" href="${escHtml(canonical)}" target="_blank" rel="noopener noreferrer">Open exact ${item.item_type === 'trial' ? 'ClinicalTrials.gov' : 'PubMed'} record <span aria-hidden="true">↗</span></a></p>` : '<p class="research-mechanical-reason">There is no link to the original source for this entry.</p>'}
+      ${canonical ? `<p><a class="research-external-link" href="${escHtml(canonical)}" target="_blank" rel="noopener noreferrer">Open on ${item.item_type === 'trial' ? 'ClinicalTrials.gov' : 'PubMed'} <span aria-hidden="true">↗</span></a></p>` : '<p class="research-mechanical-reason">There is no link to the original source for this entry.</p>'}
     `;
     if (!compact) {
       article.insertAdjacentHTML('beforeend', `
@@ -8214,12 +8243,12 @@
     const snapshot = consideration.snapshot;
     const snapshotTitle = Object.prototype.hasOwnProperty.call(snapshot.external_facts, 'title')
       ? snapshot.external_facts.title
-      : 'Title field missing';
+      : 'Title not in the record';
     article.innerHTML = `
       <header class="research-card-header">
         <div>
           <span class="research-type">${escHtml(consideration.item_type === 'trial' ? 'Clinical trial consideration' : 'Research paper consideration')}</span>
-          <h3>${escHtml(snapshotTitle === null ? 'Title is null' : snapshotTitle === '' ? 'Title is empty' : String(snapshotTitle))}</h3>
+          <h3>${escHtml(snapshotTitle === null ? 'No title recorded' : snapshotTitle === '' ? 'Title recorded as blank' : String(snapshotTitle))}</h3>
         </div>
         <span class="research-workflow-state ${escHtml(consideration.status)}">${consideration.status === 'open' ? 'Being considered' : 'Closed by you'}</span>
       </header>
@@ -8259,7 +8288,7 @@
             unlink_follow_up: 'Follow-up unlinked',
           }[entry.operation] || 'Updated by you')}</strong><span>${escHtml(formatActionTimestamp(entry.at))}</span></div></li>`).join('')}</ol>` : '<p class="research-empty-value">No consideration history is recorded.</p>'}
         </section>
-        <section class="research-follow-up-summary"><h3>Durable follow-up</h3>
+        <section class="research-follow-up-summary"><h3>Linked follow-up</h3>
           ${consideration.follow_up ? `<dl class="research-event-meta"><div><dt>Text</dt><dd>${researchValueMarkup(consideration.follow_up.text)}</dd></div><div><dt>Status</dt><dd>${researchValueMarkup(consideration.follow_up.status)}</dd></div><div><dt>Owner</dt><dd>${researchValueMarkup(consideration.follow_up.owner)}</dd></div><div><dt>Due date</dt><dd>${researchValueMarkup(consideration.follow_up.due_date)}</dd></div></dl>` : '<p class="research-empty-value">No caregiver follow-up is linked.</p>'}
         </section>
       `);
@@ -8585,7 +8614,7 @@
     document.getElementById('research-event-type').replaceChildren();
     document.getElementById('research-follow-up-existing-action').replaceChildren();
     document.getElementById('research-follow-up-modes').replaceChildren(
-      Object.assign(document.createElement('legend'), { textContent: 'Follow-up operation' })
+      Object.assign(document.createElement('legend'), { textContent: 'What do you want to do with the follow-up?' })
     );
     for (const id of [
       'research-shortlist-error', 'research-event-error', 'research-lifecycle-error',
@@ -8651,7 +8680,7 @@
       event: 'Record caregiver event',
       close: 'Close caregiver consideration',
       resume: 'Resume caregiver consideration',
-      'follow-up': current.follow_up ? 'Unlink durable follow-up' : 'Link or create a follow-up',
+      'follow-up': current.follow_up ? 'Unlink this follow-up' : 'Link or create a follow-up',
     };
     document.getElementById('research-dialog-title').textContent = titles[mode];
     document.getElementById('research-dialog-context').innerHTML = researchDialogContextMarkup(current);
@@ -8677,7 +8706,7 @@
     const select = document.getElementById('research-event-type');
     const placeholder = document.createElement('option');
     placeholder.value = '';
-    placeholder.textContent = 'Choose an allowed event type';
+    placeholder.textContent = 'Choose what kind of update this is';
     select.appendChild(placeholder);
     consideration.eligibility.allowed_event_types.forEach(type => {
       const option = document.createElement('option');
@@ -8705,7 +8734,7 @@
       ? RESEARCH_ATTRIBUTION_LABELS.clinician
       : type === 'trial_site_communication'
         ? RESEARCH_ATTRIBUTION_LABELS.trial_site
-        : type ? RESEARCH_ATTRIBUTION_LABELS.caregiver : 'Choose an allowed event type.';
+        : type ? RESEARCH_ATTRIBUTION_LABELS.caregiver : 'Choose what kind of update this is.';
     document.getElementById('research-event-attribution').textContent =
       type ? `Attribution preview · ${attribution}` : attribution;
     document.getElementById('research-event-submit').disabled = !type;
@@ -8715,7 +8744,7 @@
   function configureResearchLifecycleForm(mode, consideration) {
     const close = mode === 'close';
     document.getElementById('research-lifecycle-copy').textContent = close
-      ? 'Closing stops active caregiver consideration only. It does not mean this research is irrelevant, unavailable, unsuitable, ineligible, or rejected.'
+      ? 'Closing only stops showing this as something you are actively considering. It does not mean the research is irrelevant, unavailable, unsuitable, ineligible, or rejected.'
       : 'Resuming reopens this research entry and keeps everything already recorded against it.';
     document.getElementById('research-lifecycle-submit').textContent = close ? 'Close consideration' : 'Resume consideration';
     const eligible = close ? consideration.eligibility.close.eligible : consideration.eligibility.resume.eligible;
@@ -8725,7 +8754,7 @@
   function configureResearchFollowUpForm(consideration) {
     const fieldset = document.getElementById('research-follow-up-modes');
     const legend = document.createElement('legend');
-    legend.textContent = 'Follow-up operation';
+    legend.textContent = 'What do you want to do with the follow-up?';
     fieldset.replaceChildren(legend);
     consideration.eligibility.follow_up_variants.forEach((variant, index) => {
       const label = document.createElement('label');
@@ -8737,7 +8766,7 @@
       input.checked = index === 0;
       input.addEventListener('change', updateResearchFollowUpMode);
       label.append(input, document.createTextNode({
-        link_existing: 'Link one current eligible action',
+        link_existing: 'Link a follow-up you already have',
         create_and_link: 'Create a follow-up and link it in one step',
         unlink: 'Unlink the current action',
       }[variant]));
@@ -8746,7 +8775,7 @@
     const select = document.getElementById('research-follow-up-existing-action');
     const placeholder = document.createElement('option');
     placeholder.value = '';
-    placeholder.textContent = 'Choose a current eligible action';
+    placeholder.textContent = 'Choose a follow-up to link';
     select.appendChild(placeholder);
     researchProjection.eligible_actions.forEach((action, index) => {
       const option = document.createElement('option');
@@ -8991,7 +9020,7 @@
     } else {
       clearResearchSubmissionRetryOnly();
     }
-    setResearchDialogStatus(explicitRetry ? 'Retrying the unchanged request…' : 'Saving…', 'saving');
+    setResearchDialogStatus(explicitRetry ? 'Sending the same details again…' : 'Saving…', 'saving');
     try {
       const response = await fetch(intent.url, {
         method: intent.method,
@@ -9096,7 +9125,7 @@
       || context.length > 2000
       || (occurredOn && parseCaregiverDate(occurredOn) === null)
     ) {
-      setFormError('research-event-error', `Enter an allowed event type and a note. ${dateEntryHelp('date')}`);
+      setFormError('research-event-error', `Choose what kind of update this is and add a note. ${dateEntryHelp('date')}`);
       return;
     }
     const body = {
@@ -9152,7 +9181,7 @@
       const option = document.getElementById('research-follow-up-existing-action').selectedOptions[0];
       const action = researchActionOptionAuthority.get(option);
       if (!action || !researchProjection.eligible_actions.some(value => value.id === action.id && value.token === action.token)) {
-        setFormError('research-follow-up-error', 'Select a current eligible action.');
+        setFormError('research-follow-up-error', 'Choose a follow-up to link.');
         return;
       }
       body.caregiver_action_id = action.id;
@@ -9162,7 +9191,7 @@
       const owner = document.getElementById('research-follow-up-owner').value;
       const dueDate = document.getElementById('research-follow-up-due').value;
       if (!text.trim() || text.length > 1000 || owner.length > 100) {
-        setFormError('research-follow-up-error', 'Enter a bounded caregiver follow-up description.');
+        setFormError('research-follow-up-error', 'Enter a follow-up note under 1,000 characters.');
         return;
       }
       body.follow_up = {
@@ -9374,9 +9403,9 @@
     }
     if (task.derived_content_stale_reason === 'question_generation_superseded') {
       return {
-        title: 'Generated questions are superseded',
+        title: 'A newer set of questions is available',
         detail: 'A newer appointment-question generation replaced this result.',
-        preview: 'Generated questions superseded by a newer run',
+        preview: 'A newer set of questions replaced these',
       };
     }
     return {
@@ -9571,7 +9600,7 @@
             : `<div class="receipt-value">${escHtml(receiptValueSummary(change.effective_value, change.category))}</div>`}
           <div class="receipt-provenance">
             ${evidenceBadge(change.evidence_status)}
-            ${change.evidence_url ? `<a href="${escHtml(change.evidence_url)}" target="_blank" rel="noopener">View exact wording</a>` : ''}
+            ${change.evidence_url ? `<a href="${escHtml(change.evidence_url)}" target="_blank" rel="noopener">View source text</a>` : ''}
             ${change.original_evidence_url ? `<a href="${escHtml(change.original_evidence_url)}" target="_blank" rel="noopener">View original wording before correction</a>` : ''}
             ${history}
           </div>
@@ -9893,7 +9922,7 @@
       <strong>${escHtml(staleCopy.title)}</strong>
       <span>${escHtml(staleCopy.detail)} ${
         artifact.state === 'available'
-          ? 'The prior report is retained but hidden here.'
+          ? 'The older report is not shown here because it may be out of date.'
           : 'The prior report is not available here.'
       }</span>
     </div>${artifact.state === 'available' ? '' : artifactStateMarkup(task)}`;
@@ -10599,7 +10628,7 @@
 
   async function runDeepSweep() {
     const btn = document.getElementById('btn-deep-sweep');
-    if (!confirm('Run an ensemble deep-sweep? This runs two premium models (Fable 5 + Opus 4.8) plus a synthesis pass — it takes a few minutes and costs roughly $1–2 per run. Findings are for oncologist review and are NOT saved to the tracked lists.')) {
+    if (!confirm('Run a deeper research search? It uses more expensive AI, takes a few minutes, and costs about $1–2. The findings are for oncologist review and will not be saved to your research list.')) {
       return;
     }
     const submission = beginJobSubmission();
@@ -10861,7 +10890,7 @@
     );
     addSection('Unresolved / unknown items', sections.unresolved, (item, index) => [
       `${index + 1}. ${recapPlainText(item.text)}`,
-      `Status: ${item.kind === 'unknown' ? 'Explicitly unknown' : 'No answer recorded'}`,
+      `Status: ${item.kind === 'unknown' ? 'Clinician said it is not known' : 'No answer recorded'}`,
       `Source: ${recapPlainText(caregiverProvenancePresentation(item.provenance_label))}`,
     ]);
     return `${lines.join('\n')}\n`;
@@ -10945,7 +10974,7 @@
       },
     );
     html += recapSectionMarkup('Unresolved / unknown items', sections.unresolved, item =>
-      `<article><strong>${escHtml(item.text)}</strong><span class="visit-recap-meta">${item.kind === 'unknown' ? 'Explicitly unknown' : 'No answer recorded'}</span><p class="capture-provenance">${escHtml(caregiverProvenancePresentation(item.provenance_label))}</p></article>`
+      `<article><strong>${escHtml(item.text)}</strong><span class="visit-recap-meta">${item.kind === 'unknown' ? 'Clinician said it is not known' : 'No answer recorded'}</span><p class="capture-provenance">${escHtml(caregiverProvenancePresentation(item.provenance_label))}</p></article>`
     );
     content.innerHTML = `${html}</div>`;
   }
@@ -11215,7 +11244,7 @@
       visitRecapState = 'conflict';
       visitRecapMessage = visitChanged
         ? 'The selected visit changed. Reload the visit and recap before exporting.'
-        : 'The recap preflight returned stale or incomplete authority. Reload before exporting.';
+        : 'The recap check came back out of date or incomplete. Reload before exporting.';
       renderVisitRecap();
       return false;
     }
@@ -11436,7 +11465,7 @@
     if (!summary || !action) return;
     const visit = todayAppointmentVisit();
     if (!visit) {
-      summary.textContent = 'No working visit is set up yet. Create one and collect questions before the appointment.';
+      summary.textContent = 'No appointment has been set up yet. Add the next appointment and collect questions for it.';
       action.textContent = 'Set up appointment';
       return;
     }
@@ -11446,7 +11475,7 @@
       visit.time,
       visit.clinician,
     ].filter(Boolean).join(' · ');
-    summary.textContent = details || 'A working visit is ready for preparation.';
+    summary.textContent = details || 'An appointment is ready to prepare.';
     action.textContent = visit.status === 'in_progress' ? 'Continue appointment' : 'Prepare for appointment';
   }
 
@@ -11667,10 +11696,10 @@
     list.setAttribute('aria-labelledby', `follow-up-filter-${followUpFilter}`);
     if (!filtered.length) {
       const empty = {
-        active: 'No active follow-through tasks.',
-        completed: 'No completed follow-through tasks.',
-        cancelled: 'No cancelled follow-through tasks.',
-        all: 'No follow-through tasks yet.',
+        active: 'No active follow-ups.',
+        completed: 'No completed follow-ups.',
+        cancelled: 'No cancelled follow-ups.',
+        all: 'No follow-ups yet.',
       }[followUpFilter];
       list.innerHTML = `${staleNotice}<div class="empty-state">${escHtml(empty)}</div>`;
       refreshGeneratedActionControls();
@@ -11813,7 +11842,7 @@
     if (pendingFollowUpIntent) {
       clearFollowUpRetry();
       setFollowUpDialogStatus(
-        'The draft changed. Review the latest action and submit it as a new request.',
+        'The details changed. Review the latest follow-up and send it again.',
         'conflict',
       );
     }
@@ -12422,8 +12451,8 @@
     activeFollowUpIntent = intent;
     setFollowUpMutationBusy(true);
     if (!explicitRetry) clearFollowUpRetry();
-    setFollowUpStatus(explicitRetry ? 'Retrying the unchanged request…' : 'Saving…', 'saving');
-    setFollowUpDialogStatus(explicitRetry ? 'Retrying the unchanged request…' : 'Saving…', 'saving');
+    setFollowUpStatus(explicitRetry ? 'Sending the same details again…' : 'Saving…', 'saving');
+    setFollowUpDialogStatus(explicitRetry ? 'Sending the same details again…' : 'Saving…', 'saving');
     try {
       const response = await fetch(intent.url, {
         method: intent.method,
@@ -12638,7 +12667,7 @@
     const select = document.getElementById('visit-source-appointment');
     if (!select) return;
     const current = select.value;
-    select.innerHTML = '<option value="">Create without imported appointment</option>'
+    select.innerHTML = '<option value="">Create a new appointment</option>'
       + appointmentOptions.map(item => {
         const label = [
           item.date ? fmtDate(item.date) : 'Date pending',
@@ -12669,7 +12698,7 @@
         <div class="visit-row-main">
           <div class="visit-row-title">${escHtml(visit.title)}</div>
           <div class="visit-row-meta">${details || 'Visit details not set'}</div>
-          ${source ? `<div class="visit-source-label">Linked imported appointment · ${escHtml(source.description || source.type || fmtDate(source.date))}</div>` : ''}
+          ${source ? `<div class="visit-source-label">Linked appointment · ${escHtml(source.description || source.type || fmtDate(source.date))}</div>` : ''}
         </div>
         <span class="visit-status-badge ${safeClassToken(visit.status, 'planned')}">${escHtml(visitStatusLabel(visit.status))}</span>
         <button class="button secondary visit-open-button" onclick="openAppointmentWorkspace(this, this.closest('.visit-row').dataset.visitId)">Open appointment</button>
@@ -13147,7 +13176,7 @@
     const visit = currentVisit();
     const text = (document.getElementById('visit-manual-question')?.value || '').trim();
     if (!visit || !text) {
-      setFormError('visit-question-error', 'Enter a manual caregiver question.');
+      setFormError('visit-question-error', 'Enter the question you want to ask.');
       updateAppointmentFormValidity();
       return;
     }
@@ -13201,12 +13230,12 @@
           <label><span>Rank</span><select onchange="rankVisitQuestion(this.closest('.visit-question'),Number(this.value))">${sameGroup.map((item, rank) => `<option value="${rank}" ${item.id === question.id ? 'selected' : ''}>${rank + 1}</option>`).join('')}</select></label>
         </div>
         ${answer ? `<div class="visit-answer captured">
-          <strong>${answer.status === 'unknown' ? 'Clinician answer explicitly unknown' : 'Captured answer'}</strong>
+          <strong>${answer.status === 'unknown' ? 'Clinician said the answer is not known' : 'Answer you recorded'}</strong>
           ${answer.text ? `<p>${escHtml(answer.text)}</p>` : ''}
           <span class="capture-provenance">${RECORD_SOURCE_COPY.clinician}</span>
         </div>` : `<div class="visit-answer">
-          <label><span>Answer status</span><select class="visit-answer-status" onchange="toggleVisitAnswerText(this)"><option value="answered">Answered</option><option value="unknown">Explicitly unknown</option></select></label>
-          <label class="visit-answer-text-label"><span>Clinician-attributed answer</span><textarea class="visit-answer-text" maxlength="4000" rows="3"></textarea></label>
+          <label><span>Answer status</span><select class="visit-answer-status" onchange="toggleVisitAnswerText(this)"><option value="answered">Answered</option><option value="unknown">Clinician said it is not known</option></select></label>
+          <label class="visit-answer-text-label"><span>Answer you heard from the clinician</span><textarea class="visit-answer-text" maxlength="4000" rows="3"></textarea></label>
           <button class="button primary" onclick="saveVisitAnswer(this.closest('.visit-question'))">Save answer</button>
         </div>`}
       </article>`;
@@ -13366,7 +13395,7 @@
       .map(item => `<option value="${escHtml(item.id)}">${escHtml(item.text.slice(0, 100))}</option>`)
       .join('');
     if (!decisions.length) {
-      list.innerHTML = '<div class="empty-state">No clinician-attributed decisions captured.</div>';
+      list.innerHTML = '<div class="empty-state">No decisions from the clinician have been recorded yet.</div>';
       return;
     }
     list.innerHTML = decisions.map(decision => {
@@ -13464,7 +13493,7 @@
       ? '<div class="follow-up-stale-note compact" role="status"><div><strong>Offline · showing the last version that loaded</strong><span>Reload before adding or changing follow-ups.</span></div></div>'
       : '';
     if (!items.length) {
-      list.innerHTML = `${staleNotice}<div class="empty-state">No resulting follow-ups for this visit.</div>`;
+      list.innerHTML = `${staleNotice}<div class="empty-state">No follow-ups have been added for this appointment yet.</div>`;
       return;
     }
     list.innerHTML = staleNotice + items.map(item => {
@@ -13814,7 +13843,7 @@
     const msgs = document.getElementById('chat-messages');
     if (msgs) {
       msgs.innerHTML = `<div class="chat-revision-notice" role="status">
-        Patient record changed. Prior chat history was cleared before new answers.
+        The patient record changed, so the previous chat was cleared before answering again.
       </div>`;
     }
     return changed;
@@ -14055,7 +14084,7 @@
   }
 
   // ── Treatment reconciliation ────────────────────────────────────────────
-  const TREATMENT_SAFETY_GUIDANCE = 'NET/Care records what you enter but does not verify treatment details or advise starting, stopping, or changing treatment. Confirm treatment decisions with the treating team.';
+  const TREATMENT_SAFETY_GUIDANCE = 'NET/Care records what you enter. It does not check whether treatment details are correct or give advice about starting, stopping, or changing treatment. Confirm treatment decisions with the treating team.';
   const TREATMENT_CONFIRMATION_LABEL = 'Caregiver-entered · attributed to clinician · unverified';
   const TREATMENT_UNLINKED_GENERATED_AUTHORITY_LABEL = 'Machine-generated compatibility context · source linkage unavailable · not a treatment record';
   const TREATMENT_TODAY_LIMIT = 3;
@@ -14932,21 +14961,21 @@
       if (value.length <= 160) return treatmentElement('span', 'treatment-exact-value', value);
       const details = treatmentElement('details', 'treatment-exact-details');
       details.append(
-        treatmentElement('summary', '', `Show exact text (${value.length} characters)`),
+        treatmentElement('summary', '', 'Show full wording'),
         treatmentElement('pre', 'treatment-exact-value', value),
       );
       return details;
     }
     if (typeof value === 'boolean') {
-      return treatmentElement('span', 'treatment-exact-value', `Boolean: ${value}`);
+      return treatmentElement('span', 'treatment-exact-value', value ? 'Yes' : 'No');
     }
     if (typeof value === 'number') {
-      return treatmentElement('span', 'treatment-exact-value', `Number: ${String(value)}`);
+      return treatmentElement('span', 'treatment-exact-value', String(value));
     }
     const serialized = JSON.stringify(value, null, 2);
     const details = treatmentElement('details', 'treatment-exact-details');
     details.append(
-      treatmentElement('summary', '', Array.isArray(value) ? 'Show exact array' : 'Show exact object'),
+      treatmentElement('summary', '', 'Show full details'),
       treatmentElement('pre', 'treatment-exact-value', serialized),
     );
     return details;
@@ -14967,7 +14996,7 @@
   function treatmentDatePresentation(value, course, prefix) {
     return `${value === null ? 'Not recorded' : fmtDate(String(value))} · ${precisionLabel(course[`${prefix}_date_precision`])} · ${
       course[`${prefix}_date_kind`] === 'caregiver_entered'
-        ? 'You entered this date'
+        ? 'Date you entered'
         : 'Date source not recorded'
     }`;
   }
@@ -14989,22 +15018,22 @@
     );
     card.append(heading, treatmentElement('h3', '', course.treatment_text));
     const facts = treatmentElement('dl', 'treatment-facts');
-    treatmentAppendFact(facts, 'Type wording', course, 'treatment_type_text');
-    treatmentAppendFact(facts, 'Dose wording', course, 'dose_text');
-    treatmentAppendFact(facts, 'Schedule wording', course, 'schedule_text');
+    treatmentAppendFact(facts, 'Type', course, 'treatment_type_text');
+    treatmentAppendFact(facts, 'Dose', course, 'dose_text');
+    treatmentAppendFact(facts, 'Schedule', course, 'schedule_text');
     if (!compact) {
-      treatmentAppendFact(facts, 'Route wording', course, 'route_text');
-      treatmentAppendFact(facts, 'Frequency wording', course, 'frequency_text');
-      treatmentAppendFact(facts, 'Cycle wording', course, 'cycle_text');
-      treatmentAppendFact(facts, 'Formulation wording', course, 'formulation_text');
-      treatmentAppendFact(facts, 'Indication wording', course, 'indication_text');
+      treatmentAppendFact(facts, 'Route', course, 'route_text');
+      treatmentAppendFact(facts, 'Frequency', course, 'frequency_text');
+      treatmentAppendFact(facts, 'Cycle', course, 'cycle_text');
+      treatmentAppendFact(facts, 'Formulation', course, 'formulation_text');
+      treatmentAppendFact(facts, 'Reason for treatment', course, 'indication_text');
       treatmentAppendFact(facts, 'Notes', course, 'notes');
       treatmentAppendFact(facts, 'Start date', course, 'start_date', (value, row) => treatmentDatePresentation(value, row, 'start'));
       treatmentAppendFact(facts, 'Stop date', course, 'stop_date', (value, row) => treatmentDatePresentation(value, row, 'stop'));
       treatmentAppendFact(facts, 'Planned date', course, 'planned_date', (value, row) => treatmentDatePresentation(value, row, 'planned'));
       treatmentAppendFact(
         facts,
-        'Linked recorded components',
+        'Linked treatment wording',
         { value: course.legacy_component_ids.length
           ? `Linked to ${course.legacy_component_ids.length} recorded treatment entr${course.legacy_component_ids.length === 1 ? 'y' : 'ies'}`
           : null },
@@ -15077,7 +15106,7 @@
       ? ''
       : safeTreatmentSourceUrl(source.provenance.evidence_url, source.ref, 'evidence');
     if (evidenceUrl) {
-      const link = treatmentElement('a', '', 'View exact wording');
+      const link = treatmentElement('a', '', 'View source text');
       link.href = evidenceUrl;
       link.target = '_blank';
       link.rel = 'noopener';
@@ -15104,7 +15133,7 @@
       return cell;
     }
     const name = document_.filename || document_.document_type;
-    cell.append(treatmentElement('strong', '', name || 'Document identity not recorded'));
+    cell.append(treatmentElement('strong', '', name || 'Document name not recorded'));
     if (name && document_.filename && document_.document_type) {
       cell.append(
         treatmentElement('span', 'treatment-source-detail', document_.document_type),
@@ -15194,15 +15223,15 @@
     const presentation = {
       none: {
         label: 'No status recorded',
-        detail: 'No caregiver status record refers to this wording.',
+        detail: 'No treatment status you entered refers to this wording.',
       },
       all: {
-        label: 'Linked to reviewed status',
-        detail: 'All recorded components are linked to a caregiver-reviewed treatment status. The recorded wording remains separate.',
+        label: 'Linked to a treatment status you entered',
+        detail: 'Every part of this wording is linked to a treatment status you entered. The recorded wording stays separate.',
       },
       partial: {
-        label: 'Partly linked to reviewed status',
-        detail: `${reviewLinkage.linkedCount} of ${reviewLinkage.totalCount} recorded components are linked to a caregiver-reviewed treatment status.`,
+        label: 'Partly linked to a treatment status you entered',
+        detail: `${reviewLinkage.linkedCount} of ${reviewLinkage.totalCount} parts of this wording are linked to a treatment status you entered.`,
       },
     }[reviewLinkage.state];
     const card = treatmentElement(
@@ -15216,7 +15245,7 @@
     );
     if (compact) return card;
     const components = treatmentElement('section', 'treatment-legacy-section');
-    components.append(treatmentElement('h4', '', 'Recorded components'));
+    components.append(treatmentElement('h4', '', 'Parts of this wording'));
     if (row.components.length) {
       const list = treatmentElement('ol');
       row.components.forEach(component => {
@@ -15270,12 +15299,12 @@
     current.append(treatmentElement('h5', '', 'Current side state'));
     if (kind === 'source') {
       const snapshotFacts = treatmentElement('dl', 'treatment-facts');
-      treatmentAppendFact(snapshotFacts, 'Observed wording', side.snapshot, 'observed_text');
-      treatmentAppendFact(snapshotFacts, 'Recorded value', side.snapshot, 'record_value');
+      treatmentAppendFact(snapshotFacts, 'Wording in the document', side.snapshot, 'observed_text');
+      treatmentAppendFact(snapshotFacts, 'Saved from that wording', side.snapshot, 'record_value');
       snapshot.append(snapshotFacts);
       const currentFacts = treatmentElement('dl', 'treatment-facts');
-      treatmentAppendFact(currentFacts, 'Observed wording', side.current, 'observed_text');
-      treatmentAppendFact(currentFacts, 'Recorded value', side.current, 'record_value');
+      treatmentAppendFact(currentFacts, 'Wording in the document', side.current, 'observed_text');
+      treatmentAppendFact(currentFacts, 'Saved from that wording', side.current, 'record_value');
       current.append(currentFacts);
     } else {
       snapshot.append(treatmentCourseCard(side.snapshot, true));
@@ -15314,7 +15343,7 @@
     card.append(citations);
     if (discrepancy.confirmations.length) {
       const outcomes = treatmentElement('section', 'treatment-outcomes');
-      outcomes.append(treatmentElement('h4', '', 'Recorded treating-team outcomes'));
+      outcomes.append(treatmentElement('h4', '', 'What the treating team said'));
       discrepancy.confirmations.forEach(confirmation => {
         const outcome = treatmentElement('article', 'treatment-outcome');
         outcome.append(
@@ -15322,8 +15351,8 @@
           treatmentElement('strong', '', enumLabel(confirmation.outcome)),
         );
         const facts = treatmentElement('dl', 'treatment-facts');
-        treatmentAppendFact(facts, 'Caregiver note', confirmation, 'note');
-        treatmentAppendFact(facts, 'Clinician attribution', confirmation, 'clinician_text');
+        treatmentAppendFact(facts, 'Your note', confirmation, 'note');
+        treatmentAppendFact(facts, 'Clinician or team named', confirmation, 'clinician_text');
         treatmentAppendFact(facts, 'Context', confirmation, 'context_text');
         treatmentAppendFact(facts, 'Date', confirmation, 'date', value => (
           value == null ? value : fmtDate(String(value))
@@ -15347,7 +15376,7 @@
     const actions = treatmentElement('div', 'treatment-card-actions');
     const mutable = treatmentProjectionState === 'current' && treatmentResponseOwnerIsCurrent();
     if (discrepancy.eligibility.resolve) {
-      const resolve = treatmentElement('button', 'button secondary', 'Record treating-team outcome');
+      const resolve = treatmentElement('button', 'button secondary', 'Record what the treating team said');
       resolve.type = 'button';
       resolve.disabled = !mutable;
       resolve.addEventListener('click', () => openTreatmentDiscrepancyDialog('resolve', resolve, discrepancy.id));
@@ -15371,7 +15400,7 @@
       const linked = treatmentElement(
         'button',
         'button secondary',
-        discrepancy.follow_up ? 'Review linked follow-up' : 'Manage follow-up',
+        discrepancy.follow_up ? 'Open linked follow-up' : 'Add follow-up',
       );
       linked.type = 'button';
       linked.disabled = !mutable;
@@ -15543,8 +15572,8 @@
       const lastRoute = routes.pop();
       const routeText = routes.length ? `${routes.join(', ')}, or ${lastRoute}` : lastRoute;
       const recordedSection = treatmentOverviewSection(
-        `Recorded treatment statements (${recordedInformation.length})`,
-        'Wording already recorded in the patient record, newest recorded first. These are statements — starts, stops, dose or schedule changes and administration detail — not a list of current treatments, and no status is assigned to them. Each card shows whether its explicit components are linked to a caregiver-reviewed status record.',
+        `Treatment wording saved in the record (${recordedInformation.length})`,
+        'Wording already saved in the patient record, newest saved first. These are statements — starts, stops, dose or schedule changes and administration detail — not a list of current treatments, and none of them is given a status. Each card shows whether its parts are linked to a treatment status you entered.',
         recordedInformation,
         hiddenRecordedRows.length
           ? 'Every recorded treatment statement is hidden. Open the hidden list below to show one again.'
@@ -15555,7 +15584,7 @@
         const summary = treatmentElement(
           'summary',
           '',
-          `${hiddenRecordedRows.length} hidden by you · show`,
+          `${hiddenRecordedRows.length} hidden by you · show list`,
         );
         disclosure.append(summary);
         disclosure.append(treatmentElement(
@@ -15573,14 +15602,14 @@
       records.replaceChildren(
         treatmentOverviewSection(
           'Current and planned',
-          'Only status records explicitly reviewed by the caregiver appear here, newest first by the date each record is about. Records without that date come last.',
+          'Only treatment statuses you entered appear here, newest first by their relevant date. Records without a date come last.',
           currentAndPlanned,
           `No treatment has been explicitly recorded as current or planned. To add one, ${routeText}. You choose the status and any dates.`,
         ),
         recordedSection,
         treatmentOverviewSection(
           'Finished or past',
-          'Only status records explicitly reviewed as finished or past appear here, newest first by the date each record is about. Records without that date come last.',
+          'Only treatment statuses you entered as ended, cancelled, not started or otherwise past appear here, newest first by their relevant date. Records without a date come last.',
           past,
           'No treatment has been explicitly recorded as finished or past.',
         ),
@@ -15634,7 +15663,7 @@
     const today = document.getElementById('today-treatment-list');
     if (today) today.replaceChildren(treatmentElement('div', 'empty-state', message));
     const totals = document.getElementById('today-treatment-totals');
-    if (totals) totals.textContent = 'Treatment totals are unavailable.';
+    if (totals) totals.textContent = 'Treatment summary is unavailable.';
     const records = document.getElementById('patient-treatment-list');
     if (records) records.replaceChildren(treatmentElement('div', 'empty-state', message));
     const differences = document.getElementById('treatment-discrepancy-list');
@@ -16004,7 +16033,7 @@
         markTreatmentProjectionStale(
           treatmentProjection
             ? 'The connection dropped. You are seeing the last version that loaded, and it is out of date.'
-            : 'The treatment endpoint could not be reached and no prior snapshot is available.',
+            : 'Treatments could not be reached and no earlier version is available.',
           { abortRequest: false, preserveMutation },
         );
         if (pendingTreatmentCompletion) {
@@ -16165,15 +16194,15 @@
       ));
     }
     const labels = {
-      treatment_text: 'Treatment wording',
-      treatment_type_text: 'Treatment type wording',
-      dose_text: 'Dose wording',
-      route_text: 'Route wording',
-      frequency_text: 'Frequency wording',
-      cycle_text: 'Cycle wording',
-      schedule_text: 'Schedule wording',
-      formulation_text: 'Formulation wording',
-      indication_text: 'Indication wording',
+      treatment_text: 'Treatment',
+      treatment_type_text: 'Treatment type',
+      dose_text: 'Dose',
+      route_text: 'Route',
+      frequency_text: 'Frequency',
+      cycle_text: 'Cycle',
+      schedule_text: 'Schedule',
+      formulation_text: 'Formulation',
+      indication_text: 'Reason for treatment',
       notes: 'Notes',
     };
     const draft = options.draft || {};
@@ -16190,7 +16219,7 @@
       labels.treatment_text,
       required,
       prefilledText === null
-        ? 'Required exact caregiver wording. Nothing is copied from document mentions or generated context.'
+        ? 'Required. Write the treatment name as you want it saved.'
         : options.prefillSource === 'document_mention'
           ? 'Copied from the document mention you chose. Edit it to the exact wording you want to record.'
           : 'Copied from the recorded treatment entry you chose. Edit it to the exact wording you want to record.',
@@ -16225,8 +16254,7 @@
     optional.append(treatmentElement(
       'p',
       'helper-text',
-      'Leave these empty when your treatment wording above already says it. '
-      + 'An empty box records nothing for that detail.',
+      'Add only the details that are useful. Leave the rest blank.',
     ));
     const optionalGrid = treatmentElement('div', 'treatment-form-grid');
     for (const field of TREATMENT_OPTIONAL_TEXT_FIELDS) {
@@ -16247,7 +16275,7 @@
       treatmentElement(
         'p',
         'helper-text',
-        'You choose this link. It does not establish equivalence or confirm the source.',
+        'This only links items for your reference. It does not confirm that they mean the same thing, and it does not confirm the source.',
       ),
     );
     const componentOptions = [];
@@ -16367,7 +16395,7 @@
     });
     fragment.append(treatmentFieldLabel('Record A · document mention', sourceA));
     const variant = treatmentElement('fieldset', 'treatment-choice-fieldset');
-    variant.append(treatmentElement('legend', '', 'Record B authority'));
+    variant.append(treatmentElement('legend', '', 'What to compare it with'));
     [
       ['source', 'Another document mention'],
       ['course', 'A caregiver treatment record'],
@@ -16418,9 +16446,9 @@
     fragment.append(
       treatmentFieldLabel('What kind of difference is this?', category),
       treatmentFieldLabel(
-        'Caregiver comparison wording',
+        'What difference did you notice?',
         comparison,
-        'Record the difference without deciding chronology, preference, causality, or correctness.',
+        'Write only what differs between the two entries. Do not say which came first, which is preferred, what caused the difference, or which is correct.',
       ),
     );
     return fragment;
@@ -16477,9 +16505,9 @@
     date.dataset.caregiverField = 'true';
     fragment.append(
       treatmentFieldLabel('Outcome', outcome),
-      treatmentFieldLabel('Caregiver note', note),
-      treatmentFieldLabel('Clinician attribution wording (optional)', clinician),
-      treatmentFieldLabel('Context wording (optional)', context),
+      treatmentFieldLabel('Your note', note),
+      treatmentFieldLabel('Who said this? (optional)', clinician),
+      treatmentFieldLabel('Context (optional)', context),
       treatmentFieldLabel('Recorded date (optional)', date),
     );
     if (discrepancy.citations.course_b) {
@@ -16535,7 +16563,7 @@
     const modes = treatmentElement('fieldset', 'treatment-choice-fieldset');
     modes.append(treatmentElement('legend', '', 'Choose one follow-up option'));
     [
-      ['existing', 'Link one currently eligible existing follow-up'],
+      ['existing', 'Link a follow-up you already have'],
       ['inline', 'Create and link one manual follow-up'],
     ].forEach(([value, text]) => {
       const label = treatmentElement('label');
@@ -16553,7 +16581,7 @@
     existingPanel.hidden = true;
     const existing = treatmentElement('select');
     existing.id = 'treatment-follow-up-existing';
-    const blank = treatmentElement('option', '', 'Choose an eligible follow-up');
+    const blank = treatmentElement('option', '', 'Choose a follow-up to link');
     blank.value = '';
     existing.append(blank);
     treatmentProjection.eligible_actions.forEach((action, index) => {
@@ -16580,7 +16608,7 @@
     due.placeholder = '14.8.2026';
     due.dataset.caregiverField = 'true';
     inlinePanel.append(
-      treatmentFieldLabel('Manual follow-up text', text),
+      treatmentFieldLabel('Follow-up note', text),
       treatmentFieldLabel('Owner (optional)', owner),
       treatmentFieldLabel('Due date (optional)', due),
     );
@@ -16670,7 +16698,7 @@
     const submit = document.getElementById('treatment-submit-button');
     eyebrow.textContent = mode === 'resolve'
       ? RECORD_SOURCE_COPY.clinician
-      : 'You enter and review this';
+      : 'Your treatment record';
     const course = selection.courseId ? treatmentCourseById(selection.courseId) : null;
     const discrepancy = selection.discrepancyId
       ? treatmentDiscrepancyById(selection.discrepancyId)
@@ -16766,7 +16794,7 @@
       submit.textContent = 'Save difference';
       body.append(treatmentDifferenceForm());
     } else if (mode === 'resolve') {
-      title.textContent = 'Record treating-team outcome';
+      title.textContent = 'Record what the treating team said';
       submit.textContent = 'Save outcome';
       body.append(treatmentResolveForm(discrepancy));
     } else if (mode === 'reopen') {
@@ -17060,7 +17088,7 @@
       planned_date: null,
       legacy_component_ids: treatmentSelectedComponentIds(),
     };
-    if (!body.treatment_text) throw new Error('Enter exact treatment wording.');
+    if (!body.treatment_text) throw new Error('Enter the treatment you want to record.');
     for (const prefix of ['start', 'stop', 'planned']) {
       body[`${prefix}_date`] = caregiverDateEntry(
         `treatment-field-${prefix}-date`,
@@ -17200,7 +17228,7 @@
         body.course_id = course.id;
         body.expected_course_token = course.token;
       } else {
-        throw new Error('Choose one Record B authority.');
+        throw new Error('Choose what to compare it with.');
       }
       return {
         method: 'POST',
@@ -17277,7 +17305,7 @@
           const action = treatmentProjection.eligible_actions[
             Number(document.getElementById('treatment-follow-up-existing')?.value)
           ];
-          if (!action) throw new Error('Choose a currently eligible follow-up.');
+          if (!action) throw new Error('Choose a follow-up to link.');
           body.caregiver_action_id = action.id;
           body.expected_action_token = action.token;
         } else if (mode === 'inline') {

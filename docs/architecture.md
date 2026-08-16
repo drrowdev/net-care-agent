@@ -242,8 +242,9 @@ Create is always current; resolve is the only current-to-resolved transition.
 There is no delete, reopen, elapsed-time resolution, or lifecycle cascade to a
 linked action; recurrence creates another episode. System audit timestamps are
 never clinical dates. Fixed copy always says NET/Care records entries but does
-not assess urgency or monitor symptoms, directs concerns to the treating team,
-and directs a perceived medical emergency to local emergency services.
+not decide how urgent symptoms are or monitor them, directs concerns to the
+treating team, and directs a perceived medical emergency to local emergency
+services.
 
 The projection returns every bounded observation and episode plus both
 revisions, opaque row/episode/projection tokens, and a minimal list of eligible
@@ -386,7 +387,7 @@ current lifecycle state. Discrepancy and projection tokens bind both sides'
 complete private source/receipt/import/document/evidence/history authority,
 course/action/discrepancy/outcome state, unknown extras, and both revisions, so
 either side rotating invalidates current authority without rewriting snapshots.
-The exact static safety copy is `NET/Care records what you enter but does not verify treatment details or advise starting, stopping, or changing treatment. Confirm treatment decisions with the treating team.` It is nonconditional,
+The exact static safety copy is `NET/Care records what you enter. It does not check whether treatment details are correct or give advice about starting, stopping, or changing treatment. Confirm treatment decisions with the treating team.` It is nonconditional,
 non-PHI, and non-prescriptive.
 The projector is side-effect-free and the new course/discrepancy/confirmation
 state does not enter chat, orchestrator, executive summary, questions, deep
@@ -476,9 +477,9 @@ also indistinguishable to the caregiver, and no row with *different* wording can
 ever inherit another's state, so the failure is bounded to text the caregiver
 cannot tell apart.
 
-The UI collapses hidden rows behind a persistent `N hidden by you · show`
+The UI collapses hidden rows behind a persistent `N hidden by you · show list`
 disclosure inside the recorded section, states there that nothing was deleted and
-that NET/Care still uses them, and offers **Show in my workspace** on each. Today
+that NET/Care still uses them, and offers **Show this again** on each. Today
 reports the visible count and names the hidden count separately.
 
 Before any treatment DOM replacement, the client validates the complete

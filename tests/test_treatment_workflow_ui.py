@@ -675,7 +675,7 @@ def test_treatment_module_has_one_authority_and_no_legacy_or_date_inference():
         "Machine-generated compatibility context · source linkage unavailable · "
         "not a treatment record"
     ) in source
-    assert "Status not recorded" in source
+    assert "No status recorded" in source
     assert "No caregiver status record refers to this wording." in source
     # Recorded rows are never framed as outstanding caregiver work.
     assert "need timing/status review" not in source
@@ -1158,7 +1158,7 @@ def test_live_recorded_treatment_component_linkage_is_none_all_or_partial():
             assert "1 of 2 recorded components are linked" in cards.nth(0).inner_text()
             assert "Linked to reviewed status" in cards.nth(1).inner_text()
             assert "All recorded components are linked" in cards.nth(1).inner_text()
-            assert "Status not recorded" in cards.nth(2).inner_text()
+            assert "No status recorded" in cards.nth(2).inner_text()
             assert "No caregiver status record refers to this wording" in cards.nth(2).inner_text()
             assert cards.locator("h3").all_inner_texts() == [
                 "Partial recorded treatment",
@@ -1214,7 +1214,7 @@ def test_live_hidden_recorded_rows_collapse_without_disappearing():
             assert "None recorded treatment" in hidden_cards.nth(0).inner_text()
             assert (
                 hidden_cards.nth(0)
-                .get_by_role("button", name="Show None recorded treatment in my workspace")
+                .get_by_role("button", name="Show None recorded treatment again")
                 .count()
                 == 1
             )
@@ -1920,7 +1920,7 @@ def test_live_server_authority_discrepancies_restart_outcomes_and_followups():
             assert resolved.get_by_role("button", name="Record treating-team outcome").count() == 0
 
             incomplete = cards.nth(2)
-            assert "Second citation unavailable" in incomplete.inner_text()
+            assert "The second record is missing from what was saved" in incomplete.inner_text()
             assert incomplete.locator(".treatment-card-actions button").count() == 0
 
             page.locator("#treatment-difference-add").click()
@@ -2057,7 +2057,7 @@ def test_live_request_validation_get_corruption_eviction_and_focus_boundaries():
                 == "Safe rejected draft"
             )
             assert (
-                "current treatment record remains authoritative"
+                "the treatment record is unchanged"
                 in page.locator("#treatment-dialog-status").inner_text()
             )
             page.evaluate("() => closeTreatmentDialog(false, true, false)")
@@ -2298,7 +2298,7 @@ def test_live_recorded_row_records_status_prefilled_without_status_inference(
             # own wording rather than by position.
             unreviewed = cards.filter(has_text="None recorded treatment")
             assert unreviewed.count() == 1
-            assert "Status not recorded" in unreviewed.inner_text()
+            assert "No status recorded" in unreviewed.inner_text()
             action = unreviewed.get_by_role(
                 "button", name="Record status for None recorded treatment"
             )
@@ -2309,7 +2309,7 @@ def test_live_recorded_row_records_status_prefilled_without_status_inference(
             assert unreviewed.locator(".treatment-card-actions button").count() == 2
             assert (
                 unreviewed.get_by_role(
-                    "button", name="Hide None recorded treatment from my workspace"
+                    "button", name="Mark None recorded treatment as not useful to me"
                 ).count()
                 == 1
             )
@@ -2370,7 +2370,7 @@ def test_live_recorded_row_records_status_prefilled_without_status_inference(
                 has_text="None recorded treatment"
             )
             assert "Linked to reviewed status" in refreshed.inner_text()
-            assert "Status not recorded" not in refreshed.inner_text()
+            assert "No status recorded" not in refreshed.inner_text()
             assert (
                 "None recorded treatment"
                 in page.locator("#patient-treatment-list .treatment-course-card")
@@ -2483,7 +2483,7 @@ def test_live_recorded_row_status_conflict_leaves_row_unlinked():
             page.locator("#nav-patient").click()
             cards = page.locator("#patient-treatment-list .treatment-recorded-card")
             assert (
-                "Status not recorded"
+                "No status recorded"
                 in cards.filter(has_text="None recorded treatment").inner_text()
             )
             assert cards.count() == 3

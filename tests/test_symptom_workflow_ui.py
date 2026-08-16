@@ -470,7 +470,10 @@ def test_live_symptom_projection_is_separate_exact_accessible_and_overflow_safe(
             observation_text = page.locator("#symptom-panel-observations").inner_text()
             assert observation_text.count("Duplicate source wording") == 2
             assert "Exact current wording" not in observation_text
-            assert "Source observations are read-only mentions" in observation_text
+            assert (
+                "These are mentions of symptoms found in imported or older records"
+                in observation_text
+            )
             page.locator("#symptom-tab-current").click()
             episode_text = page.locator("#patient-current-symptom-list").inner_text()
             assert "Moderate · Recorded as blank" in episode_text

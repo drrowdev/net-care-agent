@@ -192,7 +192,7 @@
           </div>
           <button class="button primary" id="today-appointment-action" type="button" onclick="openAppointmentsView(this)">Open Appointments</button>
         </div>
-        <div class="today-appointment-summary" id="today-appointment-summary">Loading appointment workspace…</div>
+        <div class="today-appointment-summary" id="today-appointment-summary">Loading appointment prep…</div>
       </section>
 
       <section id="research-today-card" class="content-card research-today-card" aria-labelledby="today-research-heading">
@@ -219,7 +219,7 @@
           </div>
         </section>
         <div class="research-today-actions">
-          <button class="button secondary" type="button" onclick="openResearchWorkspace()">Review complete research workspace</button>
+          <button class="button secondary" type="button" onclick="openResearchWorkspace()">Review all research</button>
           <button class="button secondary" id="today-research-retry-refresh" type="button" onclick="loadResearchWorkspace({ force: true })" hidden>Retry refresh</button>
         </div>
       </section>
@@ -270,7 +270,7 @@
           </section>
           <section class="treatment-panel" id="treatment-panel-differences" role="tabpanel" aria-labelledby="treatment-tab-differences" hidden>
             <div class="treatment-panel-toolbar">
-              <p>Caregiver-recorded differences with neutral, immutable citation snapshots.</p>
+              <p>Differences you recorded. The exact wording of both records is saved as it was, and naming one first does not mean it is the right one.</p>
               <button class="button secondary" id="treatment-difference-add" type="button" onclick="openTreatmentDifferenceDialog(this)">Record a difference</button>
             </div>
             <div class="treatment-discrepancy-list" id="treatment-discrepancy-list"></div>
@@ -308,7 +308,7 @@
               </select>
             </label>
             <div class="biomarker-context" id="biomarker-context">
-              The table will show every bounded observation exactly as recorded.
+              The table shows every observation exactly as it was recorded.
             </div>
           </div>
           <div class="biomarker-status" id="biomarker-status" role="status" aria-live="polite">
@@ -331,7 +331,7 @@
                   <th scope="col">Reference</th>
                   <th scope="col">Reported flag</th>
                   <th scope="col">Recorded context</th>
-                  <th scope="col">Chart eligibility</th>
+                  <th scope="col">Can this be charted?</th>
                   <th scope="col">Source and evidence</th>
                 </tr>
               </thead>
@@ -344,7 +344,7 @@
             <div class="biomarker-section-heading">
               <div>
                 <p class="eyebrow">Secondary view</p>
-                <h3 id="biomarker-charts-heading">Comparable point charts</h3>
+                <h3 id="biomarker-charts-heading">Charts</h3>
               </div>
               <p>Only results with matching recorded context are charted. The complete values remain in the table above.</p>
             </div>
@@ -391,18 +391,18 @@
             <div class="symptom-episode-list" id="patient-resolved-symptom-list"></div>
           </section>
           <section class="symptom-panel" id="symptom-panel-observations" role="tabpanel" aria-labelledby="symptom-tab-observations" hidden>
-            <p class="symptom-observation-note">Source observations are read-only mentions from imported or older records. They are not current symptom episodes.</p>
+            <p class="symptom-observation-note">These are mentions of symptoms found in imported or older records. You cannot edit them, and they are not current symptom episodes.</p>
             <p class="table-scroll-hint">Swipe or use Shift+mouse wheel to review all table columns.</p>
             <div class="symptom-observation-table-region" id="symptom-observation-table-region" role="region" aria-labelledby="symptom-observation-caption" tabindex="0">
               <table class="symptom-observation-table">
-                <caption id="symptom-observation-caption">Read-only symptom observations in their stored order</caption>
+                <caption id="symptom-observation-caption">Symptom mentions, in the order they were recorded</caption>
                 <thead>
                   <tr>
                     <th scope="col">Recorded symptom</th>
                     <th scope="col">Stored severity</th>
-                    <th scope="col">Symptom date authority</th>
+                    <th scope="col">Where the date came from</th>
                     <th scope="col">Recorded context</th>
-                    <th scope="col">Source authority</th>
+                    <th scope="col">Where this came from</th>
                   </tr>
                 </thead>
                 <tbody id="symptom-observation-table-body">
@@ -428,7 +428,7 @@
             </div>
           </div>
           <div class="imaging-summary" id="imaging-summary">
-            The table will show every bounded imaging record exactly as supplied by the imaging authority.
+            The table shows every imaging record exactly as it was supplied.
           </div>
           <div class="imaging-status loading" id="imaging-status" role="status" aria-live="polite">
             Imaging will load when this Patient view is used.
@@ -442,15 +442,15 @@
             tabindex="0"
           >
             <table class="imaging-table">
-              <caption id="imaging-table-caption">Recorded imaging reports in their stored order</caption>
+              <caption id="imaging-table-caption">Imaging reports, in the order they were recorded</caption>
               <thead>
                 <tr>
                   <th scope="col">Compare</th>
-                  <th scope="col">Study date authority</th>
+                  <th scope="col">Where the date came from</th>
                   <th scope="col">Modality / type</th>
                   <th scope="col">Findings</th>
                   <th scope="col">Impression</th>
-                  <th scope="col">Source authority</th>
+                  <th scope="col">Where this came from</th>
                 </tr>
               </thead>
               <tbody id="imaging-table-body">
@@ -471,7 +471,7 @@
                 <p class="eyebrow">Report facts side by side</p>
                 <h3 id="imaging-comparison-heading" tabindex="-1">Selected imaging records</h3>
               </div>
-              <p>Any comparison, change, or response wording is attributed to the stored report text. NET/Care does not infer a clinical conclusion.</p>
+              <p>Any wording about comparison, change or response comes from the stored report itself. NET/Care does not draw a clinical conclusion.</p>
             </div>
             <div class="imaging-comparison-grid" id="imaging-comparison-grid"></div>
           </section>
@@ -481,7 +481,7 @@
         </section>
 
         <section class="content-card span-two" aria-labelledby="source-history-heading">
-          <div class="card-header compact"><div><p class="eyebrow">Import provenance</p><h2 id="source-history-heading">Documents and sources</h2></div></div>
+          <div class="card-header compact"><div><p class="eyebrow">Where this came from</p><h2 id="source-history-heading">Documents and sources</h2></div></div>
           <div id="source-history"><div class="loading-state">Loading source history…</div></div>
         </section>
       </div>
@@ -492,7 +492,7 @@
         <div>
           <p class="eyebrow">Complete tracked research</p>
           <h1 id="research-heading" tabindex="-1">Research</h1>
-          <p>Review current external research and the caregiver workflow without clinical ranking or eligibility inference.</p>
+          <p>Review the current research and what you have recorded about it. NET/Care does not rank it or work out whether she is eligible.</p>
         </div>
         <button class="button secondary" id="research-refresh-button" type="button" onclick="loadResearchWorkspace({ force: true })">Refresh</button>
       </div>
@@ -500,24 +500,24 @@
       <section class="content-card research-workspace" id="research-workspace" aria-labelledby="research-workspace-heading">
         <div class="card-header compact split-header">
           <div>
-            <p class="eyebrow">External facts, generated context, provenance, and caregiver workflow stay separate</p>
-            <h2 id="research-workspace-heading" tabindex="-1">Research workspace</h2>
+            <p class="eyebrow">What the sources say, what NET/Care generated, and what you recorded stay separate</p>
+            <h2 id="research-workspace-heading" tabindex="-1">Research</h2>
           </div>
           <span class="research-freshness loading" id="research-freshness">Not loaded</span>
         </div>
         <div class="research-status loading" id="research-status" role="status" aria-live="polite">Loading tracked research…</div>
-        <div class="research-tabs" role="tablist" aria-label="Research workspace sections" onkeydown="handleResearchTabKeydown(event)">
+        <div class="research-tabs" role="tablist" aria-label="Research sections" onkeydown="handleResearchTabKeydown(event)">
           <button class="research-tab active" id="research-tab-current" role="tab" aria-selected="true" aria-controls="research-panel-current" tabindex="0" onclick="selectResearchTab('current')">Current research <span id="research-count-current">0</span></button>
           <button class="research-tab" id="research-tab-considerations" role="tab" aria-selected="false" aria-controls="research-panel-considerations" tabindex="-1" onclick="selectResearchTab('considerations')">Considerations <span id="research-count-considerations">0</span></button>
         </div>
         <section class="research-panel" id="research-panel-current" role="tabpanel" aria-labelledby="research-tab-current">
-          <p class="research-authority-note">Every saved research entry remains separate and in its stored order, including repeated PMID or NCT records.</p>
+          <p class="research-authority-note">Every saved research entry stays separate and in the order it was recorded, including repeated PMID or NCT records.</p>
           <div class="research-occurrence-list" id="research-occurrence-list">
             <div class="loading-state">Loading tracked research entries…</div>
           </div>
         </section>
         <section class="research-panel" id="research-panel-considerations" role="tabpanel" aria-labelledby="research-tab-considerations" hidden>
-          <p class="research-authority-note">Open and closed are caregiver organization states only. They do not determine relevance, eligibility, availability, enrollment, or treatment suitability.</p>
+          <p class="research-authority-note">Open and closed are just your own way of organising this. They say nothing about relevance, eligibility, availability, enrolment, or whether a treatment is suitable.</p>
           <div class="research-consideration-list" id="research-consideration-list">
             <div class="loading-state">Loading all caregiver considerations…</div>
           </div>
@@ -541,7 +541,7 @@
 
       <section class="content-card appointment-prep-card" aria-labelledby="appointment-prep-heading">
         <div class="card-header compact split-header">
-          <div><p class="eyebrow">Visit working mode</p><h2 id="appointment-prep-heading" tabindex="-1">Appointment workspace</h2></div>
+          <div><p class="eyebrow">Preparing for a visit</p><h2 id="appointment-prep-heading" tabindex="-1">Appointment prep</h2></div>
           <button class="button secondary" id="visit-create-toggle" aria-controls="visit-create-panel" aria-expanded="false" onclick="toggleVisitCreateForm()">＋ New visit</button>
         </div>
         <div id="visit-create-panel" class="visit-create-panel" hidden>
@@ -605,9 +605,9 @@
         </div>
       </div>
 
-      <section class="activity-actions" aria-label="Research actions">
+      <section class="activity-actions" aria-label="Research tools">
         <div><strong>Routine research update</strong><p>Search for new trials and literature using the current record.</p><button class="button secondary" id="btn-digest" onclick="runDigest()">↻ Run digest</button></div>
-        <div><strong>Pre-appointment deep sweep</strong><p>Run a slower multi-model briefing without changing tracked items.</p><button class="button secondary deep-sweep-button" id="btn-deep-sweep" onclick="runDeepSweep()">⁂ Run deep sweep</button></div>
+        <div><strong>Pre-appointment deep sweep</strong><p>Run a slower, more thorough research check. It does not change what you are tracking.</p><button class="button secondary deep-sweep-button" id="btn-deep-sweep" onclick="runDeepSweep()">⁂ Run deep sweep</button></div>
       </section>
 
       <section class="content-card activity-card" aria-labelledby="activity-list-heading">
@@ -636,7 +636,7 @@
 
       <form id="research-shortlist-form" class="follow-up-form" onsubmit="event.preventDefault();submitResearchShortlist()" hidden>
         <p>Save this research entry for caregiver consideration.</p>
-        <p class="capture-provenance">Saving does not determine relevance, eligibility, enrollment, availability, suitability, or recommendation.</p>
+        <p class="capture-provenance">Saving this says nothing about relevance, eligibility, enrolment, availability, suitability, or what is recommended.</p>
         <p class="form-error" id="research-shortlist-error" role="alert" aria-live="polite"></p>
         <div class="follow-up-dialog-actions">
           <button class="button primary" id="research-shortlist-submit" type="submit">Save for consideration</button>
@@ -663,7 +663,7 @@
 
       <form id="research-lifecycle-form" class="follow-up-form" onsubmit="event.preventDefault();submitResearchLifecycle()" hidden>
         <p id="research-lifecycle-copy"></p>
-        <p class="capture-provenance">This changes caregiver workflow organization only. It does not change the source research, events, follow-up, or latest-batch membership.</p>
+        <p class="capture-provenance">This only changes how you have organised things. It does not change the research itself, its events, its follow-up, or which batch it came from.</p>
         <p class="form-error" id="research-lifecycle-error" role="alert" aria-live="polite"></p>
         <div class="follow-up-dialog-actions">
           <button class="button primary" id="research-lifecycle-submit" type="submit">Confirm</button>
@@ -688,7 +688,7 @@
         </section>
         <section class="research-follow-up-panel" id="research-follow-up-unlink-panel" hidden>
           <p id="research-follow-up-linked-copy"></p>
-          <p class="helper-text">Unlinking does not change the consideration or follow-up lifecycle.</p>
+          <p class="helper-text">Unlinking does not change the research entry or the follow-up itself.</p>
         </section>
         <p class="form-error" id="research-follow-up-error" role="alert" aria-live="polite"></p>
         <div class="follow-up-dialog-actions">
@@ -786,7 +786,7 @@
         <section class="symptom-linked-action-panel" id="symptom-linked-action-panel" hidden>
           <strong>Linked follow-up</strong>
           <p id="symptom-linked-action-copy"></p>
-          <p class="helper-text">Unlinking does not change the episode or the action lifecycle.</p>
+          <p class="helper-text">Unlinking does not change the episode or the follow-up itself.</p>
         </section>
         <p class="form-error" id="symptom-follow-up-error" role="alert" aria-live="polite"></p>
         <div class="follow-up-dialog-actions">
@@ -807,7 +807,7 @@
   <section class="follow-up-dialog alert-resolution-dialog" id="alert-resolution-dialog" role="dialog" aria-modal="true" aria-labelledby="alert-resolution-title" tabindex="-1" inert>
     <header class="dialog-header">
       <div>
-        <p class="eyebrow">Structured alert outcome</p>
+        <p class="eyebrow">What happened</p>
         <h2 id="alert-resolution-title">Resolve alert</h2>
       </div>
       <button class="icon-button" id="alert-resolution-close" type="button" onclick="closeAlertResolutionDialog()" aria-label="Close alert resolution dialog">×</button>
@@ -841,7 +841,7 @@
 
         <section id="alert-resolution-existing-follow-up" class="alert-resolution-link-panel" hidden>
           <label><span>Active follow-up</span><select id="alert-resolution-follow-up-select"></select></label>
-          <p class="helper-text">Only open or in-progress durable follow-ups are available.</p>
+          <p class="helper-text">You can only link follow-ups that are open or in progress.</p>
         </section>
 
         <section id="alert-resolution-inline-follow-up" class="alert-resolution-link-panel" hidden>
@@ -886,7 +886,7 @@
   <section class="follow-up-dialog" id="follow-up-dialog" role="dialog" aria-modal="true" aria-labelledby="follow-up-dialog-title" tabindex="-1">
     <header class="dialog-header">
       <div>
-        <p class="eyebrow">Durable caregiver task</p>
+        <p class="eyebrow">Follow-up</p>
         <h2 id="follow-up-dialog-title">Follow-up</h2>
       </div>
       <button class="icon-button" onclick="closeFollowUpDialog()" aria-label="Close follow-up dialog">×</button>
@@ -948,7 +948,7 @@
         <p id="appointment-dialog-meta" class="helper-text"></p>
       </div>
       <label class="appointment-visit-selector"><span class="sr-only">Selected visit</span><select id="appointment-visit-select" onchange="selectVisitInWorkspace(this.value)"></select></label>
-      <button class="icon-button" onclick="closeAppointmentWorkspace()" aria-label="Close appointment workspace">×</button>
+      <button class="icon-button" onclick="closeAppointmentWorkspace()" aria-label="Close appointment prep">×</button>
     </header>
 
     <div id="appointment-status-message" class="appointment-status-message" role="status" aria-live="polite"></div>
@@ -974,7 +974,7 @@
       <p class="form-error" id="visit-details-error" role="alert" aria-live="polite"></p>
     </section>
 
-    <div class="appointment-tabs" role="tablist" aria-label="Appointment workspace sections" onkeydown="handleAppointmentTabKeydown(event)">
+    <div class="appointment-tabs" role="tablist" aria-label="Appointment sections" onkeydown="handleAppointmentTabKeydown(event)">
       <button id="appointment-tab-questions" class="appointment-tab active" role="tab" tabindex="0" aria-selected="true" aria-controls="appointment-panel-questions" onclick="switchAppointmentTab('questions')">Questions</button>
       <button id="appointment-tab-decisions" class="appointment-tab" role="tab" tabindex="-1" aria-selected="false" aria-controls="appointment-panel-decisions" onclick="switchAppointmentTab('decisions')">Decisions</button>
       <button id="appointment-tab-followups" class="appointment-tab" role="tab" tabindex="-1" aria-selected="false" aria-controls="appointment-panel-followups" onclick="switchAppointmentTab('followups')">Follow-ups</button>
@@ -1007,7 +1007,7 @@
       <section id="appointment-panel-decisions" class="appointment-tab-panel" role="tabpanel" aria-labelledby="appointment-tab-decisions" hidden>
         <div class="appointment-form">
           <input id="visit-decision-supersedes" type="hidden">
-          <label><span id="visit-decision-label">Caregiver-entered decision attributed to the clinician</span><textarea id="visit-decision-text" maxlength="4000" rows="4" placeholder="Record what the clinician decided or said needs confirmation."></textarea></label>
+          <label><span id="visit-decision-label">What the clinician decided, as you recorded it</span><textarea id="visit-decision-text" maxlength="4000" rows="4" placeholder="Record what the clinician decided or said needs confirmation."></textarea></label>
           <div class="visit-form-actions">
             <button class="button primary" id="visit-decision-submit" onclick="addVisitDecision()" disabled>Add decision</button>
             <button class="button secondary" id="visit-decision-cancel-supersede" onclick="cancelDecisionSuccessor()" hidden>Cancel correction</button>

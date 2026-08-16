@@ -539,7 +539,7 @@ def test_actual_loader_rejects_late_response_retains_offline_snapshot_and_evicts
     assert result["afterOffline"]["token"] == "projection-fresh"
     assert result["afterOffline"]["state"] == "stale"
     assert result["afterOffline"]["table"] == result["afterRace"]["table"]
-    assert "read-only" in result["afterOffline"]["status"]
+    assert "Showing the last version that loaded" in result["afterOffline"]["status"]
     assert result["afterRecovery"] == {
         "token": "projection-recovered",
         "state": "current",
@@ -554,7 +554,7 @@ def test_actual_loader_rejects_late_response_retains_offline_snapshot_and_evicts
     assert result["afterAuth"]["caption"] == "Complete observations for the selected biomarker"
     assert result["after422"]["projection"] is None
     assert result["after422"]["state"] == "corrupt"
-    assert "stored record could not be projected safely" in result["after422"]["status"]
+    assert "stored record could not be read safely" in result["after422"]["status"]
     assert "identity is missing" not in result["after422"]["table"]
 
 
@@ -857,7 +857,10 @@ def test_live_biomarker_late_response_offline_recovery_and_hard_eviction():
             assert "Out of date" in page.locator("#biomarker-freshness").inner_text()
             stale_table = page.locator("#biomarker-table-body").inner_text()
             assert "27" in stale_table
-            assert "read-only" in page.locator("#biomarker-status").inner_text()
+            assert (
+                "Showing the last version that loaded"
+                in page.locator("#biomarker-status").inner_text()
+            )
 
             recovered = _projection(
                 "projection-browser-recovered",
@@ -921,7 +924,7 @@ def test_live_biomarker_late_response_offline_recovery_and_hard_eviction():
             )
             page.evaluate("() => loadBiomarkerSeries()")
             assert (
-                "stored record could not be projected safely"
+                "stored record could not be read safely"
                 in page.locator("#biomarker-status").inner_text()
             )
             assert "identity is missing" not in page.locator("#biomarker-explorer").inner_text()

@@ -39,6 +39,84 @@ incremented when something user-visible or operationally meaningful changes.
   whole day up front.
 
 ### Changed
+- **"Workspace" is gone from everything you read.** It appeared 59 times, in
+  headings, buttons, status messages and screen-reader labels. **Research
+  workspace** is now just **Research**, **Appointment workspace** is
+  **Appointment prep**, and **Not useful in my workspace** is **Not useful to
+  me**. The element ids and function names behind them are unchanged.
+- **Offline and out-of-date notices say what is actually happening.**
+  `Offline snapshot · read-only` now reads **Offline. Showing the last version
+  that loaded**, followed by what to do about it. `Stale · read-only` and
+  `Read-only snapshot` both became **Out of date**. Where a view is locked, the
+  copy now says so in words — "You cannot make changes yet" — rather than
+  "read-only".
+- **The app stopped narrating its own consistency machinery.** Roughly forty
+  messages mentioning an "authoritative" record, reload or workspace now name
+  the thing itself: **Loading research…**, **Try loading again**, **Reload the
+  treatment record before saving.** Six "transport is uncertain" messages now
+  say **The connection dropped, so it is unclear whether that saved.**
+- **"Atomic", "immutable" and "lifecycle" left the interface.** **Save outcome
+  atomically** is **Save outcome**; **Atomic follow-up link** is **Linked
+  follow-up**; **Create one manual action and link atomically** is **Create a
+  follow-up and link it in one step**; **Immutable saved snapshot** is **Saved
+  exactly as it was**. A replaced decision now reads **This decision was
+  replaced. It stays in the record as history and cannot be changed.**
+- **Decision statuses stopped being printed as stored codes.** The badge showed
+  `needs confirmation` by stripping the underscore out of the stored value. It
+  now reads **Needs confirmation**, **Replaced** or **Withdrawn** from the same
+  shared lookup introduced in the previous release. **Correct with successor**
+  is now **Correct with a replacement**.
+- **The CgA badge no longer shouts.** `↑ CgA RISING`, `→ CgA STABLE` and
+  `↓ CgA FALLING` are now **CgA rising**, **CgA stable** and **CgA falling**,
+  matching the assessment badge fixed last release.
+- **Forensic value views say it in words.** In the treatment differences and
+  research detail panels, `Null` now reads **Nothing recorded**,
+  `Empty string ("")` reads **Recorded as blank**, and `Missing field` reads
+  **Not in the record**. The distinction between a stored blank and nothing at
+  all is deliberately preserved — it is the point of those panels.
+- **The visit recap exports "Status", not "Lifecycle".** The visit, decision
+  and follow-up rows of the plain-text export all use the same word, and the
+  follow-up row no longer prints the stored code with its underscores stripped.
+- **The status-change note stopped printing stored codes.** It read
+  "Server-authorized transition from current to past." It now reads **Changing
+  this from a current treatment to a past treatment.**
+- **The restart reasons stopped speaking as the server.** "The server permits a
+  new record linked to this past record." is now **You can add a new treatment
+  record linked to this one.**, and "This status record was not recorded as
+  having started." is **This record says the treatment never started.**
+- **Column headers and kickers describe what you are looking at.** *Import
+  provenance* is **Where this came from**, *Source authority* and *Symptom date
+  authority* are **Where this came from** and **Where the date came from**,
+  *Chart eligibility* is **Can this be charted?**, *Comparable point charts* is
+  **Charts**, *Structured alert outcome* is **What happened**, and *Durable
+  caregiver task* is **Follow-up**.
+- **Two API messages stopped leaking plumbing.** "mutation_id must be 8-128
+  ASCII letters, numbers, or . _ : - characters" is now **The request reference
+  is not in a form NET/Care can accept.**, and "Severity must be 1-5 or null"
+  is **Severity must be a number from 1 to 5, or left empty**.
+
+### Safety wording
+
+Several safety sentences were reworded and every one keeps its meaning exactly;
+each is now pinned by a test naming the invariant it protects.
+
+- The imaging note still says NET/Care **does not draw a clinical conclusion**
+  (`INVARIANTS.md:153`).
+- Open and closed research states still **say nothing about relevance,
+  eligibility, availability, enrolment, or whether a treatment is suitable**
+  (`INVARIANTS.md:226-233`).
+- The differences card still records that **naming one record first does not
+  mean it is the right one** (`INVARIANTS.md:296-297`).
+- A captured decision is still **what the clinician decided, as you recorded
+  it** — the caregiver's own unverified record, never NET/Care's
+  (`INVARIANTS.md:99-100`).
+- The hidden-treatment notice still states that nothing was deleted, that the
+  rows are still counted, and that NET/Care still uses them
+  (`INVARIANTS.md:358-369`).
+
+The three byte-pinned safety paragraphs were again left untouched.
+
+### Changed
 - **The app now says how a treatment ended, instead of "terminal outcome".**
   In an app about metastatic cancer, "terminal" read as a statement about the
   patient's prognosis; in the code it only ever meant "end state". The whole

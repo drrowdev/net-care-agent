@@ -252,7 +252,7 @@ def test_research_authorities_remain_visible_without_routine_fixed_copy():
     for section in (
         "Registry or publication details",
         "How this research was found",
-        "Immutable saved snapshot",
+        "Saved exactly as it was",
         "Current tracked entry",
         "Your recorded events",
         "Consideration history",
@@ -309,7 +309,7 @@ def test_event_modes_scrub_fields_and_never_parse_or_default_dates():
 
 
 def test_research_accessibility_and_phone_layout_contract():
-    assert 'role="tablist" aria-label="Research workspace sections"' in INDEX_HTML
+    assert 'role="tablist" aria-label="Research sections"' in INDEX_HTML
     assert 'class="research-history-list"' in APP_JS
     assert "JSON.stringify(entry.changes" not in APP_JS
     assert "trapDialogFocus" in APP_JS
@@ -610,7 +610,7 @@ def test_live_events_lifecycle_and_atomic_follow_up_use_full_reloads():
             page.wait_for_function("() => researchProjection.considerations[0].status === 'open'")
 
             card.get_by_role("button", name="Link or create follow-up").click()
-            page.get_by_label("Create one manual action and link atomically").check()
+            page.get_by_label("Create a follow-up and link it in one step").check()
             assert page.locator("#research-follow-up-text").input_value() == ""
             page.locator("#research-follow-up-text").fill(
                 "Ask the treating team about the exact registry questions"

@@ -188,6 +188,10 @@
     completed: 'Done',
     cancelled: 'Cancelled',
     resolved: 'Resolved',
+    active: 'Active',
+    needs_confirmation: 'Needs confirmation',
+    superseded: 'Replaced',
+    retracted: 'Withdrawn',
     feed: 'Feed',
     digest: 'Digest',
     confirmed_as_recorded: 'Confirmed as recorded',
@@ -574,7 +578,7 @@
     ) {
       redactAlertResolutionContext(
         options.preserveAlertIntent
-          ? 'Saving the authoritative resolution…'
+          ? 'Saving…'
           : 'The patient record changed. Reload the alert before continuing.'
       );
       if (!options.preserveAlertIntent) {
@@ -1128,7 +1132,7 @@
         pendingWorkflowIntent = intent;
         if (String(intent.url || '').includes('/follow-ups')) {
           markFollowUpProjectionStale(
-            'Follow-ups are offline. The last loaded actions are read-only; your drafts remain available in this tab.',
+            'Follow-ups are offline. You cannot change the ones already loaded, but your drafts are still here in this tab.',
           );
         }
         const retry = document.getElementById(
@@ -1500,14 +1504,14 @@
       biomarkerNetworkAmbiguous = true;
       markBiomarkerProjectionStale(
         biomarkerProjection
-          ? 'Offline snapshot · read-only. Reconnect to reload the current biomarker record.'
+          ? 'Offline. Showing the last version that loaded. Reconnect to get the current biomarker record.'
           : 'Biomarker history is offline and no prior snapshot is available.',
       );
     }
     if (typeof markVisitRecapStale === 'function') {
       visitRecapNetworkAmbiguous = true;
       markVisitRecapStale(
-        'Offline snapshot · read-only. Export is disabled until the recap reloads.',
+        'Offline. Showing the last version that loaded. You cannot export until the recap reloads.',
         'offline',
       );
     }
@@ -2029,7 +2033,7 @@
       : `<span>${escHtml(biomarkerScalar(observation.report_range_label))}: <strong>${escHtml(observation.report_range_comparison)}</strong></span>`;
     const series = analyte.series.find(item => item.id === observation.series_id);
     const chartLabel = observation.comparable
-      ? escHtml(series?.label || 'Server-declared comparable')
+      ? escHtml(series?.label || 'Measured the same way')
       : 'Not charted';
     const notes = biomarkerListMarkup(
       observation.comparability_notes,
@@ -2270,7 +2274,7 @@
     if (!renderBiomarkerProjection(biomarkerResponseOwner)) return;
     setBiomarkerFreshness('stale', 'Out of date');
     setBiomarkerStatus(
-      message || 'Offline snapshot · read-only. Reload before relying on it.',
+      message || 'Offline. Showing the last version that loaded. Reload before relying on it.',
       'stale',
       true,
     );
@@ -2281,7 +2285,7 @@
     if (biomarkerProjection) {
       setBiomarkerFreshness('loading', 'Checking…');
       setBiomarkerStatus(
-        'Checking the current authoritative biomarker record…',
+        'Checking the current biomarker record…',
         'loading',
         false,
       );
@@ -2293,7 +2297,7 @@
       select.disabled = true;
     }
     setBiomarkerFreshness('loading', 'Loading…');
-    setBiomarkerStatus('Loading the authoritative biomarker record…', 'loading', false);
+    setBiomarkerStatus('Loading the biomarker record…', 'loading', false);
   }
 
   function biomarkerTransportRequestIsCurrent(request, acceptedPhiEpoch = null) {
@@ -2416,7 +2420,7 @@
         biomarkerNetworkAmbiguous = true;
         markBiomarkerProjectionStale(
           biomarkerProjection
-            ? 'Offline snapshot · read-only. Reconnect to reload the current biomarker record.'
+            ? 'Offline. Showing the last version that loaded. Reconnect to get the current biomarker record.'
             : 'Biomarker history is offline and no prior snapshot is available.',
           { abortRequest: false },
         );
@@ -2427,10 +2431,10 @@
         clearBiomarkerProjection({
           state: 'corrupt',
           statusLabel: 'Record unavailable',
-          message: 'Biomarker history is unavailable because the stored record could not be projected safely.',
+          message: 'Biomarker history is unavailable because the stored record could not be read safely.',
         });
         const safeError = new Error(
-          'Biomarker history is unavailable because the stored record could not be projected safely.',
+          'Biomarker history is unavailable because the stored record could not be read safely.',
         );
         safeError.status = 422;
         reportLoadError('biomarkers', safeError);
@@ -3024,7 +3028,7 @@
     }
     const caption = document.getElementById('imaging-table-caption');
     if (caption) {
-      caption.textContent = 'Recorded imaging reports in their stored order';
+      caption.textContent = 'Imaging reports, in the order they were recorded';
     }
     const table = document.getElementById('imaging-table-body');
     if (table) {
@@ -3069,7 +3073,7 @@
     if (summary) summary.textContent = 'No imaging facts are retained in this view.';
     const caption = document.getElementById('imaging-table-caption');
     if (caption) {
-      caption.textContent = 'Recorded imaging reports in their stored order';
+      caption.textContent = 'Imaging reports, in the order they were recorded';
     }
     const table = document.getElementById('imaging-table-body');
     if (table) {
@@ -3114,7 +3118,7 @@
     imagingProjectionState = 'stale';
     if (!imagingProjection) {
       renderImagingUnavailable(
-        message || 'Imaging is unavailable until an authoritative reload succeeds.',
+        message || 'Imaging is unavailable until it reloads.',
         'stale',
         'Not current',
         true,
@@ -3140,7 +3144,7 @@
       imagingProjectionState = 'stale';
       setImagingFreshness('loading', 'Checking…');
       setImagingStatus(
-        'Checking the authoritative imaging record. The displayed snapshot is read-only.',
+        'Checking the current imaging record. You cannot make changes yet.',
         'loading',
         false,
       );
@@ -3149,7 +3153,7 @@
     }
     imagingProjectionState = 'loading';
     renderImagingUnavailable(
-      'Loading the complete authoritative imaging record…',
+      'Loading the imaging record…',
       'loading',
       'Loading…',
       false,
@@ -3227,7 +3231,7 @@
       if (!authority.accepted) {
         if (imagingTransportRequestIsCurrent(request)) {
           markImagingProjectionStale(
-            'Newer patient information is available. Imaging is read-only until reloaded.',
+            'Newer patient information is available. Refresh imaging before making changes.',
           );
         }
         return null;
@@ -3280,7 +3284,7 @@
         imagingNetworkAmbiguous = true;
         markImagingProjectionStale(
           imagingProjection
-            ? 'Imaging transport is uncertain. The last accepted snapshot is stale and read-only.'
+            ? 'The connection dropped. You are seeing the last version that loaded, and it is out of date.'
             : 'The imaging endpoint could not be reached and no prior snapshot is available.',
           { abortRequest: false },
         );
@@ -3638,7 +3642,7 @@
     }
     const decisionLabel = document.getElementById('visit-decision-label');
     if (decisionLabel) {
-      decisionLabel.textContent = 'Decision you recorded from the clinician';
+      decisionLabel.textContent = 'What the clinician decided, as you recorded it';
     }
     for (const id of [
       'visit-create-error', 'visit-details-error', 'visit-question-error',
@@ -3872,7 +3876,7 @@
       } else if (!selectionCurrent) {
         redactAlertResolutionContext(
           alertResolutionMutationPending
-            ? 'Saving the authoritative resolution…'
+            ? 'Saving…'
             : 'This alert changed or is no longer available.'
         );
         if (!alertResolutionMutationPending) {
@@ -3891,7 +3895,7 @@
     if (!list) return;
     const alerts = [...alertsById.values()];
     const staleNotice = alertProjectionStale
-      ? '<div class="follow-up-stale-note" role="status">Alerts are offline and read-only until the current record reloads.</div>'
+      ? '<div class="follow-up-stale-note" role="status">Alerts are offline. You cannot change them until the current record reloads.</div>'
       : '';
     list.innerHTML = staleNotice + (alerts.length
       ? alerts.map(alert => `
@@ -4251,7 +4255,7 @@
       renderAlerts();
       setAlertResolutionProjectionReadOnly(true);
       setAlertResolutionStatus(
-        'Current link sources could not be verified. The last loaded options are read-only.',
+        'The list of things you can link to could not be checked. You cannot change the options already loaded.',
         'offline',
       );
     } else {
@@ -4678,7 +4682,7 @@
         const retry = document.getElementById('alert-resolution-retry');
         if (retry) retry.hidden = false;
         setAlertResolutionStatus(
-          'Connection lost. The last alert and link choices are read-only; retry only if the draft is unchanged.',
+          'Connection lost. You cannot change the alert and link choices already loaded. Try again only if your draft is unchanged.',
           'offline',
         );
         reportLoadError('alert-resolution', error);
@@ -5670,7 +5674,7 @@
       'Reported subject entered by caregiver',
       symptomReportedSubjectLabel(episode.reported_subject),
     );
-    symptomAppendFact(summary, 'Onset date authority', symptomDatePresentation(episode.onset, 'Onset date'));
+    symptomAppendFact(summary, 'Where the onset date came from', symptomDatePresentation(episode.onset, 'Onset date'));
     if (episode.resolution) {
       symptomAppendFact(
         summary,
@@ -6091,7 +6095,7 @@
     symptomProjectionState = 'stale';
     if (!symptomProjection) {
       renderSymptomUnavailable(
-        message || 'Symptoms are unavailable until an authoritative reload succeeds.',
+        message || 'Symptoms are unavailable until they reload.',
         'stale',
         'Not current',
         true,
@@ -6115,7 +6119,7 @@
       symptomProjectionState = 'stale';
       setSymptomFreshness('loading', 'Checking…');
       setSymptomStatus(
-        'Checking the authoritative symptom record. The displayed snapshot is read-only.',
+        'Checking the current symptom record. You cannot make changes yet.',
         'loading',
         false,
       );
@@ -6124,7 +6128,7 @@
     }
     symptomProjectionState = 'loading';
     renderSymptomUnavailable(
-      'Loading the complete authoritative symptom record…',
+      'Loading the symptom record…',
       'loading',
       'Loading…',
       false,
@@ -6222,7 +6226,7 @@
         || (Number.isSafeInteger(currentWorkflow) && data.workflow_revision < currentWorkflow)
       ) {
         markSymptomProjectionStale(
-          'Newer patient information is available. Symptoms remain read-only while reloading.',
+          'Newer patient information is available. Refresh symptoms before making changes.',
           { abortRequest: false },
         );
         return null;
@@ -6267,7 +6271,7 @@
         symptomNetworkAmbiguous = true;
         markSymptomProjectionStale(
           symptomProjection
-            ? 'Symptom transport is uncertain. The last accepted snapshot is stale and read-only.'
+            ? 'The connection dropped. You are seeing the last version that loaded, and it is out of date.'
             : 'The symptom endpoint could not be reached and no prior snapshot is available.',
           { abortRequest: false, preserveMutation: options.preserveMutation === true },
         );
@@ -7066,7 +7070,7 @@
     selectedSymptomActionId = data.follow_up?.id || null;
     selectedSymptomActionToken = data.follow_up?.token || null;
     markSymptomProjectionStale(
-      'The symptom change was accepted. Reloading the authoritative record…',
+      'Your symptom change was accepted. Reloading…',
       {
         abortRequest: true,
         ownerPhiEpoch: phiEpoch,
@@ -7085,11 +7089,11 @@
         const message = document.getElementById('symptom-dialog-retry-message');
         if (message) {
           message.textContent =
-            'The change may be saved, but the authoritative symptom record could not be verified. Retry the reload; the mutation will not be sent again.';
+            'Your change may have saved, but the symptom record could not be checked. Try loading again; the change will not be sent twice.';
         }
         if (retry) retry.hidden = false;
         setSymptomDialogStatus(
-          'The current symptom record could not be verified. Retry the authoritative reload.',
+          'The current symptom record could not be checked. Try loading again.',
           'offline',
         );
       }
@@ -7103,7 +7107,7 @@
     if (symptomDialogOpen) captureSymptomDraft();
     clearSymptomRetry();
     setSymptomDialogStatus(
-      'The symptom record changed. Review the latest authoritative episode before submitting again.',
+      'The symptom record changed. Check the latest version of this episode before submitting again.',
       'conflict',
     );
     setSymptomStatus(
@@ -7164,7 +7168,7 @@
         pendingSymptomIntent = intent;
         symptomNetworkAmbiguous = true;
         markSymptomProjectionStale(
-          'Symptom mutation transport is uncertain. The last accepted snapshot is stale and read-only.',
+          'The connection dropped, so it is unclear whether that saved. You are seeing the last version that loaded.',
           { abortRequest: false, preserveMutation: true },
         );
         const retry = document.getElementById('symptom-dialog-retry');
@@ -7634,7 +7638,7 @@
       }
       html += `<span class="s-pill prrt-${safeClassToken(d.prrt_status, 'unknown')}">${escHtml(prrtLabels[d.prrt_status] || 'PRRT: NOT ASSESSED')}</span>`;
       if (d.cga_trend) {
-        const cgaLabels = { rising: '↑ CgA RISING', stable: '→ CgA STABLE', falling: '↓ CgA FALLING', insufficient_data: 'CgA: NO DATA' };
+        const cgaLabels = { rising: 'CgA rising', stable: 'CgA stable', falling: 'CgA falling', insufficient_data: 'CgA: not enough data' };
         html += `<span class="s-pill cga-${safeClassToken(d.cga_trend, 'insufficient_data')}">${escHtml(cgaLabels[d.cga_trend] || 'CgA: NO DATA')}</span>`;
       }
       html += '</div>';
@@ -7921,7 +7925,7 @@
       || !Object.prototype.hasOwnProperty.call(historyChanges, entry.operation)
       || !researchNonemptyString(entry.at)
       || !researchExactKeys(entry.changes, historyChanges[entry.operation])
-    ))) throw new Error('Research lifecycle history is invalid.');
+    ))) throw new Error('The research history could not be read.');
     if (consideration.follow_up !== null) validateResearchAction(consideration.follow_up);
     const eligibility = consideration.eligibility;
     if (
@@ -7946,10 +7950,10 @@
 
   function validateResearchWorkspace(data) {
     const keys = ['profile_revision', 'workflow_revision', 'projection_token', 'item_count', 'consideration_count', 'items', 'considerations', 'eligible_actions', 'attribution_labels', 'authority_labels', 'safety_guidance'];
-    if (!researchExactKeys(data, keys)) throw new Error('Research workspace shape is invalid.');
+    if (!researchExactKeys(data, keys)) throw new Error('The research data is not in a form NET/Care can read.');
     validateResearchNested(data);
     if (new TextEncoder().encode(JSON.stringify(data)).length > 20000000) {
-      throw new Error('Research workspace exceeds the supported limits.');
+      throw new Error('There is more research here than NET/Care can show at once.');
     }
     if (
       !Number.isSafeInteger(data.profile_revision)
@@ -7972,7 +7976,7 @@
       || !researchExactKeys(data.safety_guidance, ['kind', 'text'])
       || data.safety_guidance.kind !== 'fixed_non_clinical'
       || data.safety_guidance.text !== RESEARCH_SAFETY_GUIDANCE
-    ) throw new Error('Research workspace authority is invalid.');
+    ) throw new Error('The research data could not be checked.');
 
     const itemIds = new Set();
     data.items.forEach(item => {
@@ -8090,10 +8094,10 @@
   }
 
   function researchValueMarkup(value) {
-    if (value === null) return '<span class="research-null">Null</span>';
-    if (value === '') return '<span class="research-empty-value">Empty string</span>';
+    if (value === null) return '<span class="research-null">Nothing recorded</span>';
+    if (value === '') return '<span class="research-empty-value">Recorded as blank</span>';
     if (Array.isArray(value)) {
-      if (!value.length) return '<span class="research-empty-value">Empty list</span>';
+      if (!value.length) return '<span class="research-empty-value">Recorded as an empty list</span>';
       return `<ol class="research-value-list">${value.map(item => `<li>${researchValueMarkup(item)}</li>`).join('')}</ol>`;
     }
     if (researchPlainObject(value)) {
@@ -8111,7 +8115,7 @@
   function researchAuthorityMarkup(label, value, allowedFields) {
     const rows = [...allowedFields].map(key => {
       const present = Object.prototype.hasOwnProperty.call(value, key);
-      return `<div class="research-fact-row"><dt>${escHtml(key.replaceAll('_', ' '))}</dt><dd>${present ? researchValueMarkup(value[key]) : '<span class="research-missing-value">Missing field</span>'}</dd></div>`;
+      return `<div class="research-fact-row"><dt>${escHtml(key.replaceAll('_', ' '))}</dt><dd>${present ? researchValueMarkup(value[key]) : '<span class="research-missing-value">Not in the record</span>'}</dd></div>`;
     }).join('');
     return `<section class="research-authority-section"><h4>${escHtml(label)}</h4><dl class="research-fact-list">${rows}</dl></section>`;
   }
@@ -8164,7 +8168,7 @@
         </div>
         ${item.latest_batch_member ? '<span class="research-latest-badge">Latest batch</span>' : ''}
       </header>
-      ${canonical ? `<p><a class="research-external-link" href="${escHtml(canonical)}" target="_blank" rel="noopener noreferrer">Open exact ${item.item_type === 'trial' ? 'ClinicalTrials.gov' : 'PubMed'} record <span aria-hidden="true">↗</span></a></p>` : '<p class="research-mechanical-reason">No validated canonical external link is available.</p>'}
+      ${canonical ? `<p><a class="research-external-link" href="${escHtml(canonical)}" target="_blank" rel="noopener noreferrer">Open exact ${item.item_type === 'trial' ? 'ClinicalTrials.gov' : 'PubMed'} record <span aria-hidden="true">↗</span></a></p>` : '<p class="research-mechanical-reason">There is no link to the original source for this entry.</p>'}
     `;
     if (!compact) {
       article.insertAdjacentHTML('beforeend', `
@@ -8183,7 +8187,7 @@
       appendResearchControl(actions, 'Open existing consideration', { kind: 'navigate-consideration', value: item });
     } else {
       const reasons = {
-        missing_or_invalid_source_id: 'Saving is unavailable because this occurrence has no validated source identifier.',
+        missing_or_invalid_source_id: 'This entry has no source reference NET/Care could check, so it cannot be saved.',
         snapshot_too_large: 'Saving is unavailable because this research entry exceeds the supported limit.',
         already_shortlisted: 'This research entry already has a caregiver consideration.',
       };
@@ -8224,8 +8228,8 @@
     if (!compact) {
       article.insertAdjacentHTML('beforeend', `
         <div class="research-snapshot-current-grid">
-          <section class="research-snapshot-section" aria-label="Immutable saved snapshot">
-            <h3>Immutable saved snapshot</h3>
+          <section class="research-snapshot-section" aria-label="Saved exactly as it was">
+            <h3>Saved exactly as it was</h3>
             ${researchAuthorityMarkup(RESEARCH_DISPLAY_LABELS.external_facts, snapshot.external_facts, RESEARCH_EXTERNAL_FIELDS[consideration.item_type])}
             ${researchAuthorityMarkup(RESEARCH_DISPLAY_LABELS.generated_context, snapshot.generated_context, RESEARCH_GENERATED_FIELDS[consideration.item_type])}
             ${researchAuthorityMarkup(RESEARCH_DISPLAY_LABELS.discovery_provenance, snapshot.discovery_provenance, RESEARCH_DISCOVERY_FIELDS[consideration.item_type])}
@@ -8293,7 +8297,7 @@
     const labels = {
       current: 'Current',
       loading: 'Loading',
-      stale: 'Stale · read-only',
+      stale: 'Out of date',
       error: 'Unavailable',
       idle: 'Not loaded',
     };
@@ -8312,8 +8316,8 @@
     const todayOpen = document.getElementById('today-open-consideration-list');
     if (!researchProjection) {
       const copy = researchProjectionState === 'loading'
-        ? 'Loading authoritative research…'
-        : 'No verified research workspace is available.';
+        ? 'Loading research…'
+        : 'No research has loaded yet.';
       [currentList, considerationList, todayLatest, todayOpen].forEach(node => {
         if (node) node.innerHTML = `<div class="research-empty-state">${escHtml(copy)}</div>`;
       });
@@ -8394,7 +8398,7 @@
     }
     setResearchStatus(message || 'Refresh research before making changes.', 'stale');
     document.getElementById('research-retry').hidden = false;
-    document.getElementById('research-retry-message').textContent = message || 'Research needs a fresh authoritative workspace.';
+    document.getElementById('research-retry-message').textContent = message || 'Research needs to reload before you can change anything.';
     document.getElementById('today-research-retry-refresh').hidden = false;
     renderResearchWorkspace();
   }
@@ -8463,7 +8467,7 @@
     );
     if (!researchProjection) {
       researchProjectionState = 'loading';
-      setResearchStatus('Loading the authoritative research workspace…', 'loading');
+      setResearchStatus('Loading research…', 'loading');
       renderResearchWorkspace();
     }
     try {
@@ -8507,7 +8511,7 @@
       const verified = verifyResearchCompletion(projection);
       if (!verified && pendingResearchCompletion) {
         markResearchProjectionStale(
-          'The mutation response was accepted, but the replacement workspace did not confirm the expected result. Retry refresh only.',
+          'Your change was accepted, but the reloaded research did not show the expected result. Refresh only, and do not send it again.',
         );
         showResearchRefreshRetry('The save was accepted, but replacement verification is incomplete.');
       }
@@ -8524,7 +8528,7 @@
       const ambiguous = error instanceof TypeError || navigator.onLine === false;
       if (ambiguous && researchProjection) {
         markResearchProjectionStale(
-          'Research refresh is ambiguous. The last verified workspace remains visible and read-only.',
+          'It is unclear whether research refreshed. You are seeing the last version that loaded, and you cannot change it yet.',
           { networkAmbiguous: true, abortRequest: false },
         );
       } else {
@@ -8532,11 +8536,11 @@
           state: 'error',
           message: error?.status === 422
             ? 'Research could not be loaded safely. The research view was cleared.'
-            : 'Research could not be loaded. The research workspace was cleared.',
+            : 'Research could not be loaded. The research view was cleared.',
           retry: true,
         });
       }
-      reportLoadError('research', new Error('Research workspace is unavailable.'));
+      reportLoadError('research', new Error('Research is unavailable.'));
       return null;
     } finally {
       if (researchRequestController === controller && loadEpoch === researchLoadEpoch) {
@@ -8555,12 +8559,12 @@
     if (researchConflictRequiresReselection) {
       researchConflictRequiresReselection = false;
       closeResearchDialog(false, true);
-      setResearchStatus('Research changed during the request. Select a current row to review the retained caregiver draft.', 'stale');
+      setResearchStatus('Research changed during your request. Choose a current row to see your saved draft.', 'stale');
       return false;
     }
     if (researchSelectionStillCurrent(researchSelection)) return true;
     closeResearchDialog(false);
-    setResearchStatus('The selected research authority changed. Select the current row again.', 'stale');
+    setResearchStatus('The research entry you selected changed. Choose the current row again.', 'stale');
     return false;
   }
 
@@ -8647,7 +8651,7 @@
       event: 'Record caregiver event',
       close: 'Close caregiver consideration',
       resume: 'Resume caregiver consideration',
-      'follow-up': current.follow_up ? 'Unlink durable follow-up' : 'Link or create durable follow-up',
+      'follow-up': current.follow_up ? 'Unlink durable follow-up' : 'Link or create a follow-up',
     };
     document.getElementById('research-dialog-title').textContent = titles[mode];
     document.getElementById('research-dialog-context').innerHTML = researchDialogContextMarkup(current);
@@ -8712,7 +8716,7 @@
     const close = mode === 'close';
     document.getElementById('research-lifecycle-copy').textContent = close
       ? 'Closing stops active caregiver consideration only. It does not mean this research is irrelevant, unavailable, unsuitable, ineligible, or rejected.'
-      : 'Resuming returns this caregiver consideration to the open workflow and preserves every prior event and lifecycle history item.';
+      : 'Resuming reopens this research entry and keeps everything already recorded against it.';
     document.getElementById('research-lifecycle-submit').textContent = close ? 'Close consideration' : 'Resume consideration';
     const eligible = close ? consideration.eligibility.close.eligible : consideration.eligibility.resume.eligible;
     document.getElementById('research-lifecycle-submit').disabled = !eligible;
@@ -8734,7 +8738,7 @@
       input.addEventListener('change', updateResearchFollowUpMode);
       label.append(input, document.createTextNode({
         link_existing: 'Link one current eligible action',
-        create_and_link: 'Create one manual action and link atomically',
+        create_and_link: 'Create a follow-up and link it in one step',
         unlink: 'Unlink the current action',
       }[variant]));
       fieldset.appendChild(label);
@@ -8867,7 +8871,7 @@
   }
 
   function researchBaseMutationBody() {
-    if (!researchProjection) throw new Error('Reload the research workspace before saving.');
+    if (!researchProjection) throw new Error('Reload research before saving.');
     return {
       mutation_id: newMutationId(),
       expected_profile_revision: researchProjection.profile_revision,
@@ -8946,7 +8950,7 @@
       expected.event_id = added[0].id;
     } else if (['close', 'resume'].includes(intent.expected.mode)) {
       expected.status = intent.expected.mode === 'close' ? 'closed' : 'open';
-      if (result.status !== expected.status) throw new Error('Research lifecycle response is inconsistent.');
+      if (result.status !== expected.status) throw new Error('The reply did not match what was requested.');
     } else if (intent.expected.mode === 'follow-up') {
       expected.follow_up_id = result.follow_up?.id || null;
       if (intent.expected.followUpMode === 'unlink' && result.follow_up !== null) {
@@ -9005,10 +9009,10 @@
       pendingResearchCompletion = expectedResearchCompletion(intent, data);
       clearResearchSubmissionRetryOnly();
       markResearchProjectionStale(
-        'The request was accepted. Research is read-only while the complete workspace verifies the result.',
+        'Your change was accepted. Research is locked while it reloads.',
         { abortRequest: false },
       );
-      showResearchRefreshRetry('The request was accepted. Verifying the complete workspace…');
+      showResearchRefreshRetry('Your change was accepted. Reloading research…');
       releaseResearchMutation(intent);
       await loadResearchWorkspace({ force: true });
       return data;
@@ -9022,9 +9026,9 @@
         researchDraft = captureResearchDraft();
         researchConflictRequiresReselection = true;
         clearResearchSubmissionRetryOnly();
-        setResearchDialogStatus('The research workspace changed. Review the reloaded authority before submitting again.', 'conflict');
+        setResearchDialogStatus('Research changed while you were working. Check the reloaded version before submitting again.', 'conflict');
         releaseResearchMutation(intent);
-        markResearchProjectionStale('Research changed during the request. Reloading authoritative workspace.', { abortRequest: false });
+        markResearchProjectionStale('Research changed during your request. Reloading.', { abortRequest: false });
         await loadResearchWorkspace({ force: true });
         return null;
       }
@@ -9032,7 +9036,7 @@
         researchDraft = captureResearchDraft();
         pendingResearchSubmission = intent;
         markResearchProjectionStale(
-          'The submission result is ambiguous. Research remains visible and read-only until authority reloads.',
+          'It is unclear whether that was submitted. Research stays visible but locked until it reloads.',
           { networkAmbiguous: true, abortRequest: false },
         );
         showResearchSubmissionRetry('Submission status is unknown. Retry only the unchanged request.');
@@ -9041,7 +9045,7 @@
       }
       if ([400, 404, 422].includes(error?.status)) {
         researchDraft = captureResearchDraft();
-        setResearchDialogStatus('The request was not accepted. Review the caregiver-entered fields and current authority.', 'error');
+        setResearchDialogStatus('That was not accepted. Check what you entered against the current version.', 'error');
         releaseResearchMutation(intent);
         return null;
       }
@@ -9193,7 +9197,7 @@
       || prior.dialogEpoch !== researchDialogEpoch
     ) {
       clearResearchSubmissionRetryOnly();
-      setResearchDialogStatus('Submission retry authority expired. Review and submit a new request.', 'conflict');
+      setResearchDialogStatus('Too much time passed to retry that safely. Check it and submit again.', 'conflict');
       return;
     }
     const owner = beginResearchMutation(true);
@@ -9263,10 +9267,10 @@
     if (artifact.freshness === 'stale') return 'Completed output is no longer current.';
     return {
       available: artifact.kind === 'report' ? 'Report available.' : 'Result available.',
-      expired: 'Output expired under the retention policy.',
+      expired: 'This output was not kept beyond its retention period.',
       not_retained: 'Output is no longer retained.',
       unavailable: 'Saved output is unavailable.',
-      legacy_unknown: 'This older record does not include output-retention details.',
+      legacy_unknown: 'This older record does not say whether its output was kept.',
       none: 'No separate saved output is expected.',
     }[artifact.state] || 'Output status unavailable.';
   }
@@ -9356,15 +9360,15 @@
     }
     if (task.derived_content_stale_reason === 'freshness_cannot_be_verified') {
       return {
-        title: `${type} freshness cannot be verified`,
+        title: `NET/Care cannot tell how current this ${type} is`,
         detail: 'This older activity record does not include enough information to compare it with the current patient record.',
-        preview: `${type} freshness cannot be verified`,
+        preview: `NET/Care cannot tell how current this ${type} is`,
       };
     }
     if (task.derived_content_stale_reason === 'generated_content_invalidated') {
       return {
         title: `${type} is outdated`,
-        detail: 'Generated content was invalidated by a review-state change.',
+        detail: 'This generated content is out of date because the record changed.',
         preview: `${type} outdated — review state changed`,
       };
     }
@@ -9853,7 +9857,7 @@
       },
       none: {
         title: 'No separate saved output',
-        detail: 'This task did not produce a separate caregiver-facing artifact.',
+        detail: 'This task did not produce anything separate for you to read.',
       },
     }[artifact.state] || {
       title: 'Output unavailable',
@@ -10447,7 +10451,7 @@
       if (!jobSubmissionOwnsRequest(submission)) return false;
       if (e instanceof TypeError || navigator.onLine === false) {
         markResearchProjectionStale(
-          'The document submission result is ambiguous. Research remains read-only until authority reloads.',
+          'It is unclear whether the document was submitted. Research stays locked until it reloads.',
           { networkAmbiguous: true },
         );
       }
@@ -10549,7 +10553,7 @@
       if (!jobSubmissionOwnsRequest(submission)) return false;
       if (e instanceof TypeError || navigator.onLine === false) {
         markResearchProjectionStale(
-          'The document submission result is ambiguous. Research remains read-only until authority reloads.',
+          'It is unclear whether the document was submitted. Research stays locked until it reloads.',
           { networkAmbiguous: true },
         );
       }
@@ -10581,7 +10585,7 @@
       if (!jobSubmissionOwnsRequest(submission)) return;
       if (e instanceof TypeError || navigator.onLine === false) {
         markResearchProjectionStale(
-          'The digest submission result is ambiguous. Research remains read-only until authority reloads.',
+          'It is unclear whether the digest was submitted. Research stays locked until it reloads.',
           { networkAmbiguous: true },
         );
       }
@@ -10639,7 +10643,7 @@
         const refreshes = [loadSummary()];
         if (activeView !== 'today') refreshes.push(loadStatus());
         markResearchProjectionStale(
-          'A manual research source run completed. Reloading the authoritative research workspace.',
+          'A research run finished. Reloading research.',
         );
         refreshes.push(loadResearchWorkspace({ force: true }));
         await Promise.allSettled(refreshes);
@@ -10796,7 +10800,7 @@
       ['Time', visit.time],
       ['Clinician', visit.clinician],
       ['Location', visit.location],
-      ['Lifecycle', visitStatusLabel(visit.status)],
+      ['Status', visitStatusLabel(visit.status)],
     ];
     detailRows.forEach(([label, value]) => {
       if (value) lines.push(`${label}: ${recapPlainText(value)}`);
@@ -10821,13 +10825,13 @@
     ]);
     addSection('Decisions / needs confirmation', sections.decisions, (item, index) => [
       `${index + 1}. ${recapPlainText(item.text)}`,
-      `Lifecycle: ${item.status === 'needs_confirmation' ? 'Needs confirmation' : 'Active'}`,
+      `Status: ${item.status === 'needs_confirmation' ? 'Needs confirmation' : 'Active'}`,
       `Source: ${recapPlainText(caregiverProvenancePresentation(item.provenance_label))}`,
     ]);
     addSection('Follow-ups', sections.follow_ups, (item, index) => {
       const result = [
         `${index + 1}. ${recapPlainText(item.text)}`,
-        `Lifecycle: ${recapPlainText(String(item.status).replaceAll('_', ' '))}`,
+        `Status: ${recapPlainText(enumLabel(item.status))}`,
       ];
       if (item.owner) result.push(`Owner: ${recapPlainText(item.owner)}`);
       if (item.due_date) result.push(`Due date: ${recapPlainText(fmtDate(item.due_date))}`);
@@ -10892,7 +10896,7 @@
       ['Time', visit.time],
       ['Clinician', visit.clinician],
       ['Location', visit.location],
-      ['Lifecycle', visitStatusLabel(visit.status)],
+      ['Status', visitStatusLabel(visit.status)],
     ].filter(([, value]) => value);
     const staleClass = visitRecapStale ? ' stale' : '';
     let html = `<div class="visit-recap-document${staleClass}">
@@ -10988,7 +10992,7 @@
     visitRecapState = options.state || data.recap.state || 'error';
     visitRecapMessage = options.message || (
       data.recap.state === 'current'
-        ? 'Current authoritative recap.'
+        ? 'This recap is up to date.'
         : data.recap.state === 'administrative'
           ? 'Cancelled visit · non-exportable administrative state.'
           : 'Recap is unavailable until this visit starts.'
@@ -11081,7 +11085,7 @@
         error?.status === 409
           ? 'The visit changed. Reload the visit and recap before exporting.'
           : state === 'offline'
-            ? 'Offline snapshot · read-only. Export is disabled until the recap reloads.'
+            ? 'Offline. Showing the last version that loaded. You cannot export until the recap reloads.'
             : (error.message || 'The recap could not be loaded.'),
         state,
       );
@@ -11281,7 +11285,7 @@
     const message = error?.status === 409
       ? 'The visit changed. Reload the visit and recap before exporting.'
       : ambiguous
-        ? 'The recap could not be rechecked. The visible snapshot is read-only until it reloads.'
+        ? 'The recap could not be rechecked. You cannot change what is shown until it reloads.'
         : (error?.message || 'The recap could not be rechecked before export.');
     if (ambiguous) visitRecapNetworkAmbiguous = true;
     rejectVisitRecapPreflight(owner, message, state);
@@ -11569,7 +11573,7 @@
   function followUpOriginLabel(item) {
     const origin = item?.origin_snapshot || {};
     if (origin.kind === 'executive_summary_action') {
-      return 'Saved from an assessment recommendation';
+      return 'You saved this from the assessment';
     }
     if (origin.kind === 'visit_decision') return 'Follow-up from an appointment decision';
     if (origin.kind === 'alert') return 'Follow-up from a recorded alert';
@@ -11631,7 +11635,7 @@
     const items = followUpItems();
     const staleNotice = followUpProjectionStale
       ? `<div class="follow-up-stale-note" role="status">
-          <div><strong>Offline snapshot · read-only</strong><span>Reload the current action list before making changes.</span></div>
+          <div><strong>Offline · showing the last version that loaded</strong><span>Reload the current follow-up list before making changes.</span></div>
           <button class="button secondary follow-up-refresh-button" onclick="loadFollowUps()">Reload actions</button>
         </div>`
       : '';
@@ -11856,7 +11860,7 @@
     const retryButton = retryContainer.querySelector('button');
     if (retryButton) {
       retryButton.disabled = false;
-      retryButton.textContent = 'Retry authoritative reload';
+      retryButton.textContent = 'Try loading again';
     }
   }
 
@@ -12138,7 +12142,7 @@
     renderVisitFollowUps();
     setFollowUpStatus(message, 'offline');
     setFollowUpDialogStatus(
-      'The action list is offline and read-only. Your draft remains available in this tab.',
+      'The follow-up list is offline, so you cannot change it. Your draft is still here in this tab.',
       'offline',
     );
     refreshGeneratedActionControls();
@@ -12198,7 +12202,7 @@
       } else {
         if (isTransientFollowUpTransportError(error)) {
           markFollowUpProjectionStale(
-            'Follow-ups are offline. The last loaded actions are read-only; your drafts remain available in this tab.',
+            'Follow-ups are offline. You cannot change the ones already loaded, but your drafts are still here in this tab.',
           );
           reportLoadError('follow-ups', error);
           return followUpItems();
@@ -12276,7 +12280,7 @@
     clearFollowUpRetry();
     if (intent.sourceKind === 'generated') redactGeneratedSummaryActions();
     const message = intent.sourceKind === 'generated'
-      ? 'The generated action is unavailable. Reloaded assessment actions must be reviewed before accepting one.'
+      ? 'This suggested action is no longer available. Check the reloaded assessment before accepting one.'
       : (error.message || 'This action changed. Review the latest version before trying again.');
     setFollowUpStatus(message, 'conflict');
     setFollowUpDialogStatus(message, 'conflict');
@@ -12351,7 +12355,7 @@
           requiresClinicalRefresh,
         };
         const message =
-          'The current follow-through state could not be verified. Retry the authoritative reload.';
+          'The current follow-ups could not be checked. Try loading again.';
         setFollowUpStatus(message, 'offline');
         setFollowUpDialogStatus(message, 'offline');
       }
@@ -12459,7 +12463,7 @@
         );
         if (retry) retry.hidden = false;
         setFollowUpDialogStatus(
-          'Connection lost. Your draft is still available for an explicit unchanged retry.',
+          'Connection lost. Your draft is still here if you want to try again unchanged.',
           'offline',
         );
         reportLoadError('follow-up-mutation', error);
@@ -12502,8 +12506,8 @@
       completion.intent.pendingPhiEpoch = phiEpoch;
       delete completion.intent.completionPhiEpoch;
       setFollowUpMutationBusy(true);
-      setFollowUpStatus('Retrying the authoritative reload…', 'saving');
-      setFollowUpDialogStatus('Retrying the authoritative reload…', 'saving');
+      setFollowUpStatus('Trying again…', 'saving');
+      setFollowUpDialogStatus('Trying again…', 'saving');
       try {
         const consumed = await consumeFollowUpResponse(
           completion.data,
@@ -12620,7 +12624,7 @@
     const allowed = (action.status === 'open' && status === 'in_progress')
       || (action.status === 'in_progress' && status === 'open');
     if (!allowed) {
-      setFollowUpStatus('This lifecycle change is not available.', 'conflict');
+      setFollowUpStatus('That change is not available.', 'conflict');
       return;
     }
     await submitFollowUpMutation(
@@ -12650,7 +12654,7 @@
     if (!list) return;
     const visits = orderedVisits();
     if (!visits.length) {
-      list.innerHTML = '<div class="empty-state">No visit workspace yet. Create one for the next appointment.</div>';
+      list.innerHTML = '<div class="empty-state">No visit prepared yet. Create one for the next appointment.</div>';
       return;
     }
     list.innerHTML = visits.map(visit => {
@@ -12847,7 +12851,7 @@
     const cancel = document.getElementById('visit-decision-cancel-supersede');
     if (cancel) cancel.hidden = true;
     const label = document.getElementById('visit-decision-label');
-    if (label) label.textContent = 'Decision you recorded from the clinician';
+    if (label) label.textContent = 'What the clinician decided, as you recorded it';
   }
 
   function revalidateDecisionSuccessorState(visit) {
@@ -12900,8 +12904,8 @@
     const superseding = Boolean(supersedesId);
     document.getElementById('visit-decision-cancel-supersede').hidden = !superseding;
     document.getElementById('visit-decision-label').textContent = superseding
-      ? 'Correct with a successor decision'
-      : 'Decision you recorded from the clinician';
+      ? 'Correct with a replacement'
+      : 'What the clinician decided, as you recorded it';
     Object.entries(values.answers || {}).forEach(([questionId, answer]) => {
       const row = [...document.querySelectorAll('#visit-question-list .visit-question')]
         .find(item => item.dataset.visitQuestionId === questionId);
@@ -13319,34 +13323,34 @@
     if (status === 'active') {
       return {
         copy: correctionBlocked
-          ? 'Reload this changed decision before creating a correction.'
-          : 'Active decisions can be marked for confirmation, corrected with an immutable successor, or retracted.',
+          ? 'This decision changed. Reload it before correcting it.'
+          : 'You can mark this as needing confirmation, correct it by adding a replacement, or withdraw it.',
         controls: `<button class="button secondary" onclick="changeDecisionStatus(this.closest('.visit-decision'),'needs_confirmation')">Needs confirmation</button>
-          ${correctionBlocked ? '' : `<button class="button secondary" onclick="prepareDecisionSuccessor(this.closest('.visit-decision'))">Correct with successor</button>`}
+          ${correctionBlocked ? '' : `<button class="button secondary" onclick="prepareDecisionSuccessor(this.closest('.visit-decision'))">Correct with a replacement</button>`}
           <button class="button secondary danger" onclick="changeDecisionStatus(this.closest('.visit-decision'),'retracted')">Retract</button>`,
       };
     }
     if (status === 'needs_confirmation') {
       return {
-        copy: 'Confirm this decision as active or retract it. Correction is available only after confirmation.',
+        copy: 'Confirm this decision as active, or withdraw it. You can only correct it after confirming.',
         controls: `<button class="button secondary" onclick="changeDecisionStatus(this.closest('.visit-decision'),'active')">Confirm active</button>
           <button class="button secondary danger" onclick="changeDecisionStatus(this.closest('.visit-decision'),'retracted')">Retract</button>`,
       };
     }
     if (status === 'superseded') {
       return {
-        copy: 'This superseded decision is immutable history; no further lifecycle actions are available.',
+        copy: 'This decision was replaced. It stays in the record as history and cannot be changed.',
         controls: '',
       };
     }
     if (status === 'retracted') {
       return {
-        copy: 'This retracted decision is immutable history; no further lifecycle actions are available.',
+        copy: 'This decision was withdrawn. It stays in the record as history and cannot be changed.',
         controls: '',
       };
     }
     return {
-      copy: 'This decision has an unavailable lifecycle state; no actions are available.',
+      copy: 'NET/Care does not recognise the state of this decision, so there is nothing to do here.',
       controls: '',
     };
   }
@@ -13371,7 +13375,7 @@
         decisionSuccessorConflicts.has(decision.id)
       );
       return `<article class="visit-decision" data-decision-id="${escHtml(decision.id)}" data-decision-token="${escHtml(decision.token)}">
-        <div class="visit-decision-heading"><strong>${escHtml(decision.text)}</strong><span class="visit-status-badge ${safeClassToken(decision.status, 'active')}">${escHtml(decision.status.replaceAll('_', ' '))}</span></div>
+        <div class="visit-decision-heading"><strong>${escHtml(decision.text)}</strong><span class="visit-status-badge ${safeClassToken(decision.status, 'active')}">${escHtml(enumLabel(decision.status))}</span></div>
         <p class="capture-provenance">${RECORD_SOURCE_COPY.clinician}</p>
         ${decision.supersedes_id ? '<p class="visit-source-label">Correction of an earlier decision</p>' : ''}
         <p class="visit-decision-lifecycle">${escHtml(lifecycle.copy)}</p>
@@ -13386,12 +13390,12 @@
     const decision = (visit?.decisions || []).find(item => item.id === id);
     if (!visit || !decision || decision.status !== 'active' || decisionSuccessorConflicts.has(id)) {
       if (visit) clearDecisionSuccessorState(visit.id);
-      setAppointmentMessage('Reload this changed decision before creating a correction.', 'conflict');
+      setAppointmentMessage('This decision changed. Reload it before correcting it.', 'conflict');
       loadVisits();
       return;
     }
     document.getElementById('visit-decision-supersedes').value = id;
-    document.getElementById('visit-decision-label').textContent = 'Correct with a successor decision';
+    document.getElementById('visit-decision-label').textContent = 'Correct with a replacement';
     document.getElementById('visit-decision-cancel-supersede').hidden = false;
     document.getElementById('visit-decision-text').focus();
     captureAppointmentDraft();
@@ -13400,7 +13404,7 @@
   function cancelDecisionSuccessor() {
     document.getElementById('visit-decision-supersedes').value = '';
     document.getElementById('visit-decision-label').textContent =
-      'Decision you recorded from the clinician';
+      'What the clinician decided, as you recorded it';
     document.getElementById('visit-decision-cancel-supersede').hidden = true;
     captureAppointmentDraft();
   }
@@ -13457,7 +13461,7 @@
       item.visit_id === visit.id || (visit.follow_up_ids || []).includes(item.id)
     );
     const staleNotice = followUpProjectionStale
-      ? '<div class="follow-up-stale-note compact" role="status"><div><strong>Offline snapshot · read-only</strong><span>Reload actions before adding or changing follow-through.</span></div></div>'
+      ? '<div class="follow-up-stale-note compact" role="status"><div><strong>Offline · showing the last version that loaded</strong><span>Reload before adding or changing follow-ups.</span></div></div>'
       : '';
     if (!items.length) {
       list.innerHTML = `${staleNotice}<div class="empty-state">No resulting follow-ups for this visit.</div>`;
@@ -14078,6 +14082,11 @@
     notes: 10000,
     terminal_detail: 1000,
   };
+  const TREATMENT_STATUS_PHRASES = {
+    current: 'a current treatment',
+    planned: 'a planned treatment',
+    past: 'a past treatment',
+  };
   const TREATMENT_STATUS_LABELS = {
     current: 'Current record',
     planned: 'Planned record',
@@ -14091,10 +14100,10 @@
     legacy_unspecified: 'How it ended was not recorded',
   };
   const TREATMENT_RESTART_REASONS = {
-    course_not_terminal: 'This record is not past.',
-    terminal_qualifier_not_restartable: 'This status record was not recorded as having started.',
-    no_prior_current_authority: 'The saved workflow does not establish a prior current record.',
-    eligible_prior_current: 'The server permits a new record linked to this past record.',
+    course_not_terminal: 'This treatment is not recorded as ended.',
+    terminal_qualifier_not_restartable: 'This record says the treatment never started.',
+    no_prior_current_authority: 'NET/Care cannot find the earlier current record this would follow.',
+    eligible_prior_current: 'You can add a new treatment record linked to this one.',
   };
 
   function treatmentElement(tag, className = '', text = null) {
@@ -14916,9 +14925,9 @@
   }
 
   function treatmentScalarNode(value, present = true) {
-    if (!present) return treatmentElement('span', 'treatment-missing', 'Missing field');
-    if (value === null) return treatmentElement('span', 'treatment-missing', 'Null');
-    if (value === '') return treatmentElement('span', 'treatment-empty', 'Empty string ("")');
+    if (!present) return treatmentElement('span', 'treatment-missing', 'Not in the record');
+    if (value === null) return treatmentElement('span', 'treatment-missing', 'Nothing recorded');
+    if (value === '') return treatmentElement('span', 'treatment-empty', 'Recorded as blank');
     if (typeof value === 'string') {
       if (value.length <= 160) return treatmentElement('span', 'treatment-exact-value', value);
       const details = treatmentElement('details', 'treatment-exact-details');
@@ -15014,7 +15023,7 @@
         treatmentAppendFact(
           facts,
           'Linked previous record',
-          { value: 'This record was created from server-authorized restart authority.' },
+          { value: 'You created this record from an earlier past record.' },
           'value',
         );
       }
@@ -15184,7 +15193,7 @@
     );
     const presentation = {
       none: {
-        label: 'Status not recorded',
+        label: 'No status recorded',
         detail: 'No caregiver status record refers to this wording.',
       },
       all: {
@@ -15235,7 +15244,7 @@
     const visibility = treatmentElement(
       'button',
       'button secondary',
-      hidden ? 'Show in my workspace' : 'Not useful in my workspace',
+      hidden ? 'Show this again' : 'Not useful to me',
     );
     visibility.type = 'button';
     visibility.disabled = !recordable;
@@ -15243,8 +15252,8 @@
     visibility.setAttribute(
       'aria-label',
       hidden
-        ? `Show ${row.raw_text} in my workspace`
-        : `Hide ${row.raw_text} from my workspace`,
+        ? `Show ${row.raw_text} again`
+        : `Mark ${row.raw_text} as not useful to me`,
     );
     visibility.addEventListener('click', () => setTreatmentRowVisibility(visibility, row.id, !hidden));
     actions.append(visibility);
@@ -15256,7 +15265,7 @@
     const panel = treatmentElement('section', 'treatment-citation-panel');
     panel.append(treatmentElement('h4', '', label));
     const snapshot = treatmentElement('section', 'treatment-citation-snapshot');
-    snapshot.append(treatmentElement('h5', '', 'Immutable snapshot when recorded'));
+    snapshot.append(treatmentElement('h5', '', 'Saved exactly as it was when recorded'));
     const current = treatmentElement('section', 'treatment-citation-current');
     current.append(treatmentElement('h5', '', 'Current side state'));
     if (kind === 'source') {
@@ -15298,7 +15307,7 @@
       const unavailable = treatmentElement('section', 'treatment-citation-panel unavailable');
       unavailable.append(
         treatmentElement('h4', '', 'Record B'),
-        treatmentElement('p', '', 'Second citation unavailable · incomplete saved workflow · read-only'),
+        treatmentElement('p', '', 'The second record is missing from what was saved, so this cannot be changed'),
       );
       citations.append(unavailable);
     }
@@ -15325,7 +15334,7 @@
       card.append(outcomes);
     }
     const followUp = treatmentElement('section', 'treatment-linked-follow-up');
-    followUp.append(treatmentElement('h4', '', 'Atomic follow-up link'));
+    followUp.append(treatmentElement('h4', '', 'Linked follow-up'));
     if (discrepancy.follow_up) {
       followUp.append(
         treatmentElement('p', '', discrepancy.follow_up.text),
@@ -15552,7 +15561,7 @@
         disclosure.append(treatmentElement(
           'p',
           'treatment-overview-description',
-          'You marked these as not useful in your workspace. Nothing was deleted or changed: they are still stored, still counted in the record, and NET/Care still uses them when answering your questions. Restore any of them at any time.',
+          'You marked these as not useful. Nothing was deleted or changed: they are still stored, still counted in the record, and NET/Care still uses them when answering your questions. Bring any of them back at any time.',
         ));
         const hiddenList = treatmentElement('div', 'treatment-course-list treatment-hidden-list');
         hiddenList.replaceChildren(
@@ -15608,11 +15617,11 @@
     });
     setTreatmentFreshness(
       treatmentProjectionState === 'stale' ? 'stale' : 'current',
-      treatmentProjectionState === 'stale' ? 'Read-only snapshot' : 'Up to date',
+      treatmentProjectionState === 'stale' ? 'Out of date' : 'Up to date',
     );
     setTreatmentStatus(
       treatmentProjectionState === 'stale'
-        ? 'This saved treatment view is read-only until it refreshes.'
+        ? 'You cannot change treatments until this refreshes.'
         : 'Treatment information is up to date.',
       treatmentProjectionState === 'stale' ? 'stale' : 'current',
       treatmentProjectionState === 'stale',
@@ -15755,7 +15764,7 @@
     treatmentProjectionState = 'stale';
     if (!treatmentProjection) {
       renderTreatmentUnavailable(
-        message || 'Treatment information is unavailable until an authoritative reload succeeds.',
+        message || 'Treatments are unavailable until they reload.',
         'stale',
         'Not current',
         true,
@@ -15785,7 +15794,7 @@
       treatmentProjectionState = 'stale';
       setTreatmentFreshness('loading', 'Checking…');
       setTreatmentStatus(
-        'Checking the authoritative treatment record. The displayed snapshot is read-only.',
+        'Checking the current treatment record. You cannot make changes yet.',
         'loading',
         false,
       );
@@ -15794,7 +15803,7 @@
     }
     treatmentProjectionState = 'loading';
     renderTreatmentUnavailable(
-      'Loading the complete authoritative treatment record…',
+      'Loading the treatment record…',
       'loading',
       'Loading…',
       false,
@@ -15929,7 +15938,7 @@
         || (Number.isSafeInteger(knownWorkflow) && data.workflow_revision < knownWorkflow)
       ) {
         markTreatmentProjectionStale(
-          'Newer patient information is available. Treatment information remains read-only while reloading.',
+          'Newer patient information is available. Refresh treatments before making changes.',
           { abortRequest: false, preserveMutation },
         );
         return null;
@@ -15963,7 +15972,7 @@
           scrubTreatmentDialog();
           renderTreatmentProjection(treatmentResponseOwner);
           setTreatmentStatus(
-            'The saved response did not match the authoritative replacement. Treatment information remains read-only; retry refresh only.',
+            'The saved reply did not match the reloaded record. Treatments stay locked; refresh only, and do not send it again.',
             'stale',
             true,
           );
@@ -15972,7 +15981,7 @@
       } else if (treatmentDialogOpen) {
         scrubTreatmentDialog({ moveFocus: false });
         setTreatmentStatus(
-          'The authoritative treatment record changed. Reopen the form and explicitly reselect server-owned records.',
+          'The treatment record changed. Reopen the form and choose the records again.',
           'current',
           false,
         );
@@ -15994,7 +16003,7 @@
         treatmentNetworkAmbiguous = true;
         markTreatmentProjectionStale(
           treatmentProjection
-            ? 'Treatment transport is uncertain. The last accepted snapshot is stale and read-only.'
+            ? 'The connection dropped. You are seeing the last version that loaded, and it is out of date.'
             : 'The treatment endpoint could not be reached and no prior snapshot is available.',
           { abortRequest: false, preserveMutation },
         );
@@ -16321,7 +16330,7 @@
     const select = treatmentElement('select');
     select.id = 'treatment-field-category';
     select.dataset.caregiverField = 'true';
-    const blank = treatmentElement('option', '', 'Choose a neutral category');
+    const blank = treatmentElement('option', '', 'Choose what kind of difference this is');
     blank.value = '';
     select.append(blank);
     [
@@ -16348,7 +16357,7 @@
     ));
     const sourceA = treatmentElement('select');
     sourceA.id = 'treatment-source-a';
-    const blankA = treatmentElement('option', '', 'Choose document Record A');
+    const blankA = treatmentElement('option', '', 'Choose the first record');
     blankA.value = '';
     sourceA.append(blankA);
     treatmentProjection.source_facts.forEach((source, index) => {
@@ -16407,7 +16416,7 @@
     comparison.id = 'treatment-field-comparison';
     comparison.maxLength = 10000;
     fragment.append(
-      treatmentFieldLabel('Neutral difference category', category),
+      treatmentFieldLabel('What kind of difference is this?', category),
       treatmentFieldLabel(
         'Caregiver comparison wording',
         comparison,
@@ -16438,7 +16447,7 @@
     blank.value = '';
     outcome.append(blank);
     [
-      ['confirmed_as_recorded', 'Treating-team outcome recorded as confirmed'],
+      ['confirmed_as_recorded', 'The treating team confirmed it as recorded'],
       ['caregiver_record_corrected', 'Caregiver treatment record corrected'],
       ['source_clarification_needed', 'Source clarification still needed'],
       ['no_change_documented', 'No change documented'],
@@ -16478,7 +16487,7 @@
       patch.id = 'treatment-course-patch';
       patch.hidden = true;
       patch.append(
-        treatmentElement('h3', '', 'Atomic caregiver record correction'),
+        treatmentElement('h3', '', 'Correcting your own record'),
         treatmentElement(
           'p',
           'helper-text',
@@ -16497,9 +16506,9 @@
       treatmentElement(
         'p',
         'treatment-authority-note',
-        'Record a recurrence using the server-owned prior citation authority. The cited sides cannot be replaced here.',
+        'This records the same difference again, reusing the two records already cited. You cannot change which records those are here.',
       ),
-      treatmentFieldLabel('Neutral difference category', treatmentCategorySelect()),
+      treatmentFieldLabel('What kind of difference is this?', treatmentCategorySelect()),
     );
     const comparison = treatmentTextControl('notes', '');
     comparison.id = 'treatment-field-comparison';
@@ -16524,7 +16533,7 @@
       return fragment;
     }
     const modes = treatmentElement('fieldset', 'treatment-choice-fieldset');
-    modes.append(treatmentElement('legend', '', 'Choose one atomic follow-up variant'));
+    modes.append(treatmentElement('legend', '', 'Choose one follow-up option'));
     [
       ['existing', 'Link one currently eligible existing follow-up'],
       ['inline', 'Create and link one manual follow-up'],
@@ -16724,7 +16733,7 @@
       body.append(treatmentElement(
         'p',
         'treatment-authority-note',
-        `Server-authorized transition from ${course.status} to ${selection.targetStatus}.`,
+        `Changing this from ${TREATMENT_STATUS_PHRASES[course.status] || 'its current status'} to ${TREATMENT_STATUS_PHRASES[selection.targetStatus] || 'another status'}.`,
       ));
       if (selection.qualifiers.length) {
         const qualifier = treatmentElement('select');
@@ -16758,7 +16767,7 @@
       body.append(treatmentDifferenceForm());
     } else if (mode === 'resolve') {
       title.textContent = 'Record treating-team outcome';
-      submit.textContent = 'Save outcome atomically';
+      submit.textContent = 'Save outcome';
       body.append(treatmentResolveForm(discrepancy));
     } else if (mode === 'reopen') {
       title.textContent = 'Reopen recorded difference';
@@ -16774,7 +16783,7 @@
       body.append(treatmentRecurrenceForm());
     } else if (mode === 'follow-up') {
       title.textContent = discrepancy.follow_up ? 'Unlink follow-up' : 'Link a follow-up';
-      submit.textContent = discrepancy.follow_up ? 'Unlink follow-up' : 'Save atomic follow-up';
+      submit.textContent = discrepancy.follow_up ? 'Unlink follow-up' : 'Save follow-up';
       body.append(treatmentFollowUpForm(discrepancy));
     } else {
       return scrubTreatmentDialog();
@@ -16908,7 +16917,7 @@
     if (pendingTreatmentRetry) {
       clearTreatmentRetry();
       setTreatmentDialogStatus(
-        'The draft changed. Submit a new request after reviewing current treatment authority.',
+        'Your draft changed. Check it against the current treatment record and submit again.',
         'conflict',
       );
     }
@@ -17078,7 +17087,7 @@
 
   function treatmentMutationMeta() {
     if (!treatmentProjection || !treatmentResponseOwnerIsCurrent()) {
-      throw new Error('Reload the authoritative treatment record before saving.');
+      throw new Error('Reload the treatment record before saving.');
     }
     return {
       expected_profile_revision: treatmentProjection.profile_revision,
@@ -17166,7 +17175,7 @@
       const variant = document.querySelector(
         'input[name="treatment-difference-variant"]:checked',
       )?.value;
-      if (!source) throw new Error('Explicitly choose document Record A.');
+      if (!source) throw new Error('Choose the first record.');
       const body = {
         ...meta,
         category: document.getElementById('treatment-field-category')?.value,
@@ -17284,7 +17293,7 @@
             due_date: dueDate,
           };
         } else {
-          throw new Error('Choose one atomic follow-up variant.');
+          throw new Error('Choose one follow-up option.');
         }
       }
       return {
@@ -17481,7 +17490,7 @@
     scrubTreatmentDialog();
     treatmentDraft = safeDraft;
     renderTreatmentUnavailable(
-      'Treatment authority changed. Reloading the complete record; review the preserved caregiver draft and reselect all server-owned records.',
+      'The treatment record changed. Reloading it; check your saved draft and choose the records again.',
       'stale',
       'Reloading…',
       false,
@@ -17511,7 +17520,7 @@
     if (!treatmentIntentOwnsMutation(intent)) return false;
     pendingTreatmentCompletion = treatmentCompletionFromResponse(data, intent);
     markTreatmentProjectionStale(
-      'Saved response received. Reloading the complete authoritative treatment record before confirming.',
+      'Your change was saved. Reloading the treatment record before confirming.',
       {
         preserveMutation: true,
         ownerPhiEpoch: authority.requestPhiEpoch,
@@ -17525,7 +17534,7 @@
     if (!treatmentIntentOwnsMutation(intent)) return null;
     activeTreatmentIntent = intent;
     setTreatmentDialogStatus(
-      explicitRetry ? 'Retrying the exact unchanged request…' : 'Saving…',
+      explicitRetry ? 'Sending the same request again…' : 'Saving…',
       'saving',
     );
     try {
@@ -17565,8 +17574,8 @@
           // answer. Re-clicking issues a fresh mutation ID against true state.
           releaseTreatmentMutation(intent);
           setTreatmentStatus(
-            'Treatment submission transport is uncertain, so it is unknown whether that change saved. '
-            + 'Reloading the authoritative record — check the entry and choose again if needed.',
+            'The connection dropped, so it is unclear whether that change saved. '
+            + 'Reloading the record — check the entry and choose again if needed.',
             'stale',
             false,
           );
@@ -17581,7 +17590,7 @@
         const retry = document.getElementById('treatment-retry-submit');
         if (retry) retry.hidden = false;
         setTreatmentStatus(
-          'Treatment submission transport is uncertain. The last accepted projection is stale and read-only.',
+          'The connection dropped, so it is unclear whether that saved. You are seeing the last version that loaded.',
           'stale',
           false,
         );
@@ -17590,7 +17599,7 @@
       if ([400, 422].includes(error?.status)) {
         captureTreatmentDraft();
         setTreatmentDialogStatus(
-          'The submitted fields were not accepted. Review the caregiver-entered draft; the current treatment record remains authoritative.',
+          'What you submitted was not accepted. Check your draft; the treatment record is unchanged.',
           'error',
         );
         setFormError('treatment-form-error', 'Review the supported fields and mechanical limits.');
@@ -17618,7 +17627,7 @@
         item => item.row_id === rowId,
       );
       if (!disposition) {
-        throw new Error('Reload the authoritative treatment record before saving.');
+        throw new Error('Reload the treatment record before saving.');
       }
       intent = createTreatmentIntent(
         {
@@ -17635,7 +17644,7 @@
       return performTreatmentIntent(intent);
     } catch (error) {
       setTreatmentStatus(
-        error.message || 'Reload the authoritative treatment record before saving.',
+        error.message || 'Reload the treatment record before saving.',
         'stale',
         true,
       );
@@ -17678,7 +17687,7 @@
     ) {
       clearTreatmentRetry();
       setTreatmentStatus(
-        'Submission retry authority expired. Review the current record and submit a new request.',
+        'Too much time passed to retry that safely. Check the current record and submit again.',
         'stale',
         true,
       );

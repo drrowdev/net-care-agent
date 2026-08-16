@@ -13,6 +13,7 @@ assertions below prove that by pinning both sides at once.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -343,3 +344,152 @@ def test_the_caregiver_entered_and_unverified_distinction_survives():
     ]:
         assert label in APP_JS, f"attribution label lost: {label}"
     assert "not caregiver lifecycle authority" in APP_JS
+
+
+# ── wave 2: jargon that survived the first pass ──────────────────────────────
+
+
+def test_the_word_workspace_is_gone_from_everything_he_reads():
+    """ "This isn't a god damn workspace, this is about recording treatment."""
+    for line in INDEX_HTML.splitlines():
+        assert (
+            "workspace" not in line.lower() or "class=" in line or "id=" in line
+        ), f"index.html still shows the word workspace: {line.strip()[:110]}"
+    # In app.js the word may survive only as a function or element name.
+    for number, line in enumerate(APP_JS.splitlines(), start=1):
+        if "workspace" not in line.lower():
+            continue
+        stripped = line.strip()
+        if stripped.startswith("//"):
+            continue
+        for quoted in re.findall(r"['`]([^'`\n]*)['`]", line):
+            if "workspace" not in quoted.lower():
+                continue
+            # CSS selectors and element ids are not copy.
+            is_selector = bool(re.fullmatch(r"[#.\w\s,>:()\[\]=\"'-]+", quoted)) and (
+                "#" in quoted or quoted.startswith(".")
+            )
+            is_identifier = bool(re.fullmatch(r"[\w-]+", quoted))
+            is_api_path = quoted.startswith("/")
+            assert (
+                is_selector or is_identifier or is_api_path
+            ), f"static/app.js:{number} still shows the word workspace: {quoted[:100]}"
+
+
+def test_offline_and_stale_notices_say_what_is_happening():
+    assert "Offline snapshot" not in APP_JS
+    assert "Stale · read-only" not in APP_JS
+    assert "Read-only snapshot" not in APP_JS
+    assert "Showing the last version that loaded" in APP_JS
+    assert "showing the last version that loaded" in APP_JS
+
+
+def test_internal_consistency_machinery_is_not_narrated():
+    for phrase in [
+        "authoritative reload",
+        "authoritative workspace",
+        "authoritative research",
+        "transport is uncertain",
+        "atomically",
+        "atomic follow-up",
+        "immutable history",
+        "immutable successor",
+        "Immutable saved snapshot",
+        "lifecycle actions are available",
+        "This lifecycle change is not available",
+    ]:
+        assert phrase not in APP_JS, f"still narrated to the caregiver: {phrase}"
+
+
+def test_forensic_value_views_say_it_in_words_but_keep_the_distinction():
+    """A stored null and a stored empty string still read differently."""
+    node = _slice("function treatmentScalarNode", "function treatmentAppendFact")
+    assert "'Null'" not in node
+    assert 'Empty string ("")' not in node
+    assert "'Nothing recorded'" in node
+    assert "'Recorded as blank'" in node
+    assert "'Not in the record'" in node
+
+    research = _slice("function researchValueMarkup", "function researchItemTitle")
+    assert ">Null<" not in research
+    assert ">Empty string<" not in research
+    assert ">Missing field<" not in research
+    assert ">Nothing recorded<" in research
+    assert ">Recorded as blank<" in research
+    assert ">Not in the record<" in research
+
+
+def test_the_cga_badge_does_not_shout_either():
+    assert "CgA RISING" not in APP_JS
+    assert "CgA FALLING" not in APP_JS
+    assert "rising: 'CgA rising'" in APP_JS
+
+
+def test_the_recap_export_says_status_not_lifecycle():
+    recap = _slice("function buildVisitRecapText", "function recapSectionMarkup")
+    # The word must be gone from every literal form, not just the quoted one:
+    # the decision and follow-up rows were template literals and slipped past an
+    # earlier version of this check.
+    assert "Lifecycle" not in recap
+    assert "['Status', visitStatusLabel(visit.status)]" in recap
+    assert "Status: ${recapPlainText(enumLabel(item.status))}" in recap
+    # The follow-up row printed the stored token with its underscores stripped.
+    assert "String(item.status).replaceAll('_', ' ')" not in recap
+
+
+def test_the_transition_note_does_not_print_stored_status_codes():
+    assert "Server-authorized transition from" not in APP_JS
+    assert "TREATMENT_STATUS_PHRASES" in APP_JS
+    assert "current: 'a current treatment'" in APP_JS
+
+
+def test_restart_reasons_speak_to_the_caregiver_not_as_the_server():
+    reasons = _slice("const TREATMENT_RESTART_REASONS", "function treatmentElement")
+    for phrase in ["The server permits", "The saved workflow does not establish", "is not past."]:
+        assert phrase not in reasons, f"restart reason still speaks as the server: {phrase}"
+    assert "This treatment is not recorded as ended." in reasons
+    assert "You can add a new treatment record linked to this one." in reasons
+
+
+def test_wave_two_safety_wording_keeps_its_meaning():
+    """Plainer words, same promises. Each of these is load-bearing."""
+    # INVARIANTS.md:153 - never infers a clinical conclusion.
+    assert "NET/Care does not draw a clinical conclusion." in INDEX_HTML
+    # INVARIANTS.md:226-233 - open/closed imply nothing clinical.
+    assert "They say nothing about relevance, eligibility, availability, enrolment," in INDEX_HTML
+    assert (
+        "Saving this says nothing about relevance, eligibility, enrolment, "
+        "availability, suitability, or what is recommended."
+    ) in INDEX_HTML
+    assert "NET/Care does not rank it or work out whether she is eligible." in INDEX_HTML
+    # INVARIANTS.md:296-297 - naming a record first carries no preference.
+    assert "naming one first does not mean it is the right one" in INDEX_HTML
+    # INVARIANTS.md:99-100 - decisions are the caregiver's own record of the
+    # clinician, never verified or model-written. The static label is reset by
+    # four JS paths, so the wording has to match in both files or the change
+    # never reaches the screen.
+    assert "What the clinician decided, as you recorded it" in INDEX_HTML
+    assert APP_JS.count("'What the clinician decided, as you recorded it'") == 4
+    assert "Decision you recorded from the clinician" not in APP_JS
+    # INVARIANTS.md:358-369 - hiding is presentation only and always reversible.
+    assert "Nothing was deleted or changed" in APP_JS
+    assert "NET/Care still uses them when answering your questions" in APP_JS
+
+
+def test_labels_rebuilt_in_js_match_the_static_markup():
+    """A caption or label reset by JS must not disagree with index.html.
+
+    Three wave 2 edits were initially inert because a render path overwrote the
+    static text on every render.
+    """
+    assert APP_JS.count("'Imaging reports, in the order they were recorded'") == 2
+    assert "Recorded imaging reports in their stored order" not in APP_JS
+    assert "Imaging reports, in the order they were recorded" in INDEX_HTML
+
+
+def test_accessible_names_match_the_visible_button():
+    """Voice control needs the accessible name to contain the visible label."""
+    assert "in my workspace" not in APP_JS
+    assert "from my workspace" not in APP_JS
+    assert "`Show ${row.raw_text} again`" in APP_JS
+    assert "`Mark ${row.raw_text} as not useful to me`" in APP_JS

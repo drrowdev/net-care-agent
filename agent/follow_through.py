@@ -95,9 +95,7 @@ def new_workflow_id(prefix: str) -> str:
 def validate_mutation_id(value: object) -> str:
     mutation_id = str(value or "").strip()
     if not _MUTATION_ID_RE.fullmatch(mutation_id):
-        raise FollowThroughError(
-            "mutation_id must be 8-128 ASCII letters, numbers, or . _ : - characters"
-        )
+        raise FollowThroughError("The request reference is not in a form NET/Care can accept.")
     return mutation_id
 
 

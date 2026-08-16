@@ -273,7 +273,7 @@ receipt shows:
 The server returns `202` with a job ID. The UI polls active work every three
 seconds and loads the
 report only from that individual job after completion. If the analysis discovers
-research that was not already tracked, the shared research workspace reloads;
+research that was not already tracked, the shared research view reloads;
 **Today** then shows the bounded exact latest-batch summary and **Research**
 shows every occurrence in server order. Alerts appear under
 **Patient**. The job status moves `queued → running → done` in the activity list;
@@ -390,7 +390,7 @@ Use this when no new document has arrived but you want a fresh literature/trial 
 
 Only one digest may be active; a duplicate request returns `409`. The report is
 not embedded in job history—it is loaded on demand when the activity item opens.
-At completion, the shared research workspace reloads from
+At completion, the shared research view reloads from
 `GET /api/patient/research-workspace`; the browser never merges job-result rows
 into display authority. **Today** shows the first three exact current
 latest-batch occurrences in server order, with exact trial/paper totals and an
@@ -557,7 +557,7 @@ presented as current appointment preparation.
 
 ## 5d. Prepare and run an appointment
 
-Open **Appointments** → **Appointment workspace**. Desktop and phone use the same
+Open **Appointments** → **Appointment prep**. Desktop and phone use the same
 working record; on a phone it opens as a full-height sheet.
 
 1. Create a visit, or select a current imported appointment to prefill its
@@ -629,8 +629,8 @@ If the selected visit or its complete visit token changes, the previous recap
 and export payload are removed before the new visit header renders or reload
 starts. If its follow-ups, a related alert, or any workflow/clinical authority
 changes, export controls disappear immediately and the recap reloads.
-A connection failure may leave the previous recap visible as **Offline snapshot
-· read-only** only for the same visit identity, but Copy/Download/Print remain
+A connection failure may leave the previous recap visible as **Offline ·
+showing the last version that loaded** only for the same visit identity, but Copy/Download/Print remain
 absent and causes no export side effect. The browser going offline revokes export
 authority and any prepared download URL synchronously; reconnecting alone does
 not restore it. A successful authoritative recap reload/review is required. A
@@ -781,7 +781,7 @@ Record or edit only explicit wording,
 
 Some extracted statements are real clinical detail that your clinicians act on
 but that you would never mark as an ongoing treatment — an infusion run at half
-speed to reduce nausea, for example. **Not useful in my workspace** on any
+speed to reduce nausea, for example. **Not useful to me** on any
 recorded treatment statement collapses it out of your Overview.
 
 What that does, exactly:

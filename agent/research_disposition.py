@@ -12,6 +12,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from .date_input import parse_partial_date
 from .follow_through import action_owner_refs, semantic_token
 from .schema import (
     CaregiverAction,
@@ -248,12 +249,8 @@ def validate_research_text(
 def validate_research_date(value: object) -> tuple[str | None, str]:
     if value is None:
         return None, "unknown"
-    if not isinstance(value, str) or not value:
-        raise ValueError("Enter the date as 2026, 2026-08 or 2026-08-14, or leave it empty")
-    precision = derive_date_precision(value)
-    if precision == "unknown":
-        raise ValueError("Enter the date as 2026, 2026-08 or 2026-08-14, or leave it empty")
-    return value, precision
+    stored = parse_partial_date(value, optional=True)
+    return stored, derive_date_precision(stored)
 
 
 def allowed_research_event_types(item_type: str) -> list[str]:

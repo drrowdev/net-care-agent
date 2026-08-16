@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import datetime
 import hashlib
 import json
 import re
@@ -12,6 +11,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from .date_input import DateInputError, parse_full_date
 from .schema import Alert, CaregiverAction, Visit, now_stamp
 
 ACTION_STATUSES = {"open", "in_progress", "completed", "cancelled"}
@@ -136,13 +136,10 @@ def validate_owner(value: object) -> str | None:
 def validate_date(value: object, field: str) -> str | None:
     if value in (None, ""):
         return None
-    if not isinstance(value, str):
-        raise FollowThroughError(f"{field} must be a full date like 2026-08-14")
     try:
-        parsed = datetime.date.fromisoformat(value)
-    except ValueError as exc:
-        raise FollowThroughError(f"{field} must be a full date like 2026-08-14") from exc
-    return parsed.isoformat()
+        return parse_full_date(value, optional=True)
+    except DateInputError as exc:
+        raise FollowThroughError(str(exc)) from exc
 
 
 def validate_follow_up_text(value: object) -> str:

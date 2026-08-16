@@ -652,8 +652,8 @@
           <label><span>Who (optional)</span><input id="research-event-who" maxlength="500" autocomplete="off" spellcheck="false"></label>
           <label><span>Context (optional)</span><input id="research-event-context" maxlength="2000" autocomplete="off" spellcheck="false"></label>
         </div>
-        <label><span>Date (optional)</span><input id="research-event-date" maxlength="10" inputmode="numeric" placeholder="2026, 2026-08 or 2026-08-14" autocomplete="off" spellcheck="false" aria-describedby="research-event-date-help"></label>
-        <p class="helper-text" id="research-event-date-help">Enter as much of the date as you know. It is stored exactly as you type it.</p>
+        <label><span>Date (optional)</span><input id="research-event-date" maxlength="11" placeholder="14.8.2026, 8/2026 or 2026" autocomplete="off" spellcheck="false" aria-describedby="research-event-date-help"></label>
+        <p class="helper-text" id="research-event-date-help">Enter as much of the date as you know: 14.8.2026, 8/2026 or 2026. It is stored exactly as you type it.</p>
         <p class="form-error" id="research-event-error" role="alert" aria-live="polite"></p>
         <div class="follow-up-dialog-actions">
           <button class="button primary" id="research-event-submit" type="submit" disabled>Record event</button>
@@ -723,9 +723,9 @@
           <label><span>Reported subject</span><select id="symptom-reported-subject"><option value="unspecified">Not specified</option><option value="patient">Patient</option><option value="caregiver">Caregiver</option></select></label>
         </div>
         <label><span>Severity detail (optional)</span><input id="symptom-severity-detail" maxlength="500" placeholder="Exact additional wording"></label>
-        <label><span>Onset date (optional)</span><input id="symptom-onset-date" maxlength="10" inputmode="numeric" placeholder="2026, 2026-08 or 2026-08-14" aria-describedby="symptom-date-help"></label>
-        <label id="symptom-edit-resolution-field" hidden><span>Resolution date (optional)</span><input id="symptom-edit-resolved-date" maxlength="10" inputmode="numeric" placeholder="2026, 2026-08 or 2026-08-14"></label>
-        <p class="helper-text" id="symptom-date-help">Enter as much of the date as you know. It is stored exactly as you type it.</p>
+        <label><span>Onset date (optional)</span><input id="symptom-onset-date" maxlength="11" placeholder="14.8.2026, 8/2026 or 2026" aria-describedby="symptom-date-help"></label>
+        <label id="symptom-edit-resolution-field" hidden><span>Resolution date (optional)</span><input id="symptom-edit-resolved-date" maxlength="11" placeholder="14.8.2026, 8/2026 or 2026"></label>
+        <p class="helper-text" id="symptom-date-help">Enter as much of the date as you know: 14.8.2026, 8/2026 or 2026. It is stored exactly as you type it.</p>
         <div class="symptom-form-grid">
           <label><span>Timing (optional)</span><input id="symptom-timing" maxlength="500"></label>
           <label><span>Frequency (optional)</span><input id="symptom-frequency" maxlength="500"></label>
@@ -757,7 +757,7 @@
 
       <form id="symptom-resolve-form" class="follow-up-form" onsubmit="event.preventDefault();submitSymptomResolution()" hidden>
         <p class="follow-up-dialog-copy" id="symptom-resolve-copy"></p>
-        <label><span>Resolution date (optional)</span><input id="symptom-resolved-date" maxlength="10" inputmode="numeric" placeholder="2026, 2026-08 or 2026-08-14"></label>
+        <label><span>Resolution date (optional)</span><input id="symptom-resolved-date" maxlength="11" placeholder="14.8.2026, 8/2026 or 2026"></label>
         <label class="symptom-resolution-confirm"><input id="symptom-resolve-confirm" type="checkbox" oninput="updateSymptomFormValidity()"> Resolving ends this episode. It cannot be reopened. If the symptom happens again, record a new episode.</label>
         <p class="form-error" id="symptom-resolve-error" role="alert" aria-live="polite"></p>
         <div class="follow-up-dialog-actions">

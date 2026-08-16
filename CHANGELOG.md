@@ -8,6 +8,36 @@ incremented when something user-visible or operationally meaningful changes.
 
 ## [Unreleased]
 
+### Added
+- **Dates can now be typed the way they are read.** The record has displayed
+  Finnish dates everywhere since v0.10.0, but every date box still only accepted
+  `2026-08-14`. Now `14.8.2026`, `04.08.2026`, `4.8.2026` and `14.8.2026.` all
+  record 14 August 2026, `8/2026` records that month and `2026` records that
+  year — on the symptom onset and resolution dates, treatment start/stop/planned
+  and resolution dates, the treatment follow-up due date, the research event
+  date, judgment review and valid-until dates, and every date in the document
+  receipt correction editor. The ISO forms still work exactly as before; they
+  are simply no longer suggested. Reopening a saved date shows it as
+  `14.8.2026`, so saving it untouched changes nothing.
+
+  Nothing about storage moved: the same ISO text is kept, at exactly the
+  precision entered, and a partial date is never completed. Anything ambiguous
+  or impossible is refused rather than guessed at — `14/8/2026` and `8/14/2026`
+  (no way to know which number is the day), `14.8.26` (which century?),
+  `2026.8.14`, and `31.2.2026`, `13.13.2026` or `29.2.2026` in a non-leap year.
+  A refused date stops the entry and says in plain words what may be typed; it
+  is never partly saved. One parser does this in Python (`agent/date_input.py`)
+  and one in the browser, and `tests/test_finnish_date_input.py` proves case by
+  case that the two accept and reject exactly the same set, so a date the
+  browser takes can never be turned away by the server.
+
+### Fixed
+- **A follow-up due date is now checked in the browser the way the server
+  checks it.** The treatment follow-up due field accepted a year or a
+  year-and-month in the browser but the server has always required a whole day,
+  so a partial entry failed only after pressing save. The field now asks for a
+  whole day up front.
+
 ### Changed
 - **The app now says how a treatment ended, instead of "terminal outcome".**
   In an app about metastatic cancer, "terminal" read as a statement about the

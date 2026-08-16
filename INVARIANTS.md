@@ -74,6 +74,17 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
   `## ⚠ Reference verification` footer).
 
 ## 3. Read vs write discipline
+- **Typed dates are normalized once, at the edge, and never guessed at.** A date
+  the caregiver types may be Finnish (`14.8.2026`, `14.8.2026.`, `8/2026`,
+  `2026`) or the ISO it always accepted, and is converted to the same stored ISO
+  text at exactly the precision entered. `agent/date_input.py` is the only
+  Python parser and the `readCaregiverDate` block in `static/app.js` is the only
+  browser parser; the two accept and reject an identical set, proven case by case
+  in `tests/test_finnish_date_input.py`. Ambiguous or impossible entries
+  (`14/8/2026`, `14.8.26`, `2026.8.14`, `31.2.2026`, `13.13.2026`) are rejected,
+  never resolved by guessing. `derive_date_precision` and its browser mirrors
+  classify values that are *already stored* and also validate server responses;
+  they must stay strict and must never be used to validate typed text.
 - **Every complete load-mutate-save transaction is serialized.** This includes
   `_run_feed_job`, `_run_digest_job`, manual summary generation, and every
   state-changing Flask route and CLI command. Use `agent.serialized_mutation`;

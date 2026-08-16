@@ -6429,12 +6429,12 @@
     document.getElementById('symptom-reported-subject').value =
       draft?.subject ?? episode?.reported_subject ?? 'unspecified';
     document.getElementById('symptom-onset-date').value =
-      draft?.onsetDate ?? episode?.onset.value ?? '';
+      draft?.onsetDate ?? caregiverDateFieldValue(episode?.onset.value);
     const resolutionField = document.getElementById('symptom-edit-resolution-field');
     const editResolved = symptomDialogMode === 'edit' && episode?.status === 'resolved';
     if (resolutionField) resolutionField.hidden = !editResolved;
     document.getElementById('symptom-edit-resolved-date').value =
-      editResolved ? (draft?.resolvedDate ?? episode?.resolution?.value ?? '') : '';
+      editResolved ? (draft?.resolvedDate ?? caregiverDateFieldValue(episode?.resolution?.value)) : '';
     document.getElementById('symptom-timing').value =
       draft?.timing ?? episode?.timing_text ?? '';
     document.getElementById('symptom-frequency').value =
@@ -6659,7 +6659,7 @@
   }
 
   function symptomDateInputIsValid(value) {
-    return value === '' || symptomDatePrecision(value) !== 'unknown';
+    return value === '' || parseCaregiverDate(value) !== null;
   }
 
   function updateSymptomFormValidity() {
@@ -6824,7 +6824,7 @@
       severity_level: document.getElementById('symptom-severity').value || null,
       severity_detail: symptomOptionalText('symptom-severity-detail'),
       reported_subject: document.getElementById('symptom-reported-subject').value,
-      onset_date: document.getElementById('symptom-onset-date').value || null,
+      onset_date: caregiverDateEntry('symptom-onset-date', dateEntryHelp('onset date')),
       timing_text: symptomOptionalText('symptom-timing'),
       frequency_text: symptomOptionalText('symptom-frequency'),
       triggers_text: symptomOptionalText('symptom-triggers'),
@@ -6833,7 +6833,10 @@
     if (symptomDialogMode === 'edit') {
       body.expected_episode_token = selectedSymptomEpisodeToken;
       if (symptomEpisodeById(selectedSymptomEpisodeId)?.status === 'resolved') {
-        body.resolved_date = document.getElementById('symptom-edit-resolved-date').value || null;
+        body.resolved_date = caregiverDateEntry(
+          'symptom-edit-resolved-date',
+          dateEntryHelp('resolution date'),
+        );
       }
     } else {
       const mode = document.querySelector(
@@ -6869,10 +6872,10 @@
       const editResolved = document.getElementById('symptom-edit-resolved-date')?.value || '';
       if (!text) throw new Error('Enter the symptom description.');
       if (!symptomDateInputIsValid(onset)) {
-        throw new Error('Enter the onset date as 2026, 2026-08 or 2026-08-14.');
+        throw new Error(dateEntryHelp('onset date'));
       }
       if (!symptomDateInputIsValid(editResolved)) {
-        throw new Error('Enter the resolution date as 2026, 2026-08 or 2026-08-14.');
+        throw new Error(dateEntryHelp('resolution date'));
       }
       const body = symptomDetailsBody();
       const creating = symptomDialogMode === 'add';
@@ -6908,12 +6911,12 @@
         throw new Error('Confirm that this episode can be resolved.');
       }
       if (!symptomDateInputIsValid(date)) {
-        throw new Error('Enter the resolution date as 2026, 2026-08 or 2026-08-14.');
+        throw new Error(dateEntryHelp('resolution date'));
       }
       const body = {
         ...symptomMutationMeta(),
         expected_episode_token: selectedSymptomEpisodeToken,
-        resolved_date: date || null,
+        resolved_date: caregiverDateEntry('symptom-resolved-date', dateEntryHelp('resolution date')),
       };
       intent = createSymptomIntent(
         'POST',
@@ -9087,9 +9090,9 @@
       || note.length > 20000
       || who.length > 500
       || context.length > 2000
-      || (occurredOn && researchPartialDatePrecision(occurredOn) === null)
+      || (occurredOn && parseCaregiverDate(occurredOn) === null)
     ) {
-      setFormError('research-event-error', 'Enter an allowed event type, a note, and an optional exact partial date.');
+      setFormError('research-event-error', `Enter an allowed event type and a note. ${dateEntryHelp('date')}`);
       return;
     }
     const body = {
@@ -9099,7 +9102,7 @@
       note,
       who: who.trim() ? who : null,
       context: context.trim() ? context : null,
-      occurred_on: occurredOn || null,
+      occurred_on: caregiverDateEntry('research-event-date', dateEntryHelp('date')),
     };
     const intent = createResearchIntent(
       'POST',
@@ -9583,13 +9586,26 @@
     </section>`;
   }
 
-  function receiptFieldInput(field, value) {
+  // Only these receipt fields hold a date. Appointment and document dates must
+  // be a full date; the rest keep whatever precision was recorded.
+  function receiptDateFieldKind(collection, field) {
+    if (field !== 'date' && field !== 'source_document_date') return null;
+    if (field === 'date' && (collection === 'appointments' || collection === 'documents')) return 'full';
+    return 'partial';
+  }
+
+  function receiptFieldInput(field, value, collection) {
     const id = `receipt-field-${field}`;
     if (field === 'key_findings') {
       return `<label><span>Key findings (one per line)</span><textarea id="${id}" data-field="${field}" data-kind="array">${escHtml((value || []).join('\n'))}</textarea></label>`;
     }
     if (field === 'new_lesions' || typeof value === 'boolean') {
       return `<label><span>${escHtml(field.replace(/_/g, ' '))}</span><select id="${id}" data-field="${field}" data-kind="boolean"><option value=""${value == null ? ' selected' : ''}>Not set</option><option value="true"${value === true ? ' selected' : ''}>Yes</option><option value="false"${value === false ? ' selected' : ''}>No</option></select></label>`;
+    }
+    const dateKind = receiptDateFieldKind(collection, field);
+    if (dateKind) {
+      const hint = dateKind === 'full' ? '14.8.2026' : '14.8.2026, 8/2026 or 2026';
+      return `<label><span>${escHtml(field.replace(/_/g, ' '))}</span><input id="${id}" data-field="${field}" data-kind="date-${dateKind}" maxlength="11" placeholder="${hint}" value="${escHtml(caregiverDateFieldValue(value))}"></label>`;
     }
     const kind = field === 'severity' || typeof value === 'number' ? 'number' : 'string';
     return `<label><span>${escHtml(field.replace(/_/g, ' '))}</span><input id="${id}" data-field="${field}" data-kind="${kind}" value="${escHtml(value ?? '')}"></label>`;
@@ -9603,8 +9619,8 @@
     const current = change.effective_value;
     const fields = change.editable_fields || [];
     const inputs = change.target?.kind === 'collection'
-      ? fields.map(field => receiptFieldInput(field, current?.[field])).join('')
-      : receiptFieldInput('value', current);
+      ? fields.map(field => receiptFieldInput(field, current?.[field], change.target.collection)).join('')
+      : receiptFieldInput('value', current, null);
     slot.innerHTML = `<div class="receipt-editor">
       ${inputs}
       <div class="receipt-editor-actions">
@@ -9616,14 +9632,35 @@
     const save = slot.querySelector('.receipt-save');
     const initial = JSON.stringify(controls.map(input => parsedReceiptInput(input)));
     controls.forEach(input => input.addEventListener('input', () => {
-      save.disabled = JSON.stringify(controls.map(control => parsedReceiptInput(control))) === initial;
+      save.disabled = JSON.stringify(controls.map(control => parsedReceiptInput(control))) === initial
+        || !receiptDatesAreReadable(controls);
     }));
     controls[0]?.focus();
+  }
+
+  // A date the app cannot read never leaves the browser, so a mistyped date is
+  // caught before it can reach the record.
+  function receiptDatesAreReadable(controls) {
+    return controls.every(control => {
+      const kind = control.dataset.kind;
+      if (kind !== 'date-partial' && kind !== 'date-full') return true;
+      const raw = control.value.trim();
+      if (raw === '') return true;
+      return (kind === 'date-full' ? parseCaregiverFullDate(raw) : parseCaregiverDate(raw)) !== null;
+    });
   }
 
   function parsedReceiptInput(input) {
     if (input.dataset.kind === 'array') return input.value.split('\n').map(item => item.trim()).filter(Boolean);
     if (input.dataset.kind === 'boolean') return input.value === '' ? null : input.value === 'true';
+    if (input.dataset.kind === 'date-partial' || input.dataset.kind === 'date-full') {
+      const raw = input.value.trim();
+      if (raw === '') return null;
+      const parsed = input.dataset.kind === 'date-full'
+        ? parseCaregiverFullDate(raw)
+        : parseCaregiverDate(raw);
+      return parsed === null ? raw : parsed;
+    }
     if (input.dataset.kind === 'number') {
       if (!input.value.trim()) return null;
       const value = Number(input.value);
@@ -10047,6 +10084,105 @@
       .replace(/>/g,'&gt;')
       .replace(/"/g,'&quot;')
       .replace(/'/g,'&#39;');
+  }
+
+  // ── caregiver date entry ──────────────────────────────────────────────────
+  // The record shows Finnish dates, so the caregiver types them too. This is
+  // the only place that turns what he types into the text that gets stored,
+  // and it is the exact mirror of agent/date_input.py; the server stays the
+  // authority and applies the same grammar again.
+  //
+  // Accepted, after trimming: 14.8.2026 / 04.08.2026 / 14.8.2026. for a day,
+  // 8/2026 for a month, 2026 for a year, plus the machine forms already in
+  // use so nothing he has learned stops working. Everything else is refused
+  // rather than guessed at: in a clinical record a date that was quietly
+  // misread is far worse than one that was turned away.
+  function readCaregiverDate(value) {
+    if (typeof value !== 'string') return null;
+    // Trimmed against an explicit ASCII set rather than String.trim/str.strip,
+    // whose whitespace definitions differ (byte-order mark, NEL), so the
+    // browser and the server read exactly the same set of strings.
+    const text = value.replace(/^[ \t\n\r\f\v]+|[ \t\n\r\f\v]+$/g, '');
+    const pad = (number, width) => String(number).padStart(width, '0');
+    const asDay = (y, m, d) => {
+      if (y < 1 || m < 1 || m > 12 || d < 1) return null;
+      const leap = y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0);
+      const lengths = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+      if (d > lengths[m - 1]) return null;
+      return { value: `${pad(y, 4)}-${pad(m, 2)}-${pad(d, 2)}`, precision: 'day' };
+    };
+    const asMonth = (y, m) => (
+      y < 1 || m < 1 || m > 12
+        ? null
+        : { value: `${pad(y, 4)}-${pad(m, 2)}`, precision: 'month' }
+    );
+    // A regular expression \d matches only 0-9 here, so digits from other
+    // scripts never reach Number().
+    let match = text.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})\.?$/);
+    if (match) return asDay(Number(match[3]), Number(match[2]), Number(match[1]));
+    match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (match) return asDay(Number(match[1]), Number(match[2]), Number(match[3]));
+    match = text.match(/^(\d{1,2})\/(\d{4})$/);
+    if (match) return asMonth(Number(match[2]), Number(match[1]));
+    match = text.match(/^(\d{4})-(\d{2})$/);
+    if (match) return asMonth(Number(match[1]), Number(match[2]));
+    match = text.match(/^(\d{4})$/);
+    if (match) return Number(match[1]) < 1 ? null : { value: match[1], precision: 'year' };
+    return null;
+  }
+
+  // Stored text for a date typed at any precision, or null when it cannot be
+  // read. Nothing is ever filled in: a year stays a year, a month a month.
+  // Empty text reads as null too, so callers that allow an absent date must
+  // check for empty themselves rather than letting junk pass as absence.
+  function parseCaregiverDate(value) {
+    const read = readCaregiverDate(value);
+    return read === null ? null : read.value;
+  }
+
+  // Stored text for the fields that need a complete day.
+  function parseCaregiverFullDate(value) {
+    const read = readCaregiverDate(value);
+    return read === null || read.precision !== 'day' ? null : read.value;
+  }
+
+  // What a stored date should look like in a box he is about to edit. It is
+  // the display format, which is also an accepted input format, so a value
+  // that is opened and saved untouched comes back byte-identical. A stored
+  // value this parser cannot read is shown exactly as recorded rather than
+  // blanked, so an old or odd date is visible and refused instead of being
+  // silently dropped from the record on the next save.
+  function caregiverDateFieldValue(value) {
+    return value == null || value === '' ? '' : fmtDate(String(value));
+  }
+
+  // The one wording for a date that could not be read. It says what may be
+  // typed and names no field and no machine notation, because he reads it.
+  function dateEntryHelp(label) {
+    return `Enter the ${label} as 14.8.2026, 8/2026 or 2026.`;
+  }
+
+  function fullDateEntryHelp(label) {
+    return `Enter the ${label} as 14.8.2026.`;
+  }
+
+  // Stored text for one typed date box. Null means the box was left empty;
+  // text that cannot be read as a date throws instead of quietly submitting
+  // no date at all, so a typo can never be recorded as a missing date.
+  function caregiverDateEntry(id, message) {
+    const typed = (document.getElementById(id)?.value || '').trim();
+    if (typed === '') return null;
+    const stored = parseCaregiverDate(typed);
+    if (stored === null) throw new Error(message);
+    return stored;
+  }
+
+  function caregiverFullDateEntry(id, message) {
+    const typed = (document.getElementById(id)?.value || '').trim();
+    if (typed === '') return null;
+    const stored = parseCaregiverFullDate(typed);
+    if (stored === null) throw new Error(message);
+    return stored;
   }
 
   function fmtDate(s) {
@@ -14027,7 +14163,7 @@
   }
 
   function treatmentDateInputIsValid(value) {
-    return value === '' || treatmentDatePrecision(value) !== null;
+    return value === '' || parseCaregiverDate(value) !== null;
   }
 
   // Display ordering for the treatment workspace is newest-first, by explicit
@@ -16055,12 +16191,11 @@
       const input = treatmentElement('input');
       input.id = `treatment-field-${field.replaceAll('_', '-')}`;
       input.name = field;
-      input.maxLength = 10;
-      input.inputMode = 'numeric';
-      input.placeholder = '2026, 2026-08 or 2026-08-14';
+      input.maxLength = 11;
+      input.placeholder = '14.8.2026, 8/2026 or 2026';
       input.value = Object.prototype.hasOwnProperty.call(draft, field)
         ? draft[field]
-        : (course?.[field] ?? '');
+        : caregiverDateFieldValue(course?.[field]);
       input.dataset.caregiverField = 'true';
       grid.append(treatmentFieldLabel(
         `${prefix[0].toUpperCase()}${prefix.slice(1)} date`,
@@ -16328,8 +16463,8 @@
     context.maxLength = 2000;
     const date = treatmentElement('input');
     date.id = 'treatment-field-resolution-date';
-    date.maxLength = 10;
-    date.placeholder = '2026, 2026-08 or 2026-08-14';
+    date.maxLength = 11;
+    date.placeholder = '14.8.2026, 8/2026 or 2026';
     date.dataset.caregiverField = 'true';
     fragment.append(
       treatmentFieldLabel('Outcome', outcome),
@@ -16432,8 +16567,8 @@
     owner.dataset.caregiverField = 'true';
     const due = treatmentElement('input');
     due.id = 'treatment-follow-up-due';
-    due.maxLength = 10;
-    due.placeholder = '2026, 2026-08 or 2026-08-14';
+    due.maxLength = 11;
+    due.placeholder = '14.8.2026';
     due.dataset.caregiverField = 'true';
     inlinePanel.append(
       treatmentFieldLabel('Manual follow-up text', text),
@@ -16869,8 +17004,11 @@
           || (
             mode === 'inline'
             && Boolean(document.getElementById('treatment-follow-up-text')?.value.trim())
-            && treatmentDateInputIsValid(
-              document.getElementById('treatment-follow-up-due')?.value || '',
+            && (
+              (document.getElementById('treatment-follow-up-due')?.value || '') === ''
+              || parseCaregiverFullDate(
+                document.getElementById('treatment-follow-up-due')?.value || '',
+              ) !== null
             )
           )
         );
@@ -16908,17 +17046,17 @@
       formulation_text: treatmentOptionalInputValue('formulation_text'),
       indication_text: treatmentOptionalInputValue('indication_text'),
       notes: treatmentOptionalInputValue('notes'),
-      start_date: document.getElementById('treatment-field-start-date')?.value || null,
-      stop_date: document.getElementById('treatment-field-stop-date')?.value || null,
-      planned_date: document.getElementById('treatment-field-planned-date')?.value || null,
+      start_date: null,
+      stop_date: null,
+      planned_date: null,
       legacy_component_ids: treatmentSelectedComponentIds(),
     };
     if (!body.treatment_text) throw new Error('Enter exact treatment wording.');
     for (const prefix of ['start', 'stop', 'planned']) {
-      const value = body[`${prefix}_date`] || '';
-      if (!treatmentDateInputIsValid(value)) {
-        throw new Error(`Enter the ${prefix} date as 2026, 2026-08 or 2026-08-14.`);
-      }
+      body[`${prefix}_date`] = caregiverDateEntry(
+        `treatment-field-${prefix}-date`,
+        dateEntryHelp(`${prefix} date`),
+      );
     }
     return body;
   }
@@ -17075,7 +17213,7 @@
         note: document.getElementById('treatment-field-resolution-note')?.value ?? '',
         clinician_text: treatmentOptionalControlValue('treatment-field-clinician'),
         context_text: treatmentOptionalControlValue('treatment-field-context'),
-        date: document.getElementById('treatment-field-resolution-date')?.value || null,
+        date: caregiverDateEntry('treatment-field-resolution-date', dateEntryHelp('resolution date')),
       };
       if (outcome === 'caregiver_record_corrected') {
         const patch = treatmentCoursePatch();
@@ -17135,11 +17273,11 @@
           body.expected_action_token = action.token;
         } else if (mode === 'inline') {
           const text = document.getElementById('treatment-follow-up-text')?.value ?? '';
-          const dueDate = document.getElementById('treatment-follow-up-due')?.value || null;
           if (!text.trim()) throw new Error('Enter manual follow-up text.');
-          if (dueDate !== null && !treatmentDateInputIsValid(dueDate)) {
-            throw new Error('Enter the follow-up due date as 2026, 2026-08 or 2026-08-14.');
-          }
+          const dueDate = caregiverFullDateEntry(
+            'treatment-follow-up-due',
+            fullDateEntryHelp('follow-up due date'),
+          );
           body.follow_up = {
             text,
             owner: treatmentOptionalControlValue('treatment-follow-up-owner'),

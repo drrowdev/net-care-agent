@@ -12,10 +12,14 @@ import pytest
 APP_JS = Path("static/app.js").read_text(encoding="utf-8")
 CSS = Path("static/styles.css").read_text(encoding="utf-8")
 INDEX_HTML = Path("static/index.html").read_text(encoding="utf-8")
+# Reworded copy: wave 3 reworded the three byte-pinned safety paragraphs into plain
+# English. INVARIANTS.md and every pin moved in the same commit; the
+# meaning is unchanged and tests/test_plain_language_copy.py asserts each
+# promise the paragraph makes, not just its bytes.
 GUIDANCE = (
-    "NET/Care records what you enter but does not verify treatment details or advise "
-    "starting, stopping, or changing treatment. Confirm treatment decisions with the "
-    "treating team."
+    "NET/Care records what you enter. It does not check whether treatment details are "
+    "correct or give advice about starting, stopping, or changing treatment. Confirm "
+    "treatment decisions with the treating team."
 )
 _NODE_STDIN_BOOTSTRAP = "eval(require('fs').readFileSync(0,'utf8'))"
 
@@ -676,7 +680,7 @@ def test_treatment_module_has_one_authority_and_no_legacy_or_date_inference():
         "not a treatment record"
     ) in source
     assert "No status recorded" in source
-    assert "No caregiver status record refers to this wording." in source
+    assert "No treatment status you entered refers to this wording." in source
     # Recorded rows are never framed as outstanding caregiver work.
     assert "need timing/status review" not in source
     assert "not yet reviewed" not in source
@@ -797,9 +801,10 @@ def _standard_payload(path: str, state: _LiveState) -> object:
             "safety_guidance": {
                 "kind": "fixed_non_diagnostic",
                 "text": (
-                    "NET/Care records what you enter but does not assess urgency or monitor "
-                    "symptoms. Contact the treating team about symptoms or concerns. If you "
-                    "think this may be a medical emergency, contact local emergency services."
+                    "NET/Care records what you enter. It does not decide how urgent "
+                    "symptoms are or monitor them. Contact the treating team about symptoms "
+                    "or concerns. If you think this may be a medical emergency, contact "
+                    "local emergency services."
                 ),
             },
         },
@@ -984,7 +989,7 @@ def test_live_shared_projection_totals_authorities_and_accessibility(width: int,
             page.locator("#nav-patient").click()
             assert page.locator("#patient-treatment-list .treatment-course-card").count() == 5
             assert (
-                "Linked to reviewed status"
+                "Linked to a treatment status you entered"
                 in page.locator("#patient-treatment-list .treatment-recorded-card").inner_text()
             )
             assert [
@@ -1100,7 +1105,7 @@ def test_live_recorded_treatments_are_first_class_without_status_inference(
             page.locator("#nav-patient").click()
             overview = page.locator("#treatment-panel-records")
             assert page.locator("#patient-treatment-list .treatment-recorded-card").count() == 31
-            assert "Recorded treatment statements (31)" in overview.inner_text()
+            assert "Treatment wording saved in the record (31)" in overview.inner_text()
             assert "Recorded treatment information 00" in overview.inner_text()
             assert "Recorded treatment information 30" in overview.inner_text()
             assert page.locator(
@@ -1154,12 +1159,15 @@ def test_live_recorded_treatment_component_linkage_is_none_all_or_partial():
             assert cards.count() == 3
             # Recorded rows are listed most recently recorded first, so the
             # last-recorded "partial" row leads and "none" comes last.
-            assert "Partly linked to reviewed status" in cards.nth(0).inner_text()
-            assert "1 of 2 recorded components are linked" in cards.nth(0).inner_text()
-            assert "Linked to reviewed status" in cards.nth(1).inner_text()
-            assert "All recorded components are linked" in cards.nth(1).inner_text()
+            assert "Partly linked to a treatment status you entered" in cards.nth(0).inner_text()
+            assert "1 of 2 parts of this wording are linked" in cards.nth(0).inner_text()
+            assert "Linked to a treatment status you entered" in cards.nth(1).inner_text()
+            assert "Every part of this wording is linked" in cards.nth(1).inner_text()
             assert "No status recorded" in cards.nth(2).inner_text()
-            assert "No caregiver status record refers to this wording" in cards.nth(2).inner_text()
+            assert (
+                "No treatment status you entered refers to this wording"
+                in cards.nth(2).inner_text()
+            )
             assert cards.locator("h3").all_inner_texts() == [
                 "Partial recorded treatment",
                 "All recorded treatment",
@@ -1205,7 +1213,7 @@ def test_live_hidden_recorded_rows_collapse_without_disappearing():
 
             disclosure = page.locator(".treatment-hidden-disclosure")
             assert disclosure.count() == 1
-            assert "1 hidden by you · show" in disclosure.locator("summary").inner_text()
+            assert "1 hidden by you · show list" in disclosure.locator("summary").inner_text()
             # The row is present in the DOM behind the disclosure, not removed.
             hidden_cards = disclosure.locator(".treatment-recorded-card")
             assert hidden_cards.count() == 1
@@ -1352,9 +1360,9 @@ def test_live_today_polish_keeps_one_guarded_action_and_consistent_update_button
         browser, context, page, state = _open_treatment_page(playwright, width, height)
         try:
             removed_copy = (
-                "NET/Care records what you enter but does not assess urgency or monitor symptoms.",
-                "NET/Care records what you enter but does not verify treatment details",
-                "NET/Care records research you choose to follow but does not determine relevance",
+                "NET/Care records what you enter. It does not decide how urgent symptoms are",
+                "NET/Care records what you enter. It does not check whether treatment details",
+                "NET/Care records the research you choose to follow. It does not decide whether",
                 "Decision-support only. Confirm clinical decisions with the treating team.",
             )
             for selector in (
@@ -1514,7 +1522,7 @@ def test_live_today_polish_keeps_one_guarded_action_and_consistent_update_button
             assert page.get_by_role("button", name="Regenerate assessment", exact=True).count() == 0
             assert page.locator("#summary-body button").count() == 0
             stale_text = page.locator("#summary-body").inner_text()
-            assert "Prior generated assessment is hidden" in stale_text
+            assert "Previous assessment hidden" in stale_text
             assert "using its actions, PRRT screening, or trial suggestion" in stale_text
             assert page.locator("#summary-card .summary-concern").count() == 0
 
@@ -1885,7 +1893,8 @@ def test_live_server_authority_discrepancies_restart_outcomes_and_followups():
             assert page.locator("#treatment-field-treatment-text").input_value() == ""
             assert page.locator('input[name="treatment-component-choice"]:checked').count() == 0
             dialog_text = page.locator("#treatment-dialog").inner_text()
-            assert "You choose this link" in dialog_text
+            assert "This only links items for your reference" in dialog_text
+            assert "does not confirm the source" in dialog_text
             assert "Linked by you" in dialog_text
             assert "Duplicate source wording" not in dialog_text
             assert "Generated compatibility text" not in dialog_text
@@ -1911,13 +1920,18 @@ def test_live_server_authority_discrepancies_restart_outcomes_and_followups():
                 "Duplicate source wording"
                 in first.locator(".treatment-citation-current").first.inner_text()
             )
-            assert first.get_by_role("button", name="Record treating-team outcome").count() == 1
+            assert (
+                first.get_by_role("button", name="Record what the treating team said").count() == 1
+            )
 
             resolved = cards.nth(1)
             assert "You recorded this from the clinician" in resolved.inner_text()
             assert resolved.get_by_role("button", name="Reopen difference").count() == 1
             assert resolved.get_by_role("button", name="Record this difference again").count() == 1
-            assert resolved.get_by_role("button", name="Record treating-team outcome").count() == 0
+            assert (
+                resolved.get_by_role("button", name="Record what the treating team said").count()
+                == 0
+            )
 
             incomplete = cards.nth(2)
             assert "The second record is missing from what was saved" in incomplete.inner_text()
@@ -1944,7 +1958,7 @@ def test_live_server_authority_discrepancies_restart_outcomes_and_followups():
             assert "course_id" not in difference_body
             page.evaluate("() => closeTreatmentDialog(false, true, false)")
 
-            first.get_by_role("button", name="Record treating-team outcome").click()
+            first.get_by_role("button", name="Record what the treating team said").click()
             page.locator("#treatment-field-outcome").select_option("caregiver_record_corrected")
             page.locator("#treatment-field-resolution-note").fill("Exact correction note")
             assert page.locator("#treatment-submit-button").is_disabled()
@@ -1974,7 +1988,7 @@ def test_live_server_authority_discrepancies_restart_outcomes_and_followups():
             assert "course_id" not in recurrence_body
             page.evaluate("() => closeTreatmentDialog(false, true, false)")
 
-            resolved.get_by_role("button", name="Review linked follow-up").click()
+            resolved.get_by_role("button", name="Open linked follow-up").click()
             page.locator("#treatment-confirm-unlink").check()
             unlink_body = page.evaluate("() => treatmentBodyForDialog().body")
             assert unlink_body["caregiver_action_id"] is None
@@ -1982,8 +1996,12 @@ def test_live_server_authority_discrepancies_restart_outcomes_and_followups():
             assert "follow_up" not in unlink_body
             page.evaluate("() => closeTreatmentDialog(false, true, false)")
 
-            first.get_by_role("button", name="Manage follow-up").click()
-            page.get_by_label("Link one currently eligible existing follow-up").check()
+            first.get_by_role("button", name="Add follow-up").click()
+            # The symptom dialogs now offer the same choice in the same words, so
+            # this has to name the treatment dialog it belongs to.
+            page.locator("#treatment-dialog").get_by_label(
+                "Link a follow-up you already have"
+            ).check()
             page.locator("#treatment-follow-up-existing").select_option("0")
             existing_body = page.evaluate("() => treatmentBodyForDialog().body")
             assert existing_body["caregiver_action_id"] == "action-one"
@@ -2369,7 +2387,7 @@ def test_live_recorded_row_records_status_prefilled_without_status_inference(
             refreshed = page.locator("#patient-treatment-list .treatment-recorded-card").filter(
                 has_text="None recorded treatment"
             )
-            assert "Linked to reviewed status" in refreshed.inner_text()
+            assert "Linked to a treatment status you entered" in refreshed.inner_text()
             assert "No status recorded" not in refreshed.inner_text()
             assert (
                 "None recorded treatment"

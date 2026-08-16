@@ -231,13 +231,13 @@
         <div>
           <p class="eyebrow">Patient record</p>
           <h1 id="patient-heading">Patient</h1>
-          <p>Review the current clinical snapshot, treatments, results, and symptoms.</p>
+          <p>Review the current profile, treatments, results, and symptoms.</p>
         </div>
       </div>
 
       <div class="patient-grid">
         <section class="content-card patient-overview-card" aria-labelledby="snapshot-heading">
-          <div class="card-header compact"><div><p class="eyebrow">Snapshot</p><h2 id="snapshot-heading">Patient profile</h2></div></div>
+          <div class="card-header compact"><div><p class="eyebrow">At a glance</p><h2 id="snapshot-heading">Patient profile</h2></div></div>
           <div class="patient-block" id="patient-block">
             <div class="patient-dx" id="patient-dx">Loading patient profile…</div>
             <div class="patient-meta" id="patient-meta"></div>
@@ -281,7 +281,7 @@
             <div class="treatment-table-region" role="region" aria-labelledby="treatment-source-caption" tabindex="0">
               <table class="treatment-table">
                 <caption id="treatment-source-caption">Treatment mentions from source documents</caption>
-                <thead><tr><th scope="col">Wording in the record</th><th scope="col">Recorded value</th><th scope="col">Document</th><th scope="col">Import status</th><th scope="col">Source</th><th scope="col">Record status</th></tr></thead>
+                <thead><tr><th scope="col">Wording in the record</th><th scope="col">Saved from that wording</th><th scope="col">Document</th><th scope="col">Import status</th><th scope="col">Source</th><th scope="col">Record status</th></tr></thead>
                 <tbody id="treatment-source-table-body"><tr><td colspan="6"><div class="loading-state">Loading document mentions…</div></td></tr></tbody>
               </table>
             </div>
@@ -295,7 +295,7 @@
         <section class="content-card span-two biomarker-explorer" id="biomarker-explorer" aria-labelledby="biomarkers-heading">
           <div class="card-header compact split-header">
             <div>
-              <p class="eyebrow">Complete recorded history</p>
+              <p class="eyebrow">Full history</p>
               <h2 id="biomarkers-heading">Biomarkers</h2>
             </div>
             <span class="biomarker-freshness loading" id="biomarker-freshness">Not loaded</span>
@@ -343,10 +343,10 @@
           <section class="biomarker-charts" aria-labelledby="biomarker-charts-heading">
             <div class="biomarker-section-heading">
               <div>
-                <p class="eyebrow">Secondary view</p>
+                <p class="eyebrow">Charts</p>
                 <h3 id="biomarker-charts-heading">Charts</h3>
               </div>
-              <p>Only results with matching recorded context are charted. The complete values remain in the table above.</p>
+              <p>Only results recorded in the same way are shown together. The full values remain in the table above.</p>
             </div>
             <div id="biomarker-chart-region">
               <div class="empty-state">Comparable charts will appear after the record loads.</div>
@@ -358,7 +358,7 @@
         </section>
 
         <section class="content-card" aria-labelledby="alerts-heading">
-          <div class="card-header compact"><div><p class="eyebrow">Needs review</p><h2 id="alerts-heading" tabindex="-1">Active alerts</h2></div></div>
+          <div class="card-header compact"><div><p class="eyebrow">Alerts to check</p><h2 id="alerts-heading" tabindex="-1">Active alerts</h2></div></div>
           <div id="alerts-list"><div class="loading-state">Loading alerts…</div></div>
         </section>
 
@@ -419,7 +419,7 @@
         <section class="content-card span-two imaging-explorer" id="imaging-explorer" aria-labelledby="imaging-heading">
           <div class="card-header compact split-header">
             <div>
-              <p class="eyebrow">Complete recorded history</p>
+              <p class="eyebrow">Full history</p>
               <h2 id="imaging-heading">Imaging</h2>
             </div>
             <div class="imaging-header-actions">
@@ -459,7 +459,7 @@
             </table>
           </div>
           <div class="imaging-selection-toolbar">
-            <p id="imaging-selection-status" role="status" aria-live="polite">Select exactly two current records to compare their raw report facts.</p>
+            <p id="imaging-selection-status" role="status" aria-live="polite">Select two imaging reports to compare the recorded findings.</p>
             <div>
               <button class="button secondary" id="imaging-clear-selection" type="button" onclick="clearImagingSelection()" disabled>Clear selection</button>
               <button class="button primary" id="imaging-compare-button" type="button" onclick="compareSelectedImagingRecords()" disabled>Compare selected records</button>
@@ -546,7 +546,7 @@
         </div>
         <div id="visit-create-panel" class="visit-create-panel" hidden>
           <div class="visit-form-grid">
-            <label><span>Imported appointment (optional)</span><select id="visit-source-appointment" onchange="prefillVisitFromAppointment()"><option value="">Create without imported appointment</option></select></label>
+            <label><span>Start from an existing appointment (optional)</span><select id="visit-source-appointment" onchange="prefillVisitFromAppointment()"><option value="">Create a new appointment</option></select></label>
             <label><span>Visit title</span><input id="visit-create-title" maxlength="200" placeholder="Oncology follow-up"></label>
             <label><span>Date</span><input id="visit-create-date" type="date"></label>
             <label><span>Time</span><input id="visit-create-time" maxlength="40" placeholder="e.g. 10:30"></label>
@@ -582,7 +582,7 @@
 
         <section class="content-card" aria-labelledby="notes-heading">
           <div class="card-header compact">
-            <div><p class="eyebrow">Clinician guidance</p><h2 id="notes-heading">Clinical notes</h2></div>
+            <div><p class="eyebrow">From the clinician, as you recorded it</p><h2 id="notes-heading">Clinical notes</h2></div>
             <span class="helper-text">Used by future assessments</span>
           </div>
           <div id="judgments-list"><div class="loading-state">Loading clinical notes…</div></div>
@@ -646,7 +646,7 @@
 
       <form id="research-event-form" class="follow-up-form" onsubmit="event.preventDefault();submitResearchEvent()" hidden>
         <label><span>Event type</span><select id="research-event-type" onchange="changeResearchEventType()"></select></label>
-        <p class="capture-provenance" id="research-event-attribution">Choose an allowed event type.</p>
+        <p class="capture-provenance" id="research-event-attribution">Choose what kind of update this is.</p>
         <label><span>Note</span><textarea id="research-event-note" maxlength="20000" rows="4" autocomplete="off" autocapitalize="sentences" spellcheck="false"></textarea></label>
         <div class="research-form-grid">
           <label><span>Who (optional)</span><input id="research-event-who" maxlength="500" autocomplete="off" spellcheck="false"></label>
@@ -673,14 +673,14 @@
 
       <form id="research-follow-up-form" class="follow-up-form" onsubmit="event.preventDefault();submitResearchFollowUp()" hidden>
         <fieldset class="research-follow-up-fieldset" id="research-follow-up-modes">
-          <legend>Follow-up operation</legend>
+          <legend>What do you want to do with the follow-up?</legend>
         </fieldset>
         <section class="research-follow-up-panel" id="research-follow-up-existing-panel" hidden>
-          <label><span>Eligible current action</span><select id="research-follow-up-existing-action"></select></label>
+          <label><span>Follow-up to link</span><select id="research-follow-up-existing-action"></select></label>
         </section>
         <section class="research-follow-up-panel" id="research-follow-up-inline-panel" hidden>
           <label><span>What needs follow-through?</span><textarea id="research-follow-up-text" maxlength="1000" rows="3" autocomplete="off" autocapitalize="sentences" spellcheck="false"></textarea></label>
-          <p class="helper-text">Start with blank caregiver wording. Use contact, ask, discuss, or confirm wording with the treating team.</p>
+          <p class="helper-text">Write the task in your own words. Use contact, ask, discuss, or confirm with the treating team.</p>
           <div class="research-form-grid">
             <label><span>Owner (optional)</span><input id="research-follow-up-owner" maxlength="100" autocomplete="off" spellcheck="false"></label>
             <label><span>Due date (optional)</span><input id="research-follow-up-due" type="date" autocomplete="off"></label>
@@ -709,7 +709,7 @@
   <section class="follow-up-dialog symptom-dialog" id="symptom-dialog" role="dialog" aria-modal="true" aria-labelledby="symptom-dialog-title" tabindex="-1" inert>
     <header class="dialog-header">
       <div>
-        <p class="eyebrow">You enter this</p>
+        <p class="eyebrow">Your note</p>
         <h2 id="symptom-dialog-title">Symptom episode</h2>
       </div>
       <button class="icon-button" id="symptom-dialog-close" type="button" onclick="closeSymptomDialog()" aria-label="Close symptom episode dialog">×</button>
@@ -722,7 +722,7 @@
           <label><span>Severity (optional)</span><select id="symptom-severity"><option value="">Not recorded</option><option value="mild">Mild</option><option value="moderate">Moderate</option><option value="severe">Severe</option></select></label>
           <label><span>Reported subject</span><select id="symptom-reported-subject"><option value="unspecified">Not specified</option><option value="patient">Patient</option><option value="caregiver">Caregiver</option></select></label>
         </div>
-        <label><span>Severity detail (optional)</span><input id="symptom-severity-detail" maxlength="500" placeholder="Exact additional wording"></label>
+        <label><span>Severity detail (optional)</span><input id="symptom-severity-detail" maxlength="500" placeholder="Any extra detail"></label>
         <label><span>Onset date (optional)</span><input id="symptom-onset-date" maxlength="11" placeholder="14.8.2026, 8/2026 or 2026" aria-describedby="symptom-date-help"></label>
         <label id="symptom-edit-resolution-field" hidden><span>Resolution date (optional)</span><input id="symptom-edit-resolved-date" maxlength="11" placeholder="14.8.2026, 8/2026 or 2026"></label>
         <p class="helper-text" id="symptom-date-help">Enter as much of the date as you know: 14.8.2026, 8/2026 or 2026. It is stored exactly as you type it.</p>
@@ -735,11 +735,11 @@
         <fieldset class="symptom-follow-up-fieldset" id="symptom-create-follow-up-fieldset">
           <legend>Optional follow-up</legend>
           <label><input type="radio" name="symptom-create-follow-up-mode" value="none" checked onchange="renderSymptomCreateFollowUpMode()"> No follow-up</label>
-          <label><input type="radio" name="symptom-create-follow-up-mode" value="existing" onchange="renderSymptomCreateFollowUpMode()"> Link an eligible existing action</label>
-          <label><input type="radio" name="symptom-create-follow-up-mode" value="inline" onchange="renderSymptomCreateFollowUpMode()"> Create and link one manual action</label>
+          <label><input type="radio" name="symptom-create-follow-up-mode" value="existing" onchange="renderSymptomCreateFollowUpMode()"> Link a follow-up you already have</label>
+          <label><input type="radio" name="symptom-create-follow-up-mode" value="inline" onchange="renderSymptomCreateFollowUpMode()"> Write a new follow-up and link it</label>
         </fieldset>
         <section class="symptom-follow-up-panel" id="symptom-create-existing-panel" hidden>
-          <label><span>Eligible action</span><select id="symptom-create-existing-action"></select></label>
+          <label><span>Follow-up to link</span><select id="symptom-create-existing-action"></select></label>
         </section>
         <section class="symptom-follow-up-panel" id="symptom-create-inline-panel" hidden>
           <label><span>What needs follow-through?</span><textarea id="symptom-create-follow-up-text" maxlength="1000" rows="3"></textarea></label>
@@ -769,12 +769,12 @@
       <form id="symptom-follow-up-form" class="follow-up-form" onsubmit="event.preventDefault();submitSymptomFollowUp()" hidden>
         <p class="follow-up-dialog-copy" id="symptom-follow-up-copy"></p>
         <fieldset class="symptom-follow-up-fieldset" id="symptom-existing-follow-up-modes">
-          <legend>Follow-up operation</legend>
-          <label><input type="radio" name="symptom-follow-up-mode" value="existing" checked onchange="renderSymptomFollowUpMode()"> Link an eligible existing action</label>
-          <label><input type="radio" name="symptom-follow-up-mode" value="inline" onchange="renderSymptomFollowUpMode()"> Create and link one manual action</label>
+          <legend>What do you want to do with the follow-up?</legend>
+          <label><input type="radio" name="symptom-follow-up-mode" value="existing" checked onchange="renderSymptomFollowUpMode()"> Link a follow-up you already have</label>
+          <label><input type="radio" name="symptom-follow-up-mode" value="inline" onchange="renderSymptomFollowUpMode()"> Write a new follow-up and link it</label>
         </fieldset>
         <section class="symptom-follow-up-panel" id="symptom-existing-action-panel">
-          <label><span>Eligible action</span><select id="symptom-existing-action"></select></label>
+          <label><span>Follow-up to link</span><select id="symptom-existing-action"></select></label>
         </section>
         <section class="symptom-follow-up-panel" id="symptom-inline-action-panel" hidden>
           <label><span>What needs follow-through?</span><textarea id="symptom-follow-up-text" maxlength="1000" rows="3"></textarea></label>
@@ -826,7 +826,7 @@
 
         <fieldset class="alert-resolution-fieldset">
           <legend>Optional outcome</legend>
-          <label><span>Outcome source</span><select id="alert-resolution-outcome-kind" onchange="updateAlertResolutionProvenance()"><option value="administrative">Administrative note - not clinical evidence</option><option value="caregiver_reported">You recorded this</option><option value="clinician_attributed">You recorded this from the clinician</option></select></label>
+          <label><span>Who this note is from</span><select id="alert-resolution-outcome-kind" onchange="updateAlertResolutionProvenance()"><option value="administrative">Administrative note, not clinical evidence</option><option value="caregiver_reported">You recorded this</option><option value="clinician_attributed">You recorded this from the clinician</option></select></label>
           <label><span>What happened?</span><textarea id="alert-resolution-outcome-text" maxlength="2000" rows="3" placeholder="Optional: record the outcome of reviewing this alert."></textarea></label>
           <p class="capture-provenance" id="alert-resolution-provenance"></p>
         </fieldset>
@@ -922,7 +922,7 @@
 
       <form id="follow-up-outcome-form" class="follow-up-form" onsubmit="event.preventDefault();submitFollowUpOutcome()" hidden>
         <p class="follow-up-dialog-copy" id="follow-up-outcome-copy"></p>
-        <label><span>Outcome source</span><select id="follow-up-outcome-kind" onchange="updateFollowUpOutcomeGuidance()"><option value="administrative">Administrative</option><option value="caregiver_reported">Caregiver reported</option><option value="clinician_attributed">Attributed to clinician</option></select></label>
+        <label><span>Who this note is from</span><select id="follow-up-outcome-kind" onchange="updateFollowUpOutcomeGuidance()"><option value="administrative">Administrative note, not clinical evidence</option><option value="caregiver_reported">You recorded this</option><option value="clinician_attributed">You recorded this from the clinician</option></select></label>
         <label><span>What happened?</span><textarea id="follow-up-outcome-text" maxlength="4000" rows="4" placeholder="Record the result of this follow-up."></textarea></label>
         <p class="capture-provenance" id="follow-up-outcome-guidance"></p>
         <p class="form-error" id="follow-up-outcome-error" role="alert" aria-live="polite"></p>
@@ -943,7 +943,7 @@
   <section class="appointment-dialog" id="appointment-dialog" role="dialog" aria-modal="true" aria-labelledby="appointment-dialog-title" tabindex="-1">
     <header class="appointment-dialog-header">
       <div>
-        <p class="eyebrow">Appointment working mode</p>
+        <p class="eyebrow">During the appointment</p>
         <h2 id="appointment-dialog-title">Visit</h2>
         <p id="appointment-dialog-meta" class="helper-text"></p>
       </div>
@@ -955,7 +955,7 @@
 
     <section class="appointment-metadata" aria-labelledby="visit-details-heading">
       <div class="appointment-section-heading">
-        <div><p class="eyebrow">Session details</p><h3 id="visit-details-heading">Visit details</h3></div>
+        <div><p class="eyebrow">Appointment details</p><h3 id="visit-details-heading">Visit details</h3></div>
         <span id="visit-status-badge" class="visit-status-badge"></span>
       </div>
       <div class="visit-form-grid">
@@ -986,14 +986,14 @@
         <div class="appointment-two-column">
           <section class="appointment-subcard" aria-labelledby="available-question-heading">
             <div class="appointment-section-heading"><div><p class="eyebrow">Preparation</p><h3 id="available-question-heading">Add a question</h3></div></div>
-            <div id="visit-source-questions" class="visit-source-questions"><div class="loading-state">Loading generated questions…</div></div>
+            <div id="visit-source-questions" class="visit-source-questions"><div class="loading-state">Loading suggested questions…</div></div>
             <div class="appointment-form">
-              <label><span>Manual caregiver question</span><textarea id="visit-manual-question" maxlength="1000" rows="3" placeholder="What do we need to ask?"></textarea></label>
+              <label><span>The question you want to ask</span><textarea id="visit-manual-question" maxlength="1000" rows="3" placeholder="What do we need to ask?"></textarea></label>
               <div class="visit-form-grid compact">
                 <label><span>Category</span><select id="visit-manual-category"><option value="Other">Other</option><option value="Treatment">Treatment</option><option value="Diagnostics">Diagnostics</option><option value="Symptoms">Symptoms</option><option value="Trials">Trials</option><option value="Monitoring">Monitoring</option></select></label>
                 <label><span>Priority</span><select id="visit-manual-priority"><option value="medium">Medium</option><option value="high">High</option><option value="urgent">Urgent</option></select></label>
               </div>
-              <button class="button secondary" id="visit-manual-question-submit" onclick="addManualVisitQuestion()" disabled>Add manual question</button>
+              <button class="button secondary" id="visit-manual-question-submit" onclick="addManualVisitQuestion()" disabled>Add question</button>
               <p class="form-error" id="visit-question-error" role="alert" aria-live="polite"></p>
             </div>
           </section>
@@ -1020,7 +1020,7 @@
 
       <section id="appointment-panel-followups" class="appointment-tab-panel" role="tabpanel" aria-labelledby="appointment-tab-followups" hidden>
         <div class="appointment-form">
-          <label><span>Resulting follow-up</span><textarea id="visit-followup-text" maxlength="1000" rows="3" placeholder="Contact, ask, discuss, or confirm with the treating team."></textarea></label>
+          <label><span>Follow-up from this visit</span><textarea id="visit-followup-text" maxlength="1000" rows="3" placeholder="Contact, ask, discuss, or confirm with the treating team."></textarea></label>
           <div class="visit-form-grid compact">
             <label><span>Linked decision (optional)</span><select id="visit-followup-decision"><option value="">No linked decision</option></select></label>
             <label><span>Owner</span><input id="visit-followup-owner" maxlength="100"></label>
@@ -1035,7 +1035,7 @@
       <section id="appointment-panel-recap" class="appointment-tab-panel visit-recap-panel" role="tabpanel" aria-labelledby="appointment-tab-recap" hidden>
         <div class="visit-recap-toolbar">
           <div>
-            <p class="eyebrow">Current visit record</p>
+            <p class="eyebrow">This visit</p>
             <h3>Visit recap</h3>
           </div>
           <div class="visit-recap-actions" id="visit-recap-actions" aria-label="Export visit recap" hidden>
@@ -1061,7 +1061,7 @@
 <div class="treatment-dialog-overlay" id="treatment-dialog-overlay" aria-hidden="true" onclick="closeTreatmentDialogFromBackdrop(event)">
   <section class="treatment-dialog" id="treatment-dialog" role="dialog" aria-modal="true" aria-labelledby="treatment-dialog-title" tabindex="-1">
     <header class="dialog-header">
-      <div><p class="eyebrow" id="treatment-dialog-eyebrow">You enter and review this</p><h2 id="treatment-dialog-title">Treatment record</h2></div>
+      <div><p class="eyebrow" id="treatment-dialog-eyebrow">Your treatment record</p><h2 id="treatment-dialog-title">Treatment record</h2></div>
       <button class="icon-button" id="treatment-dialog-close" type="button" onclick="closeTreatmentDialog()" aria-label="Close treatment dialog">×</button>
     </header>
     <div class="treatment-dialog-status" id="treatment-dialog-status" role="status" aria-live="polite"></div>
@@ -1108,12 +1108,12 @@
 </div>
 
 <div class="panel collapsed" id="report-panel" role="dialog" aria-modal="true" aria-labelledby="report-title" aria-hidden="true" tabindex="-1">
-  <div class="panel-head"><div><p class="eyebrow">Activity report</p><h2 id="report-title">Analysis</h2></div><div class="dialog-actions"><button class="button secondary panel-copy-btn" id="copy-btn" onclick="copyReport()">Copy</button><button class="icon-button" onclick="closePanel()" aria-label="Close report">×</button></div></div>
+  <div class="panel-head"><div><p class="eyebrow">Report details</p><h2 id="report-title">Analysis</h2></div><div class="dialog-actions"><button class="button secondary panel-copy-btn" id="copy-btn" onclick="copyReport()">Copy</button><button class="icon-button" onclick="closePanel()" aria-label="Close report">×</button></div></div>
   <div class="panel-body" id="panel-body"><div class="report-empty"><div class="report-empty-icon">◈</div><div class="report-empty-text">Select an activity item to view its report.</div></div></div>
 </div>
 
 <aside id="chat-panel" class="chat-panel" role="dialog" aria-modal="true" aria-labelledby="chat-title" aria-hidden="true" tabindex="-1">
-  <div class="panel-head"><div><p class="eyebrow">Grounded in the patient record</p><h2 id="chat-title">Ask Claude</h2></div><div class="dialog-actions"><button class="button secondary" onclick="clearChat()">Clear</button><button class="icon-button" onclick="toggleChat()" aria-label="Close assistant">×</button></div></div>
+  <div class="panel-head"><div><p class="eyebrow">Uses the patient record</p><h2 id="chat-title">Ask Claude</h2></div><div class="dialog-actions"><button class="button secondary" onclick="clearChat()">Clear</button><button class="icon-button" onclick="toggleChat()" aria-label="Close assistant">×</button></div></div>
   <div id="chat-messages" class="chat-messages" aria-live="polite">
     <div class="chat-welcome">Ask about the patient’s data, research findings, or treatment options.<div class="chat-suggestions"><button class="chat-suggestion" onclick="sendSuggestion(this)">What needs attention right now?</button><button class="chat-suggestion" onclick="sendSuggestion(this)">Summarise the biomarker trends over time</button><button class="chat-suggestion" onclick="sendSuggestion(this)">Why is PRRT being considered?</button><button class="chat-suggestion" onclick="sendSuggestion(this)">What do the tracked trials have in common?</button></div></div>
   </div>

@@ -164,9 +164,13 @@ def test_projection_keeps_observations_separate_and_uses_exact_fixed_safety_copy
     assert projection["observations"][1]["id"] == "safe-observation"
     assert "unsafe observation/id with spaces" not in serialized
     assert "unknown_extra" not in serialized
+    # Reworded copy: wave 3 reworded the three byte-pinned safety paragraphs into plain
+    # English. INVARIANTS.md and every pin moved in the same commit; the
+    # meaning is unchanged and tests/test_plain_language_copy.py asserts each
+    # promise the paragraph makes, not just its bytes.
     assert projection["safety_guidance"]["text"] == (
-        "NET/Care records what you enter but does not assess urgency or monitor "
-        "symptoms. Contact the treating team about symptoms or concerns. If you "
+        "NET/Care records what you enter. It does not decide how urgent symptoms are "
+        "or monitor them. Contact the treating team about symptoms or concerns. If you "
         "think this may be a medical emergency, contact local emergency services."
     )
 

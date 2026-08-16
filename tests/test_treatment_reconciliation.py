@@ -321,10 +321,14 @@ def test_source_fact_document_identity_is_bound_by_the_projection_token(agent, e
 
 
 def test_treatment_safety_copy_is_exact_static_contract(agent, empty_profile):
+    # Reworded copy: wave 3 reworded the three byte-pinned safety paragraphs into plain
+    # English. INVARIANTS.md and every pin moved in the same commit; the
+    # meaning is unchanged and tests/test_plain_language_copy.py asserts each
+    # promise the paragraph makes, not just its bytes.
     expected = (
-        "NET/Care records what you enter but does not verify treatment details or advise "
-        "starting, stopping, or changing treatment. Confirm treatment decisions with the "
-        "treating team."
+        "NET/Care records what you enter. It does not check whether treatment details "
+        "are correct or give advice about starting, stopping, or changing treatment. "
+        "Confirm treatment decisions with the treating team."
     )
 
     projection = agent.project_treatment_reconciliation(empty_profile)

@@ -512,8 +512,8 @@ console.log(JSON.stringify({
     # Wave 1: stored dates now render through the shared Finnish formatter.
     assert result["tableText"].index("4/2026") < result["tableText"].index("15.3.2026")
     assert result["tableText"].count("Target liver lesion increased") == 2
-    assert "Older record - date context was not retained" in result["tableText"]
-    assert "Source document date (not used for study chronology)" in result["tableText"]
+    assert "Older record, date type not recorded" in result["tableText"]
+    assert "Document date, not the scan date" in result["tableText"]
     assert "Record ID" not in result["tableText"]
     assert "source_unverified" not in result["tableText"]
     assert "projection-current" not in result["tableText"]
@@ -829,7 +829,7 @@ console.log(JSON.stringify({
     assert result == {
         "rendered": True,
         "state": "empty",
-        "freshness": "Current · empty",
+        "freshness": "Current · no reports recorded",
         "status": "Imaging history is up to date. No imaging reports are recorded.",
         "selection": "No imaging records are available to select or compare.",
         "compareDisabled": True,
@@ -940,7 +940,7 @@ def test_live_imaging_is_exact_semantic_responsive_and_overflow_safe():
                 assert dates == ["4/2026", "15.3.2026", "Not recorded", "15.3.2026"]
                 table_text = page.locator("#imaging-table-body").inner_text()
                 assert table_text.count("Target liver lesion increased") == 2
-                assert "Older record - date context was not retained" in table_text
+                assert "Older record, date type not recorded" in table_text
                 assert "Record ID" not in table_text
                 assert "source_unverified" not in table_text
                 assert "Study date not recorded" in table_text

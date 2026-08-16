@@ -206,10 +206,14 @@ def test_today_has_one_contextual_assessment_action_and_shared_update_buttons():
 
 
 def test_routine_workspace_omits_generic_capability_disclaimers():
+    # Reworded copy: wave 3 reworded the three byte-pinned safety paragraphs into plain
+    # English. INVARIANTS.md and every pin moved in the same commit; the
+    # meaning is unchanged and tests/test_plain_language_copy.py asserts each
+    # promise the paragraph makes, not just its bytes.
     removed_copy = (
-        "NET/Care records what you enter but does not assess urgency or monitor symptoms.",
-        "NET/Care records what you enter but does not verify treatment details",
-        "NET/Care records research you choose to follow but does not determine relevance",
+        "NET/Care records what you enter. It does not decide how urgent symptoms are",
+        "NET/Care records what you enter. It does not check whether treatment details",
+        "NET/Care records the research you choose to follow. It does not decide whether",
         "Decision-support only. Confirm clinical decisions with the treating team.",
     )
     for text in removed_copy:
@@ -223,7 +227,7 @@ def test_routine_workspace_omits_generic_capability_disclaimers():
         assert class_name not in HTML
         assert f".{class_name}" not in CSS
 
-    assert "Prior generated assessment is hidden" in APP_JS
+    assert "Previous assessment hidden" in APP_JS
     assert "they are not current symptom episodes." in HTML
     assert "Caregiver-entered · unverified" in APP_JS
     # The automatic compatibility notes surface was removed from the UI; the

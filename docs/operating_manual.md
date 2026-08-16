@@ -266,8 +266,9 @@ receipt shows:
 - the document filename/type, ingestion time, and human-readable source link;
 - each structured addition, old → new scalar update, conflict, and exact
   duplicate/no-op;
-- **Exact wording available**, **Document linked - exact wording unavailable**,
-  or **No document linked**, without claiming clinical authenticity;
+- **Exact wording available**, **Document attached, exact wording not
+  available**, or **No document linked**, without claiming clinical
+  authenticity;
 - read-only trials/papers discovered later by orchestration.
 
 The server returns `202` with a job ID. The UI polls active work every three
@@ -793,8 +794,8 @@ What that does, exactly:
   exactly as before, so asking "why has he been nauseated?" can still draw on
   it. Hiding changes your page, never what NET/Care knows.
 - **It is always disclosed.** The recorded section shows a permanent
-  **N hidden by you · show** control listing every hidden statement, each with
-  **Show in my workspace**. Today names the hidden count separately. Nothing is
+  **N hidden by you · show list** control listing every hidden statement, each
+  with **Show this again**. Today names the hidden count separately. Nothing is
   ever silently suppressed.
 - **It is entirely reversible**, as often as you like.
 - **It says nothing clinical.** Hiding does not record that the treatment

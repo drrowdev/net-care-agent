@@ -26,9 +26,9 @@ SYMPTOM_REPORTED_SUBJECTS = {"patient", "caregiver", "unspecified"}
 SYMPTOM_OBSERVATION_DATE_KINDS = {"clinical", "legacy_unknown", "unknown"}
 SYMPTOM_EPISODE_DATE_KINDS = {"caregiver_entered", "unknown"}
 SYMPTOM_SAFETY_GUIDANCE = (
-    "NET/Care records what you enter but does not assess urgency or monitor symptoms. "
-    "Contact the treating team about symptoms or concerns. If you think this may be a "
-    "medical emergency, contact local emergency services."
+    "NET/Care records what you enter. It does not decide how urgent symptoms are or "
+    "monitor them. Contact the treating team about symptoms or concerns. If you think "
+    "this may be a medical emergency, contact local emergency services."
 )
 
 _OBSERVATION_FIELD_LIMITS = {

@@ -172,10 +172,15 @@ def test_projection_separates_authority_uses_canonical_links_and_exact_safety_co
     }
     assert trial["latest_batch_member"] is True
     assert paper["latest_batch_member"] is True
+    # Reworded copy: wave 3 reworded the three byte-pinned safety paragraphs into plain
+    # English. INVARIANTS.md and every pin moved in the same commit; the
+    # meaning is unchanged and tests/test_plain_language_copy.py asserts each
+    # promise the paragraph makes, not just its bytes.
     assert workspace["safety_guidance"]["text"] == (
-        "NET/Care records research you choose to follow but does not determine relevance, "
-        "eligibility, enrollment, or treatment suitability. Confirm clinical questions "
-        "with the treating team and trial details with the study site."
+        "NET/Care records the research you choose to follow. It does not decide whether "
+        "research is relevant, whether someone is eligible for or enrolled in a study, "
+        "or whether a treatment is suitable. Confirm clinical questions with the "
+        "treating team and trial details with the study site."
     )
     response = client.get("/api/patient/research-workspace")
     assert "no-store" in response.headers["Cache-Control"]

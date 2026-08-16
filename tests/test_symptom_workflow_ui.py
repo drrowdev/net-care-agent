@@ -12,10 +12,14 @@ import pytest
 APP_JS = Path("static/app.js").read_text(encoding="utf-8")
 CSS = Path("static/styles.css").read_text(encoding="utf-8")
 INDEX_HTML = Path("static/index.html").read_text(encoding="utf-8")
+# Reworded copy: wave 3 reworded the three byte-pinned safety paragraphs into plain
+# English. INVARIANTS.md and every pin moved in the same commit; the
+# meaning is unchanged and tests/test_plain_language_copy.py asserts each
+# promise the paragraph makes, not just its bytes.
 GUIDANCE = (
-    "NET/Care records what you enter but does not assess urgency or monitor symptoms. "
-    "Contact the treating team about symptoms or concerns. If you think this may be a "
-    "medical emergency, contact local emergency services."
+    "NET/Care records what you enter. It does not decide how urgent symptoms are or "
+    "monitor them. Contact the treating team about symptoms or concerns. If you think "
+    "this may be a medical emergency, contact local emergency services."
 )
 _NODE_STDIN_BOOTSTRAP = "eval(require('fs').readFileSync(0,'utf8'))"
 
@@ -236,7 +240,8 @@ def test_symptom_module_has_one_authority_and_no_clinical_or_date_inference():
     assert "observations.sort(" not in source
     assert ".dedupe" not in source
     assert GUIDANCE not in INDEX_HTML
-    assert "You enter this" in INDEX_HTML
+    # Wave 3 wording: the symptom dialog eyebrow reads "Your note".
+    assert "Your note" in INDEX_HTML
     assert "patient-reported" not in source.lower()
     assert "triage" not in source.lower()
     assert "treatment advice" not in source.lower()
@@ -549,7 +554,7 @@ def test_live_symptom_lifecycle_and_atomic_follow_up_mutations():
             current_card = page.locator(
                 "#patient-current-symptom-list .symptom-episode-card"
             ).filter(has_text="Exact current wording")
-            current_card.get_by_role("button", name="Edit episode facts").click()
+            current_card.get_by_role("button", name="Edit episode details").click()
             page.locator("#symptom-text").fill("Corrected exact current wording")
             page.locator("#symptom-details-submit").click()
             page.wait_for_function("() => !symptomMutationPending")
@@ -694,7 +699,7 @@ def test_live_symptom_transport_hard_failure_and_replacement_scrub_boundaries():
             current_card = page.locator(
                 "#patient-current-symptom-list .symptom-episode-card"
             ).filter(has_text="Exact current wording")
-            current_card.get_by_role("button", name="Edit episode facts").click()
+            current_card.get_by_role("button", name="Edit episode details").click()
             page.locator("#symptom-text").fill("Draft tied to old token")
             state.projection["episodes"][0]["token"] = "replacement-episode-token"
             state.projection["projection_token"] = "replacement-projection-token"

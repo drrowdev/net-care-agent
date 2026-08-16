@@ -305,6 +305,65 @@ def test_recover_profile_no_candidates_raises(profile_dir):
         recover_profile()
 
 
+def test_recover_profile_never_selects_a_structurally_invalid_backup(
+    profile_dir, valid_profile_bytes
+):
+    """A damaged daily backup must never be restored over the live profile.
+
+    ``daily_backup`` used to copy straight onto its final filename, so an
+    interrupted copy left a truncated backup carrying a newer mtime than every
+    good candidate — which is exactly the position recovery searches first. Both
+    shapes of damage are covered: bytes that do not parse at all, and bytes that
+    parse cleanly into something unusable as a profile.
+    """
+    import os
+
+    _write_profile(profile_dir, b"corrupt")
+    truncated = _write_backup(
+        profile_dir,
+        valid_profile_bytes[: len(valid_profile_bytes) // 2],
+        name="profile_20260303.json",
+    )
+    wrong_shape = _write_backup(
+        profile_dir,
+        json.dumps({"schema_version": 1, "patient": "not a mapping"}).encode(),
+        name="profile_20260202.json",
+    )
+    good = _write_backup(profile_dir, valid_profile_bytes, name="profile_20260101.json")
+    # Pin the ordering the mtimes imply, so the damaged files really are preferred.
+    for path, when in (
+        (good, 1_700_000_000),
+        (wrong_shape, 1_750_000_000),
+        (truncated, 1_800_000_000),
+    ):
+        os.utime(path, (when, when))
+
+    from agent.recovery import find_recovery_candidates, recover_profile
+
+    assert [c.path for c in find_recovery_candidates()] == [truncated, wrong_shape, good]
+
+    data = recover_profile()
+
+    assert data["patient"]["diagnosis"] == "NET"
+    restored = json.loads(profile_dir.joinpath("patient_profile.json").read_bytes())
+    assert restored["patient"]["diagnosis"] == "NET"
+
+
+def test_recovery_ignores_abandoned_copy_temporaries(profile_dir, valid_profile_bytes):
+    """A leftover ``.tmp`` from an interrupted copy is not a candidate."""
+    from agent.recovery import find_recovery_candidates
+
+    _write_profile(profile_dir, b"corrupt")
+    bdir = profile_dir / "backups"
+    bdir.mkdir(parents=True, exist_ok=True)
+    (bdir / ".profile_20260303.json.deadbeef.tmp").write_bytes(valid_profile_bytes)
+    sdir = profile_dir / "snapshots"
+    sdir.mkdir(parents=True, exist_ok=True)
+    (sdir / ".profile_20260303_120000_000000.json.cafe.tmp").write_bytes(valid_profile_bytes)
+
+    assert find_recovery_candidates() == []
+
+
 # ── load_profile integration ──────────────────────────────────────────────────
 
 

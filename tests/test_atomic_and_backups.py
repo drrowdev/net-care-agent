@@ -5,12 +5,54 @@ from __future__ import annotations
 import datetime
 import json
 import threading
+import time
+from pathlib import Path
 
 import pytest
 
 
 def _profile_temps(config):
     return list(config.DATA_DIR.glob(f".{config.PROFILE_PATH.name}.*.tmp"))
+
+
+def _copy_temps(directory: Path):
+    return list(directory.glob(".profile_*.tmp"))
+
+
+def _truncate_bytes(raw: bytes) -> bytes:
+    """The first half of a JSON document — what an interrupted copy leaves."""
+    return raw[: len(raw) // 2]
+
+
+def _interrupt_every_copy(monkeypatch, backups, *, raising: bool = True):
+    """Make every byte-copy this module performs stop half-way through.
+
+    Both primitives are patched so the assertion holds regardless of which one
+    the implementation reaches for: the pre-fix code copied with
+    ``shutil.copy2`` straight onto the final filename, the fixed code streams
+    with ``copyfileobj`` onto a temporary first. Either way exactly half the
+    bytes reach whatever destination was asked for, which is what a container
+    recycle part-way through a copy leaves behind.
+
+    ``raising=False`` models the nastier variant — a short write that reports no
+    error at all — which no amount of exception handling can catch and only
+    validating the copy can.
+    """
+
+    def half_copy2(src, dst, *_args, **_kwargs):
+        Path(dst).write_bytes(_truncate_bytes(Path(src).read_bytes()))
+        if raising:
+            raise OSError("simulated interruption mid-copy")
+        return dst
+
+    def half_copyfileobj(fsrc, fdst, *_args, **_kwargs):
+        fdst.write(_truncate_bytes(fsrc.read()))
+        fdst.flush()
+        if raising:
+            raise OSError("simulated interruption mid-copy")
+
+    monkeypatch.setattr(backups.shutil, "copy2", half_copy2)
+    monkeypatch.setattr(backups.shutil, "copyfileobj", half_copyfileobj)
 
 
 def _noon_today() -> float:
@@ -538,3 +580,194 @@ def test_restore_snapshots_the_state_it_replaces(agent):
     captured = json.loads(new_snapshots.pop().read_text(encoding="utf-8"))
     assert captured["patient"]["stage"] == "IV"
     assert captured["profile_revision"] == live["profile_revision"]
+
+
+# ── an interrupted copy must never become the artefact ────────────────────────
+#
+# Both writers used to copy straight onto their final filename with a bare
+# ``shutil.copy2``. A copy interrupted part-way therefore left a TRUNCATED file
+# at the real path carrying an ordinary mtime, which nothing downstream could
+# tell apart from a good artefact: /api/health judges the daily backup by mtime
+# and calendar day, ``daily_backup``'s once-per-day existence gate treated the
+# day as done so it was never retried, and recovery would still offer it.
+
+
+def test_interrupted_daily_backup_leaves_nothing_at_the_target_path(agent, monkeypatch):
+    """The truncated bytes must never reach ``backups/profile_YYYYMMDD.json``."""
+    from agent import backups, config
+
+    agent.save_profile({"patient": {"diagnosis": "NET"}})
+    bdir = config.DATA_DIR / "backups"
+    target = bdir / _today_backup_name()
+    target.unlink()
+
+    _interrupt_every_copy(monkeypatch, backups)
+
+    assert backups.daily_backup() is None
+    assert not target.exists(), "an interrupted copy landed at the real backup path"
+    assert _copy_temps(bdir) == [], "the abandoned temporary was not cleaned up"
+
+
+def test_silently_truncated_daily_backup_is_rejected_by_validation(agent, monkeypatch):
+    """A short write that reports no error is caught by validating the copy."""
+    from agent import backups, config
+
+    agent.save_profile({"patient": {"diagnosis": "NET"}})
+    bdir = config.DATA_DIR / "backups"
+    target = bdir / _today_backup_name()
+    target.unlink()
+
+    _interrupt_every_copy(monkeypatch, backups, raising=False)
+
+    assert backups.daily_backup() is None
+    assert not target.exists(), "a truncated copy became the day's backup"
+    assert _copy_temps(bdir) == []
+
+
+def test_interrupted_snapshot_leaves_no_partial_snapshot(agent, monkeypatch):
+    """A truncated snapshot would occupy one of the limited rotating slots."""
+    from agent import backups, config
+
+    agent.save_profile({"patient": {"diagnosis": "NET"}})
+    before = _snapshot_paths(config)
+
+    _interrupt_every_copy(monkeypatch, backups)
+
+    assert backups.rotating_snapshot() is None
+    assert _snapshot_paths(config) == before
+    assert _copy_temps(config.DATA_DIR / "snapshots") == []
+
+
+def test_pre_existing_truncated_backup_is_replaced_not_skipped_forever(agent):
+    """The bug's steady state: a corrupt backup that satisfies the day's gate.
+
+    Its mtime is perfectly ordinary, so /api/health stays green, and the old
+    ``if not target.exists()`` gate meant the next save — and every save after
+    it — left the corrupt file exactly where it was.
+    """
+    from agent import backups, config
+
+    agent.save_profile({"patient": {"diagnosis": "NET"}})
+    target = config.DATA_DIR / "backups" / _today_backup_name()
+    good = target.read_bytes()
+
+    # Exactly what an interrupted copy leaves: half a document, fresh mtime.
+    target.write_bytes(_truncate_bytes(good))
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(target.read_bytes())
+
+    written = backups.daily_backup()
+
+    assert written == target, "the corrupt backup was accepted as the day's backup"
+    restored = json.loads(target.read_bytes())
+    assert restored["patient"]["diagnosis"] == "NET"
+
+
+def test_daily_backup_leaves_an_unreadable_backup_alone(agent, monkeypatch):
+    """ "Cannot read it" is not evidence of corruption.
+
+    Overwriting a good same-day backup on a transient Azure Files read error
+    would destroy the earlier revision that backup exists to preserve.
+    """
+    from agent import backups, config
+
+    agent.save_profile({"patient": {"diagnosis": "NET"}})
+    target = config.DATA_DIR / "backups" / _today_backup_name()
+    original = target.read_bytes()
+    mtime_before = target.stat().st_mtime
+
+    agent.save_profile({"patient": {"diagnosis": "NET", "stage": "IV"}})
+
+    real_read_bytes = Path.read_bytes
+
+    def unreadable(self):
+        if self == target:
+            raise OSError("simulated transient Azure Files read error")
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(backups.Path, "read_bytes", unreadable)
+
+    assert backups.daily_backup() is None
+    monkeypatch.undo()
+    assert target.read_bytes() == original
+    assert target.stat().st_mtime == mtime_before
+
+
+def test_backup_validation_failure_never_fails_a_save(agent, caplog):
+    """A save is committed by the atomic replace; validation runs around it."""
+    from agent import backups, config
+
+    agent.save_profile({"patient": {"diagnosis": "First"}})
+
+    original_classify = backups._classify_copy
+    backups._classify_copy = lambda _path: backups.COPY_INVALID
+    try:
+        with caplog.at_level("WARNING"):
+            agent.save_profile({"patient": {"diagnosis": "Committed anyway"}})
+    finally:
+        backups._classify_copy = original_classify
+
+    committed = json.loads(config.PROFILE_PATH.read_text(encoding="utf-8"))
+    assert committed["patient"]["diagnosis"] == "Committed anyway"
+
+
+def test_stale_copy_temp_is_purged_and_never_a_recovery_candidate(agent):
+    """A crash between temp and replace must not accumulate litter."""
+    import os
+
+    from agent import backups, config, recovery
+
+    agent.save_profile({"patient": {"diagnosis": "NET"}})
+    bdir = config.DATA_DIR / "backups"
+    old = time.time() - backups.TEMP_STALE_SECONDS - 60
+
+    stale = bdir / f".profile_20260101.json.{int(old)}.deadbeef.tmp"
+    stale.write_bytes(b'{"patient": {"diag')
+    os.utime(stale, (old, old))
+
+    live = bdir / f".profile_20260101.json.{int(time.time())}.cafe1234.tmp"
+    live.write_bytes(b'{"patient": {"diag')
+    # A copy in flight is back-dated to the source profile's mtime just before
+    # the replace, so an mtime-aged purge could delete it mid-copy. The
+    # timestamp in the name is what makes it survive that window.
+    os.utime(live, (old, old))
+
+    untimestamped = bdir / ".profile_20260101.json.nostamp.tmp"
+    untimestamped.write_bytes(b'{"patient": {"diag')
+    os.utime(untimestamped, (old, old))
+
+    backups.daily_backup()
+
+    assert not stale.exists(), "an abandoned temporary was never swept up"
+    assert live.exists(), "a copy still in flight was destroyed"
+    assert not untimestamped.exists(), "an unrecognised temporary was left to accumulate"
+    assert all(
+        c.path.suffix == ".json" for c in recovery.find_recovery_candidates()
+    ), "a temporary was offered as a recovery candidate"
+
+
+def test_sidecar_hash_write_is_atomic(agent, monkeypatch):
+    """A half-written sidecar permanently rejects a perfectly good snapshot.
+
+    ``recovery._validate_candidate`` reads a readable-but-mismatched ``.sha256``
+    as proof the snapshot is corrupt, so the checksum must land whole or not at
+    all.
+    """
+    from agent import backups, config, io, recovery
+
+    agent.save_profile({"patient": {"diagnosis": "NET"}})
+    agent.save_profile({"patient": {"diagnosis": "NET", "stage": "IV"}})
+    snapshot = next(iter(_snapshot_paths(config)))
+    sidecar = snapshot.with_suffix(snapshot.suffix + ".sha256")
+    sidecar.unlink(missing_ok=True)
+
+    def fail_replace(_source, _destination):
+        raise OSError("simulated interruption committing the sidecar")
+
+    monkeypatch.setattr(io.os, "replace", fail_replace)
+    backups._write_sidecar_hash(snapshot, snapshot.read_bytes())
+    monkeypatch.undo()
+
+    assert not sidecar.exists(), "a partially written sidecar was left behind"
+    assert _copy_temps(config.DATA_DIR / "snapshots") == []
+    assert recovery._validate_candidate(snapshot) is not None

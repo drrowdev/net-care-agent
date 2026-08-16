@@ -32,11 +32,48 @@ incremented when something user-visible or operationally meaningful changes.
   browser takes can never be turned away by the server.
 
 ### Fixed
+- **An interrupted backup can no longer leave a damaged copy that is never
+  repaired.** Both protective copies of the record — the pre-write snapshot and
+  the once-a-day backup — used to be written straight onto their final filename.
+  If one was cut short part-way, by a restart or the machine running out of room,
+  what was left behind was **half a file wearing a completely normal timestamp**.
+  Nothing could see anything wrong with it: the health page judges the backup by
+  its timestamp and calendar day, so it stayed green, and the once-a-day check
+  only asked whether a file for today existed, so the damaged one satisfied that
+  day permanently and was never written again. The damaged file also stayed on
+  the list of things the record could be restored from. The result was a backup
+  that looked healthy right up until the moment it was needed.
+
+  Every copy is now written to a temporary file alongside the real one, checked
+  there for being complete and readable, and only then swapped into place in a
+  single step. A copy that is cut short never becomes the backup. A backup
+  already found to be damaged is replaced on the next save rather than trusted
+  forever, while a backup that merely could not be read at that moment is left
+  untouched — a passing read error is not proof of damage, and overwriting on one
+  would throw away the earlier state that backup exists to preserve. A good
+  backup for the day is still never rewritten. The checksum file kept beside each
+  snapshot is now written the same careful way, so a half-written checksum can no
+  longer make the record refuse a perfectly good copy.
+
+  As before, a copy that fails or is refused never stops the record being saved:
+  it is recorded in the log and the save goes through regardless.
+
 - **A follow-up due date is now checked in the browser the way the server
   checks it.** The treatment follow-up due field accepted a year or a
   year-and-month in the browser but the server has always required a whole day,
   so a partial entry failed only after pressing save. The field now asks for a
   whole day up front.
+
+### Operations
+- **Leftover `.tmp` files in `snapshots/` and `backups/` are normal and clear
+  themselves.** Copies of the record are now staged on a temporary file next to
+  the real one, so a crash mid-copy leaves one behind. The next snapshot or
+  backup deletes any over an hour old. They are invisible to pruning, to the
+  health page and to recovery, and must not be cleaned up by hand — one that is
+  still being written would be destroyed. Only the backup for the record's own
+  day is re-checked on a save, so a damaged backup from an earlier day is
+  rejected rather than repaired; `docs/operating_manual.md` §9 has the check to
+  run if you suspect one.
 
 ### Changed
 - **The last of the database vocabulary left the screen.** This finishes the

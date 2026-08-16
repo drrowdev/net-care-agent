@@ -65,6 +65,31 @@ incremented when something user-visible or operationally meaningful changes.
   whole day up front.
 
 ### Operations
+- **Deploying and rolling back are possible again.** `Scripts/deploy.ps1` builds
+  an Authorization header for every Kudu request out of an Azure access token. A
+  secret-scrubbing placeholder had been committed over the one line that builds
+  it, so the script still fetched the token and still checked it, then discarded
+  it and sent a masked value instead. Kudu rejected every such request, so no
+  deployment could complete — and because that same line is used by `-Rollback`
+  and by the automatic restore that runs when a deployment fails, neither could
+  any recovery. Nothing that was already running was affected; the release live
+  at the time kept serving normally. The line has been restored byte-for-byte
+  from the last known-good commit and is now byte-identical to the one in the
+  running release. Nothing else in the deploy script changed, and what gets
+  packaged and deployed is unchanged.
+
+  The fault was invisible to review because the same scrubber hides that string
+  again whenever the file is displayed, so it had to be found and repaired by
+  measuring the line rather than reading it. Two guards now cover it.
+  `tests/test_deploy_script.py` evaluates the real `Get-AuthHeaders` against a
+  stand-in for the Azure CLI and measures the header it produces, so a header
+  that is not the word `Bearer` followed by the token just fetched fails the
+  test suite — which is itself one of the gates the deploy script runs before it
+  will build a package. `tests/test_redaction_artifacts.py` scans every tracked
+  file for committed placeholder text of this kind. Both were confirmed to fail
+  against the broken script before the repair. Neither guard prints a token, and
+  the deploy script still never echoes one.
+
 - **Leftover `.tmp` files in `snapshots/` and `backups/` are normal and clear
   themselves.** Copies of the record are now staged on a temporary file next to
   the real one, so a crash mid-copy leaves one behind. The next snapshot or

@@ -69,9 +69,29 @@ know it was considered.
   pytest/ruff/gitleaks, verifies SHA-256, records HEAD, polls asynchronous Kudu
   and authenticated terminal Kudu status plus `/api/health`
   critical fields and exact packaged commit, and promotes
-  `.deploy/last-known-good.*` only after success. A dirty working tree is
+  the release to `current-verified` only after success, keeping the former
+  current release as `previous-known-good`. A dirty working tree is
   rejected. `-Rollback`
   verifies and redeploys that exact package.
+- **Release state is per-machine, not per-worktree.** Deploys are run from
+  throwaway git worktrees, so state kept inside the working copy was empty every
+  time and `-Rollback` never had a baseline. It now lives in
+  `%LOCALAPPDATA%\net-care-agent\deploy\apps\<app-service>\` (non-Windows:
+  `$XDG_STATE_HOME`, else `~/.local/state/net-care-agent/deploy`), keyed by app
+  name. Override with `-StateRoot` or `NET_CARE_DEPLOY_STATE_ROOT`; the path
+  must be absolute and is created on demand. Back this directory up — it is the
+  only copy of the rollback packages.
+- Releases are immutable and content-addressed (`<commit>-<sha256>`), and
+  `state.json` names current/previous in one atomically replaced file, so a
+  partially written baseline cannot exist. `Scripts/deploy-state.ps1` owns this;
+  `Scripts/Test-DeployState.ps1` exercises it without deploying, and `pytest`
+  runs that harness.
+- A legacy in-worktree `.deploy/` is adopted once, after verification, if the
+  durable store has no current release. Its files are only ever read and copied,
+  never moved or deleted.
+- One deploy at a time per app: the script holds an exclusive lock for the whole
+  remote window and fails fast if another deploy holds it. The lock is per
+  machine and per user — it cannot coordinate two different machines.
 - Keep `.deployment` (`SCM_DO_BUILD_DURING_DEPLOYMENT=true`) and exact runtime,
   dev, and setuptools build pins. The script includes `.deployment`, ensuring
   Oryx build-on-deploy is active.

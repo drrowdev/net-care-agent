@@ -1360,15 +1360,107 @@ Use only `Scripts/deploy.ps1`: it refuses to package unless pytest, ruff, and
 gitleaks pass and the working tree is clean, verifies the release SHA-256,
 records the current HEAD, polls asynchronous Kudu (900 seconds default), checks
 authenticated terminal Kudu status and `/api/health` critical fields
-for the exact packaged commit (300 seconds), and promotes
-`.deploy/current-verified.*` only after success, preserving the former current
-package as `.deploy/previous-known-good.*`. A usable `degraded` response is
+for the exact packaged commit (300 seconds), and promotes the release to
+`current-verified` only after success, preserving the former current
+package as `previous-known-good`. A usable `degraded` response is
 accepted for interrupted-job history, but storage and job metadata must be healthy.
 If candidate upload, Kudu completion, or readiness fails, a complete prevalidated
 `current-verified` package is automatically redeployed and health-checked before
 the candidate failure is returned. A first deployment has no automatic restore.
 `-Rollback` requires that distinct previous package, verifies its SHA-256 and
 embedded commit, redeploys it, then repeats both checks.
+
+### Where the rollback packages live
+
+Verified release packages are stored **outside the repository**, in one stable
+place per machine and per app:
+
+```
+%LOCALAPPDATA%\net-care-agent\deploy\apps\<app-service>\
+    state.json                       # names current + previous + history
+    releases\<commit>-<sha256>.zip   # immutable, content-addressed
+    releases\<commit>-<sha256>.sha256
+    releases\<commit>-<sha256>.commit
+    build\                           # scratch; safe to delete
+    deploy.lock, deploy.lock.owner   # one deploy at a time
+```
+
+On non-Windows hosts the default is `$XDG_STATE_HOME/net-care-agent/deploy`, or
+`~/.local/state/net-care-agent/deploy`. Override the root with `-StateRoot
+<absolute-path>` or the `NET_CARE_DEPLOY_STATE_ROOT` environment variable;
+relative paths are rejected. The directory is created on demand, and the script
+prints `Deployment state: <path>` at the start of every run — read it there
+rather than assuming.
+
+This location is deliberate. Deployments are run from fresh throwaway git
+worktrees. When the state lived in a `.deploy/` directory inside the working
+copy it was empty on every single run, so `-Rollback` had no baseline *and* the
+automatic restore-on-failure could not fire — exactly when it was needed most.
+
+**Back this directory up.** It is the only copy of the packages that
+`-Rollback` can redeploy. Losing it does not break a deploy; it silently
+removes the ability to revert one.
+
+Inspect the current baseline at any time:
+
+```powershell
+Get-Content "$env:LOCALAPPDATA\net-care-agent\deploy\apps\<app-service>\state.json"
+```
+
+`current` is what was last verified in production; `previous` is what
+`-Rollback` will redeploy. If `previous` is `null`, rollback will refuse — that
+is correct, not a fault. A successful rollback consumes its baseline, so
+rollback is one step back, not an unbounded walk through history.
+
+### Migrating from an old in-worktree `.deploy/`
+
+If a working copy still contains a `.deploy/` directory with a usable
+`current-verified` (and optionally `previous-known-good`) package, the script
+verifies both and copies them into the durable store the first time it runs —
+but only if the durable store has no current release yet. It reports what it
+adopted and which app it attributed the packages to, because the legacy layout
+recorded no app name. Nothing is moved or deleted: the old directory is left
+exactly as it was, and you can remove it by hand once you are satisfied. If the
+durable store already has a current release, the script prints that the legacy
+directory was left untouched and ignores it.
+
+### If a deploy reports the lock is held
+
+Only one deploy per app per machine may run at a time. The lock is taken after
+the local gates, so a long pytest run never blocks another operator, and is held
+for the whole upload/health window. A blocked run names the holder (pid, host,
+user, start time) from `deploy.lock.owner`. The lock is an open file handle:
+if the holding process dies the operating system releases it immediately, so
+there is no stale lock to clear by hand. This lock is per machine — it cannot
+stop a second operator deploying from a different machine.
+
+### Warnings about an interrupted deploy
+
+The script journals the release it is about to send and clears the journal on
+completion. If a previous run was killed mid-flight, the next run reports which
+commit was in flight and when. That is informational: production may be running
+the interrupted candidate, the previous release, or a half-applied build, so
+confirm with `/api/health` (`release_commit`) before deciding.
+
+### Retention
+
+Old release packages are pruned after a successful promotion, keeping the most
+recent ones in promotion order (`-RetainReleases`, default 10, minimum 2). The
+current and previous packages are always protected and are never pruned,
+whatever the retention setting.
+
+### Checking the rollback machinery without deploying
+
+```powershell
+pwsh Scripts/Test-DeployState.ps1
+```
+
+This exercises state-root resolution, cross-worktree discovery, atomic
+promotion, rollback selection, rejection of corrupted or partial baselines,
+retention, restore-baseline coherence, legacy migration, locking, and the crash
+journal — against temporary directories, with no network, Azure, or production
+access. It exits non-zero on any failure. `pytest` runs it too, so a normal test
+run covers it.
 
 ## 14a. Migrate the authorization settings
 

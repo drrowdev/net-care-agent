@@ -988,8 +988,35 @@ requirements are also exact. The archive includes `.deployment`, which declares
 gitleaks; builds and verifies a commit/SHA-256-addressed release; polls Kudu for
 up to 900 seconds, then
 `/api/health` critical fields and exact release commit for up to 300 seconds; and only then
-preserves `.deploy/previous-known-good.*` and updates `.deploy/current-verified.*`.
+promotes the release to `current-verified`, keeping the former current release
+as `previous-known-good`.
 Candidate deployment/readiness failure automatically redeploys and health-checks
 the prevalidated current package when one exists, without promoting the candidate.
 Rollback verifies the distinct previous package's SHA and embedded commit,
 redeploys it, and repeats both readiness checks.
+
+That release state is deliberately **not** stored in the working copy.
+Deployments are run from throwaway git worktrees, so a per-worktree store is
+empty on every run and both `-Rollback` and the automatic restore silently have
+nothing to fall back to. `Scripts/deploy-state.ps1` keeps it in a stable
+per-machine, per-app directory instead — `%LOCALAPPDATA%\net-care-agent\deploy\apps\<app>\`
+on Windows, `$XDG_STATE_HOME` or `~/.local/state/net-care-agent/deploy`
+elsewhere — overridable with `-StateRoot` or `NET_CARE_DEPLOY_STATE_ROOT`.
+
+Releases in that store are immutable and content-addressed as
+`<commit>-<sha256>.zip` with sidecar `.sha256`/`.commit` records, and a single
+`state.json` manifest names current, previous, and promotion history. The
+manifest is written to a temporary file and moved into place in one operation,
+so current and previous can never disagree and a crash cannot leave a
+half-promoted pair. An exclusive lock file serialises deploys for one app on one
+machine; it is taken after the local gates so a long test run does not block
+another operator, and is held across the whole remote window. Retention keeps a
+bounded number of releases in promotion order and never prunes current or
+previous. Before arming the automatic restore, the script compares the recorded
+current release against the commit `/api/health` actually reports, so it does not
+"restore" a package production was never running; when health is unreachable it
+falls back to the recorded current, because the app may simply be down. A legacy
+in-worktree `.deploy/` is verified and copied in once, only when the durable
+store has no current release, and is never moved or deleted.
+`Scripts/Test-DeployState.ps1` exercises all of this against temporary
+directories with no network or Azure access, and `pytest` runs it.

@@ -156,14 +156,26 @@ and declares Oryx build-on-deploy.
 `Scripts/deploy.ps1` gates packages on pytest, ruff, and gitleaks; verifies
 SHA-256; polls authenticated asynchronous Kudu to terminal success and then
 the public PHI-free application health endpoint; and
-promotes the hash/package to `.deploy/current-verified.*` only after success,
-first preserving the former current package as `.deploy/previous-known-good.*`.
+promotes the hash/package to `current-verified` only after success,
+first preserving the former current package as `previous-known-good`.
 The script refuses a dirty working tree so the recorded HEAD identifies the
 package. Promotion requires `/api/health` to identify the packaged commit and
 report healthy critical storage/job fields; a usable `degraded` response is
 accepted for noncritical interrupted history. `-Rollback` fails when no distinct
 previous package exists, verifies its hash and embedded commit, redeploys it,
 then repeats both readiness checks.
+
+Verified release packages live in a stable per-machine, per-app directory —
+`%LOCALAPPDATA%\net-care-agent\deploy\apps\<app-service>\` on Windows, or
+`$XDG_STATE_HOME`/`~/.local/state/net-care-agent/deploy` elsewhere — and not
+inside the working copy, because deploys are run from throwaway git worktrees.
+Set `-StateRoot` or `NET_CARE_DEPLOY_STATE_ROOT` to move it; the path must be
+absolute. Releases are immutable and content-addressed (`<commit>-<sha256>`),
+and `state.json` names the current and previous release in a single atomically
+replaced file, so `-Rollback` can never select a half-written baseline. A legacy
+in-worktree `.deploy/` is verified and adopted once, and never deleted.
+`Scripts/deploy-state.ps1` implements this and `Scripts/Test-DeployState.ps1`
+exercises it offline; `pytest` runs that harness.
 
 ## Profile schema
 
@@ -343,7 +355,9 @@ state and withholds the prior clinical content.
 ├── app.py                # Flask app: HTTP endpoints + background jobs + /api/health
 ├── net_agent.py          # Back-compat shim — re-exports the agent.* package
 ├── INVARIANTS.md         # Load-bearing rules & output contracts (read before editing)
-├── Scripts/              # deploy.ps1 (verified deploy+rollback), eval_harness.py
+├── Scripts/              # deploy.ps1 (verified deploy+rollback), deploy-state.ps1
+│   │                     # (durable per-machine release state),
+│   │                     # Test-DeployState.ps1 (offline harness), eval_harness.py
 ├── agent/                # Modular agent core
 │   ├── config.py         # paths + per-agent ANTHROPIC_MODEL_* env overrides
 │   ├── llm.py            # Anthropic client + JSON-fence stripper

@@ -603,9 +603,17 @@ Manual, via `Scripts/deploy.ps1`. It refuses to package unless
 pytest/ruff/gitleaks pass, records commit + SHA-256, polls asynchronous Kudu
 completion and `/api/health`
 critical fields plus the exact packaged commit, then promotes that exact
-package to `.deploy/last-known-good.*`. A dirty working tree is rejected so the
+package to `current-verified`, keeping the former current release as
+`previous-known-good`. A dirty working tree is rejected so the
 recorded commit identifies the package. Rollback
-verifies the recorded SHA before redeploying and repeating that check.
+verifies the recorded SHA and the embedded commit before redeploying and
+repeating that check.
+Verified release packages live in a stable per-machine, per-app directory
+(`%LOCALAPPDATA%\net-care-agent\deploy`, overridable with `-StateRoot` or
+`NET_CARE_DEPLOY_STATE_ROOT`), never inside the working copy: deploys run from
+throwaway worktrees, and state that dies with the worktree is not a safety net.
+Releases are immutable and content-addressed; `state.json` names current and
+previous and is replaced atomically, so a partial baseline cannot be selected.
 Oryx build-on-deploy is required; the release archive includes `.deployment`,
 which declares it. Runtime/dev and build dependencies stay exactly pinned. See
 `AGENTS.md → Deploy`.

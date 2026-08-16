@@ -184,11 +184,26 @@ Do not hand-build or synchronously post a zip. The script requires
 pytest/ruff/gitleaks, builds with Python `zipfile`, records HEAD + SHA-256, polls
 authenticated asynchronous Kudu completion (900-second default), and
 `/api/health` critical fields plus the exact
-packaged commit (300 seconds), and only then promotes
-`.deploy/last-known-good.*`. Dirty working trees are rejected so
-HEAD and SHA identify the package. Rollback verifies that SHA before redeploying
-and repeating both checks. The archive includes `.deployment`, which declares
-Oryx build-on-deploy. The runtime executes `output.tar.zst`.
+packaged commit (300 seconds), and only then promotes the release to
+`current-verified`, keeping the former current release as
+`previous-known-good`. Dirty working trees are rejected so
+HEAD and SHA identify the package. Rollback verifies that SHA and the embedded
+commit before redeploying and repeating both checks. The archive includes
+`.deployment`, which declares Oryx build-on-deploy. The runtime executes
+`output.tar.zst`.
+
+Verified release packages are kept **outside** the working copy, in
+`%LOCALAPPDATA%\net-care-agent\deploy\apps\<app-service>\`, because deploys run
+from throwaway worktrees. Override with `-StateRoot` or
+`NET_CARE_DEPLOY_STATE_ROOT` (absolute path, created on demand). That directory
+is the only copy of the rollback packages, so include it in your backups. The
+script prints the resolved path on every run.
+
+Check the state logic without deploying:
+
+```powershell
+pwsh Scripts/Test-DeployState.ps1   # also run by pytest
+```
 
 ### 6.4 Rotate the Anthropic API key
 

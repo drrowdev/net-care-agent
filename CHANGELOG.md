@@ -107,6 +107,45 @@ incremented when something user-visible or operationally meaningful changes.
   have both of its linked records**. The fixed PHI-free reason codes behind all
   of these are unchanged.
 
+### Operations
+- **The deployment rollback safety net now actually exists.** `Scripts/deploy.ps1`
+  kept its verified release packages in a `.deploy/` directory inside the working
+  copy. Deployments here are run from fresh throwaway git worktrees, so that
+  directory was empty on every run: `-Rollback` reported that no baseline existed,
+  and the automatic restore that is supposed to put the previous release back when
+  a deploy fails could not fire either — precisely during an outage. Release state
+  now lives in one stable place per machine and per app,
+  `%LOCALAPPDATA%\net-care-agent\deploy\apps\<app-service>\` (non-Windows:
+  `$XDG_STATE_HOME` or `~/.local/state/net-care-agent/deploy`), so a deploy from
+  any worktree sees what earlier deploys verified. Set `-StateRoot` or
+  `NET_CARE_DEPLOY_STATE_ROOT` to move it. **Back that directory up — it is the
+  only copy of the packages rollback can redeploy.**
+- Release packages are now immutable and content-addressed (`<commit>-<sha256>`),
+  and one `state.json` names the current and previous release. It is replaced in a
+  single atomic move, so current and previous can never disagree and a crash can
+  no longer leave a half-promoted pair that `-Rollback` might pick up. Packages are
+  re-verified — hash and embedded commit — before anything is sent, on rollback and
+  on automatic restore as well as on a normal deploy.
+- Before arming the automatic restore, the script compares the release it recorded
+  as current against the commit `/api/health` actually reports, so a failed deploy
+  cannot "restore" a package production was never running. If health cannot be
+  reached it falls back to the recorded current, because the app may simply be
+  down.
+- One deploy at a time per app per machine, via an exclusive lock taken after the
+  local test gates and held for the whole upload and health window; a blocked run
+  names the process holding it. Old packages are pruned after a successful deploy
+  (`-RetainReleases`, default 10), never touching the current and previous pair.
+  An interrupted deploy is journalled and reported by the next run.
+- An old in-worktree `.deploy/` is verified and adopted once, only when the durable
+  store has no current release, and is never moved or deleted.
+- Every existing gate is unchanged and in the same order: clean working tree,
+  pytest, ruff, gitleaks, Python `zipfile` build, SHA-256 and embedded
+  `RELEASE_COMMIT` verification, Kudu upload with authenticated terminal polling,
+  the exact-release `/api/health` check, and promotion only after success. The
+  health fields the deploy reads are unchanged. `Scripts/Test-DeployState.ps1`
+  checks all of this offline, with no network or Azure access, and `pytest` runs
+  it. Documented in `docs/operating_manual.md` §14.
+
 ### Safety wording
 - **The three byte-pinned safety paragraphs were reworded, and each keeps its
   meaning exactly.** They were deliberately deferred by the two previous waves

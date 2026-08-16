@@ -8,6 +8,23 @@ import time
 from pathlib import Path
 
 
+def replace_with_retry(source: Path, destination: Path, attempts: int = 5) -> None:
+    """``os.replace`` with a short retry, then re-raise.
+
+    Windows and some network filesystems can briefly deny replacement while
+    another handle is closing. Profile transactions are serialized, but this
+    small retry also protects other atomic artifacts (jobs/reports/backups).
+    """
+    for attempt in range(attempts):
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(0.02 * (attempt + 1))
+
+
 def atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> None:
     """Write `content` to `path` atomically.
 
@@ -31,14 +48,7 @@ def atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> None
         # Windows and some network filesystems can briefly deny replacement
         # while another handle is closing. Profile transactions are serialized,
         # but this small retry also protects other atomic artifacts (jobs/reports).
-        for attempt in range(5):
-            try:
-                os.replace(tmp, path)
-                break
-            except PermissionError:
-                if attempt == 4:
-                    raise
-                time.sleep(0.02 * (attempt + 1))
+        replace_with_retry(tmp, path)
         try:
             dir_fd = os.open(path.parent, os.O_RDONLY)
             try:
@@ -68,14 +78,7 @@ def atomic_write_bytes(path: Path, content: bytes) -> None:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        for attempt in range(5):
-            try:
-                os.replace(tmp, path)
-                break
-            except PermissionError:
-                if attempt == 4:
-                    raise
-                time.sleep(0.02 * (attempt + 1))
+        replace_with_retry(tmp, path)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise

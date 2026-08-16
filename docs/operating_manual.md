@@ -1051,6 +1051,70 @@ the atomic replace can. A caregiver save additionally best-effort maintains
 error type and does not turn the committed mutation into an API failure. Loading
 a valid profile repairs an absent marker best-effort.
 
+### Both artifacts are copied through a validated temporary
+
+Neither the snapshot nor the daily backup is ever written straight onto its final
+filename. Each copy streams to a hidden sibling temporary
+(`.profile_<name>.<created>.<random>.tmp`), is flushed to disk, is checked there
+for being parseable JSON in a usable profile shape, and only then atomically
+replaces the real path. A reader therefore only ever sees a file that is absent
+or complete, never one that is half-written.
+
+This closed a silent data-protection gap. A bare copy interrupted part-way — by a
+container recycle, a restart, or disk pressure — used to leave a **truncated
+artifact at the real path carrying a perfectly ordinary mtime**, and nothing
+downstream could tell it apart from a good one:
+
+- `/api/health` judges backup freshness by mtime and calendar day, so
+  `backup_out_of_date` stayed `false`.
+- The once-per-day gate only asked whether the file *existed*, so the corrupt
+  backup satisfied that day forever and was never retried.
+- It was still offered to recovery as a candidate.
+
+The gate now asks whether a **usable** artifact exists for the day. A backup
+proven corrupt is replaced on the next save; a backup that merely could not be
+read is deliberately left alone, because a transient Azure Files read error is
+not evidence of corruption and overwriting on one would destroy the earlier
+revision that backup exists to preserve. A good same-day backup is still never
+rewritten.
+
+- **Leftover `.tmp` files are normal and self-clearing.** A crash between
+  creating a temporary and replacing the target leaves one behind; the next
+  snapshot or backup run deletes any that are over an hour old. They never match
+  the `profile_*.json` patterns, so they are never pruned as artifacts, never
+  aged by `/api/health`, and never offered to recovery. Do not clean them by
+  hand — one still being written would be destroyed.
+- **Only the backup for the profile's own day is re-checked.** Each save
+  re-examines `profile_<profile mtime day>.json` and nothing else, so a damaged
+  backup from an *earlier* day is never repaired automatically; it is simply
+  rejected if recovery ever reaches it. Nothing scans the backup directory at
+  startup either. If you have reason to think older backups were damaged, check
+  them explicitly:
+
+  ```bash
+  python -c "
+  import json, pathlib
+  from agent.schema import structural_check
+  for p in sorted(pathlib.Path('/home/data/backups').glob('profile_*.json')):
+      try:
+          ok = structural_check(json.loads(p.read_bytes()))
+      except ValueError:
+          ok = False
+      print(p.name, 'OK' if ok else 'DAMAGED')
+  "
+  ```
+
+  Delete anything reported damaged; recovery skips it either way, and removing
+  it keeps the candidate list honest. This is the structural half of what
+  recovery checks — recovery additionally skips a candidate holding no clinical
+  content at all, so a file reported `OK` here is sound but not automatically the
+  one recovery would choose.
+
+The snapshot `.sha256` sidecar is written atomically for the same reason. It
+authenticates later damage to a snapshot, not damage introduced while copying it
+— the digest is computed from the copy — and a half-written sidecar would look
+like a hash mismatch and permanently reject a perfectly good candidate.
+
 Four things write the profile and **all four are protected**: a caregiver save, a
 schema **migration write-back on load**, the normalised write that follows an
 automated recovery, and an operator restore. The migration write-back matters

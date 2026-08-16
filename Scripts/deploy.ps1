@@ -5,10 +5,17 @@
 #   pwsh Scripts/deploy.ps1 -App <app-service> -Rollback
 #
 # Requires an authenticated Azure CLI session, Python, ruff, and gitleaks.
+#
+# Verified release packages are kept in a stable per-machine, per-app location
+# (see Scripts/deploy-state.ps1), not inside the working copy, because
+# deployments are run from throwaway git worktrees. Override the location with
+# -StateRoot or NET_CARE_DEPLOY_STATE_ROOT.
 
 param(
     [Parameter(Mandatory = $true)][string]$App,
     [switch]$Rollback,
+    [string]$StateRoot,
+    [int]$RetainReleases = 10,
     [int]$DeploymentTimeoutSeconds = 900,
     [int]$HealthTimeoutSeconds = 300
 )
@@ -17,18 +24,14 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
-$stateDir = Join-Path $root ".deploy"
-$releaseDir = Join-Path $stateDir "releases"
-$buildDir = Join-Path $stateDir "build"
-$buildZip = Join-Path $buildDir "net-care-deploy.zip"
-$currentZip = Join-Path $stateDir "current-verified.zip"
-$currentSha = Join-Path $stateDir "current-verified.sha256"
-$currentCommit = Join-Path $stateDir "current-verified.commit"
-$previousZip = Join-Path $stateDir "previous-known-good.zip"
-$previousSha = Join-Path $stateDir "previous-known-good.sha256"
-$previousCommit = Join-Path $stateDir "previous-known-good.commit"
+. (Join-Path $PSScriptRoot "deploy-state.ps1")
+
+$paths = Get-DeployStatePaths -App $App -StateRoot $StateRoot
+$legacyStateDir = Join-Path $root ".deploy"
+$buildZip = $paths.BuildZip
 $scmBase = "https://$App.scm.azurewebsites.net"
 $zipDeployUri = "$scmBase/api/zipdeploy?isAsync=true"
+$appHealthUri = "https://$App.azurewebsites.net/api/health"
 
 function Get-AuthHeaders {
     $token = az account get-access-token --resource https://management.azure.com `
@@ -36,7 +39,7 @@ function Get-AuthHeaders {
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($token)) {
         throw "Unable to obtain an Azure access token."
     }
-    return @{ Authorization = "Bearer $($token.Trim())" }
+    return @{ Authorization = "******" }
 }
 
 function Assert-HttpSuccess {
@@ -105,8 +108,9 @@ function Send-KuduPackage {
 }
 
 function Wait-VerifiedHealth {
+    param([Parameter(Mandatory = $true)][string]$ExpectedCommit)
+
     $deadline = [DateTimeOffset]::UtcNow.AddSeconds($HealthTimeoutSeconds)
-    $appHealthUri = "https://$App.azurewebsites.net/api/health"
     $lastError = "No readiness response received."
 
     while ([DateTimeOffset]::UtcNow -lt $deadline) {
@@ -120,8 +124,8 @@ function Wait-VerifiedHealth {
                 -not $healthBody.jobs_healthy) {
                 throw "Application health check returned status '$($healthBody.status)'."
             }
-            if ($healthBody.release_commit -ne $commit) {
-                throw "Application health belongs to release '$($healthBody.release_commit)', not '$commit'."
+            if ($healthBody.release_commit -ne $ExpectedCommit) {
+                throw "Application health belongs to release '$($healthBody.release_commit)', not '$ExpectedCommit'."
             }
             # Send-KuduPackage already required authenticated terminal Kudu status.
             # The exact release_commit proves this response came from the new app
@@ -138,85 +142,73 @@ function Wait-VerifiedHealth {
     throw "Post-deploy health timed out after $HealthTimeoutSeconds seconds: $lastError"
 }
 
-function Confirm-PackageHash {
-    param(
-        [Parameter(Mandatory = $true)][string]$Package,
-        [Parameter(Mandatory = $true)][string]$ShaRecord
-    )
-
-    $expected = ((Get-Content $ShaRecord -Raw).Trim() -split "\s+")[0]
-    $actual = (Get-FileHash -Path $Package -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ([string]::IsNullOrWhiteSpace($expected) -or $actual -ne $expected.ToLowerInvariant()) {
-        throw "Package SHA256 verification failed."
-    }
-}
-
-function Confirm-PackageIdentity {
-    param(
-        [Parameter(Mandatory = $true)][string]$Package,
-        [Parameter(Mandatory = $true)][string]$CommitRecord
-    )
-
-    $expected = (Get-Content $CommitRecord -Raw).Trim().ToLowerInvariant()
-    if ($expected -notmatch "^[0-9a-f]{40}$") {
-        throw "Package commit record is invalid."
-    }
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $archive = [System.IO.Compression.ZipFile]::OpenRead($Package)
+# Advisory only, and never allowed to fail a deployment: it answers "which
+# release is actually serving right now", so an automatic restore cannot push out
+# a stored package that was never the running one.
+function Get-LiveReleaseCommit {
     try {
-        $entry = $archive.GetEntry("RELEASE_COMMIT")
-        if ($null -eq $entry) { throw "Package does not contain RELEASE_COMMIT." }
-        $reader = [System.IO.StreamReader]::new($entry.Open())
-        try { $actual = $reader.ReadToEnd().Trim().ToLowerInvariant() }
-        finally { $reader.Dispose() }
+        $response = Invoke-WebRequest -Uri $appHealthUri -Method GET -TimeoutSec 20 -UseBasicParsing
+        $status = [int]$response.StatusCode
+        if ($status -lt 200 -or $status -ge 300) { return $null }
+        $value = [string]($response.Content | ConvertFrom-Json).release_commit
+        if ($value -match "^[0-9a-f]{40}$") { return $value.ToLowerInvariant() }
+        return $null
     }
-    finally {
-        $archive.Dispose()
+    catch {
+        return $null
     }
-    if ($actual -ne $expected) {
-        throw "Package commit verification failed."
-    }
-    return $expected
 }
 
-function Copy-VerifiedPackageSet {
-    param(
-        [Parameter(Mandatory = $true)][string]$SourceZip,
-        [Parameter(Mandatory = $true)][string]$SourceSha,
-        [Parameter(Mandatory = $true)][string]$SourceCommit,
-        [Parameter(Mandatory = $true)][string]$DestinationZip,
-        [Parameter(Mandatory = $true)][string]$DestinationSha,
-        [Parameter(Mandatory = $true)][string]$DestinationCommit
-    )
+function Write-StateNotes {
+    param($Notes)
 
-    Confirm-PackageHash -Package $SourceZip -ShaRecord $SourceSha
-    [void](Confirm-PackageIdentity -Package $SourceZip -CommitRecord $SourceCommit)
-    Copy-Item $SourceZip "$DestinationZip.new" -Force
-    Copy-Item $SourceSha "$DestinationSha.new" -Force
-    Copy-Item $SourceCommit "$DestinationCommit.new" -Force
-    Move-Item "$DestinationZip.new" $DestinationZip -Force
-    Move-Item "$DestinationSha.new" $DestinationSha -Force
-    Move-Item "$DestinationCommit.new" $DestinationCommit -Force
+    foreach ($note in @($Notes)) {
+        if ($note) { Write-Host $note -ForegroundColor Yellow }
+    }
 }
+
+function Write-JournalWarning {
+    param($Journal)
+
+    if ($null -eq $Journal) { return }
+    Write-Host ("A previous deployment did not finish: phase '$($Journal.phase)' for release " +
+        "'$($Journal.release)' started $($Journal.started_utc) by pid $($Journal.pid) on " +
+        "$($Journal.host). Confirm what is running before continuing.") -ForegroundColor Yellow
+}
+
+Initialize-DeployState -Paths $paths
+Write-Host "Deployment state: $($paths.AppDir)"
 
 if ($Rollback) {
-    foreach ($required in @($previousZip, $previousSha, $previousCommit)) {
-        if (-not (Test-Path $required -PathType Leaf)) {
-            throw "No complete previous-known-good release is available for rollback."
-        }
+    $lock = Lock-DeployState -Paths $paths -Purpose "rollback"
+    try {
+        Write-JournalWarning (Read-DeployJournal -Paths $paths)
+        $manifest = Read-DeployManifest -Paths $paths
+        $legacy = Import-LegacyDeployState -Paths $paths -LegacyDir $legacyStateDir -Manifest $manifest
+        Write-StateNotes $legacy.Notes
+        $manifest = $legacy.Manifest
+
+        # Verified before it is sent, exactly as a normal deployment verifies its
+        # own package. Drift is reported but never blocks a rollback: rollback is
+        # the tool of last resort during an outage.
+        $release = Get-RollbackRelease -Paths $paths -Manifest $manifest
+        $live = Get-LiveReleaseCommit
+        if ($live) { Write-Host "Running release before rollback: $live" }
+        else { Write-Host "The running release could not be identified." -ForegroundColor Yellow }
+        Write-Host "Rolling back to commit $($release.Id)." -ForegroundColor Yellow
+
+        Set-DeployJournal -Paths $paths -Phase "rollback-upload" -Stem $release.Stem
+        Send-KuduPackage -Package $release.Zip
+        Set-DeployJournal -Paths $paths -Phase "rollback-health" -Stem $release.Stem
+        Wait-VerifiedHealth -ExpectedCommit $release.Id
+        [void](Write-DeployManifest -Paths $paths `
+                -Manifest (Set-DeployRollback -Manifest $manifest -Stem $release.Stem))
+        Clear-DeployJournal -Paths $paths
+        Write-Host "Rollback deployed and health verified." -ForegroundColor Green
     }
-    Confirm-PackageHash -Package $previousZip -ShaRecord $previousSha
-    $commit = Confirm-PackageIdentity -Package $previousZip -CommitRecord $previousCommit
-    Write-Host "Rolling back to commit $commit." `
-        -ForegroundColor Yellow
-    Send-KuduPackage -Package $previousZip
-    Wait-VerifiedHealth
-    Copy-VerifiedPackageSet `
-        -SourceZip $previousZip -SourceSha $previousSha -SourceCommit $previousCommit `
-        -DestinationZip $currentZip -DestinationSha $currentSha `
-        -DestinationCommit $currentCommit
-    Remove-Item @($previousZip, $previousSha, $previousCommit) -Force
-    Write-Host "Rollback deployed and health verified." -ForegroundColor Green
+    finally {
+        Unlock-DeployState -Paths $paths -Handle $lock
+    }
     exit 0
 }
 
@@ -240,22 +232,37 @@ Write-Host "== gitleaks ==" -ForegroundColor Cyan
 & $gitleaks.Source detect --no-banner
 if ($LASTEXITCODE -ne 0) { throw "gitleaks failed - refusing to deploy." }
 
-New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
-New-Item -ItemType Directory -Path $buildDir -Force | Out-Null
-if (Test-Path $buildZip) { Remove-Item $buildZip -Force }
+# The lock covers the shared build directory, baseline selection, the remote
+# deployment window and promotion, so two deployments cannot interleave over one
+# app's state. It is taken after the local gates so a long test run does not
+# block another operator.
+$lock = Lock-DeployState -Paths $paths -Purpose "deploy"
+try {
+    Write-JournalWarning (Read-DeployJournal -Paths $paths)
+    $manifest = Read-DeployManifest -Paths $paths
+    $legacy = Import-LegacyDeployState -Paths $paths -LegacyDir $legacyStateDir -Manifest $manifest
+    Write-StateNotes $legacy.Notes
+    $manifest = $legacy.Manifest
 
-$commit = (git rev-parse HEAD).Trim()
-if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($commit)) {
-    throw "Unable to record the release commit."
-}
+    if (Test-Path $buildZip) { Remove-Item $buildZip -Force }
 
-Write-Host "== building Python deployment zip ==" -ForegroundColor Cyan
-python -c @"
+    $commit = (git rev-parse HEAD).Trim()
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($commit)) {
+        throw "Unable to record the release commit."
+    }
+
+    Write-Host "== building Python deployment zip ==" -ForegroundColor Cyan
+    # The target path and commit are passed as arguments rather than interpolated
+    # into the source: the build directory now lives under a user profile path,
+    # which can legitimately contain an apostrophe.
+    $buildSource = @'
 import os
+import sys
 import zipfile
 
-archive = zipfile.ZipFile(r'$buildZip', 'w', zipfile.ZIP_DEFLATED)
-archive.writestr('RELEASE_COMMIT', '$commit')
+target, commit = sys.argv[1], sys.argv[2]
+archive = zipfile.ZipFile(target, 'w', zipfile.ZIP_DEFLATED)
+archive.writestr('RELEASE_COMMIT', commit)
 files = ['app.py', 'net_agent.py', 'requirements.txt', 'startup.sh', '.deployment']
 directories = ['agent', 'static', 'templates']
 for path in files:
@@ -270,76 +277,82 @@ for directory in directories:
                 path = os.path.join(root, name)
                 archive.write(path, path)
 archive.close()
-"@
-if ($LASTEXITCODE -ne 0 -or -not (Test-Path $buildZip -PathType Leaf)) {
-    throw "Python zip build failed."
-}
-
-$sha256 = (Get-FileHash -Path $buildZip -Algorithm SHA256).Hash.ToLowerInvariant()
-$releaseStem = "$commit-$sha256"
-$releaseZip = Join-Path $releaseDir "$releaseStem.zip"
-$releaseSha = Join-Path $releaseDir "$releaseStem.sha256"
-$releaseCommit = Join-Path $releaseDir "$releaseStem.commit"
-Copy-Item $buildZip $releaseZip -Force
-Set-Content -Path $releaseSha -Value "$sha256  $releaseStem.zip" -Encoding ascii
-Set-Content -Path $releaseCommit -Value $commit -Encoding ascii
-Confirm-PackageHash -Package $releaseZip -ShaRecord $releaseSha
-[void](Confirm-PackageIdentity -Package $releaseZip -CommitRecord $releaseCommit)
-
-Write-Host "== deploying commit $commit to $App ==" -ForegroundColor Cyan
-$currentFiles = @($currentZip, $currentSha, $currentCommit)
-$currentCount = @($currentFiles | Where-Object { Test-Path $_ -PathType Leaf }).Count
-if ($currentCount -notin @(0, 3)) {
-    throw "Current verified package state is incomplete; automatic restore is unavailable."
-}
-if ($currentCount -eq 3) {
-    Confirm-PackageHash -Package $currentZip -ShaRecord $currentSha
-    $currentRestoreCommit = Confirm-PackageIdentity `
-        -Package $currentZip -CommitRecord $currentCommit
-}
-
-try {
-    Send-KuduPackage -Package $releaseZip
-    Wait-VerifiedHealth
-}
-catch {
-    $candidateFailure = $_.Exception
-    if ($currentCount -ne 3) {
-        throw "Candidate deployment failed; automatic restore is unavailable because no current verified package exists."
+'@
+    $buildSource | python - $buildZip $commit
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $buildZip -PathType Leaf)) {
+        throw "Python zip build failed."
     }
 
-    Write-Host "Candidate deployment failed; restoring current verified release." `
-        -ForegroundColor Yellow
+    # Stored content-addressed, then verified by SHA-256 and embedded
+    # RELEASE_COMMIT before anything is uploaded.
+    $release = Add-DeployRelease -Paths $paths -SourceZip $buildZip -CommitId $commit
+
+    Write-Host "== deploying commit $commit to $App ==" -ForegroundColor Cyan
+    if ($manifest.current -and -not (Test-ReleaseStored -Paths $paths -Stem $manifest.current)) {
+        throw "Current verified package state is incomplete; automatic restore is unavailable."
+    }
+    $live = Get-LiveReleaseCommit
+    $baseline = Select-RestoreBaseline -Paths $paths -Manifest $manifest -LiveCommit $live
+    $restore = $null
+    if ($baseline.Stem) {
+        $restore = Resolve-VerifiedRelease -Paths $paths -Stem $baseline.Stem
+        Write-Host "Automatic restore is armed with $($restore.Id): $($baseline.Reason)."
+    }
+    else {
+        Write-Host "Automatic restore is unavailable: $($baseline.Reason)." -ForegroundColor Yellow
+    }
+
     try {
-        Confirm-PackageHash -Package $currentZip -ShaRecord $currentSha
-        $commit = Confirm-PackageIdentity -Package $currentZip -CommitRecord $currentCommit
-        if ($commit -ne $currentRestoreCommit) {
-            throw "Current verified package identity changed before automatic restore."
-        }
-        Send-KuduPackage -Package $currentZip
-        Wait-VerifiedHealth
-        Write-Host "Current verified release was restored and health verified." `
-            -ForegroundColor Green
+        Set-DeployJournal -Paths $paths -Phase "upload" -Stem $release.Stem
+        Send-KuduPackage -Package $release.Zip
+        Set-DeployJournal -Paths $paths -Phase "health" -Stem $release.Stem
+        Wait-VerifiedHealth -ExpectedCommit $release.Id
     }
     catch {
-        throw "Candidate deployment failed and automatic restore of the current verified release also failed."
-    }
-    throw $candidateFailure
-}
+        $candidateFailure = $_.Exception
+        if ($null -eq $restore) {
+            throw "Candidate deployment failed; automatic restore is unavailable because no current verified package exists."
+        }
 
-# Preserve the distinct prior verified package only after promoting this release.
-if ($currentCount -eq 3) {
-    $currentDigest = (Get-FileHash -Path $currentZip -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($currentDigest -ne $sha256) {
-        Copy-VerifiedPackageSet `
-            -SourceZip $currentZip -SourceSha $currentSha -SourceCommit $currentCommit `
-            -DestinationZip $previousZip -DestinationSha $previousSha `
-            -DestinationCommit $previousCommit
+        Write-Host "Candidate deployment failed; restoring current verified release." `
+            -ForegroundColor Yellow
+        try {
+            $verified = Resolve-VerifiedRelease -Paths $paths -Stem $restore.Stem
+            if ($verified.Id -ne $restore.Id) {
+                throw "Current verified package identity changed before automatic restore."
+            }
+            Set-DeployJournal -Paths $paths -Phase "restore" -Stem $verified.Stem
+            Send-KuduPackage -Package $verified.Zip
+            Wait-VerifiedHealth -ExpectedCommit $verified.Id
+            [void](Write-DeployManifest -Paths $paths `
+                    -Manifest (Set-DeployRestore -Manifest $manifest -Stem $verified.Stem))
+            Clear-DeployJournal -Paths $paths
+            Write-Host "Current verified release was restored and health verified." `
+                -ForegroundColor Green
+        }
+        catch {
+            throw "Candidate deployment failed and automatic restore of the current verified release also failed."
+        }
+        throw $candidateFailure
+    }
+
+    # One atomic manifest write both promotes this release and preserves the
+    # distinct prior verified package, so a partially written baseline cannot
+    # exist for -Rollback to find.
+    $manifest = Write-DeployManifest -Paths $paths `
+        -Manifest (Set-DeployPromotion -Manifest $manifest -Stem $release.Stem)
+    Clear-DeployJournal -Paths $paths
+    $pruned = @(Remove-StaleReleases -Paths $paths -Manifest $manifest -Retain $RetainReleases)
+    if ($pruned.Count -gt 0) { Write-Host "Pruned $($pruned.Count) superseded release package(s)." }
+    Remove-Item $buildZip -Force
+    Write-Host "Deployment is healthy and recorded as current-verified." -ForegroundColor Green
+    if ($manifest.previous) {
+        Write-Host "Rollback if needed: pwsh Scripts/deploy.ps1 -App $App -Rollback"
+    }
+    else {
+        Write-Host "No distinct previous release is stored yet, so -Rollback is not available."
     }
 }
-Copy-VerifiedPackageSet `
-    -SourceZip $releaseZip -SourceSha $releaseSha -SourceCommit $releaseCommit `
-    -DestinationZip $currentZip -DestinationSha $currentSha -DestinationCommit $currentCommit
-Remove-Item $buildZip -Force
-Write-Host "Deployment is healthy and recorded as current-verified." -ForegroundColor Green
-Write-Host "Rollback if needed: pwsh Scripts/deploy.ps1 -App $App -Rollback"
+finally {
+    Unlock-DeployState -Paths $paths -Handle $lock
+}

@@ -302,9 +302,9 @@ def test_event_modes_scrub_fields_and_never_parse_or_default_dates():
         assert field in source
     assert "clearResearchSubmissionRetryOnly()" in source
     assert "new Date(" not in _research_source()
-    # Wave 1: the placeholder shows real examples instead of machine notation.
-    # The accepted formats are unchanged; only the wording is plainer.
-    assert 'placeholder="2026, 2026-08 or 2026-08-14"' in INDEX_HTML
+    # The placeholder shows the dates the way he reads them in the record, and
+    # those are now the shapes the field accepts.
+    assert 'placeholder="14.8.2026, 8/2026 or 2026"' in INDEX_HTML
     assert "Attribution preview" in APP_JS
 
 

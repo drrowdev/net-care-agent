@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import copy
-import datetime
 import hashlib
 import json
 import math
 from typing import Any
 
+from .date_input import DateInputError, parse_full_date, parse_partial_date
 from .intake import _treatment_similarity
 from .provenance import anchor_source_quote
 from .schema import derive_date_precision, now_stamp
@@ -643,21 +643,19 @@ def _required_text(value: Any, label: str, *, maximum: int = 4000) -> str:
 
 
 def _date_text(value: Any, label: str = "Date") -> str:
-    cleaned = _required_text(value, label, maximum=10)
     try:
-        datetime.date.fromisoformat(cleaned)
-    except ValueError as exc:
-        raise ReconciliationError(f"{label} must be a full date like 2026-08-14") from exc
-    return cleaned
+        return parse_full_date(value)
+    except DateInputError as exc:
+        raise ReconciliationError(str(exc)) from exc
 
 
 def _partial_date_text(value: Any, label: str) -> str | None:
     if value is None or value == "":
         return None
-    cleaned = _required_text(value, label, maximum=10)
-    if derive_date_precision(cleaned) == "unknown":
-        raise ReconciliationError(f"{label} must be a date like 2026, 2026-08 or 2026-08-14")
-    return cleaned
+    try:
+        return parse_partial_date(value, optional=True)
+    except DateInputError as exc:
+        raise ReconciliationError(str(exc)) from exc
 
 
 def _optional_text(value: Any, label: str, *, maximum: int) -> str | None:

@@ -363,6 +363,7 @@ state and withholds the prior clinical content.
 │   ├── evidence.py       # validated claim-level source-span catalog/resolution
 │   ├── reconciliation.py # per-document receipts + compare-and-swap correction/undo
 │   ├── follow_through.py # durable actions/visits, validation, CAS + audit helpers
+│   ├── date_input.py     # the one parser for typed Finnish/ISO dates → stored ISO
 │   ├── orchestrator.py   # agentic loop driving the tools
 │   ├── verify.py         # deterministic PMID/NCT existence verifier (report backstop)
 │   ├── trials_poll.py    # deterministic tracked-trial status poller
@@ -384,6 +385,7 @@ state and withholds the prior clinical content.
 ├── tests/                # pytest suite (no network or API key needed)
 │   ├── test_imaging_timeline_ui.py # actual-function Node + live responsive browser coverage
 │   ├── test_date_time_formats_ui.py # exact Finnish date/time/number rendering contract
+│   ├── test_finnish_date_input.py # typed Finnish/ISO dates: one grammar, both layers
 │   ├── test_summary_narrative_ui.py # how the generated assessment reads: evidence chips + prose dates
 │   ├── test_symptom_workflow_ui.py # symptom authority + live lifecycle/responsive coverage
 │   ├── test_symptom_episodes.py # backend identity/lifecycle/replay/projection contract

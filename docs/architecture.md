@@ -300,8 +300,9 @@ record, history, replay snapshot, or unknown extra. Current/planned courses
 receive no terminal authority, and rerunning migration is a no-op.
 
 Courses store exact caregiver text and explicit current/past/planned workflow
-state. Dates preserve only explicitly entered YYYY, YYYY-MM, or YYYY-MM-DD
-precision. New past creation requires exact `ended`, `not_started`, `cancelled`,
+state. Dates preserve only explicitly entered year, year-and-month, or full-date
+precision, whether typed in Finnish or ISO. New past creation requires exact
+`ended`, `not_started`, `cancelled`,
 or `other` authority. `other` requires nonempty bounded exact caregiver detail;
 other qualifiers reject detail. Current/planned courses have no terminal
 authority. Current may transition to past only as `ended|other`; planned may

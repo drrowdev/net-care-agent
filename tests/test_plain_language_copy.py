@@ -23,6 +23,7 @@ TREATMENT_PY = Path("agent/treatment_reconciliation.py").read_text(encoding="utf
 RESEARCH_PY = Path("agent/research_disposition.py").read_text(encoding="utf-8")
 FOLLOW_THROUGH_PY = Path("agent/follow_through.py").read_text(encoding="utf-8")
 RECONCILIATION_PY = Path("agent/reconciliation.py").read_text(encoding="utf-8")
+DATE_INPUT_PY = Path("agent/date_input.py").read_text(encoding="utf-8")
 
 _NODE_STDIN_BOOTSTRAP = "eval(require('fs').readFileSync(0,'utf8'))"
 
@@ -137,13 +138,17 @@ def test_api_date_messages_do_not_use_machine_notation_or_leak_field_plumbing():
         (FOLLOW_THROUGH_PY, "agent/follow_through.py"),
         (RECONCILIATION_PY, "agent/reconciliation.py"),
         (RESEARCH_PY, "agent/research_disposition.py"),
+        (DATE_INPUT_PY, "agent/date_input.py"),
     ]:
         for phrase in banned:
             assert phrase not in source, f"{name} still says: {phrase}"
 
+    # Every rejected date is answered with one shared sentence, so the wording
+    # is asserted where it now lives rather than at each endpoint.
     # "null" is developer vocabulary; he is told to leave the field empty.
-    assert "or leave it empty" in RESEARCH_PY
-    assert "2026-08-14" in APP_PY
+    assert "or leave it empty" in DATE_INPUT_PY
+    assert "14.8.2026" in DATE_INPUT_PY
+    assert "YYYY" not in DATE_INPUT_PY
 
 
 def test_the_eight_leaking_date_sites_now_use_the_shared_finnish_formatter():

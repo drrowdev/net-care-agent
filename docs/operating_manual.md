@@ -29,6 +29,39 @@ Times are always 24-hour, never AM/PM. Partial dates keep the precision that was
 recorded — NET/Care never invents a missing day or month to complete a date.
 Relative labels such as `5m ago` and `2h ago` stay in English.
 
+## How dates are typed in
+
+Every date box you type into accepts the dates the way you read them:
+
+| Typed | Recorded as | Precision kept |
+|---|---|---|
+| `14.8.2026`, `04.08.2026`, `4.8.2026`, `14.8.2026.` | `2026-08-14` | day |
+| `8/2026`, `08/2026` | `2026-08` | month |
+| `2026` | `2026` | year |
+
+Leading zeros and single digits are both fine, and a trailing full stop — the
+Finnish way of writing an ordinal date — is accepted. Spaces around what you
+type are ignored. The older `2026-08-14`, `2026-08` and `2026` forms still work
+exactly as before; they are simply no longer suggested.
+
+A few boxes need a whole day rather than a partial date: a follow-up due date,
+a judgment's review or valid-until date, and an appointment or document date.
+Those show `14.8.2026` on their own as the example.
+
+Anything the app cannot read for certain is refused rather than guessed at. That
+includes `14/8/2026` and `8/14/2026` (there is no way to know which number is
+the day), `14.8.26` (which century?), `2026.8.14`, `8/2026` written without a
+year, and impossible dates such as `31.2.2026`, `13.13.2026` or `29.2.2026` in a
+year that is not a leap year. A date the app refuses is never partly saved: the
+entry stops and the message tells you what may be typed. In a clinical record a
+wrong date that is silently accepted is far worse than one that is turned away.
+
+Nothing is ever filled in for you. If you type only `2026`, the record keeps
+`2026` — it never becomes January, and never becomes today.
+
+When you reopen a saved date to edit it, the box shows it the way you read it
+(`14.8.2026`), so saving it untouched changes nothing.
+
 This also applies to dates the generated assessment writes inside its own
 sentences, which are not stored fields and so are not covered by the table
 above. *"Three doses every 8 weeks from 2026-05-07"* is displayed as *"three
@@ -662,8 +695,8 @@ In **Patient → Symptoms**:
 
 The episode form accepts exact symptom wording; optional
 Mild/Moderate/Severe selection and exact detail; reported subject; timing,
-frequency, triggers, and notes; and an optional onset date entered as a year,
-a year and month, or a full date (`2026`, `2026-08`, `2026-08-14`). Resolution
+frequency, triggers, and notes; and an optional onset date entered as a year, a
+year and month, or a full date (`2026`, `8/2026`, `14.8.2026`). Resolution
 date is also optional and starts blank. Dates are stored exactly as entered and
 are displayed in Finnish format (`8/2026`, `14.8.2026`). The
 browser does not fill today's date, parse dates into another timezone, compare

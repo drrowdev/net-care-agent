@@ -1991,14 +1991,18 @@ def test_live_server_authority_discrepancies_restart_outcomes_and_followups():
             assert "follow_up" not in existing_body
             page.get_by_label("Create and link one manual follow-up").check()
             page.locator("#treatment-follow-up-text").fill("  Exact inline follow-up  ")
-            page.locator("#treatment-follow-up-due").fill("2027-04")
+            page.locator("#treatment-follow-up-due").fill("30.4.2027")
             inline_body = page.evaluate("() => treatmentBodyForDialog().body")
             assert inline_body["follow_up"] == {
                 "text": "  Exact inline follow-up  ",
                 "owner": None,
-                "due_date": "2027-04",
+                "due_date": "2027-04-30",
             }
             assert "caregiver_action_id" not in inline_body
+            # A follow-up is due on a day, so a month-only entry is refused here
+            # rather than after he presses save.
+            page.locator("#treatment-follow-up-due").fill("4/2027")
+            assert page.locator("#treatment-submit-button").is_disabled()
             page.locator("#treatment-follow-up-due").fill("2027-99")
             assert page.locator("#treatment-submit-button").is_disabled()
 

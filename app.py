@@ -50,6 +50,11 @@ except Exception as exc:
     sys.exit(1)
 
 # Configure logging once Anthropic + dotenv are loaded.
+from agent.date_input import (  # noqa: E402
+    DateInputError,
+    parse_full_date,
+    parse_partial_date,
+)
 from agent.io import atomic_write_bytes, atomic_write_text  # noqa: E402
 from agent.job_runtime import (  # noqa: E402
     BoundedExecutor,
@@ -1392,12 +1397,8 @@ def _optional_episode_text(value: Any, field: str) -> str | None:
 def _episode_date(value: Any, field: str) -> tuple[str | None, str]:
     if value in (None, ""):
         return None, "unknown"
-    if not isinstance(value, str):
-        raise ValueError(f"{field} must be a date like 2026, 2026-08 or 2026-08-14.")
-    precision = derive_date_precision(value)
-    if precision == "unknown":
-        raise ValueError(f"{field} must be a real date like 2026, 2026-08 or 2026-08-14.")
-    return value, precision
+    stored = parse_partial_date(value, optional=True)
+    return stored, derive_date_precision(stored)
 
 
 def _episode_content(
@@ -1641,12 +1642,8 @@ def _exact_treatment_text(value: Any, field: str, *, required: bool = False) -> 
 def _treatment_date(value: Any, field: str) -> tuple[str | None, str, str]:
     if value is None:
         return None, "unknown", "unknown"
-    if not isinstance(value, str):
-        raise ValueError(f"{field} must be a date like 2026, 2026-08 or 2026-08-14, or left empty.")
-    precision = derive_date_precision(value)
-    if precision == "unknown":
-        raise ValueError(f"{field} must be a real date like 2026, 2026-08 or 2026-08-14.")
-    return value, precision, "caregiver_entered"
+    stored = parse_partial_date(value, optional=True)
+    return stored, derive_date_precision(stored), "caregiver_entered"
 
 
 def _course_content(
@@ -5356,12 +5353,15 @@ def api_judgments_add():
     status = data.get("status") or "active"
     if status not in {"active", "superseded", "needs_review"}:
         return jsonify({"error": "Invalid judgment status"}), 400
+    judgment_dates: dict[str, str | None] = {}
     for field in ("review_after", "valid_until"):
-        if data.get(field):
-            try:
-                datetime.date.fromisoformat(data[field])
-            except (TypeError, ValueError):
-                return jsonify({"error": f"{field} must be a full date like 2026-08-14"}), 400
+        if not data.get(field):
+            judgment_dates[field] = None
+            continue
+        try:
+            judgment_dates[field] = parse_full_date(data[field], optional=True)
+        except DateInputError as exc:
+            return jsonify({"error": str(exc)}), 400
     timestamp = now_stamp()
     judgment = {
         "id": f"j_{_new_id()}",
@@ -5373,8 +5373,8 @@ def api_judgments_add():
         "updated_at": timestamp,
         "scope": (data.get("scope") or "").strip() or None,
         "status": status,
-        "review_after": data.get("review_after") or None,
-        "valid_until": data.get("valid_until") or None,
+        "review_after": judgment_dates["review_after"],
+        "valid_until": judgment_dates["valid_until"],
         "supersedes": data.get("supersedes") or None,
     }
     if judgment["supersedes"]:
@@ -5413,12 +5413,17 @@ def api_judgments_edit(jid):
     status = data.get("status")
     if status is not None and status not in {"active", "superseded", "needs_review"}:
         return jsonify({"error": "Invalid judgment status"}), 400
+    judgment_dates: dict[str, str | None] = {}
     for field in ("review_after", "valid_until"):
-        if data.get(field):
-            try:
-                datetime.date.fromisoformat(data[field])
-            except (TypeError, ValueError):
-                return jsonify({"error": f"{field} must be a full date like 2026-08-14"}), 400
+        if field not in data:
+            continue
+        if not data.get(field):
+            judgment_dates[field] = None
+            continue
+        try:
+            judgment_dates[field] = parse_full_date(data[field], optional=True)
+        except DateInputError as exc:
+            return jsonify({"error": str(exc)}), 400
     profile = agent.load_profile()
     for j in profile.get("clinical_judgments", []):
         if j.get("id") == jid:
@@ -5453,9 +5458,12 @@ def api_judgments_edit(jid):
                 j["text"] = text
             if category:
                 j["category"] = category
-            for field in ("scope", "review_after", "valid_until", "supersedes"):
+            for field in ("scope", "supersedes"):
                 if field in data:
                     j[field] = (data.get(field) or "").strip() or None
+            for field in ("review_after", "valid_until"):
+                if field in data:
+                    j[field] = judgment_dates[field]
             if status is not None:
                 j["status"] = status
             j["updated_at"] = now_stamp()
@@ -6892,9 +6900,10 @@ def api_symptoms_add():
         return jsonify({"error": "Severity must be 1-5"}), 400
     profile = agent.load_profile()
     today = datetime.date.today().isoformat()
-    clinical_date = data.get("date") or today
-    if derive_date_precision(clinical_date) == "unknown":
-        return jsonify({"error": "Enter the date as 2026, 2026-08 or 2026-08-14"}), 400
+    try:
+        clinical_date = parse_partial_date(data.get("date") or today)
+    except DateInputError as exc:
+        return jsonify({"error": str(exc)}), 400
     symptom = {
         "id": agent.new_workflow_id("sym"),
         "date": clinical_date,
@@ -6940,10 +6949,12 @@ def api_symptoms_edit(sid):
             if "related_treatment" in data:
                 s["related_treatment"] = (data.get("related_treatment") or "").strip() or None
             if "date" in data and data["date"]:
-                if derive_date_precision(data["date"]) == "unknown":
-                    return jsonify({"error": "Enter the date as 2026, 2026-08 or 2026-08-14"}), 400
-                s["date"] = data["date"]
-                s["date_precision"] = derive_date_precision(data["date"])
+                try:
+                    stored_date = parse_partial_date(data["date"])
+                except DateInputError as exc:
+                    return jsonify({"error": str(exc)}), 400
+                s["date"] = stored_date
+                s["date_precision"] = derive_date_precision(stored_date)
                 s["date_kind"] = "clinical"
             agent.save_profile(profile)
             return jsonify(s)

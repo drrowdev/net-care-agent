@@ -24,6 +24,16 @@ from .config import (
     PROFILE_PATH,
     REPORTS_DIR,
 )
+from .date_input import (
+    DATE_INPUT_HELP,
+    FULL_DATE_INPUT_HELP,
+    OPTIONAL_DATE_INPUT_HELP,
+    OPTIONAL_FULL_DATE_INPUT_HELP,
+    DateInputError,
+    parse_full_date,
+    parse_partial_date,
+    read_date_input,
+)
 from .deep_sweep import run_deep_sweep
 from .evidence import build_evidence_catalog, evidence_catalog_prompt, resolve_summary_evidence
 from .exec_summary import generate_executive_summary
@@ -207,6 +217,15 @@ __all__ = [
     "is_timeout_error",
     "render_prompt",
     "strip_code_fences",
+    # date input
+    "DATE_INPUT_HELP",
+    "OPTIONAL_DATE_INPUT_HELP",
+    "FULL_DATE_INPUT_HELP",
+    "OPTIONAL_FULL_DATE_INPUT_HELP",
+    "DateInputError",
+    "read_date_input",
+    "parse_partial_date",
+    "parse_full_date",
     # profile
     "DEFAULT_PROFILE",
     "load_profile",

@@ -6897,7 +6897,7 @@ def api_symptoms_add():
     except (TypeError, ValueError):
         severity = None
     if severity is not None and not (1 <= severity <= 5):
-        return jsonify({"error": "Severity must be 1-5"}), 400
+        return jsonify({"error": "Severity must be a number from 1 to 5"}), 400
     profile = agent.load_profile()
     today = datetime.date.today().isoformat()
     try:
@@ -6940,9 +6940,9 @@ def api_symptoms_edit(sid):
                 try:
                     sev = int(sev) if sev not in (None, "") else None
                 except (TypeError, ValueError):
-                    return jsonify({"error": "Severity must be 1-5 or null"}), 400
+                    return jsonify({"error": "Severity must be a number from 1 to 5, or left empty"}), 400
                 if sev is not None and not (1 <= sev <= 5):
-                    return jsonify({"error": "Severity must be 1-5"}), 400
+                    return jsonify({"error": "Severity must be a number from 1 to 5"}), 400
                 s["severity"] = sev
             if "note" in data:
                 s["note"] = (data.get("note") or "").strip() or None

@@ -26,6 +26,12 @@ def _function_source(name: str, next_name: str) -> str:
     return APP_JS[start:end]
 
 
+def _slice_source(start_marker: str, end_marker: str) -> str:
+    start = APP_JS.index(start_marker)
+    end = APP_JS.index(end_marker, start)
+    return APP_JS[start:end]
+
+
 def _executable_function_source(name: str, next_name: str) -> str:
     source = _function_source(name, next_name).rstrip()
     if source.endswith("async"):
@@ -1467,7 +1473,7 @@ def test_stale_task_copy_maps_reason_and_type_without_source_mislabeling():
     assert "The source document was corrected or undone." in copy
     assert "The patient record changed after this task was generated." in copy
     assert "This older activity record does not include enough information" in copy
-    assert "Generated content was invalidated by a review-state change." in copy
+    assert "This generated content is out of date because the record changed." in copy
     assert "A newer appointment-question generation replaced this result." in copy
 
 
@@ -3502,6 +3508,8 @@ function escHtml(value) {
             _function_source("activeDecisionSuccessorId", "restoreAppointmentDraft"),
             _function_source("restoreAppointmentDraft", "openAppointmentWorkspace"),
             _function_source("decisionLifecyclePresentation", "renderVisitDecisions"),
+            _slice_source("const ENUM_LABELS", "const QUESTION_CATEGORY_LABELS"),
+            _function_source("enumLabel", "revisionIsOlder"),
             _function_source("renderVisitDecisions", "prepareDecisionSuccessor"),
             """
 renderVisitDecisions();
@@ -4035,40 +4043,40 @@ def test_decision_controls_match_the_server_lifecycle_matrix_at_runtime():
     lifecycle = result["lifecycle"]
 
     assert "Needs confirmation" in lifecycle["active"]["controls"]
-    assert "Correct with successor" in lifecycle["active"]["controls"]
+    assert "Correct with a replacement" in lifecycle["active"]["controls"]
     assert "Retract" in lifecycle["active"]["controls"]
     assert "Confirm active" in lifecycle["needs_confirmation"]["controls"]
     assert "Retract" in lifecycle["needs_confirmation"]["controls"]
-    assert "Correct with successor" not in lifecycle["needs_confirmation"]["controls"]
+    assert "Correct with a replacement" not in lifecycle["needs_confirmation"]["controls"]
     assert lifecycle["superseded"]["controls"] == ""
     assert lifecycle["retracted"]["controls"] == ""
-    assert "only after confirmation" in lifecycle["needs_confirmation"]["copy"]
-    assert "immutable history" in lifecycle["superseded"]["copy"]
-    assert "immutable history" in lifecycle["retracted"]["copy"]
+    assert "only correct it after confirming" in lifecycle["needs_confirmation"]["copy"]
+    assert "stays in the record as history" in lifecycle["superseded"]["copy"]
+    assert "stays in the record as history" in lifecycle["retracted"]["copy"]
 
-    assert result["html"].count("Correct with successor") == 1
+    assert result["html"].count("Correct with a replacement") == 1
     assert result["html"].count("Confirm active") == 1
     assert result["html"].count(">Retract</button>") == 2
     assert "decision-active" in result["followupOptions"]
     assert "decision-needs_confirmation" in result["followupOptions"]
     assert "decision-superseded" not in result["followupOptions"]
     assert "decision-retracted" not in result["followupOptions"]
-    assert "Correct with successor" not in result["conflictedHtml"]
-    assert "Reload this changed decision" in result["conflictedHtml"]
+    assert "Correct with a replacement" not in result["conflictedHtml"]
+    assert "This decision changed. Reload it before correcting it." in result["conflictedHtml"]
     assert result["activeDraft"] == {
         "supersedesId": "decision-active",
-        "correctionLabel": "Correct with a successor decision",
+        "correctionLabel": "Correct with a replacement",
         "cancelHidden": False,
     }
     assert result["immediateInvalidation"] == {
         "supersedesId": "",
-        "correctionLabel": "Decision you recorded from the clinician",
+        "correctionLabel": "What the clinician decided, as you recorded it",
         "cancelHidden": True,
         "storedSupersedesId": "",
     }
     assert result["nonActiveDraft"] == {
         "supersedesId": "",
-        "correctionLabel": "Decision you recorded from the clinician",
+        "correctionLabel": "What the clinician decided, as you recorded it",
         "cancelHidden": True,
         "decisionText": "Corrected decision wording",
         "storedSupersedesId": "",
@@ -5588,7 +5596,7 @@ def test_visit_recap_desktop_phone_and_print_layout_is_accessible():
                   <button class="button secondary">Print</button>
                 </div>
               </div>
-              <div class="visit-recap-status current">Current authoritative recap.</div>
+              <div class="visit-recap-status current">This recap is up to date.</div>
               <div class="visit-recap-content">
                 <div class="visit-recap-document">
                   <section class="visit-recap-section visit-recap-details">
@@ -5894,7 +5902,7 @@ def test_visit_recap_live_browser_enforces_visit_identity_and_control_visibility
         assert "Exact answer A fresh" in stale["content"]
         assert stale["stale"] is True
         assert stale["actionsHidden"] is True
-        assert "Offline snapshot" in stale["status"]
+        assert "Showing the last version that loaded" in stale["status"]
 
         page.emulate_media(media="print")
         page.evaluate("prepareVisitRecapPrint()")
@@ -6481,10 +6489,10 @@ def test_follow_up_transport_failures_keep_authoritative_rows_stale_and_read_onl
     assert "Today cached action" in offline["todayRows"]
     assert "Visit cached action" in offline["todayRows"]
     assert "Visit cached action" in offline["visitRows"]
-    assert "Offline snapshot" in offline["todayRows"]
-    assert "read-only" in offline["todayRows"]
-    assert "Offline snapshot" in offline["visitRows"]
-    assert "read-only" in offline["visitRows"]
+    assert "showing the last version that loaded" in offline["todayRows"]
+    assert "Reload the current follow-up list before making changes" in offline["todayRows"]
+    assert "showing the last version that loaded" in offline["visitRows"]
+    assert "Reload before adding or changing follow-ups" in offline["visitRows"]
     assert 'disabled onclick="changeFollowUpStatus' in offline["todayRows"]
     assert 'disabled onclick="openFollowUpEditDialog' in offline["todayRows"]
     assert offline["headerDisabled"] is True
@@ -6852,7 +6860,7 @@ def test_follow_up_busy_controls_cover_retry_and_preserve_accepted_state():
         },
         "pendingRetry": {
             "disabled": False,
-            "text": "Retry authoritative reload",
+            "text": "Try loading again",
         },
     }
 

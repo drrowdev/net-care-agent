@@ -964,7 +964,7 @@ def test_live_imaging_is_exact_semantic_responsive_and_overflow_safe():
                 comparison_text = page.locator("#imaging-comparison").inner_text()
                 assert "Findings (report wording)" in comparison_text
                 assert "Consistent with progression." in comparison_text
-                assert "NET/Care does not infer a clinical conclusion" in comparison_text
+                assert "NET/Care does not draw a clinical conclusion" in comparison_text
                 assert "Change detected" not in comparison_text
                 assert "Better" not in comparison_text
 

@@ -55,7 +55,7 @@ def test_primary_states_and_dialogs_are_accessible():
         'id="appointment-dialog" role="dialog" aria-modal="true" '
         'aria-labelledby="appointment-dialog-title"'
     ) in HTML
-    assert ('role="tablist" aria-label="Appointment workspace sections"') in HTML
+    assert ('role="tablist" aria-label="Appointment sections"') in HTML
     for name in ("questions", "decisions", "followups"):
         assert f'id="appointment-tab-{name}"' in HTML
         assert f'id="appointment-panel-{name}"' in HTML
@@ -79,7 +79,7 @@ def test_patient_has_authoritative_imaging_and_source_history():
     assert 'id="imaging-comparison"' in HTML
     assert "Compare selected records" in HTML
     assert 'id="source-history"' in HTML
-    assert "Recorded imaging reports" in HTML
+    assert "Imaging reports, in the order they were recorded" in HTML
     assert "Loading source history" in HTML
     assert "imaging-table-region" in CSS
     assert "imaging-comparison-grid" in CSS
@@ -142,7 +142,7 @@ def test_mobile_controls_and_overflow_guards_are_explicit():
 
 
 def test_questions_view_contains_one_shared_appointment_workspace():
-    assert 'id="appointment-prep-heading" tabindex="-1">Appointment workspace</h2>' in HTML
+    assert 'id="appointment-prep-heading" tabindex="-1">Appointment prep</h2>' in HTML
     assert 'id="visit-list"' in HTML
     assert 'id="visit-source-appointment"' in HTML
     assert 'id="appointment-overlay"' in HTML
@@ -224,7 +224,7 @@ def test_routine_workspace_omits_generic_capability_disclaimers():
         assert f".{class_name}" not in CSS
 
     assert "Prior generated assessment is hidden" in APP_JS
-    assert "They are not current symptom episodes." in HTML
+    assert "they are not current symptom episodes." in HTML
     assert "Caregiver-entered · unverified" in APP_JS
     # The automatic compatibility notes surface was removed from the UI; the
     # stored rows and their server projection are untouched.

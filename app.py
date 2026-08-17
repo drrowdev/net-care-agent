@@ -7274,6 +7274,7 @@ def api_summary():
         response["status"] = "stale"
         response["content_hidden"] = True
     else:
+        response = agent.reconcile_cga_summary(response, profile)
         response["claim_evidence"] = agent.resolve_summary_evidence(profile, response)
         response["next_actions"] = agent.project_summary_actions(summary)
     return jsonify(response)

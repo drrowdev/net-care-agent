@@ -476,15 +476,25 @@ def test_generated_alert_containment_covers_passive_alias_and_conjunction_varian
 
 def test_dispatch_to_biomarker_trends(agent, empty_profile):
     empty_profile["biomarkers"] = [
-        {"marker": "CgA", "value": 100, "date": "2026-01-01"},
-        {"marker": "CgA", "value": 200, "date": "2026-02-01"},
+        {
+            "id": f"cga-{index}",
+            "marker": "CgA",
+            "value": value,
+            "date": date,
+            "date_precision": "day",
+            "date_kind": "clinical_unspecified",
+            "evidence_status": "missing",
+        }
+        for index, (value, date) in enumerate(((100, "2026-01-01"), (200, "2026-02-01")))
     ]
     result = agent.execute_tool(
         "analyze_biomarker_trends",
         {"marker_name": "CgA"},
         empty_profile,
     )
-    assert result["trend"] == "increasing"
+    assert result["trend"] == "insufficient_data"
+    assert result["eligibility"] == "no_comparable_series"
+    assert result["readings"] == []
 
 
 # ─── search_pubmed ───────────────────────────────────────────────────────────

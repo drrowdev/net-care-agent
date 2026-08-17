@@ -7,6 +7,7 @@ import json
 import math
 import re
 import unicodedata
+from collections import Counter
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -94,6 +95,8 @@ def _marker_key(value: str) -> str:
     alias_key = re.sub(r"[\s_-]+", " ", normalized).strip()
     aliases = {
         "cga": ("chromogranin-a", "Chromogranin A"),
+        "s cga": ("chromogranin-a", "Chromogranin A"),
+        "p cga": ("chromogranin-a", "Chromogranin A"),
         "chromogranin a": ("chromogranin-a", "Chromogranin A"),
         "nse": ("nse", "NSE"),
         "neuron specific enolase": ("nse", "NSE"),
@@ -773,6 +776,64 @@ def _observation_sort_key(observation: dict) -> tuple:
     return (2, str(date["value"] or ""), observation["id"])
 
 
+_CHART_REQUIREMENTS = (
+    (
+        "numeric_value",
+        "numeric value",
+        "Only finite unqualified numeric values are comparable.",
+    ),
+    ("unit", "unit", "Unit is not explicitly recorded."),
+    (
+        "exact_date_kind",
+        "exact collection or result date",
+        "An exact collection or result date is not explicitly recorded.",
+    ),
+    ("specimen", "specimen", "Specimen is not explicitly recorded."),
+    (
+        "assay_or_method",
+        "assay or method",
+        "Assay or method is not explicitly recorded.",
+    ),
+    (
+        "reference_range",
+        "parseable reference range",
+        "Reference-range semantics are not explicitly comparable.",
+    ),
+)
+
+
+def _chart_diagnostics(
+    observations: list[dict],
+    candidate_groups: dict[str, list[dict]],
+) -> dict:
+    note_counts = Counter(
+        note for observation in observations for note in observation["comparability_notes"]
+    )
+    requirements = [
+        {
+            "code": code,
+            "label": label,
+            "missing_count": note_counts[note],
+        }
+        for code, label, note in _CHART_REQUIREMENTS
+    ]
+    comparable_groups = [members for members in candidate_groups.values() if len(members) >= 2]
+    unmatched_compatible_count = sum(
+        len(members) for members in candidate_groups.values() if len(members) < 2
+    )
+    return {
+        "observation_count": len(observations),
+        "comparable_series_count": len(comparable_groups),
+        "comparable_observation_count": sum(len(members) for members in comparable_groups),
+        "unmatched_compatible_count": unmatched_compatible_count,
+        "range_position_count": sum(
+            observation["report_range_comparison"] in {"within", "above", "below"}
+            for observation in observations
+        ),
+        "requirements": requirements,
+    }
+
+
 def project_biomarker_series(profile: dict) -> dict:
     """Project every bounded biomarker row without mutating the profile."""
     for revision_name in ("profile_revision", "workflow_revision"):
@@ -918,6 +979,7 @@ def project_biomarker_series(profile: dict) -> dict:
                 candidate_groups.setdefault(_canonical(observation["candidate_key"]), []).append(
                     observation
                 )
+        chart_diagnostics = _chart_diagnostics(family_observations, candidate_groups)
 
         series = []
         for candidate, members in sorted(candidate_groups.items()):
@@ -1033,6 +1095,7 @@ def project_biomarker_series(profile: dict) -> dict:
                     observation["duplicate_count"] for observation in family_observations
                 ),
                 "series_count": len(series),
+                "chart_diagnostics": chart_diagnostics,
                 "series": sorted(series, key=lambda item: item["id"]),
                 "observations": family_observations,
             }

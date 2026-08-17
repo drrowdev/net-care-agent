@@ -21,10 +21,13 @@ def app_client(agent):
 
 
 def _save_current_summary(agent, profile, *, revision=5):
+    from agent.profile import EXECUTIVE_SUMMARY_POLICY_VERSION
+
     profile["profile_revision"] = revision
     profile["summary_stale"] = False
     profile["executive_summary"] = {
         "generation_id": "summary-current",
+        "policy_version": EXECUTIVE_SUMMARY_POLICY_VERSION,
         "summary_revision": revision,
         "stale": False,
         "next_actions": [

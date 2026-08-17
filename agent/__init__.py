@@ -36,7 +36,7 @@ from .date_input import (
 )
 from .deep_sweep import run_deep_sweep
 from .evidence import build_evidence_catalog, evidence_catalog_prompt, resolve_summary_evidence
-from .exec_summary import generate_executive_summary
+from .exec_summary import generate_executive_summary, reconcile_cga_summary
 from .follow_through import (
     ACTION_STATUSES,
     DECISION_STATUSES,
@@ -385,6 +385,7 @@ __all__ = [
     "treatment_identity_set",
     "treatment_text_is_certifiable",
     "generate_executive_summary",
+    "reconcile_cga_summary",
     "generate_appointment_questions",
     "generate_questions_for_profile",
     "build_chat_system",

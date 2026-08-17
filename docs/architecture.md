@@ -157,7 +157,7 @@ state, and both revisions without returning paths, raw quotes/text, offsets,
 history, or job internals.
 
 Analyte grouping and comparability are deliberately separate. Only a tiny
-boundary-exact alias allowlist groups CgA/Chromogranin A,
+boundary-exact alias allowlist groups CgA/S-CgA/P-CgA/Chromogranin A,
 NSE/neuron-specific enolase, and 5-HIAA/5-hydroxyindoleacetic acid. Comparison
 requires an explicit identical unit, exact collection/result day, specimen,
 assay or method, and parsed reference-range semantics; missing context never
@@ -166,13 +166,26 @@ nonnumeric values remain exact table-ready observations but never receive
 numeric comparison. Same-source exact semantic duplicates may collapse only in
 the read projection while retaining every row ID, evidence link, duplicate
 count, and token authority; rows from different sources never collapse.
+Before singleton-series wording replaces row notes, the server aggregates each
+analyte's missing numeric value, unit, exact collection/result date, specimen,
+assay-or-method, and parseable-range counts. The browser renders those counts
+without re-deriving comparability. It may also order the already-authorized
+per-observation `within|above|below` comparisons against each observation's own
+report range; that coarse sequence has no shared numeric axis and is explicitly
+not a trend.
 
 Malformed structure, duplicate/missing IDs, unsafe nested/non-finite values,
 overflow, or inconsistent verified source authority fail the complete endpoint
 with a bounded path-free `422`. Bounded incomplete facts remain visible as
 explicitly unclassified/non-comparable rows rather than being silently omitted.
 The projection never saves, audits, advances revisions, persists state, or calls
-a network/model service, and it is not injected into any LLM context.
+a network/model service, and the HTTP projection is not injected into an LLM
+context. The deterministic biomarker tool and executive-summary post-validator
+reuse its exact comparable-series boundary: they never combine separate series,
+and Today replaces an ineligible saved/generated CgA direction with the specific
+missing-context explanation plus the per-report-range alternative. Thus Today
+cannot make a looser CgA comparison than Patient, while Patient's chart guard is
+unchanged.
 
 The Patient biomarker surface renders that one projection twice. Above the
 per-analyte table sits a line-per-biomarker overview with a browser-side search
@@ -933,7 +946,7 @@ fail-closed evictions.
 | Today's import shortcut deep-links through stored intake identity | `build_import_record` stamps `feed_job_id` on the source document, so "Latest document import" → **Open Activity** resolves the exact job by lookup rather than by matching dates, filenames, or text. `/api/status` offers the identifier only while that job is still in the live store, because jobs are pruned by count and age while documents are kept; the browser still treats a job that vanished between render and click as an expected retention outcome — panel closed, plain note, focus returned — rather than the authorization eviction a directly clicked missing task triggers. |
 | Separate imported appointments and workflow visits | Receipt-correctable source facts remain immutable evidence; caregiver working state can evolve without pretending generated questions or captured statements are source-verified. |
 | Clinical + workflow revisions | Administrative follow-through does not invalidate expensive clinical artifacts, while new model-context facts still stale every dependent artifact safely. |
-| Server biomarker projection, not browser inference | Complete row/source/import authority is available only at the profile boundary. The Patient explorer renders that projection as a complete table and charts only exact server-declared comparable groups as unconnected points. Dedicated request/selection epochs, AbortController ownership, monotonic revisions, and opaque response-token owners reject late or cross-analyte responses without duplicating clinical rules in JavaScript or reading truncated `/api/status` biomarkers. |
+| Server biomarker projection, not browser inference | Complete row/source/import authority is available only at the profile boundary. The Patient explorer renders that projection as a complete table, server-computed missing-context diagnostics, per-observation position against each report's own range, and charts only exact server-declared comparable groups as unconnected points. Today validates CgA wording against that same boundary. Dedicated request/selection epochs, AbortController ownership, monotonic revisions, and opaque response-token owners reject late or cross-analyte responses without duplicating clinical rules in JavaScript or reading truncated `/api/status` biomarkers. |
 | Server imaging authority before comparison UI | Stable identity, explicit date uncertainty, source/receipt lifecycle, and complete failure semantics must exist before the browser can offer record selection. The first slice exposes exact stored rows only and defers every clinical comparison or visualization decision. |
 | Explicit `fi-FI` display formatting, not the browser locale | The caregiver reads this record in Finland, so `14.8.2026`, `8/2026` and the 24-hour `09:26` are the only correct shapes. An implicit locale made the same stored value render differently per browser. `static/app.js` centralises this in `fmtDate` / `fmtTime` / `fmtDateTime` / `fmtNumber`; date-only values are formatted as text so a stored day never shifts across a timezone boundary, and timestamps are parsed through one shared `parseTimestamp` that reads a missing timezone as UTC because the server writes naive stamps on a UTC host. Interface copy, relative labels, and stored/API/prompt values remain untouched English and ISO. |
 

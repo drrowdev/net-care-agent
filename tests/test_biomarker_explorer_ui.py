@@ -108,6 +108,38 @@ def _projection(
     workflow_revision: int = 3,
     nse_value: int = 14,
 ) -> dict:
+    def diagnostics(
+        observation_count,
+        comparable_series_count,
+        comparable_observation_count,
+        unmatched_compatible_count,
+        range_position_count,
+        **missing,
+    ):
+        labels = {
+            "numeric_value": "numeric value",
+            "unit": "unit",
+            "exact_date_kind": "exact collection or result date",
+            "specimen": "specimen",
+            "assay_or_method": "assay or method",
+            "reference_range": "parseable reference range",
+        }
+        return {
+            "observation_count": observation_count,
+            "comparable_series_count": comparable_series_count,
+            "comparable_observation_count": comparable_observation_count,
+            "unmatched_compatible_count": unmatched_compatible_count,
+            "range_position_count": range_position_count,
+            "requirements": [
+                {
+                    "code": code,
+                    "label": label,
+                    "missing_count": missing.get(code, 0),
+                }
+                for code, label in labels.items()
+            ],
+        }
+
     cga_series = {
         "id": "series-cga-comparable",
         "token": f"{token}-series-cga",
@@ -188,6 +220,13 @@ def _projection(
         marker_context="Serum",
         notes=["Fewer than two compatible observations are recorded."],
     )
+    nse_observation["date"]["kind"] = "clinical_unspecified"
+    nse_observation["comparability_notes"] = [
+        "An exact collection or result date is not explicitly recorded."
+    ]
+    nse_series["date_kind"] = "clinical_unspecified"
+    nse_series["label"] = "Not comparable"
+    nse_series["comparability_notes"] = nse_observation["comparability_notes"]
     return {
         "profile_revision": profile_revision,
         "workflow_revision": workflow_revision,
@@ -203,6 +242,15 @@ def _projection(
                 "observation_count": 3,
                 "source_row_count": 4,
                 "series_count": 2,
+                "chart_diagnostics": diagnostics(
+                    3,
+                    1,
+                    2,
+                    0,
+                    2,
+                    numeric_value=1,
+                    exact_date_kind=1,
+                ),
                 "series": [cga_series, cga_isolated],
                 "observations": cga_observations,
             },
@@ -214,6 +262,14 @@ def _projection(
                 "observation_count": 1,
                 "source_row_count": 1,
                 "series_count": 1,
+                "chart_diagnostics": diagnostics(
+                    1,
+                    0,
+                    0,
+                    0,
+                    1,
+                    exact_date_kind=1,
+                ),
                 "series": [nse_series],
                 "observations": [nse_observation],
             },
@@ -362,6 +418,12 @@ biomarkerResponseOwner = newBiomarkerResponseOwner(
   selectedBiomarkerAnalyte(),
 );
 const valid = biomarkerProjectionPayloadIsValid(payload);
+const invalidDiagnosticsPayload = JSON.parse(JSON.stringify(payload));
+invalidDiagnosticsPayload.analytes[0].chart_diagnostics.unmatched_compatible_count = -1;
+const invalidDiagnostics = biomarkerProjectionPayloadIsValid(invalidDiagnosticsPayload);
+const invalidRangePositionPayload = JSON.parse(JSON.stringify(payload));
+invalidRangePositionPayload.analytes[0].observations[0].report_range_comparison = 'critical';
+const invalidRangePosition = biomarkerProjectionPayloadIsValid(invalidRangePositionPayload);
 const rendered = renderBiomarkerProjection(biomarkerResponseOwner);
 const first = {
   select: element('biomarker-analyte-select').innerHTML,
@@ -392,6 +454,8 @@ const workflowAdvance = {
 };
 console.log(JSON.stringify({
   valid,
+  invalidDiagnostics,
+  invalidRangePosition,
   rendered,
   switched,
   first,
@@ -406,6 +470,8 @@ console.log(JSON.stringify({
     result = _run_node(script)
 
     assert result["valid"] is True
+    assert result["invalidDiagnostics"] is False
+    assert result["invalidRangePosition"] is False
     assert result["rendered"] is True
     assert result["switched"] is True
     assert "S-&lt;CgA&gt;" in result["first"]["context"]
@@ -423,10 +489,8 @@ console.log(JSON.stringify({
     assert result["first"]["ownerToken"] == projection["projection_token"]
     assert result["second"]["selected"] == "analyte-nse"
     assert str(14) in result["second"]["table"]
-    assert (
-        "fewer than two results here were recorded in the same way"
-        in result["second"]["charts"].lower()
-    )
+    assert "no comparable point chart for nse" in result["second"]["charts"].lower()
+    assert "does not record exact collection or result date" in result["second"]["charts"].lower()
     assert result["second"]["selectionEpoch"] == 2
     assert result["second"]["ownerToken"] == projection["analytes"][1]["token"]
     assert result["workflowAdvance"]["accepted"] is True
@@ -441,6 +505,7 @@ console.log(JSON.stringify({
 def test_actual_loader_rejects_late_response_retains_offline_snapshot_and_evicts():
     late = _projection("projection-late", profile_revision=5, workflow_revision=2, nse_value=15)
     fresh = _projection("projection-fresh", profile_revision=6, workflow_revision=3, nse_value=16)
+    fresh["analytes"].reverse()
     recovered = _projection(
         "projection-recovered",
         profile_revision=7,
@@ -472,6 +537,7 @@ def test_actual_loader_rejects_late_response_retains_offline_snapshot_and_evicts
   await lateLoad;
   const afterRace = {
     token: biomarkerProjection?.projection_token,
+    selected: selectedBiomarkerAnalyteId,
     table: element('biomarker-table-body').innerHTML,
     ownerCurrent: biomarkerResponseOwnerIsCurrent(biomarkerResponseOwner),
   };
@@ -483,6 +549,7 @@ def test_actual_loader_rejects_late_response_retains_offline_snapshot_and_evicts
     state: biomarkerProjectionState,
     table: element('biomarker-table-body').innerHTML,
     status: element('biomarker-status').textContent,
+    charts: element('biomarker-chart-region').innerHTML,
   };
 
   globalThis.fetch = async () => response(200, recoveredPayload);
@@ -504,6 +571,7 @@ def test_actual_loader_rejects_late_response_retains_offline_snapshot_and_evicts
     retryHidden: element('biomarker-retry').hidden,
     activeElement: document.activeElement?.id || null,
     caption: element('biomarker-table-caption').textContent,
+    charts: element('biomarker-chart-region').innerHTML,
   };
 
   globalThis.fetch = async () => response(422, {
@@ -516,6 +584,7 @@ def test_actual_loader_rejects_late_response_retains_offline_snapshot_and_evicts
     state: biomarkerProjectionState,
     status: element('biomarker-status').textContent,
     table: element('biomarker-table-body').innerHTML,
+    charts: element('biomarker-chart-region').innerHTML,
   };
   console.log(JSON.stringify({
     fetchCount,
@@ -537,6 +606,7 @@ def test_actual_loader_rejects_late_response_retains_offline_snapshot_and_evicts
 
     assert result["fetchCount"] == 2
     assert result["afterRace"]["token"] == "projection-fresh"
+    assert result["afterRace"]["selected"] == "analyte-cga"
     assert "16" in result["afterRace"]["table"]
     assert "15" not in result["afterRace"]["table"]
     assert result["afterRace"]["ownerCurrent"] is True
@@ -544,6 +614,7 @@ def test_actual_loader_rejects_late_response_retains_offline_snapshot_and_evicts
     assert result["afterOffline"]["state"] == "stale"
     assert result["afterOffline"]["table"] == result["afterRace"]["table"]
     assert "Showing the last version that loaded" in result["afterOffline"]["status"]
+    assert "Position against each report" in result["afterOffline"]["charts"]
     assert result["afterRecovery"] == {
         "token": "projection-recovered",
         "state": "current",
@@ -556,10 +627,13 @@ def test_actual_loader_rejects_late_response_retains_offline_snapshot_and_evicts
     assert result["afterAuth"]["retryHidden"] is True
     assert result["afterAuth"]["activeElement"] == "nav-patient"
     assert result["afterAuth"]["caption"] == "Complete observations for the selected biomarker"
+    assert "authority evicted (401)" in result["afterAuth"]["charts"].lower()
     assert result["after422"]["projection"] is None
     assert result["after422"]["state"] == "corrupt"
     assert "stored record could not be read safely" in result["after422"]["status"]
     assert "identity is missing" not in result["after422"]["table"]
+    assert "stored record could not be read safely" in result["after422"]["charts"]
+    assert result["afterAuth"]["charts"] != result["after422"]["charts"]
 
 
 def test_actual_loader_distinguishes_empty_record_and_ordinary_hard_failure():
@@ -716,7 +790,7 @@ def test_live_biomarker_explorer_is_semantic_responsive_and_overflow_safe():
         executable = Path(playwright.chromium.executable_path)
         if not executable.exists():
             pytest.skip("Installed Playwright browser is unavailable")
-        for width, height in ((1280, 900), (360, 800)):
+        for width, height in ((1280, 900), (768, 900), (360, 800)):
             browser, context, page, _ = _open_biomarker_page(
                 playwright,
                 width,
@@ -729,6 +803,14 @@ def test_live_biomarker_explorer_is_semantic_responsive_and_overflow_safe():
                 assert page.locator("#biomarker-table-body tr").count() == 3
                 assert page.locator(".biomarker-chart-card").count() == 1
                 assert page.locator(".biomarker-chart-card circle").count() == 2
+                assert page.locator(".biomarker-range-position-item").count() == 2
+                assert (
+                    "each report's own reference range"
+                    in page.locator(".biomarker-range-position").inner_text().lower()
+                )
+                assert (
+                    "not a trend" in page.locator(".biomarker-range-position").inner_text().lower()
+                )
                 assert page.locator(".biomarker-chart-card polyline").count() == 0
                 assert page.locator(".biomarker-chart-card path").count() == 0
                 assert "S-<CgA>" in page.locator("#biomarker-context").inner_text()
@@ -746,7 +828,11 @@ def test_live_biomarker_explorer_is_semantic_responsive_and_overflow_safe():
                 assert page.locator("#biomarker-table-body tr").count() == 1
                 assert "NSE" in page.locator("#biomarker-table-caption").inner_text()
                 assert (
-                    "fewer than two results here were recorded in the same way"
+                    "no comparable point chart for nse"
+                    in page.locator("#biomarker-chart-region").inner_text().lower()
+                )
+                assert (
+                    "does not record exact collection or result date"
                     in page.locator("#biomarker-chart-region").inner_text().lower()
                 )
 

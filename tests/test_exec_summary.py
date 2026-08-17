@@ -57,6 +57,124 @@ def test_valid_json_passes_through(agent, empty_profile):
     # generated_at must be re-stamped to today (not the dummy 'ignored')
     assert out["generated_at"] != "ignored"
     assert len(out["generated_at"]) == 10  # YYYY-MM-DD
+    from agent.profile import EXECUTIVE_SUMMARY_POLICY_VERSION
+
+    assert out["policy_version"] == EXECUTIVE_SUMMARY_POLICY_VERSION
+
+
+def test_pre_comparability_policy_assessment_is_not_current(agent, empty_profile):
+    empty_profile["summary_stale"] = False
+    empty_profile["executive_summary"] = {
+        "generation_id": "old-summary",
+        "summary_revision": empty_profile["profile_revision"],
+        "stale": False,
+        "cga_trend": "rising",
+    }
+
+    assert agent.summary_is_current(empty_profile) is False
+
+    from agent.profile import EXECUTIVE_SUMMARY_POLICY_VERSION
+
+    empty_profile["executive_summary"]["policy_version"] = EXECUTIVE_SUMMARY_POLICY_VERSION
+    assert agent.summary_is_current(empty_profile) is True
+
+
+def test_cga_summary_claim_is_rebuilt_from_the_exact_patient_chart_series(agent, empty_profile):
+    empty_profile["biomarkers"] = [
+        {
+            "id": f"cga-{index}",
+            "marker": marker,
+            "value": value,
+            "unit": "ng/mL",
+            "date": date,
+            "date_precision": "day",
+            "date_kind": "collection",
+            "reference_range": "0-100",
+            "specimen": "Plasma",
+            "assay": "Assay X",
+            "method": None,
+            "evidence_status": "missing",
+        }
+        for index, (marker, value, date) in enumerate(
+            (
+                ("S-CgA", 100, "2026-01-01"),
+                ("Chromogranin A", 150, "2026-02-01"),
+            )
+        )
+    ]
+    empty_profile["biomarkers"].append(
+        {
+            **empty_profile["biomarkers"][-1],
+            "id": "cga-other-assay",
+            "marker": "P-CgA",
+            "value": 175,
+            "date": "2026-03-01",
+            "assay": "Assay Y",
+        }
+    )
+    payload = {
+        "overall_status": "stable",
+        "status_confidence": "medium",
+        "status_rationale": "Review recorded results.",
+        "key_concern": "None established.",
+        "summary": "Review recorded results.",
+        "prrt_status": "unknown",
+        "prrt_rationale": "Not assessed.",
+        "cga_trend": "falling",
+        "cga_trend_detail": "A loose comparison claimed that CgA fell.",
+        "next_actions": [],
+        "timeline": [],
+        "best_trial": None,
+        "claim_evidence": {},
+    }
+
+    captured = {}
+
+    def handler(**kwargs):
+        captured["content"] = kwargs["messages"][0]["content"]
+        return llm_text(json.dumps(payload))
+
+    with patch_llm(agent, handler):
+        out = agent.generate_executive_summary(empty_profile)
+
+    projection = agent.project_biomarker_series(empty_profile)
+    cga = projection["analytes"][0]
+    assert cga["display_name"] == "Chromogranin A"
+    assert cga["chart_diagnostics"]["comparable_series_count"] == 1
+    assert out["cga_trend"] == "rising"
+    assert "2 CgA results that Patient can show together" in out["cga_trend_detail"]
+    assert "matching recorded unit, date type, specimen" in out["cga_trend_detail"]
+    assert "1 other matching-marker result(s) are not included" in out["cga_trend_detail"]
+    assert "cga-0" in captured["content"]
+    assert "cga-1" in captured["content"]
+    assert "cga-other-assay" not in captured["content"]
+
+
+def test_cga_summary_explains_why_a_previous_claim_is_not_comparable(agent, empty_profile):
+    empty_profile["biomarkers"] = [
+        {
+            "id": f"cga-{index}",
+            "marker": "CgA",
+            "value": value,
+            "unit": "ng/mL",
+            "date": date,
+            "date_precision": "day",
+            "date_kind": "clinical_unspecified",
+            "reference_range": "0-100",
+            "specimen": "Plasma",
+            "assay": "Assay X",
+            "method": None,
+            "evidence_status": "missing",
+        }
+        for index, (value, date) in enumerate(((100, "2026-01-01"), (150, "2026-02-01")))
+    ]
+    previous = {"cga_trend": "rising", "cga_trend_detail": "CgA rose."}
+
+    out = agent.reconcile_cga_summary(previous, empty_profile)
+
+    assert out["cga_trend"] == "insufficient_data"
+    assert "exact collection or result date" in out["cga_trend_detail"]
+    assert "each result's position against its own report" in out["cga_trend_detail"]
 
 
 def test_exec_summary_context_uses_raw_treatments_when_classification_stale(agent, empty_profile):
@@ -137,7 +255,11 @@ def test_generated_prose_is_stored_and_prompted_exactly_as_the_model_wrote_it(ag
         out = agent.generate_executive_summary(empty_profile)
 
     for field, text in prose.items():
+        if field == "cga_trend_detail":
+            continue
         assert out[field] == text
+    assert out["cga_trend"] == "insufficient_data"
+    assert "No matching biomarker results" in out["cga_trend_detail"]
     assert out["next_actions"][0]["action"] == "Confirm the dose booked for 2026-09-01"
     assert out["next_actions"][0]["timeframe"] == "before 2026-08-20"
     assert out["next_actions"][0]["rationale"] == "The interval closes 2026-08-26."

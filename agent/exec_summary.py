@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import copy
 import datetime
 import json
 import re
 
 from . import config
+from .biomarker_series import _marker_key
 from .evidence import evidence_catalog_prompt
 from .judgments import get_clinical_judgments_context
 from .llm import client, first_text, is_timeout_error, render_prompt, strip_code_fences
 from .profile import (
+    EXECUTIVE_SUMMARY_POLICY_VERSION,
     active_alerts,
     build_patient_context,
     get_caregiver_relationship,
@@ -18,6 +21,7 @@ from .profile import (
     imaging_context_rows,
 )
 from .schema import derive_date_precision
+from .tools.biomarkers import analyze_biomarker_trends
 
 EXECUTIVE_SUMMARY_SYSTEM_TEMPLATE = """\
 You are a clinical summarization agent for [[PATIENT_CONTEXT]].
@@ -83,6 +87,7 @@ Rules:
 - overall_status: judge from the most recent imaging plus biomarker trends. If they conflict, recent imaging outweighs a single noisy biomarker movement; explain the conflict in status_rationale. Use "insufficient_data" when neither recent imaging nor a usable biomarker trend exists.
 - status_confidence: high = recent imaging AND consistent biomarker trend support the status; medium = one strong signal or mildly conflicting signals; low = sparse, old, or contradictory data.
 - cga_trend: requires ≥2 comparable CgA readings; otherwise "insufficient_data". cga_trend_detail must quote the actual values, units, and dates from the profile (and note it if assay/units changed between readings).
+- The deterministic CgA comparison context in the user message is authoritative for cga_trend. Never combine separate series or use raw CgA rows that context excludes. The application validates these two fields again after generation.
 - next_actions: max 5, ordered urgent→high→medium. Triage: urgent = needs to happen this week regardless of appointment schedule; high = important but can wait for next appointment IF within 2 weeks; medium = worth doing but not time-critical. Do NOT include actions the oncologist has already addressed per clinical judgments. Do NOT include speculative actions without evidence from the profile data. Each action names WHO does WHAT — not just "consider discussing X".
 - timeline: max 6 most relevant upcoming items.
 - timeline[].date is a DATE FIELD, not a sentence. It must hold a bare calendar date at the precision the record actually supports — "2026-08-14", "2026-08" or "2026" — and nothing else. No parenthetical, no qualifier, no "approx", no "late", no "before the next dose", no two alternatives, no range, no slash. Never estimate or invent a date that the record does not state.
@@ -290,6 +295,15 @@ def generate_executive_summary(profile: dict) -> dict:
             PATIENT_CONTEXT=build_patient_context(profile),
             CAREGIVER=get_caregiver_relationship(profile),
         )
+        cga_comparison = analyze_biomarker_trends("CgA", profile)
+        summary_profile = copy.deepcopy(profile)
+        included_cga_rows = set(cga_comparison.get("included_source_row_ids") or [])
+        summary_profile["biomarkers"] = [
+            row
+            for row in profile.get("biomarkers", [])
+            if _marker_key(str(row.get("marker") or "")) != _marker_key("CgA")
+            or row.get("id") in included_cga_rows
+        ]
         user_content = (
             f"Generate an executive summary based on this patient profile.\n\n"
             f"{timeframe_guide}\n\n"
@@ -298,9 +312,12 @@ def generate_executive_summary(profile: dict) -> dict:
             f"{get_clinical_judgments_context(profile)}\n\n"
             f"{'=' * 60}\n"
             f"STEP 2 — Patient profile and raw data:\n\n"
-            f"{get_patient_summary(profile)}\n\n"
-            f"Full biomarker history ({len(profile.get('biomarkers', []))} entries):\n"
-            f"{json.dumps(profile.get('biomarkers', []), default=str)}\n\n"
+            f"{get_patient_summary(summary_profile)}\n\n"
+            f"Biomarker history authorized for summary comparison "
+            f"({len(summary_profile.get('biomarkers', []))} entries):\n"
+            f"{json.dumps(summary_profile.get('biomarkers', []), default=str)}\n\n"
+            f"Deterministic CgA comparison context (authoritative for cga_trend only):\n"
+            f"{json.dumps(cga_comparison, default=str)}\n\n"
             f"Full imaging history ({len(profile.get('imaging', []))} entries):\n"
             f"{json.dumps(imaging_context_rows(profile), default=str)}\n\n"
             f"Tracked trials and inclusion manifest: "
@@ -342,6 +359,8 @@ def generate_executive_summary(profile: dict) -> dict:
             summary = json.loads(raw)
             break
         summary["generated_at"] = datetime.date.today().isoformat()
+        summary["policy_version"] = EXECUTIVE_SUMMARY_POLICY_VERSION
+        summary = reconcile_cga_summary(summary, profile, comparison=cga_comparison)
         return _merge_upcoming_appointments(_normalise_timeline_dates(summary), profile)
     except Exception as e:
         if is_timeout_error(e):
@@ -367,6 +386,62 @@ def generate_executive_summary(profile: dict) -> dict:
                 "timeline": [],
                 "best_trial": None,
                 "generated_at": datetime.date.today().isoformat(),
+                "policy_version": EXECUTIVE_SUMMARY_POLICY_VERSION,
             },
             profile,
         )
+
+
+def reconcile_cga_summary(
+    summary: dict,
+    profile: dict,
+    *,
+    comparison: dict | None = None,
+) -> dict:
+    """Keep Today CgA wording on the same comparability boundary as Patient."""
+    result = dict(summary)
+    comparison = comparison or analyze_biomarker_trends("CgA", profile)
+    direction = comparison.get("trend")
+    mapped = {
+        "increasing": ("rising", "increased"),
+        "stable": ("stable", "changed"),
+        "decreasing": ("falling", "decreased"),
+    }.get(direction)
+    if mapped is None:
+        caveats = comparison.get("data_quality_caveats") or []
+        explanation = (
+            " ".join(caveats)
+            if caveats
+            else comparison.get("eligibility_explanation")
+            or "No two CgA results are recorded with enough matching measurement context."
+        )
+        result["cga_trend"] = "insufficient_data"
+        result["cga_trend_detail"] = (
+            f"{explanation} Patient still shows every result and, when available, each "
+            "result's position against its own report's reference range."
+        )
+        return result
+
+    trend_token, verb = mapped
+    first_value = comparison.get("first_value")
+    latest_value = comparison.get("latest_value")
+    first_date = comparison.get("first_date")
+    latest_date = comparison.get("latest_date")
+    unit = ((comparison.get("unit_compatibility") or {}).get("units") or [""])[0]
+    unit_suffix = f" {unit}" if unit else ""
+    percent_change = comparison.get("percent_change")
+    percent_text = (
+        "" if percent_change is None else f" ({percent_change:+g}% across the displayed interval)"
+    )
+    count = comparison.get("number_of_readings")
+    caveats = comparison.get("data_quality_caveats") or []
+    caveat_text = f" {' '.join(caveats)}" if caveats else ""
+    result["cga_trend"] = trend_token
+    result["cga_trend_detail"] = (
+        f"Using {count} CgA results that Patient can show together, the recorded value "
+        f"{verb} from {first_value}{unit_suffix} on {first_date} to "
+        f"{latest_value}{unit_suffix} on {latest_date}{percent_text}. The results have "
+        "matching recorded unit, date type, specimen, assay or method, and reference "
+        f"range; this does not interpret their clinical meaning.{caveat_text}"
+    )
+    return result

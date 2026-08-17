@@ -215,9 +215,12 @@ summary in `/api/status`.
    coloured at all. The browser never compares a number with a range and never
    decides that a result is abnormal.
 4. Choose the biomarker name from **Choose a biomarker**, or press **Show
-   history** on any line, to fill the table below. Recorded aliases appear
-   exactly as stored; the browser does not rename or merge tests. **Show
-   history** moves the focus to the table it just filled.
+   history** on any line, to fill the table below. The selector defaults to
+   Chromogranin A when it is recorded. Recorded aliases appear exactly as
+   stored. The server treats CgA, S-CgA, P-CgA and Chromogranin A as names for
+   one analyte, but never infers a specimen from the prefix and never grants
+   comparability merely because names are grouped. **Show history** moves the
+   focus to the table it just filled.
 5. Read the table for the full history. It keeps every
    observation, including partial or unknown dates, qualified/ranged/text
    values, missing context, non-comparable facts, and presentation-collapsed
@@ -232,12 +235,19 @@ summary in `/api/status`.
    removed when the rows were compacted — a row simply no longer repeats "Not
    recorded" for every fact the document did not carry.
    Internal observation, source-row, document, and evidence IDs remain hidden.
-6. Treat **Comparable point charts** as a secondary view only. Each card is one
+6. **Position against each report's own reference range** is a separate
+   chronological sequence. Each numeric result is labelled within, above or
+   below using only the range printed on that same report. Exact same-date ties
+   are disclosed instead of being ordered. It is not a trend, does not compare
+   values or measurement methods, and does not show magnitude. Results without
+   a numeric value and parseable report range cannot appear in this sequence.
+7. Treat **Comparable point charts** as a secondary view only. Each card is one
    exact series the server declared comparable. Points are not connected and the
    browser performs no conversion, interpolation, smoothing, aggregation,
    direction label, response judgment, or recommendation. If no group contains
-   at least two comparable points, the explorer says so and leaves all facts in
-   the table.
+   at least two comparable points, the explorer names how many results are
+   missing each required dimension, including an exact collection/result date,
+   and says what a chart would require. It leaves all facts in the table.
 
 The status above the table distinguishes loading, current, current-but-empty,
 offline stale, corrupt/inconsistent (`422`), and other failures. If connectivity
@@ -248,6 +258,16 @@ biomarker values, chart/table markup, selection and response tokens, the search
 box, focus, and
 late responses from the browser. Biomarker data is never stored in browser
 storage, and this surface has no copy, download, or print action.
+
+The Today assessment uses the same strict server-declared CgA series as the
+Patient point chart before it may say rising, stable or falling. If no such
+series exists, Today says why the comparison is unavailable and points back to
+the complete table and per-report-range positions; it does not retain a looser
+claim based only on names, numbers and units.
+An assessment generated before this shared comparison policy is labelled
+outdated even when the patient profile itself has not changed. Use **Refresh
+assessment** once; the old wording is not reused in Today, chat, or generated
+actions.
 
 The header reports processing only: **Processing N**, **Idle**, or
 **Unavailable**. It never claims the clinical assessment is current. Assessment
@@ -449,6 +469,14 @@ course and its link are unaffected.
 Receipt access follows normal feed-job retention. Its audit record remains in
 `patient_profile.json` and backups, but legacy imports created before schema v2
 do not receive retroactive editable receipts.
+
+For biomarkers, this receipt correction is currently the only place to add
+explicit date kind, specimen, assay or method from the report. There is no
+durable metadata editor in Patient yet. Once the feed job is pruned, the receipt
+endpoint returns `404` even though the import audit remains in the profile, so
+those fields cannot currently be repaired through the UI. A receipt-independent
+Patient editor is deferred work; never infer the missing fields to work around
+this gap.
 
 ## 2. Run a research-only digest
 

@@ -39,8 +39,8 @@ Return ONLY valid JSON matching this exact schema (no markdown, no prose outside
   "status_rationale": "1-2 sentence explanation based on most recent imaging/biomarkers",
   "key_concern": "The single most important clinical issue right now (1 sentence, plain language)",
   "summary": "2-3 sentence narrative overview written for a non-clinician caregiver",
-  "prrt_status": "eligible|likely_eligible|pending_dotatate|not_eligible|unknown",
-  "prrt_rationale": "Brief screening assessment of potential PRRT fit; state that the treating team confirms candidacy.",
+  "prrt_status": "course_in_progress|eligible|likely_eligible|pending_dotatate|not_eligible|unknown",
+  "prrt_rationale": "Brief PRRT context: either a screening view of potential fit or the recorded state of a course already under way; state that the treating team confirms candidacy.",
   "cga_trend": "rising|stable|falling|insufficient_data",
   "cga_trend_detail": "e.g. CgA 145 → 188 nmol/L over 3 months (+30%)",
   "next_actions": [
@@ -86,6 +86,9 @@ Rules:
 - best_trial: this is only a trial to discuss, not a patient match or eligibility finding. Choose ONLY from trials tracked in the profile — never construct, recall, or guess an NCT ID. Set to null if the profile lists no potentially relevant trial or if the oncologist has ruled the candidates out. The treating team and trial site determine eligibility.
 - provisional: true for any timeline item or action NOT explicitly confirmed, agreed, or scheduled in the clinical documents. false only for confirmed appointments, agreed treatment plans, or scheduled tests. When uncertain, default to true.
 - Treat prrt_status as a screening description of potential fit, never a definitive eligibility decision. The treating team confirms candidacy using receptor imaging, pathology, organ function, prior treatment, and the full clinical context.
+- prrt_status describes one thing: what the record shows about PRRT right now. Use "course_in_progress" when the profile records a PRRT course that has started and is still running — for example a numbered series with doses already given and further doses planned or scheduled. Use "eligible", "likely_eligible", "pending_dotatate" or "not_eligible" only as a screening view of potential fit for someone who is not currently receiving PRRT. A course that finished, was cancelled, or is only planned is not "course_in_progress"; neither is a past course being screened for retreatment.
+- Never call a course that is already under way a potential, possible or likely fit. That contradicts the record the caregiver is reading.
+- "course_in_progress" states a recorded fact, not a judgment that treatment should continue. If the record or an active clinical judgment raises any concern about continuing — a cumulative dose limit, toxicity, a hold, a stop — say so in prrt_rationale and reflect it in key_concern and next_actions. Never leave such a concern out because a course is running.
 - If DOTATATE PET has never been done, identify that as a data gap. Add an action only when the current record and an active clinical decision make receptor imaging relevant; never automatically make it the top action.
 - claim_evidence and next_actions[].evidence_ids: copy only IDs from the supplied evidence catalog that directly support that specific claim/action. Use [] when no exact span supports it. Never invent an ID or reuse one merely because it is generally related.
 - generated_at: use today's date as provided in the input; if absent, use the date of the most recent document in the profile.

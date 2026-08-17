@@ -153,3 +153,62 @@ def test_generated_prose_is_stored_and_prompted_exactly_as_the_model_wrote_it(ag
     from agent import exec_summary
 
     assert '"generated_at": "YYYY-MM-DD"' in exec_summary.EXECUTIVE_SUMMARY_SYSTEM_TEMPLATE
+
+
+# ── PRRT status vocabulary ───────────────────────────────────────────────────
+# The caregiver read "PRRT: POTENTIAL FIT" directly above a rationale saying the
+# patient is already receiving her second Lu-177-octreotate series. That chip is
+# `prrt_status == "eligible"`. The vocabulary simply had no value for a course
+# already under way, so the strongest screening token was the closest thing the
+# model could say. The fix is vocabulary, not prose inspection: nothing reads
+# `prrt_rationale` to decide what the chip says.
+
+
+def test_the_status_vocabulary_can_say_a_course_is_already_under_way(agent):
+    from agent import exec_summary
+
+    template = exec_summary.EXECUTIVE_SUMMARY_SYSTEM_TEMPLATE
+    assert (
+        '"prrt_status": "course_in_progress|eligible|likely_eligible|'
+        'pending_dotatate|not_eligible|unknown"'
+    ) in template
+    # The screening tokens survive unchanged for someone not yet receiving PRRT.
+    for token in ("eligible", "likely_eligible", "pending_dotatate", "not_eligible", "unknown"):
+        assert token in template
+
+
+def test_the_prompt_forbids_calling_a_running_course_a_potential_fit(agent):
+    from agent import exec_summary
+
+    template = exec_summary.EXECUTIVE_SUMMARY_SYSTEM_TEMPLATE
+    assert "Never call a course that is already under way a potential" in template
+    assert "not a judgment that treatment should continue" in template
+    # A running course must never swallow a concern about continuing it.
+    assert "reflect it in key_concern and next_actions" in template
+    # The original non-eligibility promise is still made.
+    assert "never a definitive eligibility decision" in template
+
+
+def test_a_course_in_progress_status_passes_through_untouched(agent, empty_profile):
+    payload = {
+        "overall_status": "stable",
+        "status_confidence": "high",
+        "status_rationale": "Imaging is stable.",
+        "key_concern": "Cumulative renal dose is being tracked.",
+        "summary": "Treatment is continuing as planned.",
+        "prrt_status": "course_in_progress",
+        "prrt_rationale": (
+            "She is SSTR-positive and is already receiving Series 2 Lu-177-octreotate; "
+            "the treating team confirms candidacy and tracks cumulative renal dose."
+        ),
+        "cga_trend": "stable",
+        "cga_trend_detail": "CgA 180 to 185",
+        "next_actions": [],
+        "timeline": [],
+        "best_trial": None,
+        "generated_at": "ignored",
+    }
+    with patch_llm(agent, lambda **_: llm_text(json.dumps(payload))):
+        out = agent.generate_executive_summary(empty_profile)
+    assert out["prrt_status"] == "course_in_progress"
+    assert "already receiving Series 2" in out["prrt_rationale"]

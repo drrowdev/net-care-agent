@@ -55,13 +55,18 @@ are on you. Nothing here may be routed around. Last verified: 2026-07-11.
 - **exec_summary** JSON keys: `overall_status` (enum
   `stable|responding|progressing|insufficient_data`), `status_confidence`
   (`high|medium|low`), `status_rationale, key_concern, summary, prrt_status`
-  (`eligible|likely_eligible|pending_dotatate|not_eligible|unknown`),
+  (`course_in_progress|eligible|likely_eligible|pending_dotatate|not_eligible|unknown`),
   `prrt_rationale, cga_trend` (`rising|stable|falling|insufficient_data`),
   `cga_trend_detail, next_actions[], timeline[], best_trial, claim_evidence,
   generated_at`. `claim_evidence` and `next_actions[].evidence_ids` may contain
   only opaque IDs from the server-built verified evidence catalog. Unknown IDs
   are invalid, and an empty list means no exact source span. PRRT/trial values
-  are screening support for clinician discussion, never definitive eligibility.
+  are screening support for clinician discussion, never definitive eligibility;
+  `course_in_progress` is the generated assessment restating a recorded course,
+  not a judgment that treatment should continue, and never suppresses a concern
+  about continuing. The interface renders whichever value the assessment
+  produced and never reads `prrt_rationale` prose to choose, override, or
+  withhold the chip.
 - **questions** JSON array items: `text, category`
   (`Treatment|Diagnostics|Symptoms|Trials|Monitoring|Other`), `priority`
   (`urgent|high|medium`), `rationale`. Enums stay English; `text`/`rationale`

@@ -3805,6 +3805,10 @@
           ? `${latestDocument.added_at ? relativeTime(latestDocument.added_at) : 'Import time unavailable'} · ${latestDocument.summary || latestDocument.type || 'Clinical document'}`
           : 'No import time is available.',
         action: 'activity',
+        // The server resolves this from the source document's stored intake job
+        // and only sends it while that job is still retained, so the row can
+        // open the import it is actually describing.
+        job: typeof latestDocument?.job_id === 'string' ? latestDocument.job_id : '',
       },
       {
         label: 'Latest research run',
@@ -3812,23 +3816,34 @@
           ? `${relativeTime(research.completed_at)} · ${enumLabel(research.trigger, 'Research update')}`
           : 'No recent research check is recorded.',
         action: 'research',
+        job: '',
       },
       {
         label: 'Active recorded alerts',
         value: `${alertCount} alert${alertCount === 1 ? '' : 's'} currently recorded as active.`,
         action: 'patient',
+        job: '',
       },
     ];
     container.innerHTML = rows.map(row => `<article class="recent-update-item">
       <div><strong>${escHtml(row.label)}</strong><span>${escHtml(row.value)}</span></div>
-      <button class="button secondary recent-update-action" type="button" data-update-view="${row.action}">${
+      <button class="button secondary recent-update-action" type="button" data-update-view="${row.action}" data-update-job="${escHtml(row.job)}">${
         row.action === 'patient' ? 'Review alerts' : row.action === 'research' ? 'Open Research' : 'Open Activity'
       }</button>
     </article>`).join('');
     container.querySelectorAll('[data-update-view]').forEach(button => {
       button.addEventListener('click', () => {
         const view = button.dataset.updateView;
+        const jobId = button.dataset.updateJob || '';
         switchView(view);
+        if (jobId) {
+          // switchView already moved focus to the destination nav button, which
+          // is what selectTask records as the trigger to return to. Opening the
+          // detail hands focus to the panel and marks the nav inert, so the
+          // deferred nav focus below must not also run.
+          selectTask(jobId, null, null, { missingIsExpected: true });
+          return;
+        }
         const focusDestination = () => {
           document.getElementById(`nav-${view}`)?.focus({ preventScroll: true });
         };
@@ -7553,7 +7568,13 @@
 
     let html = '<section class="summary-primary" aria-labelledby="summary-matters-heading">';
     html += '<h3 class="summary-section-label prominent" id="summary-matters-heading">What matters now</h3>';
+    // The chip reports the value the generated assessment produced. A course
+    // already under way is a recorded fact, so it gets its own label rather
+    // than being squeezed into the screening vocabulary, where it read as
+    // "POTENTIAL FIT" directly above a rationale describing doses already
+    // given. Nothing here reads the rationale prose to decide anything.
     const prrtLabels = {
+      course_in_progress: 'PRRT: COURSE RECORDED AS IN PROGRESS',
       eligible: 'PRRT: POTENTIAL FIT', likely_eligible: 'PRRT: MAY FIT',
       pending_dotatate: 'PRRT: NEEDS RECEPTOR-IMAGING REVIEW',
       not_eligible: 'PRRT: NOT SUPPORTED BY CURRENT RECORD', unknown: 'PRRT: NOT ASSESSED'
@@ -7647,7 +7668,13 @@
         html += `<div class="summary-rationale"><strong>CgA trend:</strong> ${escHtml(fmtProseDates(d.cga_trend_detail))}${renderClaimEvidence(d.claim_evidence?.claims?.cga_trend_detail)}</div>`;
       }
       if (d.prrt_rationale) {
-        html += `<div class="summary-rationale"><strong>PRRT screening context:</strong> ${escHtml(fmtProseDates(d.prrt_rationale))}${renderClaimEvidence(d.claim_evidence?.claims?.prrt_rationale)}</div>`;
+        // The heading follows the generated status value, never the prose:
+        // calling a running course "screening context" repeats the same
+        // contradiction in smaller type.
+        const prrtHeading = d.prrt_status === 'course_in_progress'
+          ? 'PRRT context:'
+          : 'PRRT screening context:';
+        html += `<div class="summary-rationale"><strong>${prrtHeading}</strong> ${escHtml(fmtProseDates(d.prrt_rationale))}${renderClaimEvidence(d.claim_evidence?.claims?.prrt_rationale)}</div>`;
       }
       html += '</div></details>';
     }
@@ -9940,9 +9967,17 @@
     </div>${artifact.state === 'available' ? '' : artifactStateMarkup(task)}`;
   }
 
-  async function selectTask(id, expectedEpoch = null, fallbackReceipt = null) {
+  function setActivityNotice(message = '') {
+    const notice = document.getElementById('activity-notice');
+    if (!notice) return;
+    notice.textContent = message;
+    notice.hidden = !message;
+  }
+
+  async function selectTask(id, expectedEpoch = null, fallbackReceipt = null, options = {}) {
     const selectionEpoch = expectedEpoch == null ? ++taskSelectionEpoch : expectedEpoch;
     if (selectionEpoch !== taskSelectionEpoch) return;
+    setActivityNotice();
     selectedTaskId = id;
     openTaskRenderKey = null;
     const request = capturePatientRequest({ taskSelection: true });
@@ -9983,6 +10018,17 @@
 
     let task = tasks.find(t => t.id === id);
     if (!task) {
+      if (options.missingIsExpected) {
+        // Activity records are pruned by count and age while the document they
+        // came from is kept, so a Today shortcut can outlive its job. That is a
+        // retention outcome, not a failure: fall back to the list with a plain
+        // explanation instead of the authorization eviction below.
+        closePanel();
+        setActivityNotice(
+          'The activity record for that import is no longer kept, so the full list is shown instead. The document itself and everything imported from it are unchanged.'
+        );
+        return false;
+      }
       const missingError = new Error('The selected activity no longer exists.');
       evictClientPhi(missingError);
       reportLoadError('tasks', missingError);

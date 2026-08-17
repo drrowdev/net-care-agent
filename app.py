@@ -319,6 +319,23 @@ def _save_jobs():
     atomic_write_text(JOBS_PATH, json.dumps(_jobs, separators=(",", ":"), default=str))
 
 
+def _retained_feed_job_id(job_id: str | None) -> str | None:
+    """Return ``job_id`` only while that intake job is still an existing job.
+
+    Jobs are pruned by count and age, so the deep link the Today card offers has
+    to be checked against the live store rather than assumed. This is a hint,
+    not a guarantee: pruning can still happen between this read and the click,
+    which the client handles as an expected outcome rather than an error.
+    """
+    if not job_id:
+        return None
+    with _jobs_lock:
+        retained = any(
+            job.get("id") == job_id and job.get("type") == "feed" for job in _jobs
+        )
+    return job_id if retained else None
+
+
 def _clean_job(job: dict) -> dict:
     clean = {key: value for key, value in job.items() if key in _JOB_FIELDS}
     if clean.get("artifact_state") not in _ARTIFACT_STATES:
@@ -3075,6 +3092,12 @@ def api_status():
         key=lambda item: item.get("added_at") or "",
         default=None,
     )
+    latest_import_job_id = _retained_feed_job_id(
+        agent.source_document_feed_job_id(
+            profile,
+            (latest_document_import or {}).get("source_document_id"),
+        )
+    )
     return jsonify(
         {
             "patient": profile.get("patient", {}),
@@ -3089,6 +3112,7 @@ def api_status():
                     for key in ("added_at", "date", "type", "summary")
                     if key in latest_document_import
                 }
+                | ({"job_id": latest_import_job_id} if latest_import_job_id else {})
                 if latest_document_import is not None
                 else None
             ),

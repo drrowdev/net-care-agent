@@ -370,3 +370,105 @@ def test_cli_update_profile_syncs_components_without_classification(agent, monke
     assert [item["text"] for item in saved["patient"]["current_treatment_records"]] == [
         "capecitabine"
     ]
+
+
+# ── The Today shortcut into one specific import ──────────────────────────────
+# "Latest document import" names one import but its button used to land on the
+# undifferentiated Activity list. The intake job is stored on the source
+# document as `feed_job_id`, so the link is an exact stored lookup rather than
+# a guess — and it is only offered while that job is still retained, because
+# jobs are pruned by count and age while the document is kept.
+
+
+def _seed_one_import(tmp_path, *, source_id="doc_" + "a" * 32):
+    artifact = {"path": f"source_documents/{source_id}/source.bin", "sha256": "0" * 64, "length": 4}
+    _seed_profile(
+        tmp_path,
+        documents=[
+            {
+                "id": "document-1",
+                "date": "2026-08-10",
+                "added_at": "2026-08-12T10:00:00",
+                "type": "lab_result",
+                "summary": "Bloods from the August visit.",
+                "source_document_id": source_id,
+            }
+        ],
+        source_documents=[
+            {
+                "id": source_id,
+                "ingested_at": "2026-08-12T10:00:00",
+                "source": artifact,
+                "text": {**artifact, "path": f"source_documents/{source_id}/extracted.txt"},
+                "feed_job_id": "job-feed-1",
+            }
+        ],
+    )
+    return source_id
+
+
+def test_the_latest_import_row_carries_the_job_that_produced_it(client, app_module, tmp_path):
+    _seed_one_import(tmp_path)
+    app_module._initialized = True
+    app_module._jobs[:] = [{"id": "job-feed-1", "type": "feed", "status": "done"}]
+
+    body = client.get("/api/status").get_json()
+
+    assert body["latest_document_import"]["job_id"] == "job-feed-1"
+    assert body["latest_document_import"]["summary"] == "Bloods from the August visit."
+
+
+def test_a_pruned_activity_record_offers_no_deep_link(client, app_module, tmp_path):
+    """Retention removes jobs but keeps documents, so the link must disappear."""
+    _seed_one_import(tmp_path)
+    app_module._initialized = True
+    app_module._jobs[:] = []
+
+    body = client.get("/api/status").get_json()
+
+    assert "job_id" not in body["latest_document_import"]
+
+
+def test_an_unrelated_job_of_the_same_id_is_not_offered_as_the_import(client, app_module, tmp_path):
+    _seed_one_import(tmp_path)
+    app_module._initialized = True
+    app_module._jobs[:] = [{"id": "job-feed-1", "type": "digest", "status": "done"}]
+
+    body = client.get("/api/status").get_json()
+
+    assert "job_id" not in body["latest_document_import"]
+
+
+def test_a_document_with_no_recorded_intake_job_offers_no_deep_link(client, app_module, tmp_path):
+    _seed_profile(
+        tmp_path,
+        documents=[
+            {
+                "id": "document-1",
+                "added_at": "2026-08-12T10:00:00",
+                "type": "lab_result",
+                "summary": "Manually recorded.",
+            }
+        ],
+    )
+    app_module._initialized = True
+    app_module._jobs[:] = [{"id": "job-feed-1", "type": "feed", "status": "done"}]
+
+    body = client.get("/api/status").get_json()
+
+    assert "job_id" not in body["latest_document_import"]
+
+
+def test_the_lookup_matches_the_stored_source_id_and_never_the_newest_job(app_module, tmp_path):
+    profile = {
+        "source_documents": [
+            {"id": "doc_" + "a" * 32, "feed_job_id": "job-a"},
+            {"id": "doc_" + "b" * 32, "feed_job_id": "job-b"},
+        ]
+    }
+    lookup = app_module.agent.source_document_feed_job_id
+
+    assert lookup(profile, "doc_" + "b" * 32) == "job-b"
+    assert lookup(profile, "doc_" + "c" * 32) is None
+    assert lookup(profile, None) is None
+    assert lookup({}, "doc_" + "a" * 32) is None

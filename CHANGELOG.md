@@ -32,6 +32,50 @@ incremented when something user-visible or operationally meaningful changes.
   browser takes can never be turned away by the server.
 
 ### Fixed
+- **The assessment no longer contradicts itself about PRRT.** The Assessment
+  context panel showed the label **PRRT: POTENTIAL FIT** immediately above its
+  own explanation that she *is already receiving Series 2 Lu-177-octreotate*,
+  with the treating team tracking cumulative renal dose. Both lines came from
+  the same generated assessment, and they disagreed on screen.
+
+  The cause was vocabulary, not a stale value or a wrong answer. The assessment
+  could only describe PRRT with words about *screening* — a potential fit, a
+  possible fit, needs receptor imaging, not supported — and none of them means
+  *a course is already running*. Faced with a patient mid-course, the strongest
+  screening word was the closest thing it could say, and the panel then printed
+  it as speculation about the future.
+
+  The assessment can now say a course is under way, and the panel labels it
+  **PRRT: COURSE RECORDED AS IN PROGRESS**. That is the assessment restating
+  what the record shows, not NET/Care deciding anything clinical, and it is
+  explicitly not a judgment that treatment should continue: a concern about
+  continuing — a dose limit, toxicity, a hold — must still be stated in the
+  explanation, the key concern and the next steps, so this can never quietly
+  swallow a real disagreement. The screening words are unchanged for anyone who
+  has not started PRRT. Nothing reads the explanation's wording to decide what
+  the label says; that inference boundary is unchanged.
+
+  This applies to assessments generated from now on. An assessment already
+  saved keeps the words it was generated with until the next **Refresh
+  assessment** or **Regenerate assessment**.
+- **"Open Activity" now opens the import it is talking about.** On Today, the
+  **Latest document import** row names one import — its time and its summary —
+  but its button dropped you at the top of the whole Activity list to find that
+  item yourself. It now opens that import's own record directly. The link is the
+  intake job stored on the source document when it was imported, so it is a
+  lookup, not a guess about which item you meant.
+
+  Activity records are cleared out over time while the documents themselves are
+  kept, so an import can outlive its record. When that has happened the list
+  opens as before with a plain note saying the activity record is no longer kept
+  and that the document and everything imported from it are unchanged — rather
+  than an error, and rather than the browser clearing what it holds. Keyboard
+  use and focus are unchanged: the button reads the same, and focus follows the
+  record that opens and comes back to Activity when it closes.
+
+  **Open Research** and **Review alerts** on the same card are unchanged. They
+  already open the whole of what they name — the research workspace and the
+  recorded alert list.
 - **An interrupted backup can no longer leave a damaged copy that is never
   repaired.** Both protective copies of the record — the pre-write snapshot and
   the once-a-day backup — used to be written straight onto their final filename.

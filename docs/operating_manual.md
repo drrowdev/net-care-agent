@@ -100,7 +100,14 @@ available at every screen size:
   use the same secondary-button treatment
   as the card action at desktop and phone widths. Today creates no unread state.
   Latest document import is selected by ingestion time across all active
-  documents, independently of the clinical document date.
+  documents, independently of the clinical document date. Its **Open Activity**
+  action opens that import's own activity record rather than the general list.
+  Activity records are pruned by count and age while documents are kept, so when
+  the record is already gone the list opens with a plain note saying the activity
+  record is no longer kept and that the document and everything imported from it
+  are unchanged. **Open Research** and **Review alerts** open the Research
+  workspace and the Patient alert list, which are the whole of what those two
+  rows describe.
 - **Patient** — profile snapshot, treatments, complete biomarker history,
   alerts, symptoms, imaging history, and immutable document/source history.
 - **Research** — every current trial/paper occurrence and every open/closed

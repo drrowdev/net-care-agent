@@ -2933,6 +2933,15 @@ main#main-content {
 .activity-actions .button { grid-column: 2; grid-row: 1 / span 2; }
 .deep-sweep-button { color: var(--purple) !important; border-color: #cbb8df !important; }
 .activity-card { overflow: visible; }
+.activity-notice {
+  margin: 0;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text1);
+}
+.activity-notice[hidden] { display: none; }
 .task-item { min-height: 84px; padding: 15px 18px; border-left-width: 3px; cursor: pointer; }
 .task-item {
   width: 100%;

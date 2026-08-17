@@ -297,7 +297,7 @@ class _LiveState:
                 severity=body["severity_level"],
                 detail=body["severity_detail"],
                 onset=body["onset_date"],
-                onset_precision="year",
+                onset_precision="year" if body["onset_date"] else "unknown",
             )
             if "follow_up" in body:
                 episode["follow_up"] = _action(

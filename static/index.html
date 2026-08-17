@@ -145,7 +145,7 @@
         <div class="card-header compact split-header">
           <div>
             <p class="eyebrow">Patient record</p>
-            <h2 id="today-symptoms-heading">Symptoms logged</h2>
+            <h2 id="today-symptoms-heading" tabindex="-1">Symptoms logged</h2>
           </div>
           <span class="symptom-freshness loading" id="today-symptom-freshness">Not loaded</span>
         </div>
@@ -153,6 +153,13 @@
         <div class="symptom-episode-list compact" id="today-symptom-list">
           <div class="loading-state">Loading current symptom episodes…</div>
         </div>
+        <form class="symptom-quick-entry" id="symptom-quick-entry" onsubmit="event.preventDefault();submitQuickSymptom()">
+          <label for="symptom-quick-text"><span>Record a symptom in one line</span><input id="symptom-quick-text" maxlength="500" autocomplete="off" placeholder="What she felt today" oninput="updateQuickSymptomEntry()"></label>
+          <label for="symptom-quick-severity"><span>Severity (optional)</span><select id="symptom-quick-severity"><option value="">Not recorded</option><option value="mild">Mild</option><option value="moderate">Moderate</option><option value="severe">Severe</option></select></label>
+          <button class="button primary" id="symptom-quick-submit" type="submit" disabled>Record</button>
+          <p class="helper-text">This records the description and severity only. Use the full form below to add timing, onset or a follow-up.</p>
+          <p class="form-error" id="symptom-quick-error" role="alert" aria-live="polite"></p>
+        </form>
         <div class="symptom-workflow-actions">
           <button class="button primary" id="today-symptom-add" type="button" onclick="openSymptomAddDialog(this)">＋ Record symptom episode</button>
           <button class="button secondary" type="button" onclick="openPatientSymptoms()">Review all symptom records</button>
@@ -300,6 +307,32 @@
             </div>
             <span class="biomarker-freshness loading" id="biomarker-freshness">Not loaded</span>
           </div>
+          <section class="biomarker-overview" id="biomarker-overview" aria-labelledby="biomarker-overview-heading">
+            <div class="biomarker-section-heading">
+              <div>
+                <p class="eyebrow">Every biomarker</p>
+                <h3 id="biomarker-overview-heading">Latest result for each biomarker</h3>
+              </div>
+              <p>One line for each biomarker, so you can read them all without choosing one first.</p>
+            </div>
+            <label class="biomarker-search-field" for="biomarker-search">
+              <span>Search biomarkers</span>
+              <input
+                id="biomarker-search"
+                type="search"
+                maxlength="80"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="Search biomarkers…"
+                oninput="filterBiomarkerOverview()"
+                disabled
+              >
+            </label>
+            <p class="biomarker-overview-count" id="biomarker-overview-count" role="status" aria-live="polite"></p>
+            <ul class="biomarker-overview-list" id="biomarker-overview-list">
+              <li class="loading-state">Loading recorded biomarkers…</li>
+            </ul>
+          </section>
           <div class="biomarker-controls">
             <label for="biomarker-analyte-select">
               <span>Choose a biomarker</span>
@@ -330,13 +363,11 @@
                   <th scope="col">Recorded result</th>
                   <th scope="col">Reference</th>
                   <th scope="col">Reported flag</th>
-                  <th scope="col">Recorded context</th>
-                  <th scope="col">Can this be charted?</th>
-                  <th scope="col">Source and evidence</th>
+                  <th scope="col">Detail</th>
                 </tr>
               </thead>
               <tbody id="biomarker-table-body">
-                <tr><td colspan="7"><div class="loading-state">Loading biomarker observations…</div></td></tr>
+                <tr><td colspan="5"><div class="loading-state">Loading biomarker observations…</div></td></tr>
               </tbody>
             </table>
           </div>

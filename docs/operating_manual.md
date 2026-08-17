@@ -125,7 +125,8 @@ available at every screen size:
 
 - **Today** — global access/freshness, the expanded latest assessment/key
   concern/recommendations, bounded recorded update times plus active-alert
-  count, treatment status, symptoms logged, follow-ups, appointment preparation,
+  count, treatment status, symptoms logged with a one-line symptom entry,
+  follow-ups, appointment preparation,
   then lower-priority tracked research. The freshness banner holds the only
   assessment action at every state: **Refresh assessment** beside **New
   information since this assessment**, **Regenerate assessment** beside **Up to
@@ -142,7 +143,8 @@ available at every screen size:
   are unchanged. **Open Research** and **Review alerts** open the Research
   workspace and the Patient alert list, which are the whole of what those two
   rows describe.
-- **Patient** — profile snapshot, treatments, complete biomarker history,
+- **Patient** — profile snapshot, treatments, complete biomarker history with a
+  searchable line-per-biomarker overview above it,
   alerts, symptoms, imaging history, and immutable document/source history.
 - **Research** — every current trial/paper occurrence and every open/closed
   caregiver consideration in exact server order.
@@ -194,16 +196,43 @@ longitudinal projection directly from
 `GET /api/patient/biomarker-series`; it does not use the truncated biomarker
 summary in `/api/status`.
 
-1. Choose the server-provided biomarker name from **Choose a biomarker**.
-   Recorded aliases appear exactly as stored; the browser does not rename or
-   merge tests.
-2. Read the table first. It keeps every
+1. Read **Latest result for each biomarker** first. There is one line for every
+   biomarker in the record, showing its newest recorded result with the unit,
+   the flag printed in the report, the date and the reference range. Nothing has
+   to be chosen to see it. If several results carry exactly that same date the
+   line says how many, because nothing in the record says which of them came
+   first. If a result has no date the app can read, it is used
+   only when nothing else for that biomarker has one, and the line then says the
+   date was not recorded.
+2. Type into **Search biomarkers** to narrow that list. It matches the displayed
+   name and every recorded alias, so `cga` finds Chromogranin A. The search runs
+   in the browser against the record already loaded; it asks the server nothing
+   and is cleared if authorization is lost.
+3. A line is coloured only when the server itself compared the result with the
+   range printed in the report. The comparison is written out next to the colour
+   — **Within range**, **Above range** or **Below range** — so colour is never
+   the only way to read it, and a result the server did not compare is not
+   coloured at all. The browser never compares a number with a range and never
+   decides that a result is abnormal.
+4. Choose the biomarker name from **Choose a biomarker**, or press **Show
+   history** on any line, to fill the table below. Recorded aliases appear
+   exactly as stored; the browser does not rename or merge tests. **Show
+   history** moves the focus to the table it just filled.
+5. Read the table for the full history. It keeps every
    observation, including partial or unknown dates, qualified/ranged/text
    values, missing context, non-comparable facts, and presentation-collapsed
-   same-source duplicates. Expand **Source and wording** for plain source
-   meaning and authenticated **View exact wording** / **Open source** links.
+   same-source duplicates. Each row shows the date, the result, the reference
+   range and the reported flag. Expand **Show detail** on a row for everything
+   else that was recorded about it: the date type, the value type, the flag
+   source and the report's own range comparison, the specimen, assay and method
+   — all three named, so a fact the document did not carry still says so there —
+   whether it can be charted and why
+   not, how many recorded entries support it, and the plain source meaning with
+   authenticated **View source text** / **Open source** links. Nothing was
+   removed when the rows were compacted — a row simply no longer repeats "Not
+   recorded" for every fact the document did not carry.
    Internal observation, source-row, document, and evidence IDs remain hidden.
-3. Treat **Comparable point charts** as a secondary view only. Each card is one
+6. Treat **Comparable point charts** as a secondary view only. Each card is one
    exact series the server declared comparable. Points are not connected and the
    browser performs no conversion, interpolation, smoothing, aggregation,
    direction label, response judgment, or recommendation. If no group contains
@@ -215,7 +244,8 @@ offline stale, corrupt/inconsistent (`422`), and other failures. If connectivity
 becomes ambiguous, the last accepted table and charts remain visibly **Stale
 snapshot** and read-only until an authoritative reload succeeds. Reconnecting
 triggers that reload. Authorization loss or a hard invalidating response removes
-biomarker values, chart/table markup, selection and response tokens, focus, and
+biomarker values, chart/table markup, selection and response tokens, the search
+box, focus, and
 late responses from the browser. Biomarker data is never stored in browser
 storage, and this surface has no copy, download, or print action.
 
@@ -715,10 +745,27 @@ open, submission is disabled and the server rejects any stale request with
 
 ## 5a. Record and review symptom episodes
 
-**Today → Current symptom episodes** shows every current caregiver-maintained
-episode in server order and its linked follow-up state. Use **Record symptom
-episode** there, or open **Patient → Symptoms** for the complete workflow.
+**Today → Symptoms logged** shows every current caregiver-maintained
+episode in server order and its linked follow-up state. Beneath the list is a
+one-line entry — **Record a symptom in one line** — for the common case of
+noting what she felt today. Type the description, optionally choose a severity,
+and press **Record**. Use **Record symptom episode** there, or open
+**Patient → Symptoms**, for the complete workflow.
 Desktop and phone use the same projection, renderer, and dialogs.
+
+The one-line entry is a shortcut into the very same creation the full form uses,
+not a second way to record a symptom. Pressing **Record** opens the full episode
+dialog, fills in only the description and severity, and submits it through the
+same path — so every check the full form makes still runs, the same
+compare-and-set fields and replay identifier are sent, and it records the
+description and severity only. The dialog is on screen while it saves. If it
+saves, the dialog closes by itself, the line clears and the focus returns to
+**Symptoms logged**. If the record changed underneath or the connection dropped,
+the dialog stays open with the wording already in it, which is where the
+conflict and retry notices live, and the one-line entry keeps what was typed
+until it is known to have saved. A detailed entry started in the full dialog and
+left unsent is kept separately and is neither sent with a one-line entry nor
+thrown away by one.
 
 In **Patient → Symptoms**:
 
@@ -758,7 +805,8 @@ reload is uncertain, the retry reloads only and does not resend the mutation.
 A conflict reloads the record for explicit review and never auto-submits a
 draft. Authorization failure clears all patient information from the browser;
 a malformed or hard symptom failure clears the symptom surfaces without
-removing unrelated Patient cards.
+removing unrelated Patient cards. Authorization failure also empties the
+one-line entry on Today.
 
 Routine Today, Patient, and episode-dialog presentation does not repeat a
 generic capability or emergency disclaimer. Caregiver-entered/unverified

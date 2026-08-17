@@ -68,6 +68,10 @@
   let pendingSymptomIntent = null;
   let pendingSymptomCompletion = null;
   let symptomDrafts = new Map();
+  // True while the symptom dialog is being driven by the one-line entry on
+  // Today. It gives that entry its own draft identity, so finishing it never
+  // overwrites or discards a detailed entry he saved and has not sent.
+  let quickSymptomDialog = false;
   let treatmentProjection = null;
   let treatmentResponseOwner = null;
   let treatmentProjectionState = 'idle';
@@ -96,6 +100,7 @@
   let biomarkerRequestController = null;
   let biomarkerProjectionState = 'idle';
   let biomarkerNetworkAmbiguous = false;
+  let biomarkerSearchQuery = '';
   let receiptMutationPending = false;
   let taskSelectionEpoch = 0;
   let jobSubmissionEpoch = 0;
@@ -1955,10 +1960,11 @@
     if (caption) caption.textContent = 'Complete observations for the selected biomarker';
     const table = document.getElementById('biomarker-table-body');
     if (table) {
-      table.innerHTML = `<tr><td colspan="7"><div class="empty-state">${escHtml(message)}</div></td></tr>`;
+      table.innerHTML = `<tr><td colspan="5"><div class="empty-state">${escHtml(message)}</div></td></tr>`;
     }
     const charts = document.getElementById('biomarker-chart-region');
     if (charts) charts.innerHTML = '<div class="empty-state">No comparable chart is available.</div>';
+    clearBiomarkerOverview(message);
     setBiomarkerFreshness(state, statusLabel);
     setBiomarkerStatus(message, state, retry);
   }
@@ -1971,6 +1977,9 @@
     biomarkerResponseOwner = null;
     selectedBiomarkerAnalyteId = null;
     biomarkerNetworkAmbiguous = false;
+    biomarkerSearchQuery = '';
+    const search = document.getElementById('biomarker-search');
+    if (search) search.value = '';
     biomarkerProjectionState = options.state || 'error';
     biomarkerFocusFallback();
     renderBiomarkerUnavailable(
@@ -2011,14 +2020,74 @@
       corrected: observation.provenance.status === 'caregiver_corrected_unverified',
       older: observation.provenance.status === 'legacy_unknown',
     });
-    return `<details class="biomarker-source-details">
-      <summary>Source and wording</summary>
-      <div>
-        <p><strong>${escHtml(presentation.label)}</strong>${presentation.detail ? ` · ${escHtml(presentation.detail)}` : ''}</p>
-        <p>${observation.duplicate_count === 1 ? 'One recorded entry supports this result.' : `${observation.duplicate_count} matching recorded entries support this result.`}</p>
-        ${evidenceItems ? `<ul class="biomarker-evidence-list">${evidenceItems}</ul>` : '<span class="biomarker-missing">No document link is available.</span>'}
-      </div>
-    </details>`;
+    // Emitted as a plain block, not its own `<details>`. The row wraps every
+    // recorded detail in one toggle, and a `<details>` nested inside another
+    // would keep these links hidden after he opened the row.
+    return `<div class="biomarker-source-block">
+      <p><strong>${escHtml(presentation.label)}</strong>${presentation.detail ? ` · ${escHtml(presentation.detail)}` : ''}</p>
+      <p>${observation.duplicate_count === 1 ? 'One recorded entry supports this result.' : `${observation.duplicate_count} matching recorded entries support this result.`}</p>
+      ${evidenceItems ? `<ul class="biomarker-evidence-list">${evidenceItems}</ul>` : '<span class="biomarker-missing">No document link is available.</span>'}
+    </div>`;
+  }
+
+  const BIOMARKER_DATE_KINDS = {
+    collection: 'Collection date',
+    result: 'Result date',
+    clinical_unspecified: 'Clinical date - type not recorded',
+    source_document: 'Date from the document',
+    unknown: 'Date type not recorded',
+  };
+
+  const BIOMARKER_VALUE_KINDS = {
+    numeric: 'Number as recorded',
+    qualified: 'Qualified result as recorded',
+    range: 'Range as recorded',
+    text: 'Text result as recorded',
+    missing: 'Result not recorded',
+  };
+
+  const BIOMARKER_FLAG_AUTHORITIES = {
+    source_reported: 'Flag printed in the document',
+    caregiver_corrected: 'You corrected this flag',
+    legacy_unknown: 'Flag source details were not retained',
+    unknown: 'Flag source not recorded',
+  };
+
+  // Presentation only. `report_range_comparison` is decided on the server, in
+  // agent/biomarker_series.py, against the reference range printed in the
+  // report. The browser never compares a value with a range and never reaches
+  // a clinical conclusion of its own; it only colours the word the server
+  // sent, and that word is always on screen too, so colour is never the only
+  // way to read the row.
+  const BIOMARKER_RANGE_COMPARISONS = {
+    within: { tone: 'within', short: 'Within range', text: 'Within the range printed in the report' },
+    above: { tone: 'outside', short: 'Above range', text: 'Above the range printed in the report' },
+    below: { tone: 'outside', short: 'Below range', text: 'Below the range printed in the report' },
+  };
+
+  function biomarkerRangeComparison(observation) {
+    const comparison = observation.report_range_comparison;
+    if (typeof comparison !== 'string') return null;
+    return BIOMARKER_RANGE_COMPARISONS[comparison] || null;
+  }
+
+  function biomarkerUnitSuffix(observation) {
+    return observation.unit == null || observation.unit === ''
+      ? ''
+      : ` ${observation.unit}`;
+  }
+
+  function biomarkerRecordedContext(observation) {
+    // All three are always listed here, missing ones included. This lives
+    // behind the row's toggle, so naming what was not recorded costs him
+    // nothing at a glance and nothing the old row showed is lost.
+    return [
+      ['Specimen', observation.specimen],
+      ['Assay', observation.assay],
+      ['Method', observation.method],
+    ].map(
+      ([label, value]) => `<span><strong>${escHtml(label)}:</strong> ${escHtml(biomarkerScalar(value))}</span>`
+    ).join('');
   }
 
   function biomarkerObservationRow(analyte, observation) {
@@ -2026,12 +2095,11 @@
     const sourceDate = date.source_document_date == null
       ? ''
       : `<span>Document date: ${escHtml(biomarkerDate(date.source_document_date))} · ${escHtml(precisionLabel(date.source_document_date_precision))}</span>`;
-    const unit = observation.unit == null || observation.unit === ''
-      ? ''
-      : ` ${escHtml(observation.unit)}`;
-    const rangeComparison = observation.report_range_comparison == null
-      ? '<span class="biomarker-missing">No report-range comparison supplied</span>'
-      : `<span>${escHtml(biomarkerScalar(observation.report_range_label))}: <strong>${escHtml(observation.report_range_comparison)}</strong></span>`;
+    const unit = escHtml(biomarkerUnitSuffix(observation));
+    const comparison = biomarkerRangeComparison(observation);
+    const rangeComparison = comparison
+      ? `<span class="biomarker-comparison ${safeClassToken(comparison.tone)}">${escHtml(comparison.text)}</span>`
+      : '';
     const series = analyte.series.find(item => item.id === observation.series_id);
     const chartLabel = observation.comparable
       ? escHtml(series?.label || 'Measured the same way')
@@ -2045,54 +2113,44 @@
     const duplicateLabel = observation.duplicate_count === 1
       ? '1 recorded entry'
       : `${observation.duplicate_count} recorded entries`;
+    // Only the four things he reads at a glance stay on the row. Everything
+    // else — including the run of "Not recorded" lines that used to fill it —
+    // moves behind one toggle, and none of it is dropped.
     return `<tr data-observation-id="${escHtml(observation.id)}">
       <td>
         <strong>${escHtml(biomarkerDate(date.value))}</strong>
-        <span>${escHtml(precisionLabel(date.precision))}</span>
-        <span>${escHtml({
-          collection: 'Collection date',
-          result: 'Result date',
-          clinical_unspecified: 'Clinical date - type not recorded',
-          source_document: 'Date from the document',
-          unknown: 'Date type not recorded',
-        }[date.kind] || 'Date type not recorded')}</span>
-        ${sourceDate}
       </td>
       <td>
         <strong>${escHtml(biomarkerScalar(observation.value.raw))}${unit}</strong>
-        <span>${escHtml({
-          numeric: 'Number as recorded',
-          qualified: 'Qualified result as recorded',
-          range: 'Range as recorded',
-          text: 'Text result as recorded',
-          missing: 'Result not recorded',
-        }[observation.value.kind] || 'Result as recorded')}</span>
+        ${observation.value.kind === 'numeric' ? '' : `<span>${escHtml(BIOMARKER_VALUE_KINDS[observation.value.kind] || 'Result as recorded')}</span>`}
       </td>
       <td>
         <strong>${escHtml(biomarkerScalar(observation.reference_range))}</strong>
         ${rangeComparison}
       </td>
       <td>
-        <strong>${escHtml(biomarkerScalar(observation.reported_flag))}</strong>
-        <span>${escHtml({
-          source_reported: 'Flag printed in the document',
-          caregiver_corrected: 'You corrected this flag',
-          legacy_unknown: 'Flag source details were not retained',
-          unknown: 'Flag source not recorded',
-        }[observation.reported_flag_authority] || 'Flag source not recorded')}</span>
+        ${observation.reported_flag == null || observation.reported_flag === ''
+          ? '<span class="biomarker-missing">No flag recorded</span>'
+          : `<strong>${escHtml(observation.reported_flag)}</strong>`}
       </td>
       <td>
-        <span><strong>Specimen:</strong> ${escHtml(biomarkerScalar(observation.specimen))}</span>
-        <span><strong>Assay:</strong> ${escHtml(biomarkerScalar(observation.assay))}</span>
-        <span><strong>Method:</strong> ${escHtml(biomarkerScalar(observation.method))}</span>
-      </td>
-      <td>
-        <strong>${chartLabel}</strong>
-        ${notes}
-      </td>
-      <td>
-        <span class="biomarker-duplicate-count">${escHtml(duplicateLabel)}</span>
-        ${biomarkerEvidenceMarkup(observation)}
+        <details class="biomarker-source-details">
+          <summary>Show detail</summary>
+          <div>
+            <span><strong>Date:</strong> ${escHtml(precisionLabel(date.precision))} · ${escHtml(BIOMARKER_DATE_KINDS[date.kind] || 'Date type not recorded')}</span>
+            ${sourceDate}
+            <span><strong>Result:</strong> ${escHtml(BIOMARKER_VALUE_KINDS[observation.value.kind] || 'Result as recorded')}</span>
+            ${observation.report_range_comparison == null
+              ? '<span class="biomarker-missing">No report-range comparison supplied</span>'
+              : `<span><strong>${escHtml(biomarkerScalar(observation.report_range_label))}:</strong> ${escHtml(observation.report_range_comparison)}</span>`}
+            <span><strong>Flag:</strong> ${escHtml(BIOMARKER_FLAG_AUTHORITIES[observation.reported_flag_authority] || 'Flag source not recorded')}</span>
+            ${biomarkerRecordedContext(observation)}
+            <span><strong>Can this be charted?</strong> ${chartLabel}</span>
+            ${notes}
+            <span class="biomarker-duplicate-count">${escHtml(duplicateLabel)}</span>
+            ${biomarkerEvidenceMarkup(observation)}
+          </div>
+        </details>
       </td>
     </tr>`;
   }
@@ -2170,6 +2228,145 @@
     </figure>`;
   }
 
+  const BIOMARKER_DATED_PRECISIONS = new Set(['day', 'month', 'year']);
+
+  // The newest recorded result for one biomarker. A date the server stored
+  // keeps the precision it was recorded with, and a shorter value is always a
+  // prefix of a longer one in the same year, so comparing the stored text
+  // orders them by calendar date without the browser parsing a date or
+  // deciding anything clinical. An observation whose date could not be read is
+  // used only when nothing else has one, and every row shows the date it
+  // picked so he can see exactly what he is reading.
+  function biomarkerLatestObservation(analyte) {
+    const observations = analyte.observations || [];
+    let latest = null;
+    for (const observation of observations) {
+      const date = observation.date || {};
+      if (!BIOMARKER_DATED_PRECISIONS.has(date.precision)) continue;
+      if (typeof date.value !== 'string' || !date.value) continue;
+      if (!latest || date.value >= latest.date.value) latest = observation;
+    }
+    return latest || observations[observations.length - 1] || null;
+  }
+
+  // Several results can carry exactly the same recorded date. Nothing in the
+  // record says which of them came first, so the line names how many there are
+  // instead of presenting one of them as the later result.
+  function biomarkerSameDateCount(analyte, observation) {
+    const value = observation?.date?.value;
+    if (typeof value !== 'string' || !value) return 1;
+    return (analyte.observations || []).filter(
+      item => item.date?.value === value && item.date?.precision === observation.date.precision
+    ).length;
+  }
+
+  function biomarkerOverviewMatches(analyte, query) {
+    if (String(analyte.display_name || '').toLowerCase().includes(query)) return true;
+    return (analyte.observed_aliases || []).some(
+      alias => String(alias || '').toLowerCase().includes(query)
+    );
+  }
+
+  function biomarkerOverviewRow(analyte, index, selected) {
+    const observation = biomarkerLatestObservation(analyte);
+    const sameDate = observation ? biomarkerSameDateCount(analyte, observation) : 1;
+    const nameId = `biomarker-overview-name-${index}`;
+    const actionId = `biomarker-overview-action-${index}`;
+    const comparison = observation ? biomarkerRangeComparison(observation) : null;
+    const flagText = observation && observation.reported_flag != null && observation.reported_flag !== ''
+      ? escHtml(observation.reported_flag)
+      : '<span class="biomarker-missing">No flag recorded</span>';
+    const value = observation
+      ? `${escHtml(biomarkerScalar(observation.value.raw))}${escHtml(biomarkerUnitSuffix(observation))}`
+      : '<span class="biomarker-missing">No result recorded</span>';
+    return `<li class="biomarker-overview-row${selected ? ' selected' : ''}"${selected ? ' aria-current="true"' : ''}>
+      <span class="biomarker-overview-name" id="${nameId}">${escHtml(analyte.display_name)}</span>
+      <span class="biomarker-overview-value">${value}</span>
+      <span class="biomarker-overview-flag">${flagText}</span>
+      ${comparison
+        ? `<span class="biomarker-overview-comparison ${safeClassToken(comparison.tone)}">${escHtml(comparison.short)}</span>`
+        : '<span class="biomarker-overview-comparison"></span>'}
+      <span class="biomarker-overview-date">${observation ? escHtml(biomarkerDate(observation.date.value)) : ''}${
+        sameDate > 1
+          ? `<span class="biomarker-overview-tied">${sameDate} results carry this date</span>`
+          : ''
+      }</span>
+      <span class="biomarker-overview-range">Reference: ${observation ? escHtml(biomarkerScalar(observation.reference_range)) : escHtml('Not recorded')}</span>
+      <button
+        class="button secondary biomarker-overview-action"
+        type="button"
+        id="${actionId}"
+        data-analyte-id="${escHtml(analyte.id)}"
+        aria-labelledby="${nameId} ${actionId}"
+        onclick="selectBiomarkerAnalyteFromRow(this)"
+      >Show history</button>
+    </li>`;
+  }
+
+  function clearBiomarkerOverview(message) {
+    const list = document.getElementById('biomarker-overview-list');
+    if (list) list.innerHTML = `<li class="empty-state">${escHtml(message)}</li>`;
+    const count = document.getElementById('biomarker-overview-count');
+    if (count) count.textContent = '';
+    const search = document.getElementById('biomarker-search');
+    if (search) search.disabled = true;
+  }
+
+  function renderBiomarkerOverview(owner) {
+    if (!biomarkerResponseOwnerIsCurrent(owner)) return false;
+    const analytes = biomarkerProjection.analytes;
+    const query = biomarkerSearchQuery.trim().toLowerCase();
+    const matches = query
+      ? analytes.filter(analyte => biomarkerOverviewMatches(analyte, query))
+      : analytes;
+    const search = document.getElementById('biomarker-search');
+    if (search) {
+      search.disabled = !analytes.length;
+      if (search.value !== biomarkerSearchQuery) search.value = biomarkerSearchQuery;
+    }
+    const list = document.getElementById('biomarker-overview-list');
+    if (list) {
+      list.innerHTML = matches.length
+        ? matches.map((analyte, index) => biomarkerOverviewRow(
+            analyte,
+            index,
+            analyte.id === selectedBiomarkerAnalyteId,
+          )).join('')
+        : `<li class="empty-state">${escHtml(
+            analytes.length
+              ? 'No biomarker name matches that search.'
+              : 'No biomarker results are recorded.'
+          )}</li>`;
+    }
+    const count = document.getElementById('biomarker-overview-count');
+    if (count) {
+      if (!analytes.length) {
+        count.textContent = 'No biomarker results are recorded.';
+      } else if (query) {
+        count.textContent = `Showing ${matches.length} of ${analytes.length} biomarkers.`;
+      } else {
+        count.textContent = `Showing all ${analytes.length} biomarker${analytes.length === 1 ? '' : 's'}.`;
+      }
+    }
+    return true;
+  }
+
+  function filterBiomarkerOverview() {
+    const search = document.getElementById('biomarker-search');
+    biomarkerSearchQuery = search?.value || '';
+    return renderBiomarkerOverview(biomarkerResponseOwner);
+  }
+
+  function selectBiomarkerAnalyteFromRow(element) {
+    if (!selectBiomarkerAnalyte(element?.dataset?.analyteId || '')) return false;
+    // Choosing a biomarker rebuilds this list, so the button he pressed no
+    // longer exists. Focus moves to the history he asked for rather than being
+    // dropped on the page body.
+    document.activeElement?.blur();
+    document.getElementById('biomarker-table-region')?.focus();
+    return true;
+  }
+
   function renderBiomarkerProjection(owner) {
     if (!biomarkerResponseOwnerIsCurrent(owner)) return false;
     const analyte = selectedBiomarkerAnalyte();
@@ -2200,8 +2397,9 @@
         ? analyte.observations.map(observation => (
             biomarkerObservationRow(analyte, observation)
           )).join('')
-        : '<tr><td colspan="7"><div class="empty-state">No observations are recorded for this biomarker.</div></td></tr>';
+        : '<tr><td colspan="5"><div class="empty-state">No observations are recorded for this biomarker.</div></td></tr>';
     }
+    renderBiomarkerOverview(owner);
 
     const comparableSeries = analyte.series.filter(series => series.comparable === true);
     const charts = document.getElementById('biomarker-chart-region');
@@ -2382,10 +2580,11 @@
         if (caption) caption.textContent = 'Complete observations for the selected biomarker';
         const table = document.getElementById('biomarker-table-body');
         if (table) {
-          table.innerHTML = '<tr><td colspan="7"><div class="empty-state">No biomarker observations are recorded.</div></td></tr>';
+          table.innerHTML = '<tr><td colspan="5"><div class="empty-state">No biomarker observations are recorded.</div></td></tr>';
         }
         const charts = document.getElementById('biomarker-chart-region');
         if (charts) charts.innerHTML = '<div class="empty-state">No comparable chart is available.</div>';
+        clearBiomarkerOverview('No biomarker results are recorded.');
         setBiomarkerFreshness('current', 'Current · no results recorded');
         setBiomarkerStatus(
           'Biomarker history is up to date. No biomarker results are recorded.',
@@ -5861,6 +6060,7 @@
       }
     });
     if (!symptomMutationPending) updateSymptomFormValidity();
+    updateQuickSymptomEntry();
   }
 
   function renderSymptomProjection(owner = symptomResponseOwner) {
@@ -6007,6 +6207,7 @@
     const wasActive = symptomDialogOpen || activeDialogSurface === dialog;
     symptomDialogOpen = false;
     symptomDialogMode = null;
+    quickSymptomDialog = false;
     selectedSymptomEpisodeId = null;
     selectedSymptomEpisodeToken = null;
     selectedSymptomActionId = null;
@@ -6089,6 +6290,8 @@
     symptomMutationOwner = null;
     symptomMutationPending = false;
     scrubSymptomDialog({ moveFocus: false });
+    clearQuickSymptomEntry();
+    quickSymptomDialog = false;
     symptomProjection = null;
     symptomResponseOwner = null;
     symptomNetworkAmbiguous = false;
@@ -6364,7 +6567,10 @@
   }
 
   function symptomDraftKey() {
-    return `${symptomDialogMode || 'closed'}:${selectedSymptomEpisodeId || 'new'}`;
+    const mode = quickSymptomDialog && symptomDialogMode === 'add'
+      ? 'quick'
+      : (symptomDialogMode || 'closed');
+    return `${mode}:${selectedSymptomEpisodeId || 'new'}`;
   }
 
   function captureSymptomDraft() {
@@ -6549,7 +6755,7 @@
     updateSymptomFormValidity();
   }
 
-  function openSymptomDialog(mode, trigger, episodeId = null) {
+  function openSymptomDialog(mode, trigger, episodeId = null, options = {}) {
     if (
       !['current', 'empty'].includes(symptomProjectionState)
       || !symptomResponseOwnerIsCurrent()
@@ -6575,6 +6781,9 @@
     symptomDialogEpoch += 1;
     symptomDialogMode = mode;
     symptomDialogOpen = true;
+    // Set here, and only here, so an ordinary open always clears it and it can
+    // never stay set and misroute the full dialog's saved entry.
+    quickSymptomDialog = mode === 'add' && options.quick === true;
     clearSymptomRetry();
     setSymptomDialogStatus('');
     for (const id of ['symptom-details-error', 'symptom-resolve-error', 'symptom-follow-up-error']) {
@@ -6615,6 +6824,7 @@
     if (preserveDraft) captureSymptomDraft();
     symptomDialogOpen = false;
     symptomDialogMode = null;
+    quickSymptomDialog = false;
     selectedSymptomEpisodeId = null;
     selectedSymptomEpisodeToken = null;
     selectedSymptomActionId = null;
@@ -6821,6 +7031,7 @@
       actionToken: selectedSymptomActionToken,
       draftKey: options.draftKey || symptomDraftKey(),
       operation: options.operation || '',
+      quick: options.quick === true,
     };
   }
 
@@ -6835,6 +7046,95 @@
   function symptomOptionalText(id) {
     const value = document.getElementById(id)?.value ?? '';
     return value === '' ? null : value.trim();
+  }
+
+  function updateQuickSymptomEntry() {
+    const button = document.getElementById('symptom-quick-submit');
+    if (!button) return;
+    const text = (document.getElementById('symptom-quick-text')?.value || '').trim();
+    button.disabled = !text
+      || symptomMutationPending
+      || Boolean(pendingSymptomCompletion)
+      || !['current', 'empty'].includes(symptomProjectionState)
+      || !symptomResponseOwnerIsCurrent();
+  }
+
+  function clearQuickSymptomEntry() {
+    const text = document.getElementById('symptom-quick-text');
+    if (text) text.value = '';
+    const severity = document.getElementById('symptom-quick-severity');
+    if (severity) severity.value = '';
+    setFormError('symptom-quick-error', '');
+    updateQuickSymptomEntry();
+  }
+
+  // Every field the create request reads, put back to the value it has on a
+  // fresh dialog. The quick line writes here rather than through the saved
+  // drafts, so a half-written detailed entry he left behind is neither sent
+  // with this one nor thrown away.
+  function resetSymptomDetailsFields() {
+    for (const id of [
+      'symptom-text',
+      'symptom-severity',
+      'symptom-severity-detail',
+      'symptom-onset-date',
+      'symptom-edit-resolved-date',
+      'symptom-timing',
+      'symptom-frequency',
+      'symptom-triggers',
+      'symptom-notes',
+      'symptom-create-follow-up-text',
+      'symptom-create-follow-up-owner',
+      'symptom-create-follow-up-due',
+    ]) {
+      const control = document.getElementById(id);
+      if (control) control.value = '';
+    }
+    const subject = document.getElementById('symptom-reported-subject');
+    if (subject) subject.value = 'unspecified';
+    const noFollowUp = document.querySelector(
+      'input[name="symptom-create-follow-up-mode"][value="none"]',
+    );
+    if (noFollowUp) noFollowUp.checked = true;
+    renderSymptomCreateFollowUpMode();
+  }
+
+  // The one-line entry on Today is a shortcut into the same guarded creation
+  // the full form uses. It opens the real dialog so every precondition runs,
+  // fills in the two things it collects, and submits through
+  // submitSymptomDetails. There is no second way to create an episode and no
+  // check the full form makes is skipped. If anything goes wrong the dialog is
+  // already open with the wording in it, which is where the retry and conflict
+  // notices live.
+  async function submitQuickSymptom() {
+    const input = document.getElementById('symptom-quick-text');
+    const text = (input?.value || '').trim();
+    setFormError('symptom-quick-error', '');
+    if (!text) {
+      setFormError('symptom-quick-error', 'Write what she felt before recording it.');
+      return null;
+    }
+    const severity = document.getElementById('symptom-quick-severity')?.value || '';
+    openSymptomDialog(
+      'add',
+      document.getElementById('symptom-quick-submit'),
+      null,
+      { quick: true },
+    );
+    if (!symptomDialogOpen) {
+      setFormError(
+        'symptom-quick-error',
+        'Load the current symptom record again before recording anything.',
+      );
+      return null;
+    }
+    resetSymptomDetailsFields();
+    const description = document.getElementById('symptom-text');
+    if (description) description.value = text;
+    const level = document.getElementById('symptom-severity');
+    if (level) level.value = severity;
+    updateSymptomFormValidity();
+    return submitSymptomDetails();
   }
 
   function symptomDetailsBody() {
@@ -6883,6 +7183,7 @@
   }
 
   async function submitSymptomDetails() {
+    const quick = quickSymptomDialog && symptomDialogMode === 'add';
     const mutationOwner = beginSymptomMutation();
     if (!mutationOwner) return null;
     let intent;
@@ -6906,11 +7207,20 @@
           : `/api/symptom-episodes/${encodeURIComponent(selectedSymptomEpisodeId)}`,
         body,
         mutationOwner,
-        { operation: creating ? 'create' : 'edit' },
+        {
+          operation: creating ? 'create' : 'edit',
+          quick: quick && creating,
+        },
       );
       return performSymptomIntent(intent);
     } catch (error) {
       setFormError('symptom-details-error', error.message || 'Review the episode fields.');
+      if (quick) {
+        setFormError(
+          'symptom-quick-error',
+          error.message || 'Review the episode fields.',
+        );
+      }
       releaseSymptomMutation(intent || {
         mutationOwner,
         controller: symptomMutationController,
@@ -7056,6 +7366,7 @@
     setSymptomStatus('Symptom record saved.', 'current', false);
     reportLoadSuccess('symptom-mutation');
     releaseSymptomMutation(intent);
+    if (intent.quick) clearQuickSymptomEntry();
     const target = document.getElementById(
       activeView === 'patient' ? 'symptoms-heading' : 'today-symptoms-heading',
     );
@@ -7229,6 +7540,7 @@
         clearSymptomRetry();
         if (symptomDialogOpen) closeSymptomDialog(false, true);
         setSymptomStatus('Symptom record saved.', 'current', false);
+        if (completion.intent.quick) clearQuickSymptomEntry();
       }
       return;
     }

@@ -9,6 +9,52 @@ incremented when something user-visible or operationally meaningful changes.
 ## [Unreleased]
 
 ### Added
+- **Every biomarker is back on one screen, and searchable.** The redesign
+  replaced the old list of recent results with a single dropdown showing one
+  marker at a time, opening on whichever name came first alphabetically. There
+  was no way to scan for anything out of range, compare two markers, or search.
+  **Patient → Biomarkers** now opens on **Latest result for each biomarker**:
+  one line per biomarker with its newest recorded result, unit, reported flag,
+  date and reference range, above a **Search biomarkers** box that filters by
+  displayed name or recorded alias, so `cga` finds Chromogranin A. **Show
+  history** on a line fills the full table below and moves the focus there.
+
+  The detailed table is kept — it is better than the old one for a single
+  marker — and the dropdown still works. Nothing about how results are read
+  changed: a line is coloured only when the server itself compared the result
+  with the range printed in the report, that comparison is written out in words
+  next to the colour, and a comparison the server did not make is not coloured.
+  The browser does not compare a number with a range. Which result counts as
+  the newest is decided by comparing the stored dates, so a month-precision
+  result from this year is not passed over for an exact one from six years ago;
+  a result whose date could not be read is used only when nothing else for that
+  biomarker has one. Where several results carry exactly that same date, the
+  line says how many rather than presenting one of them as the later result,
+  because nothing in the record says which came first. Searching happens
+  entirely in the browser against the
+  record already loaded, asks the server nothing, and is cleared along with
+  everything else if authorization is lost.
+
+- **A symptom can be recorded in one line from Today again.** The old interface
+  took a description, a severity and a `+`. The redesign replaced it with a
+  ten-field dialog, which gained real things — resolution dates, follow-up
+  linking — but made "she felt sick today" slow. **Today → Symptoms logged**
+  now carries a one-line entry: a description, an optional severity, and
+  **Record**.
+
+  It is a shortcut into the same creation the full form uses, not a second way
+  to record a symptom. Pressing **Record** opens the full dialog, fills in only
+  those two fields and submits it through the same guarded path, so every check
+  the full form makes still runs and the same compare-and-set fields and replay
+  identifier are sent. The dialog is visible while it saves; on success it
+  closes itself, the line clears and the focus returns to **Symptoms logged**.
+  If the record changed underneath or the connection dropped, the dialog stays
+  open with the wording in it — which is where the conflict and retry notices
+  live — and the one-line entry keeps what was typed until the save is known to
+  have completed. A detailed entry started in the full dialog and left unsent is
+  kept separately: a one-line entry neither sends it along nor throws it away.
+  Losing authorization empties the one-line entry with everything else.
+
 - **Dates can now be typed the way they are read.** The record has displayed
   Finnish dates everywhere since v0.10.0, but every date box still only accepted
   `2026-08-14`. Now `14.8.2026`, `04.08.2026`, `4.8.2026` and `14.8.2026.` all
@@ -31,7 +77,34 @@ incremented when something user-visible or operationally meaningful changes.
   case that the two accept and reject exactly the same set, so a date the
   browser takes can never be turned away by the server.
 
+### Changed
+- **One blood result no longer fills twelve lines.** A single haemoglobin value
+  used to render as a date plus "Exact date" plus "Date type not recorded"; the
+  value plus "Number as recorded"; the reference plus its comparison; the flag
+  plus "Flag source not recorded"; "Specimen: Not recorded / Assay: Not recorded
+  / Method: Not recorded"; a "Can this be charted?" column with three reasons;
+  "1 recorded entry"; and a source toggle. The number was buried in the record
+  of what had not been recorded, and reading several results in a row was
+  impractical.
+
+  A row now shows the date, the result, the reference range and the reported
+  flag. Everything else moved behind a per-row **Show detail** toggle: the date
+  type, the value type, the flag source and the report's own range comparison,
+  the specimen, assay and method — all three still named there, so a fact the
+  document did not carry still says so — whether it can be charted and why not,
+  how many recorded entries support it,
+  and the source wording with its authenticated links. Nothing was deleted and
+  nothing became unreachable — a row simply no longer repeats "Not recorded"
+  for every fact the document did not carry, and the table stopped needing to
+  scroll sideways on a desktop screen.
+
 ### Fixed
+- **Focus was dropped after recording a symptom from Today.** Saving an episode
+  moves the focus to the heading of the list it was added to. On Patient that
+  heading could take the focus; the Today heading could not, so the focus fell
+  to the top of the page and anyone navigating by keyboard lost their place. The
+  Today heading is now focusable like the Patient one.
+
 - **The assessment no longer contradicts itself about PRRT.** The Assessment
   context panel showed the label **PRRT: POTENTIAL FIT** immediately above its
   own explanation that she *is already receiving Series 2 Lu-177-octreotate*,

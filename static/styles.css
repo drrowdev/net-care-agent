@@ -1691,6 +1691,89 @@ main#main-content {
 .biomarker-freshness.stale { border-color: #d7bf75; background: var(--amber-dim); color: #684800; }
 .biomarker-freshness.corrupt,
 .biomarker-freshness.error { border-color: #e8aaaa; background: var(--red-dim); color: var(--red); }
+.biomarker-overview {
+  padding: 16px 18px;
+  display: grid;
+  gap: 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg1);
+}
+.biomarker-search-field {
+  display: grid;
+  gap: 6px;
+  color: var(--text1);
+  font-size: 11px;
+  font-weight: 600;
+}
+.biomarker-search-field input {
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg1);
+  color: var(--text0);
+  font: inherit;
+}
+.biomarker-overview-count {
+  margin: 0;
+  color: var(--text1);
+  font-size: 11px;
+}
+.biomarker-overview-list {
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+  list-style: none;
+}
+.biomarker-overview-row {
+  min-width: 0;
+  padding: 8px 10px;
+  display: grid;
+  grid-template-columns:
+    minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1fr)
+    minmax(0, 0.9fr) minmax(0, 0.8fr) minmax(0, 1.2fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg2);
+  color: var(--text1);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.biomarker-overview-row.selected {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+.biomarker-overview-name { color: var(--text0); font-size: 12px; font-weight: 700; }
+.biomarker-overview-value { color: var(--text0); font-weight: 700; }
+.biomarker-overview-tied { display: block; color: var(--text2); font-style: italic; }
+/* The colour repeats a comparison the server made against the range printed
+   in the report. The same words are on screen next to it, so the colour is
+   never the only way to read the row. */
+.biomarker-overview-comparison:empty { display: none; }
+.biomarker-overview-comparison.within,
+.biomarker-comparison.within {
+  padding: 3px 8px;
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  background: var(--bg1);
+  color: var(--text1);
+  font-weight: 700;
+}
+.biomarker-overview-comparison.outside,
+.biomarker-comparison.outside {
+  padding: 3px 8px;
+  border: 1px solid #d7bf75;
+  border-radius: 999px;
+  background: var(--amber-dim);
+  color: #684800;
+  font-weight: 700;
+}
+.biomarker-comparison { display: inline-block; margin-top: 4px; }
+.biomarker-overview-action { min-height: 44px; white-space: nowrap; }
 .biomarker-controls {
   padding: 16px 18px;
   display: grid;
@@ -1757,7 +1840,7 @@ main#main-content {
 }
 .biomarker-table {
   width: 100%;
-  min-width: 1120px;
+  min-width: 640px;
   border-collapse: collapse;
   table-layout: fixed;
   color: var(--text0);
@@ -1780,13 +1863,11 @@ main#main-content {
   text-align: left;
   vertical-align: bottom;
 }
-.biomarker-table th:nth-child(1) { width: 15%; }
-.biomarker-table th:nth-child(2) { width: 12%; }
-.biomarker-table th:nth-child(3) { width: 14%; }
-.biomarker-table th:nth-child(4) { width: 11%; }
-.biomarker-table th:nth-child(5) { width: 16%; }
-.biomarker-table th:nth-child(6) { width: 15%; }
-.biomarker-table th:nth-child(7) { width: 17%; }
+.biomarker-table th:nth-child(1) { width: 16%; }
+.biomarker-table th:nth-child(2) { width: 20%; }
+.biomarker-table th:nth-child(3) { width: 24%; }
+.biomarker-table th:nth-child(4) { width: 16%; }
+.biomarker-table th:nth-child(5) { width: 24%; }
 .biomarker-table td {
   padding: 13px 12px;
   border-bottom: 1px solid var(--border);
@@ -1813,6 +1894,14 @@ main#main-content {
   font-weight: 700;
 }
 .biomarker-source-details { margin-top: 7px; }
+.biomarker-source-details > div > span {
+  display: block;
+  margin-top: 4px;
+  color: var(--text1);
+}
+.biomarker-source-block { margin-top: 8px; }
+.biomarker-source-block p { margin: 0; }
+.biomarker-source-block p + p { margin-top: 6px; }
 .biomarker-source-details summary {
   min-height: 36px;
   display: inline-flex;
@@ -2159,6 +2248,38 @@ main#main-content {
 /* Symptom episodes */
 .symptom-workspace,
 .symptom-today-card { min-width: 0; }
+.symptom-quick-entry {
+  padding: 12px 18px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(140px, 0.35fr) auto;
+  align-items: end;
+  gap: 10px;
+  border-top: 1px solid var(--border);
+  background: var(--bg2);
+}
+.symptom-quick-entry label {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  color: var(--text1);
+  font-size: 11px;
+  font-weight: 600;
+}
+.symptom-quick-entry input,
+.symptom-quick-entry select {
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg1);
+  color: var(--text0);
+  font: inherit;
+}
+.symptom-quick-entry .button { min-height: 44px; }
+.symptom-quick-entry .helper-text,
+.symptom-quick-entry .form-error { grid-column: 1 / -1; margin: 0; }
+.symptom-quick-entry .form-error:empty { display: none; }
 .symptom-header-actions,
 .symptom-workflow-actions,
 .symptom-episode-heading,
@@ -4790,10 +4911,15 @@ body.dialog-open { overflow: hidden; }
   .questions-grid { gap: 12px; }
   .biomarker-controls { grid-template-columns: 1fr; padding: 14px; }
   .biomarker-controls select { min-height: 44px; }
+  .biomarker-overview { padding: 14px; }
+  .biomarker-overview-row { grid-template-columns: 1fr; gap: 4px; }
+  .biomarker-overview-comparison.within,
+  .biomarker-overview-comparison.outside { justify-self: start; }
+  .biomarker-overview-action { width: 100%; justify-content: center; margin-top: 6px; }
   .biomarker-status { padding-inline: 14px; }
   .biomarker-table-region { max-width: 100%; }
   .table-scroll-hint { display: block; }
-  .biomarker-table { min-width: 880px; font-size: 11px; }
+  .biomarker-table { min-width: 620px; font-size: 11px; }
   .biomarker-table th { padding: 11px 10px; font-size: 11px; }
   .biomarker-table td { padding: 12px 10px; }
   .biomarker-charts { padding: 14px; }
@@ -4846,6 +4972,8 @@ body.dialog-open { overflow: hidden; }
     justify-content: center;
   }
   .symptom-tabs { padding-inline: 14px; }
+  .symptom-quick-entry { grid-template-columns: 1fr; padding-inline: 14px; }
+  .symptom-quick-entry .button { width: 100%; justify-content: center; }
   .symptom-episode-list { padding: 14px; }
   .symptom-episode-summary,
   .symptom-form-grid { grid-template-columns: 1fr; }

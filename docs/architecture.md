@@ -174,6 +174,21 @@ explicitly unclassified/non-comparable rows rather than being silently omitted.
 The projection never saves, audits, advances revisions, persists state, or calls
 a network/model service, and it is not injected into any LLM context.
 
+The Patient biomarker surface renders that one projection twice. Above the
+per-analyte table sits a line-per-biomarker overview with a browser-side search
+box; both are rebuilt only inside the same response-owner guard as the table, so
+a filtered view can never outlive the projection it came from, and the query is
+dropped when the projection is cleared. The overview picks each biomarker's
+newest observation by comparing the stored date text, which orders recorded
+dates without parsing them; observations whose date could not be read are used
+only when nothing else for that biomarker has one, and a shared date is
+disclosed as a count rather than resolved into a false ordering. Colour on an overview line
+and on a table row repeats `report_range_comparison` — computed on the server in
+`agent/biomarker_series.py` against the range printed in the report — and the
+same comparison is always written out beside the colour. The browser performs no
+comparison of a value against a range and derives no clinical meaning of its
+own; an unrecognised comparison value is rendered without colour.
+
 `GET /api/patient/imaging-series` is a separate authenticated/no-store
 projection over every bounded `imaging[]` row and the sole longitudinal
 authority for the shared Patient imaging timeline/comparison UI. Schema v10 preserves
@@ -274,6 +289,16 @@ visit/decision/alert action provenance is untouched, duplicate episode linkage
 is rejected, and neither lifecycle cascades. The legacy `/api/symptoms` and
 `/api/status` payloads remain backend compatibility surfaces, but the SPA makes
 no symptom requests to them; only `symptoms[]` enters model prompts.
+
+The one-line symptom entry on Today adds no endpoint and no second creation
+path. It opens the real episode dialog so every precondition guard runs, writes
+the description and severity into that dialog's own fields, and submits through
+`submitSymptomDetails`, so the mutation ID, compare-and-set fields, conflict,
+ambiguous-retry and eviction handling are byte-for-byte the ones the full form
+uses. A dialog opened this way carries its own draft identity, so completing or
+abandoning a one-line entry never overwrites an unsent detailed draft, and the
+intent is tagged so the one-line fields are cleared only when the save is known
+to have completed — including after a deferred explicit retry.
 
 `GET /api/patient/treatment-reconciliation` is the complete bounded backend
 contract for five deliberately separate authorities: every treatment receipt

@@ -276,6 +276,7 @@ let biomarkerSelectionEpoch = 0;
 let biomarkerRequestController = null;
 let biomarkerProjectionState = 'idle';
 let biomarkerNetworkAmbiguous = false;
+let biomarkerSearchQuery = '';
 const loadEvents = [];
 function requestClinicalConvergence() {}
 function markVisitRecapStale() {}
@@ -732,10 +733,14 @@ def test_live_biomarker_explorer_is_semantic_responsive_and_overflow_safe():
                 assert page.locator(".biomarker-chart-card path").count() == 0
                 assert "S-<CgA>" in page.locator("#biomarker-context").inner_text()
                 assert "<5" in page.locator("#biomarker-table-body").inner_text()
+                # The comparability reason moved behind the per-row toggle when
+                # the rows were compacted; it is still reachable, not dropped.
+                page.locator("#biomarker-table-body summary").last.click()
                 assert (
                     "Only finite unqualified numeric values are comparable."
                     in page.locator("#biomarker-table-body").inner_text()
                 )
+                page.locator("#biomarker-table-body summary").last.click()
 
                 page.locator("#biomarker-analyte-select").select_option("analyte-nse")
                 assert page.locator("#biomarker-table-body tr").count() == 1
@@ -755,9 +760,11 @@ def test_live_biomarker_explorer_is_semantic_responsive_and_overflow_safe():
                         <= document.getElementById('biomarker-explorer').clientWidth,
                     })"""
                 )
+                # Compacting the rows removed the desktop side-scroll: five
+                # columns fit at 1280, and only the phone still scrolls.
                 assert overflow == {
                     "document": 0,
-                    "tableScrolls": True,
+                    "tableScrolls": width == 360,
                     "chartContained": True,
                 }
                 select_height = page.locator("#biomarker-analyte-select").evaluate(

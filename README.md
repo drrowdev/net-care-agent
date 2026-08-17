@@ -397,10 +397,12 @@ state and withholds the prior clinical content.
 ├── pyproject.toml        # Python deps + tooling config
 ├── .env.example          # Template for local secrets
 ├── tests/                # pytest suite (no network or API key needed)
+│   ├── _ui_render.py     # shared Node harness: runs real render functions, reads visible text
 │   ├── test_imaging_timeline_ui.py # actual-function Node + live responsive browser coverage
 │   ├── test_date_time_formats_ui.py # exact Finnish date/time/number rendering contract
 │   ├── test_finnish_date_input.py # typed Finnish/ISO dates: one grammar, both layers
 │   ├── test_summary_narrative_ui.py # how the generated assessment reads: evidence chips + prose dates
+│   ├── test_summary_timeline_ui.py # assessment timeline: horizontal layout, a11y, 1280/768/360
 │   ├── test_symptom_workflow_ui.py # symptom authority + live lifecycle/responsive coverage
 │   ├── test_symptom_episodes.py # backend identity/lifecycle/replay/projection contract
 │   └── test_treatment_reconciliation.py # treatment authority/lifecycle/replay contract

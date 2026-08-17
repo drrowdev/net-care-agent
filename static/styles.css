@@ -1534,49 +1534,100 @@ main#main-content {
   margin-top: -5px;
 }
 
-.timeline-list {
+/* ── Assessment timeline ──────────────────────────────────────────────────
+   The horizontal reading he asked for: each row carries a plot strip whose
+   marker sits at that event's true position in time, and one today line runs
+   down the whole column so every row is read against the same reference. Each
+   event having its own row is what keeps markers aligned with their own words
+   and removes any need to shorten a label. Below 720px the plot strips and the
+   today line are dropped and the rows stand alone; nothing scrolls sideways at
+   any width. */
+
+.timeline-track {
   position: relative;
   list-style: none;
   display: grid;
-  gap: 0;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
 }
 
-.timeline-list::before {
+.timeline-stop {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(96px, auto) 1fr auto;
+  align-items: baseline;
+  gap: 4px 12px;
+  padding-bottom: 8px;
+  border-bottom: 0.5px solid var(--border);
+}
+
+.timeline-stop:last-child { border-bottom: none; }
+
+/* The plot strip spans the row and holds only this row's marker. */
+.timeline-plot {
+  grid-column: 1 / -1;
+  position: relative;
+  height: 11px;
+  margin-bottom: 2px;
+}
+
+.timeline-plot::before {
   content: "";
   position: absolute;
-  top: 12px;
-  bottom: 12px;
-  left: 6px;
-  width: 1px;
+  left: 0;
+  right: 0;
+  top: 5px;
+  height: 1px;
   background: var(--border2);
 }
 
-.timeline-entry {
-  position: relative;
-  padding: 0 0 14px 24px;
-  display: grid;
-  grid-template-columns: minmax(88px, auto) 1fr auto;
-  align-items: baseline;
-  gap: 12px;
-}
-
-.timeline-entry::before {
-  content: "";
+.timeline-plot-mark {
   position: absolute;
-  top: 7px;
-  left: 2px;
-  width: 9px;
+  top: 1px;
+  left: var(--stop-offset, 0%);
+  /* A marker has width, so one sitting at the very end of the window would
+     otherwise hang past the edge of the strip. Pulling it back in proportion
+     to how far along it sits keeps the last marker flush with the end and the
+     first flush with the start, without distorting anything between them. */
+  margin-left: calc(-9px * var(--stop-fraction, 0));
+  width: max(var(--stop-span, 0%), 9px);
   height: 9px;
-  border: 2px solid var(--bg1);
-  border-radius: 50%;
+  border-radius: 5px;
   background: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent);
+  box-shadow: 0 0 0 1px var(--bg1);
 }
 
-.timeline-entry.past::before { background: var(--text2); box-shadow: 0 0 0 1px var(--text2); }
-.timeline-entry time { color: var(--text2); font-family: var(--mono); font-size: 11px; }
-.timeline-event-copy { color: var(--text0); font-size: 12px; }
-.timeline-provisional { color: var(--amber); font-size: 11px; font-style: italic; }
+/* Past is stated in words for a screen reader as well; the styling is a
+   second signal, never the only one. */
+.timeline-plot-mark.past { background: var(--text2); }
+
+.timeline-today {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--stop-offset, 0%);
+  margin-left: calc(-1px * var(--stop-fraction, 0));
+  width: 1px;
+  background: var(--red);
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.timeline-stop-when { grid-column: 1; }
+.timeline-stop time,
+.timeline-when-text { color: var(--text1); font-family: var(--mono); font-size: 11px; }
+.timeline-stop.past time,
+.timeline-stop.past .timeline-when-text { color: var(--text2); }
+.timeline-stop.undated .timeline-when-text { font-style: italic; }
+.timeline-event-copy { grid-column: 2; color: var(--text0); font-size: 12px; line-height: 1.4; }
+.timeline-type { grid-column: 3; justify-self: end; }
+.timeline-provisional {
+  grid-column: 2 / -1;
+  color: var(--amber);
+  font-size: 11px;
+  font-style: italic;
+}
 
 .loading-state {
   min-height: 72px;
@@ -4725,8 +4776,15 @@ body.dialog-open { overflow: hidden; }
   .action-controls { grid-column: 2 / -1; justify-content: flex-start; flex-wrap: wrap; }
   .action-dismiss-btn { justify-self: end; }
   .action-accept-btn { min-height: 44px; }
-  .timeline-entry { grid-template-columns: 1fr; gap: 2px; }
-  .timeline-entry .timeline-type { justify-self: start; }
+  /* On a phone the plot strip and the today line are dropped rather than
+     squeezed into a few pixels: they are decoration, so nothing is lost, and
+     the rows read better stacked in a narrow column. */
+  .timeline-plot,
+  .timeline-today { display: none; }
+  .timeline-stop { grid-template-columns: 1fr; gap: 2px; }
+  .timeline-type { grid-column: 1; justify-self: start; }
+  .timeline-event-copy,
+  .timeline-provisional { grid-column: 1; }
 
   .patient-grid,
   .questions-grid { gap: 12px; }

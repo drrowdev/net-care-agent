@@ -76,6 +76,88 @@ incremented when something user-visible or operationally meaningful changes.
   **Open Research** and **Review alerts** on the same card are unchanged. They
   already open the whole of what they name — the research workspace and the
   recorded alert list.
+- **The assessment timeline no longer shows machine dates, and reads left to
+  right again.** The rows under *What changed / upcoming* still read
+  `2026-08 (approx late Aug)`, `2026-08/09` and `2026-09/10` after three earlier
+  rounds of date work. The renderer was not at fault — it already called the
+  Finnish formatter. The fault was upstream: the assessment's own contract
+  described that field as *"YYYY-MM or approximate description"* and told the
+  model to *"estimate dates where reasonable"*, so it wrote qualifiers and
+  alternatives into a **date** field, and the formatter, which only rewrites an
+  exact date and deliberately leaves anything else untouched, passed them
+  straight through.
+
+  The contract now asks for a bare calendar date at the precision the record
+  actually supports and nothing else, and says that timing wording belongs in
+  the event sentence. A deterministic check enforces that after generation, so a
+  drifting model cannot reintroduce it: `2026-08 (approx late Aug)` is split
+  into the date `2026-08` and the wording `(approx late Aug)`, which moves into
+  the event where it reads naturally.
+
+  Assessments already stored still contain the old values, so the display side
+  now improves them on its own without anything being regenerated. A recognisable
+  date is shown in Finnish with the recorded qualifier kept beside it —
+  `8/2026 (approx late Aug)`. Two possible months are shown as
+  `8/2026 or 9/2026`; **neither is silently chosen**, because picking one would
+  be the app inventing clinical timing. Where even that cannot be read honestly —
+  `2026-12/01`, which would need January to be assumed to mean 2027 — it says
+  *Timing unclear* rather than guessing, and an item with no timing at all says
+  *Timing not recorded*, because those are different facts. No stored value is
+  ever rewritten.
+
+  Two related faults went with it. `<time datetime="2026-08 (approx late Aug)">`
+  was not a valid machine date, so that attribute is now written only when the
+  record really states one date. And past/upcoming was decided by comparing text,
+  which marked the whole of August as already past on 14 August, and marked a
+  qualified August past because a space sorts below a hyphen; a recorded month or
+  year is now compared at the precision it was recorded at, so one that still
+  contains today is neither past nor upcoming. Today's date is also read in the
+  local zone rather than UTC, which was an hour or three wrong near midnight.
+
+  The horizontal timeline he asked for is back. The one removed in the redesign
+  was an SVG graph with hover-only tooltips, no keyboard reach at all, a 400px
+  floor that overflowed a phone, event labels cut to 19 characters and English
+  month names, so its shape was kept but rebuilt on ordinary markup. Every event
+  has its own row, and each row carries a strip showing where that event sits in
+  time, with one faint line down the whole column marking today. Giving each
+  event its own row is what keeps a marker directly above its own words and
+  removes any need to shorten a label. A month-precision date is drawn as a band
+  across the month it names, not as a point on an invented day inside it. The
+  strips are decoration and are hidden from screen readers, because everything
+  they show is written out in the row; a row that has already happened says so
+  in words, so nothing rests on colour alone. Under 720px the strips are dropped
+  and the rows stand alone; nothing scrolls sideways at 360px.
+
+- **Dates the assessment, chat and research write into their own sentences are
+  localised everywhere, not just in the assessment panel.** Generated prose is
+  not a field, so no field formatter reaches it. That was fixed for the
+  assessment's paragraphs in an earlier round, which left chat replies, generated
+  questions and their rationales, and the body of a research report still
+  printing `2026-08-14` mid-sentence. They now pass through the same
+  transcription, which changes only the punctuation of an unambiguous date and
+  leaves identifiers, filenames, links, timestamps and two-year spans alone.
+  The visit recap's *Resolved* line was formatted on screen but written into the
+  copied and downloaded text as stored; the export now matches what he read.
+
+- **The same due date no longer reads two different ways on two screens.** A
+  symptom follow-up's due date was corrected in an earlier round on the episode
+  card, but the linked-action line and the follow-up picker still printed it as
+  stored, so one screen said `1.9.2026` and the next said `2026-09-01`. The same
+  was true of five dates in the research record view — *Recorded*, *Due date*,
+  *Date added*, *Registry last updated* and a paper's publication date — which
+  were printed by a generic value renderer that showed a scalar exactly as
+  stored. That renderer now knows which fields hold a date. The linked-action
+  line also stopped printing the stored status code instead of its label.
+
+  The guard that was supposed to prevent all of this asserted that a hand-picked
+  list of call sites mentioned a formatter, which is precisely why a site nobody
+  had listed kept leaking. It now renders the real screens with every dated field
+  set to a machine date and fails if one survives into anything he reads,
+  whatever route it took — including accessible names — with a second, cheaper
+  check that reads every value interpolated into markup and fails on a
+  date-bearing field that has no formatter, next to a written reason for each
+  deliberate exception.
+
 - **An interrupted backup can no longer leave a damaged copy that is never
   repaired.** Both protective copies of the record — the pre-write snapshot and
   the once-a-day backup — used to be written straight onto their final filename.

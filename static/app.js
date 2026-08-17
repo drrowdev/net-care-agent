@@ -7677,23 +7677,23 @@
   }
 
   // ── Assessment timeline ─────────────────────────────────────────────────
-  // He asked for the horizontal timeline back. The old one was an SVG graph
-  // with hover-only tooltips, a 400px floor that overflowed a phone, event text
-  // cut to 19 characters, English month abbreviations from the browser locale,
-  // and a parser that invented the 1st of the month for a month-precision date.
-  // Restoring it verbatim would undo work that shipped since, so the horizontal
-  // reading is rebuilt on ordinary accessible markup instead:
+  // He asked for the horizontal timeline back. The old one plotted each event
+  // at its true position on a horizontal time axis, gave each event its own
+  // row, and drew a dashed line for today. That shape is kept. What is not kept
+  // is how it was built: an SVG with hover-only tooltips and no keyboard reach,
+  // a 400px floor that overflowed a phone, event text cut to 19 characters,
+  // English month names from the browser locale, and a parser that invented the
+  // 1st of the month for a month-precision date.
   //
-  //   · an axis strip that encodes position only. It is decorative and hidden
-  //     from assistive technology, because every fact it shows is written out
-  //     in the cards below, so nothing depends on seeing it.
-  //   · an ordered list of stop cards carrying the readable text. Because the
-  //     text is not on the axis, no label ever has to be truncated or dropped
-  //     to avoid a collision.
+  // Giving every event its own row is what makes the rest possible. Two events
+  // a week apart cannot collide, so no label has to be shortened or suppressed,
+  // and the marker for a row sits directly above that row's own words. The
+  // markers, the today line and the axis are decoration and are hidden from
+  // assistive technology, because everything they show is written out in the
+  // row beneath them.
   //
-  // Under 720px, the app's existing mobile breakpoint, the axis is hidden and
-  // the cards fall back to the vertical list, which stays the better shape on a
-  // phone. Nothing scrolls sideways at 360px.
+  // Under 720px, the app's existing mobile breakpoint, the plot strip is
+  // dropped and the rows stand alone. Nothing scrolls sideways at any width.
 
   // The window a recorded date occupies, in whole UTC days. A day-precision date
   // is a point. A month or a year is a band across exactly the span the record
@@ -7713,20 +7713,19 @@
     return { start: Date.UTC(year, month, day), end: Date.UTC(year, month, day) };
   }
 
-  // Proportional offsets for the axis strip, as percentages of the whole window.
-  // Returns null when there is nothing to scale against — a single dated item,
-  // or none at all — so the axis is simply not drawn rather than drawn wrong.
+  // Proportional offsets as percentages of the whole window. Returns null when
+  // there is nothing to scale against — fewer than two dated items, or every
+  // item on the same day — so the plot strip is simply not drawn rather than
+  // drawn wrong.
   function timelineAxisGeometry(items, today) {
     const windows = items.map(item => timelineDateWindow(timelineDateParts(item.date).date));
     const dated = windows.filter(Boolean);
     if (dated.length < 2) return null;
     const todayPoint = timelineDateWindow(today);
-    const starts = dated.map(w => w.start).concat(todayPoint ? [todayPoint.start] : []);
-    const ends = dated.map(w => w.end).concat(todayPoint ? [todayPoint.end] : []);
-    const from = Math.min(...starts);
-    const to = Math.max(...ends);
+    const from = Math.min(...dated.map(w => w.start), todayPoint ? todayPoint.start : Infinity);
+    const to = Math.max(...dated.map(w => w.end), todayPoint ? todayPoint.end : -Infinity);
     const span = to - from;
-    if (span <= 0) return null;
+    if (!Number.isFinite(span) || span <= 0) return null;
     const percent = value => ((value - from) / span) * 100;
     return {
       marks: windows.map(w => (w === null ? null : {
@@ -7742,8 +7741,8 @@
     const geometry = timelineAxisGeometry(items, today);
     const stops = items.map((item, index) => {
       const parts = timelineDateParts(item.date);
-      const past = timelineDateIsPast(parts.date, today) ? ' past' : '';
-      const undated = parts.date ? '' : ' undated';
+      const isPast = timelineDateIsPast(parts.date, today);
+      const mark = geometry?.marks[index];
       // A Finnish date when the record states one, both months when it offers
       // two, and otherwise a plain statement of what is missing. "Timing not
       // recorded" and "Timing unclear" are different facts and are not
@@ -7752,32 +7751,28 @@
         ? `<time datetime="${escHtml(parts.date)}">${escHtml(parts.display)}</time>`
         : `<span class="timeline-when-text">${escHtml(parts.display
           || (parts.unclear ? 'Timing unclear' : 'Timing not recorded'))}</span>`;
-      const mark = geometry?.marks[index];
-      const position = mark
-        ? ` style="--stop-offset:${mark.offset.toFixed(3)}%;--stop-span:${mark.width.toFixed(3)}%"`
+      // Past is a fact about the item, so it is said in words as well as shown
+      // in the styling. Nothing here depends on colour alone.
+      const status = isPast ? '<span class="sr-only">Already happened. </span>' : '';
+      const plot = mark
+        ? `<span class="timeline-plot" aria-hidden="true"><span class="timeline-plot-mark${isPast ? ' past' : ''}" style="--stop-offset:${mark.offset.toFixed(3)}%;--stop-span:${mark.width.toFixed(3)}%;--stop-fraction:${(mark.offset / 100).toFixed(5)}"></span></span>`
         : '';
-      return `<li class="timeline-stop${past}${undated}"${position}>
-        <span class="timeline-stop-when">${when}</span>
+      return `<li class="timeline-stop${isPast ? ' past' : ''}${parts.date ? '' : ' undated'}">
+        ${plot}
+        <span class="timeline-stop-when">${status}${when}</span>
         <span class="timeline-event-copy">${escHtml(fmtProseDates(item.event))}</span>
         <span class="timeline-type ${safeClassToken(item.type, 'test')}">${escHtml(translateType(item.type || 'Event'))}</span>
         ${item.provisional ? '<span class="timeline-provisional">Provisional — confirm with the care team</span>' : ''}
       </li>`;
     }).join('');
-    const axis = geometry
-      ? `<div class="timeline-axis" aria-hidden="true">
-        <span class="timeline-axis-line"></span>
-        ${geometry.today === null ? '' : `<span class="timeline-axis-today" style="--stop-offset:${geometry.today.toFixed(3)}%"></span>`}
-        ${geometry.marks.map((mark, index) => (mark === null ? '' : `<span class="timeline-axis-mark${timelineDateIsPast(timelineDateParts(items[index].date).date, today) ? ' past' : ''}" style="--stop-offset:${mark.offset.toFixed(3)}%;--stop-span:${mark.width.toFixed(3)}%"></span>`)).join('')}
-      </div>`
+    // The today line runs the height of the plot column, so every row is read
+    // against the same reference point, exactly as the old graph did.
+    const todayLine = geometry && geometry.today !== null
+      ? `<span class="timeline-today" aria-hidden="true" style="--stop-offset:${geometry.today.toFixed(3)}%;--stop-fraction:${(geometry.today / 100).toFixed(5)}"></span>`
       : '';
-    // The card row scrolls sideways when the stops do not fit, so it is a
-    // focusable landmark: a keyboard alone has to be able to reach and scroll it.
     return `<div class="summary-section">
       <div class="summary-section-label" id="summary-timeline-heading">What changed / upcoming</div>
-      <div class="timeline-scroll" role="region" aria-labelledby="summary-timeline-heading" tabindex="0">
-        ${axis}
-        <ol class="timeline-track">${stops}</ol>
-      </div>
+      <ol class="timeline-track${geometry ? ' plotted' : ''}" aria-labelledby="summary-timeline-heading">${todayLine}${stops}</ol>
     </div>`;
   }
 
@@ -10262,8 +10257,10 @@
   }
 
   function formatReport(text) {
-    // Light formatting: highlight headers and key phrases
-    return escHtml(text)
+    // Light formatting: highlight headers and key phrases. The report is the
+    // model's own prose, so its dates are localised here like any other
+    // generated sentence — before escaping, so the pattern sees the real text.
+    return escHtml(fmtProseDates(text))
       .replace(/^(#{1,3}\s.+)$/gm, '<strong>$1</strong>')
       .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
       .replace(/(NCT\d{8})/g, '<span style="color:var(--teal)">$1</span>')
@@ -10467,7 +10464,10 @@
       const note = match[2].trim();
       return {
         date: match[1],
-        display: note ? `${fmtDate(match[1])} ${note}` : fmtDate(match[1]),
+        // The qualifier is the model's own wording and can itself contain a
+        // date, so it goes through the same prose handling as any other
+        // generated sentence rather than being copied through untouched.
+        display: note ? `${fmtDate(match[1])} ${fmtProseDates(note)}` : fmtDate(match[1]),
         unclear: false,
       };
     }
@@ -11122,7 +11122,7 @@
       sections.related_resolved_alerts,
       (item, index) => {
         const result = [`${index + 1}. Resolved alert`];
-        if (item.resolved_at) result.push(`Resolved: ${recapPlainText(item.resolved_at)}`);
+        if (item.resolved_at) result.push(`Resolved: ${recapPlainText(formatActionTimestamp(item.resolved_at))}`);
         if (item.visit_id) result.push('Link: this visit');
         if (item.decision_id) result.push('Linked decision: recorded for this appointment');
         if (item.follow_up_id) result.push('Linked follow-up: recorded');
@@ -13387,7 +13387,7 @@
     }
     const currentRows = generated.map(question =>
       `<div class="visit-source-question" data-source-question-id="${escHtml(question.id)}" data-source-token="${escHtml(question.source_token)}">
-        <div><strong>${escHtml(question.text)}</strong><span>Current generated question</span></div>
+        <div><strong>${escHtml(fmtProseDates(question.text))}</strong><span>Current generated question</span></div>
         <button class="button secondary" onclick="addGeneratedVisitQuestion(this.closest('.visit-source-question'))">Add</button>
       </div>`
     );
@@ -13927,10 +13927,10 @@
         <div class="q-priority-dot ${safeClassToken(q.priority, 'medium')}"></div>
         <button class="q-checkbox${q.asked?' checked':''}" onclick="toggleQuestion(this.closest('.q-item').dataset.questionId)" aria-label="${q.asked ? 'Mark question as not asked' : 'Mark question as asked'}">${q.asked?'✓':''}</button>
         <div class="q-text-wrap">
-          <div class="q-text${q.asked?' asked':''}">${escHtml(q.text)}</div>
+          <div class="q-text${q.asked?' asked':''}">${escHtml(fmtProseDates(q.text))}</div>
           <div class="q-meta">
             <span class="q-cat ${safeClassToken(q.category, 'Other')}">${escHtml(translateCategory(q.category||'Other'))}</span>
-            ${q.rationale ? `<span class="q-rationale">${escHtml(q.rationale)}</span>` : ''}
+            ${q.rationale ? `<span class="q-rationale">${escHtml(fmtProseDates(q.rationale))}</span>` : ''}
           </div>
         </div>
         <button class="q-delete" onclick="deleteQuestion(this.closest('.q-item').dataset.questionId)" aria-label="Delete question" title="Delete">✕</button>
@@ -14250,7 +14250,7 @@
     const now = fmtTime(new Date());
     const div = document.createElement('div');
     div.className = `chat-msg ${role}`;
-    const body = role === 'assistant' ? renderMarkdown(text) : escHtml(text).replace(/\n/g,'<br>');
+    const body = role === 'assistant' ? renderMarkdown(fmtProseDates(text)) : escHtml(text).replace(/\n/g,'<br>');
     div.innerHTML = `
       <div class="chat-bubble ${role}">${body}</div>
       <div class="chat-time">${now}</div>`;
@@ -14262,7 +14262,7 @@
   function updateLastMsg(div, text) {
     const bubble = div.querySelector('.chat-bubble');
     // updateLastMsg is only ever called for assistant replies/errors.
-    if (bubble) bubble.innerHTML = renderMarkdown(text);
+    if (bubble) bubble.innerHTML = renderMarkdown(fmtProseDates(text));
     const msgs = document.getElementById('chat-messages');
     msgs.scrollTop = msgs.scrollHeight;
   }

@@ -81,17 +81,20 @@ recommendation apart from one you wrote.
 
 ### The timeline under *What changed / upcoming*
 
-This reads left to right: the further right a stop sits, the further ahead it
-is, and the gaps between stops are proportional to the real time between them.
-The thin strip above the stops is only there to show that spacing — everything
-it indicates is written out in the stops themselves, so nothing is lost if you
-cannot see it. A stop whose date is known only to the month is drawn as a band
-across that whole month, never as a dot on a particular day inside it, because
-the record does not say which day. The row can be scrolled sideways with the
-keyboard alone. On a phone the strip is dropped and the stops simply stack, so
-the page never scrolls sideways.
+Each event has its own row, and each row carries a thin strip showing where that
+event sits in time: the further right the marker, the further ahead it is, and
+the gaps between markers are proportional to the real time between them. One
+faint red line runs down the whole column to mark today, so every row is read
+against the same point. Giving every event its own row is what keeps a marker
+directly above its own words, and means no wording ever has to be shortened to
+fit. The strips and the today line are there to be looked at — everything they
+show is also written out in the row, so nothing is lost if you cannot see them.
+An event whose date is known only to the month is drawn as a band across that
+whole month, never as a dot on a particular day inside it, because the record
+does not say which day. On a phone the strips and the today line are dropped and
+the rows stand alone; the page never scrolls sideways.
 
-Each stop says when it happens in the same Finnish form as everywhere else, and
+Each row says when it happens in the same Finnish form as everywhere else, and
 the assessment is only ever allowed to put a real calendar date there. If it
 recorded something alongside the date — *late in the month*, *before the next
 dose* — that wording is kept and shown next to the date.
@@ -100,13 +103,15 @@ Where the assessment could not settle on one month, both are shown, as
 *8/2026 or 9/2026*. **The app never picks one of them for you.** Choosing would
 be the app deciding clinical timing, which it does not do anywhere. If the
 recorded timing cannot be read honestly at all — for example a pair of months
-that would require assuming which year the second one falls in — the stop says
-**Timing unclear** rather than guessing. A stop with no timing recorded says
+that would require assuming which year the second one falls in — the row says
+**Timing unclear** rather than guessing. A row with no timing recorded says
 **Timing not recorded**, which is a different thing and is shown differently.
 
-A stop is only greyed out as past once the whole of the period it names is
-behind us. An event recorded as *August 2026* is not treated as past partway
-through August, because as far as the record is concerned it may still be ahead.
+A row is only greyed out as past once the whole of the period it names is behind
+us. An event recorded as *August 2026* is not treated as past partway through
+August, because as far as the record is concerned it may still be ahead. A row
+that has already happened also says so in words for a screen reader, so the
+distinction never rests on colour alone.
 
 Stored timestamps are written by the server as naive ISO strings on a UTC host,
 so the interface reads a timestamp without a timezone as UTC and shows it in the

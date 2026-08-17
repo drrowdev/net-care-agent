@@ -104,8 +104,10 @@ def test_the_timeline_is_horizontal_readable_and_overflow_safe_at_every_width():
                 assert page.locator(".timeline-provisional").count() == 3
                 assert page.locator(".timeline-type").count() == len(_TIMELINE)
                 # Past and upcoming are still told apart, and the month that
-                # still contains today is not filed as past.
+                # still contains today is not filed as past. Past is also said
+                # in words, so nothing depends on colour alone.
                 assert page.locator(".timeline-stop.past").count() == 2
+                assert page.locator(".timeline-stop.past .sr-only").count() == 2
 
                 # `<time datetime>` is only written when there is a real date.
                 machine = page.locator(".timeline-stop time").evaluate_all(
@@ -117,56 +119,59 @@ def test_the_timeline_is_horizontal_readable_and_overflow_safe_at_every_width():
                     """() => {
                       const doc = document.documentElement;
                       const track = document.querySelector('.timeline-track');
-                      const scroll = document.querySelector('.timeline-scroll');
-                      const axis = document.querySelector('.timeline-axis');
+                      const plots = [...document.querySelectorAll('.timeline-plot')];
                       const stops = [...document.querySelectorAll('.timeline-stop')];
                       const tops = new Set(stops.map(s => Math.round(
                         s.getBoundingClientRect().top)));
+                      // Each marker must sit inside its own row, which is what
+                      // keeps it above the words it belongs to.
+                      const aligned = [...document.querySelectorAll('.timeline-plot-mark')]
+                        .every(mark => {
+                          const row = mark.closest('.timeline-stop').getBoundingClientRect();
+                          const box = mark.getBoundingClientRect();
+                          return box.left >= row.left - 1 && box.right <= row.right + 1
+                            && box.top >= row.top - 1 && box.bottom <= row.bottom + 1;
+                        });
                       return {
                         pageOverflow: doc.scrollWidth - doc.clientWidth,
-                        axisShown: axis ? getComputedStyle(axis).display !== 'none' : false,
-                        sameRow: tops.size === 1,
+                        trackOverflow: track.scrollWidth - track.clientWidth,
+                        plotsShown: plots.length
+                          ? getComputedStyle(plots[0]).display !== 'none' : false,
                         rowCount: tops.size,
-                        scrollFits: scroll.scrollWidth <= scroll.clientWidth,
-                        trackWidth: track.scrollWidth,
+                        aligned,
                       };
                     }"""
                 )
 
-                # Nothing ever pushes the page sideways.
+                # Nothing ever pushes the page, or the timeline, sideways.
                 assert layout["pageOverflow"] == 0, (width, layout)
+                assert layout["trackOverflow"] <= 0, (width, layout)
+                # Every event keeps its own row, so no label can collide.
+                assert layout["rowCount"] == len(_TIMELINE), (width, layout)
 
                 if horizontal:
-                    # Time runs left to right: the stops share one row.
-                    assert layout["sameRow"], (width, layout)
-                    assert layout["axisShown"], width
+                    assert layout["plotsShown"], width
+                    assert layout["aligned"], (width, layout)
                 else:
-                    # On a phone the stops stack and the axis is dropped, so the
-                    # row is not a sideways-scrolling region at all.
-                    assert layout["rowCount"] == len(_TIMELINE), (width, layout)
-                    assert not layout["axisShown"], width
-                    assert layout["scrollFits"], (width, layout)
+                    # On a phone the plot strips are dropped, not squeezed.
+                    assert not layout["plotsShown"], width
 
-                # The scrolling row is reachable by keyboard alone and named.
-                region = page.locator(".timeline-scroll")
-                assert region.get_attribute("role") == "region"
-                assert region.get_attribute("tabindex") == "0"
-                labelled = region.get_attribute("aria-labelledby")
+                # The list names itself for a screen reader.
+                labelled = page.locator(".timeline-track").get_attribute("aria-labelledby")
                 # The section label is upper-cased by CSS, so compare the words.
                 assert (
                     page.locator(f"#{labelled}").inner_text().lower() == "what changed / upcoming"
                 )
-                page.evaluate("() => document.querySelector('.timeline-scroll').focus()")
-                assert page.evaluate(
-                    "() => document.activeElement.classList.contains('timeline-scroll')"
-                )
 
-                # The axis is decoration; the facts are all in the stops.
-                if layout["axisShown"]:
-                    assert page.locator(".timeline-axis").get_attribute("aria-hidden") == "true"
-                    assert page.locator(".timeline-axis").inner_text().strip() == ""
-                    # Only the four dated stops are placed on it.
-                    assert page.locator(".timeline-axis-mark").count() == 4
+                # The plot strips are decoration; the facts are all in the rows.
+                if layout["plotsShown"]:
+                    for index in range(page.locator(".timeline-plot").count()):
+                        strip = page.locator(".timeline-plot").nth(index)
+                        assert strip.get_attribute("aria-hidden") == "true"
+                        assert strip.inner_text().strip() == ""
+                    # Only the four dated stops are plotted.
+                    assert page.locator(".timeline-plot-mark").count() == 4
+                    assert page.locator(".timeline-today").count() == 1
 
                 assert errors == []
             finally:
@@ -174,7 +179,7 @@ def test_the_timeline_is_horizontal_readable_and_overflow_safe_at_every_width():
                 browser.close()
 
 
-def test_the_axis_positions_stops_by_elapsed_time_not_by_even_steps():
+def test_the_plot_positions_stops_by_elapsed_time_not_by_even_steps():
     """Even spacing would be a stepper. The gaps have to reflect real time."""
     playwright_api = pytest.importorskip("playwright.sync_api")
     with playwright_api.sync_playwright() as playwright:
@@ -184,7 +189,7 @@ def test_the_axis_positions_stops_by_elapsed_time_not_by_even_steps():
         browser, context, page = _open(playwright, 1280, 900)
         try:
             offsets = page.evaluate(
-                """() => [...document.querySelectorAll('.timeline-axis-mark')]
+                """() => [...document.querySelectorAll('.timeline-plot-mark')]
                      .map(el => parseFloat(el.style.getPropertyValue('--stop-offset')))"""
             )
             assert offsets == sorted(offsets)
@@ -195,7 +200,7 @@ def test_the_axis_positions_stops_by_elapsed_time_not_by_even_steps():
             # A month-precision stop is a band across the month it names, never
             # a point on an invented day inside it.
             spans = page.evaluate(
-                """() => [...document.querySelectorAll('.timeline-axis-mark')]
+                """() => [...document.querySelectorAll('.timeline-plot-mark')]
                      .map(el => parseFloat(el.style.getPropertyValue('--stop-span')))"""
             )
             assert spans[0] == 0 and spans[1] == 0 and spans[3] == 0

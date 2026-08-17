@@ -212,6 +212,8 @@ def test_a_course_in_progress_status_passes_through_untouched(agent, empty_profi
         out = agent.generate_executive_summary(empty_profile)
     assert out["prrt_status"] == "course_in_progress"
     assert "already receiving Series 2" in out["prrt_rationale"]
+
+
 # ── the timeline date field ──────────────────────────────────────────────────
 # The prompt used to describe `timeline[].date` as "YYYY-MM or approximate
 # description", so the model wrote qualifiers and alternatives into a date field
@@ -252,34 +254,35 @@ def test_a_qualifier_is_moved_out_of_the_date_field_into_the_event():
     ]
 
 
-def test_two_possible_months_never_become_one_and_never_become_prose_notation():
-    """Keeping "2026-08/09" as the date, or pasting it into the sentence, would
-    both put machine notation back on screen. The date is dropped instead, and
-    the model's own sentence is left to carry the timing."""
+def test_two_possible_months_are_left_for_the_display_to_read_once():
+    """Clearing a value the generator cannot split would make the same recorded
+    timing read differently depending on when it was generated. It is left
+    exactly as recorded, and the browser decides how to show it — for a new
+    assessment and an old one alike."""
     from agent.exec_summary import _normalise_timeline_dates
 
     summary = _normalise_timeline_dates(
         {"timeline": [{"date": "2026-08/09", "event": "Scan window"}]}
     )
-    assert summary["timeline"] == [{"date": "", "event": "Scan window"}]
-    # Emphatically not narrowed to August.
-    assert "2026-08" not in json.dumps(summary)
+    assert summary["timeline"] == [{"date": "2026-08/09", "event": "Scan window"}]
 
 
-def test_wording_with_no_date_at_all_is_kept_as_wording():
+def test_wording_with_no_date_at_all_is_kept_as_recorded():
     from agent.exec_summary import _normalise_timeline_dates
 
     summary = _normalise_timeline_dates(
         {"timeline": [{"date": "when the team decides", "event": "Repeat scan"}]}
     )
-    assert summary["timeline"] == [{"date": "", "event": "Repeat scan (when the team decides)"}]
+    assert summary["timeline"] == [{"date": "when the team decides", "event": "Repeat scan"}]
 
 
 def test_an_impossible_day_is_not_accepted_as_a_calendar_date():
+    """It stays recorded, but nothing downstream may read it as a date."""
     from agent.exec_summary import _normalise_timeline_dates
+    from agent.schema import derive_date_precision
 
     summary = _normalise_timeline_dates({"timeline": [{"date": "2026-02-31", "event": "Scan"}]})
-    assert summary["timeline"][0]["date"] == ""
+    assert derive_date_precision(summary["timeline"][0]["date"]) == "unknown"
 
 
 def test_normalising_a_broken_timeline_never_costs_him_the_summary():

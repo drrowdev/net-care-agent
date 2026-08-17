@@ -3430,6 +3430,9 @@ async function submitWorkflowMutation(url, body, visitId, method) {
             _executable_function_source("persistVisitQuestionOrder", "reorderedQuestionList"),
             _executable_function_source("reorderedQuestionList", "moveVisitQuestion"),
             _function_source("generatedQuestionIsCurrent", "projectQuestionChoices"),
+            # A generated question is model prose, so its dates are localised
+            # before escaping. This probe is about redaction, not punctuation.
+            "function fmtProseDates(text) { return text == null ? '' : String(text); }",
             _executable_function_source("renderVisitSourceQuestions", "addGeneratedVisitQuestion"),
             _function_source("switchAppointmentTab", "handleAppointmentTabKeydown"),
             """
@@ -3749,6 +3752,11 @@ function snapshot() {
             _function_source("projectQuestionChoices", "redactGeneratedQuestionChoices"),
             _executable_function_source("redactGeneratedQuestionChoices", "loadQuestions"),
             _executable_function_source("loadQuestions", "renderQuestions"),
+            # A generated question is model prose, so `qRow` localises the dates
+            # inside its sentences before escaping them. This probe is about
+            # redaction, not punctuation, so the transcription is stubbed out —
+            # the escaping it feeds is still exercised for real.
+            "function fmtProseDates(text) { return text == null ? '' : String(text); }",
             _executable_function_source("renderQuestions", "generateQuestions"),
             _function_source("syncChatRevision", "toggleChat"),
             """

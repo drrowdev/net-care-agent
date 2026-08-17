@@ -583,9 +583,13 @@ def _timeline_html(timeline: list[dict], *, today: str = "2026-08-17") -> str:
 
 
 def _stop_labels(html: str) -> list[str]:
-    """The wording shown for *when* each stop happens, in order."""
+    """The wording shown for *when* each stop happens, in order.
+
+    The screen-reader-only past marker is dropped, because it is asserted on its
+    own and would otherwise be repeated into every expected label.
+    """
     return [
-        " ".join(_TAGS.sub(" ", block).split())
+        " ".join(_TAGS.sub(" ", block).replace("Already happened.", "").split())
         for block in re.findall(
             r'<span class="timeline-stop-when">(.*?)</span>\s*<span class="timeline-event-copy"',
             html,
@@ -709,12 +713,65 @@ def test_an_impossible_day_is_treated_as_wording_not_as_a_calendar_date():
     assert "<time" not in html
 
 
+def test_a_date_inside_the_qualifier_is_localised_too():
+    """The qualifier is the model's own wording and can contain a date itself.
+
+    Copying it through untouched put `2026-08-14` back on screen beside the
+    Finnish date it qualified.
+    """
+    html = _timeline_html(
+        [{"date": "2026-08 (after 2026-08-14)", "event": "Third dose", "type": "milestone"}]
+    )
+    assert _stop_labels(html) == ["8/2026 (after 14.8.2026)"]
+    assert not bare_iso_dates(html)
+
+
+def test_the_generator_and_the_display_never_disagree_about_the_same_value():
+    """Both must read a recorded timing the same way.
+
+    Clearing a value the generator could not parse would have made the same
+    recorded timing show as `8/2026 or 9/2026` when it came from an older
+    assessment and `Timing not recorded` when it came from a new one.
+    """
+    import subprocess
+    import sys
+
+    unreadable = ["2026-08/09", "2026-09/10", "2026-12/01", "when the team decides"]
+    normalised = json.loads(
+        subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import json,sys;from agent.exec_summary import _normalise_timeline_dates;"
+                "print(json.dumps(_normalise_timeline_dates("
+                '{"timeline":[{"date":d,"event":"E"} for d in json.loads(sys.argv[1])]})'
+                '["timeline"]))',
+                json.dumps(unreadable),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    )
+    # The generator leaves a value it cannot split exactly as recorded, so the
+    # browser decides how to read it, once, for old and new assessments alike.
+    assert [item["date"] for item in normalised] == unreadable
+    html = _timeline_html([{"date": value, "event": "E", "type": "test"} for value in unreadable])
+    assert _stop_labels(html) == [
+        "8/2026 or 9/2026",
+        "9/2026 or 10/2026",
+        "Timing unclear",
+        "Timing unclear",
+    ]
+
+
 def test_the_timeline_reads_left_to_right_and_stays_an_ordered_list():
     """He asked for the horizontal timeline back, without losing the semantics.
 
-    Position along the axis is proportional to real elapsed time, but the axis
-    carries no text and is hidden from assistive technology, because every fact
-    it shows is written out in the stops. The stops stay a real ordered list.
+    Each row carries a plot strip whose marker sits at that event's true
+    position in time, so position is proportional to elapsed time rather than
+    one step per item. Giving each event its own row is what keeps a marker
+    above its own words and removes any need to shorten a label.
     """
     html = _timeline_html(
         [
@@ -723,27 +780,25 @@ def test_the_timeline_reads_left_to_right_and_stays_an_ordered_list():
             {"date": "2026-11-02", "event": "Next scan", "type": "scan"},
         ]
     )
-    assert '<ol class="timeline-track">' in html
+    assert '<ol class="timeline-track plotted"' in html
     assert html.count('<li class="timeline-stop') == 3
-    assert '<div class="timeline-axis" aria-hidden="true">' in html
-    # The scrolling row is reachable with a keyboard alone and names itself.
-    assert 'role="region"' in html
-    assert 'tabindex="0"' in html
     assert 'aria-labelledby="summary-timeline-heading"' in html
-    # Offsets are proportional to elapsed time, not one-per-stop steps.
-    offsets = [float(value) for value in re.findall(r"--stop-offset:([\d.]+)%", html)]
-    # today, then the three stops
-    assert offsets[0] == 0.0 or offsets[0] > 0
+    # The plot strips and the today line are decoration; the words are the facts.
+    assert html.count('<span class="timeline-plot" aria-hidden="true">') == 3
+    assert '<span class="timeline-today" aria-hidden="true"' in html
+    # Offsets are proportional to elapsed time, not one step per stop.
     stops = [
-        float(v) for v in re.findall(r'class="timeline-stop"[^>]*--stop-offset:([\d.]+)%', html)
+        float(v)
+        for v in re.findall(r"timeline-plot-mark[^\"]*\" style=\"--stop-offset:([\d.]+)%", html)
     ]
     assert stops == sorted(stops)
-    # May→August is a longer wait than August→November is short; the gaps differ,
-    # which is the whole point of a proportional axis rather than even spacing.
-    assert len(set(stops)) == len(stops)
+    gaps = [round(b - a, 2) for a, b in zip(stops, stops[1:], strict=False)]
+    # May→August and August→November are different lengths of time, so they are
+    # different distances along the strip.
+    assert len(set(gaps)) == len(gaps), gaps
 
 
-def test_an_undated_stop_is_left_off_the_axis_rather_than_placed_somewhere():
+def test_an_undated_stop_is_left_off_the_plot_rather_than_placed_somewhere():
     html = _timeline_html(
         [
             {"date": "2026-05-02", "event": "Prior scan", "type": "scan"},
@@ -751,8 +806,19 @@ def test_an_undated_stop_is_left_off_the_axis_rather_than_placed_somewhere():
             {"date": "2026-11-02", "event": "Next scan", "type": "scan"},
         ]
     )
-    assert html.count('class="timeline-axis-mark') == 2
+    assert html.count('class="timeline-plot-mark') == 2
     assert 'class="timeline-stop undated"' in html
+
+
+def test_a_past_stop_says_so_in_words_and_not_only_in_colour():
+    html = _timeline_html(
+        [
+            {"date": "2026-05-02", "event": "Prior scan", "type": "scan"},
+            {"date": "2026-11-02", "event": "Next scan", "type": "scan"},
+        ]
+    )
+    assert html.count('<span class="sr-only">Already happened. </span>') == 1
+    assert "Already happened." in visible_text(html)
 
 
 def test_the_provisional_marker_and_type_chip_survive_the_new_layout():
@@ -937,11 +1003,29 @@ _DELIBERATE_RAW_DATES = {
 }
 
 
+def _reads_the_value(expression: str) -> bool:
+    """True when a dated field is actually emitted, not merely tested for.
+
+    `parts.date ? '' : ' undated'` decides a class name from whether a date
+    exists; it never puts the date itself anywhere. Treating that as a leak
+    would push real reads into the exemption list, which is where a guard
+    starts going quietly blind.
+    """
+    tested = re.sub(
+        r"!*\s*[\w.?\[\]]*" + _DATE_FIELD.pattern + r"\s*(?:\?|&&|\|\||===|!==|==|!=)",
+        " ",
+        expression,
+    )
+    return bool(_DATE_FIELD.search(tested))
+
+
 def test_no_interpolated_date_field_reaches_markup_without_a_formatter():
     lines = APP_JS.splitlines()
     offenders = []
     for line, expression in javascript_interpolations(APP_JS):
         if not _DATE_FIELD.search(expression):
+            continue
+        if not _reads_the_value(expression):
             continue
         if any(formatter in expression for formatter in _APPROVED_FORMATTERS):
             continue
@@ -963,6 +1047,11 @@ def test_the_tripwire_would_actually_catch_a_regression():
         if _DATE_FIELD.search(expression) and not any(f in expression for f in _APPROVED_FORMATTERS)
     ]
     assert found == ["item.due_date"]
+    # A value that is only tested for is not a leak, and a value emitted from
+    # the same test still is.
+    assert not _reads_the_value("parts.date ? '' : ' undated'")
+    assert not _reads_the_value("!item.due_date ? 'None' : 'Set'")
+    assert _reads_the_value("item.due_date ? item.due_date : 'None'")
 
 
 def test_the_symptom_follow_up_reads_the_same_date_on_every_surface():

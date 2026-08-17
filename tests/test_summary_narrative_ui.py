@@ -323,7 +323,7 @@ _UNDER_WAY_RATIONALE = (
 
 
 def test_a_course_already_under_way_is_never_labelled_a_potential_fit():
-    body = _render_summary(
+    body = render_summary(
         _summary(prrt_status="course_in_progress", prrt_rationale=_UNDER_WAY_RATIONALE)
     )["body"]
     assert "PRRT: COURSE RECORDED AS IN PROGRESS" in body
@@ -335,7 +335,7 @@ def test_a_course_already_under_way_is_never_labelled_a_potential_fit():
 
 
 def test_a_running_course_is_not_introduced_as_screening_context():
-    body = _render_summary(
+    body = render_summary(
         _summary(prrt_status="course_in_progress", prrt_rationale=_UNDER_WAY_RATIONALE)
     )["body"]
     assert "<strong>PRRT context:</strong>" in body
@@ -343,7 +343,7 @@ def test_a_running_course_is_not_introduced_as_screening_context():
 
 
 def test_the_screening_vocabulary_is_untouched_for_someone_not_receiving_prrt():
-    screening = _render_summary(
+    screening = render_summary(
         _summary(prrt_status="eligible", prrt_rationale="Receptor imaging supports screening.")
     )["body"]
     assert "PRRT: POTENTIAL FIT" in screening
@@ -353,7 +353,7 @@ def test_the_screening_vocabulary_is_untouched_for_someone_not_receiving_prrt():
 
 def test_a_concern_about_continuing_is_still_shown_beside_a_running_course():
     """The chip states a recorded fact, so it can never mask a disagreement."""
-    rendered = _render_summary(
+    rendered = render_summary(
         _summary(
             prrt_status="course_in_progress",
             prrt_rationale=(

@@ -126,12 +126,6 @@ _APPT_TYPE_MAP = {
 # "/09" tacked on — that would silently narrow two months to one.
 _LEADING_DATE = re.compile(r"^\s*(\d{4}(?:-\d{2}(?:-\d{2})?)?)(?![\d\-/.\\])(.*)$", re.DOTALL)
 
-# Leftover wording is only worth moving into the event if it reads as words. A
-# leftover that is itself machine date notation would put on screen exactly what
-# this change exists to remove, so the date is simply dropped and the model's own
-# sentence, which the prompt now requires to carry the timing, is left to say it.
-_MACHINE_DATE_TEXT = re.compile(r"(?<!\d)\d{4}-\d{2}(?!\d)")
-
 
 def _split_timeline_date(value: object) -> tuple[str, str]:
     """Return ``(calendar date, leftover wording)`` for one recorded date.
@@ -150,9 +144,12 @@ def _split_timeline_date(value: object) -> tuple[str, str]:
     match = _LEADING_DATE.match(text)
     if match and derive_date_precision(match.group(1)) != "unknown":
         return match.group(1), match.group(2).strip()
-    # No calendar date to be sure of: claim no date, and keep the wording only
-    # when it is wording rather than notation.
-    return "", "" if _MACHINE_DATE_TEXT.search(text) else text
+    # Nothing here can be split without guessing at what it means. The value is
+    # left exactly as recorded so that display decides how to read it, in one
+    # place, identically for a summary generated now and one generated before
+    # this rule existed. Clearing it here would make the same recorded timing
+    # show two different ways depending on when it happened to be generated.
+    return text, ""
 
 
 def _normalise_timeline_dates(summary: dict) -> dict:

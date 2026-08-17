@@ -117,14 +117,27 @@ incremented when something user-visible or operationally meaningful changes.
   The horizontal timeline he asked for is back. The one removed in the redesign
   was an SVG graph with hover-only tooltips, no keyboard reach at all, a 400px
   floor that overflowed a phone, event labels cut to 19 characters and English
-  month names, so it was rebuilt rather than restored: position along the axis is
-  still proportional to real elapsed time, but the axis carries no text and is
-  hidden from screen readers, and the readable content sits in an ordered list of
-  stops beneath it — which is why no label has to be shortened or dropped any
-  more. A month-precision date is drawn as a band across the month it names, not
-  as a point on an invented day inside it. Under 720px the axis is dropped and
-  the stops stack, which reads better on a phone; nothing scrolls sideways at
-  360px.
+  month names, so its shape was kept but rebuilt on ordinary markup. Every event
+  has its own row, and each row carries a strip showing where that event sits in
+  time, with one faint line down the whole column marking today. Giving each
+  event its own row is what keeps a marker directly above its own words and
+  removes any need to shorten a label. A month-precision date is drawn as a band
+  across the month it names, not as a point on an invented day inside it. The
+  strips are decoration and are hidden from screen readers, because everything
+  they show is written out in the row; a row that has already happened says so
+  in words, so nothing rests on colour alone. Under 720px the strips are dropped
+  and the rows stand alone; nothing scrolls sideways at 360px.
+
+- **Dates the assessment, chat and research write into their own sentences are
+  localised everywhere, not just in the assessment panel.** Generated prose is
+  not a field, so no field formatter reaches it. That was fixed for the
+  assessment's paragraphs in an earlier round, which left chat replies, generated
+  questions and their rationales, and the body of a research report still
+  printing `2026-08-14` mid-sentence. They now pass through the same
+  transcription, which changes only the punctuation of an unambiguous date and
+  leaves identifiers, filenames, links, timestamps and two-year spans alone.
+  The visit recap's *Resolved* line was formatted on screen but written into the
+  copied and downloaded text as stored; the export now matches what he read.
 
 - **The same due date no longer reads two different ways on two screens.** A
   symptom follow-up's due date was corrected in an earlier round on the episode

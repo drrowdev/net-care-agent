@@ -116,7 +116,12 @@ from .profile import (
     treatment_classification_is_current,
     treatment_edit_token,
 )
-from .provenance import anchor_source_quote, preserve_source_document, remove_source_document
+from .provenance import (
+    anchor_source_quote,
+    preserve_source_document,
+    remove_source_document,
+    source_document_feed_job_id,
+)
 from .questions import generate_appointment_questions, generate_questions_for_profile
 from .reconciliation import (
     ImportConflict,
@@ -340,6 +345,7 @@ __all__ = [
     "anchor_source_quote",
     "preserve_source_document",
     "remove_source_document",
+    "source_document_feed_job_id",
     "build_import_record",
     "add_derived_research",
     "public_receipt",

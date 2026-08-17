@@ -77,6 +77,25 @@ def preserve_source_document(
     }
 
 
+def source_document_feed_job_id(profile: dict, source_document_id: object) -> str | None:
+    """Return the intake job that produced one source document, or ``None``.
+
+    ``build_import_record`` stamps ``feed_job_id`` on the source document at
+    import, so this is an exact stored lookup: no matching on dates, filenames,
+    or text, and no inference. Callers still have to decide whether that job is
+    still retained — jobs are pruned by count and age, the source document is
+    not.
+    """
+    if not isinstance(source_document_id, str) or not source_document_id:
+        return None
+    for source in profile.get("source_documents", []) or []:
+        if not isinstance(source, dict) or source.get("id") != source_document_id:
+            continue
+        job_id = source.get("feed_job_id")
+        return job_id if isinstance(job_id, str) and job_id else None
+    return None
+
+
 def remove_source_document(source: dict) -> None:
     """Remove a newly-created source directory after a failed transaction."""
     source_id = source.get("id", "")

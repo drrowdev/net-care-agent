@@ -369,3 +369,64 @@ def test_escaping_still_holds_after_the_date_transformation():
     assert "Ampersand &amp; &quot;quote&quot; on 7.5.2026" in body
     assert "&amp;amp;" not in body
     assert "&amp;lt;" not in body
+
+
+# ── The PRRT chip and its own rationale ──────────────────────────────────────
+# The panel showed "PRRT: POTENTIAL FIT" immediately above a rationale saying
+# the patient is already receiving her second Lu-177-octreotate series. The chip
+# is the generated `prrt_status`; the vocabulary had no value for a course
+# already running, so a screening token was the closest the assessment could
+# get. The renderer draws whichever value the assessment produced — it never
+# reads the rationale to choose, soften, or withhold the chip.
+
+_UNDER_WAY_RATIONALE = (
+    "She is SSTR-positive on the April 2026 PET-CT and is already receiving Series 2 "
+    "Lu-177-octreotate; the treating team has confirmed candidacy and is tracking "
+    "cumulative renal dose (19 Gy of a <23 Gy limit)."
+)
+
+
+def test_a_course_already_under_way_is_never_labelled_a_potential_fit():
+    body = _render_summary(
+        _summary(prrt_status="course_in_progress", prrt_rationale=_UNDER_WAY_RATIONALE)
+    )["body"]
+    assert "PRRT: COURSE RECORDED AS IN PROGRESS" in body
+    assert "POTENTIAL FIT" not in body
+    assert "MAY FIT" not in body
+    # An unrecognised value used to fall through to this, which was equally wrong.
+    assert "PRRT: NOT ASSESSED" not in body
+    assert "already receiving Series 2" in body
+
+
+def test_a_running_course_is_not_introduced_as_screening_context():
+    body = _render_summary(
+        _summary(prrt_status="course_in_progress", prrt_rationale=_UNDER_WAY_RATIONALE)
+    )["body"]
+    assert "<strong>PRRT context:</strong>" in body
+    assert "PRRT screening context" not in body
+
+
+def test_the_screening_vocabulary_is_untouched_for_someone_not_receiving_prrt():
+    screening = _render_summary(
+        _summary(prrt_status="eligible", prrt_rationale="Receptor imaging supports screening.")
+    )["body"]
+    assert "PRRT: POTENTIAL FIT" in screening
+    assert "<strong>PRRT screening context:</strong>" in screening
+    assert "COURSE RECORDED AS IN PROGRESS" not in screening
+
+
+def test_a_concern_about_continuing_is_still_shown_beside_a_running_course():
+    """The chip states a recorded fact, so it can never mask a disagreement."""
+    rendered = _render_summary(
+        _summary(
+            prrt_status="course_in_progress",
+            prrt_rationale=(
+                "Series 2 is under way, but cumulative renal dose is close to the limit "
+                "and the oncologist has asked to review before the next dose."
+            ),
+            key_concern="Renal dose is close to the agreed limit.",
+        )
+    )["body"]
+    assert "PRRT: COURSE RECORDED AS IN PROGRESS" in rendered
+    assert "Renal dose is close to the agreed limit." in rendered
+    assert "asked to review before the next dose" in rendered

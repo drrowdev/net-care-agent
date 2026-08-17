@@ -2744,7 +2744,7 @@ def test_malicious_stored_display_fields_are_escaped():
         "escHtml(translateCategory(q.category||'Other'))",
         # Timeline copy is generated prose: reformatted first, always escaped after.
         "escHtml(fmtProseDates(item.event))",
-        'datetime="${escHtml(date)}"',
+        'datetime="${escHtml(parts.date)}"',
     )
     for expression in escaped_expressions:
         assert expression in APP_JS

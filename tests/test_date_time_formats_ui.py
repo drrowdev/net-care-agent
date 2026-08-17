@@ -17,6 +17,9 @@ import re
 import subprocess
 from pathlib import Path
 
+from tests._copy_scan import javascript_interpolations
+from tests._ui_render import bare_iso_dates, render_summary, visible_text
+
 APP_JS = Path("static/app.js").read_text(encoding="utf-8")
 _NODE_STDIN_BOOTSTRAP = "eval(require('fs').readFileSync(0,'utf8'))"
 
@@ -540,5 +543,439 @@ def test_every_generated_narrative_field_routes_through_the_prose_formatter():
         assert field in summary
     # The value the dismiss call sends back to the server stays the stored text.
     assert "data-action-text=\"${escHtml(a.action || '')}\"" in summary
-    # <time datetime> stays machine-readable ISO-8601.
-    assert '<time datetime="${escHtml(date)}">' in summary
+    # `<time datetime>` stays machine-readable ISO-8601 — and is now only drawn
+    # when there really is one, so a qualifier can no longer make it invalid.
+    assert '<time datetime="${escHtml(parts.date)}">' in summary
+
+
+# ── the assessment timeline ──────────────────────────────────────────────────
+# He reported machine dates on this panel three times. The first two rounds
+# localised fields and generated prose; this one starts from the fact that the
+# renderer already called the formatter, so the defect was upstream — the
+# generated contract described `timeline[].date` as "YYYY-MM or approximate
+# description", and `fmtDate` deliberately returns anything it cannot read
+# unchanged. These pin the display behaviour for values already stored, which
+# no amount of prompt work can retrospectively clean up.
+
+
+def _timeline_summary(timeline: list[dict], **overrides) -> dict:
+    summary = {
+        "status": "current",
+        "overall_status": "stable",
+        "profile_revision": 12,
+        "summary_revision": 12,
+        "generation_id": "gen-1",
+        "generated_at": "2026-08-14",
+        "generated_at_timestamp": "2026-08-14T06:26:00",
+        "key_concern": "",
+        "status_rationale": "",
+        "summary": "",
+        "next_actions": [],
+        "timeline": timeline,
+        "claim_evidence": {"claims": {}, "actions": []},
+    }
+    summary.update(overrides)
+    return summary
+
+
+def _timeline_html(timeline: list[dict], *, today: str = "2026-08-17") -> str:
+    return render_summary(_timeline_summary(timeline), today=today)["body"]
+
+
+def _stop_labels(html: str) -> list[str]:
+    """The wording shown for *when* each stop happens, in order."""
+    return [
+        " ".join(_TAGS.sub(" ", block).split())
+        for block in re.findall(
+            r'<span class="timeline-stop-when">(.*?)</span>\s*<span class="timeline-event-copy"',
+            html,
+            re.S,
+        )
+    ]
+
+
+_TAGS = re.compile(r"<[^<>]*>")
+
+
+def test_a_qualifier_in_the_date_field_renders_finnish_and_keeps_the_qualifier():
+    """`2026-08 (approx late Aug)` reached the screen exactly like that.
+
+    The date field was specified as "YYYY-MM or approximate description", so the
+    model wrote a qualifier into it, and `fmtDate` matches only an exact ISO
+    value. The recognisable part is now formatted and the recorded wording is
+    kept beside it, so nothing he was told is lost and nothing is invented.
+    """
+    html = _timeline_html(
+        [
+            {"date": "2026-08 (approx late Aug)", "event": "Third dose", "type": "milestone"},
+            {"date": "2026-08 (before next dose)", "event": "Bloods", "type": "test"},
+        ]
+    )
+    assert _stop_labels(html) == [
+        "8/2026 (approx late Aug)",
+        "8/2026 (before next dose)",
+    ]
+    assert "2026-08 (" not in visible_text(html)
+
+
+def test_two_possible_months_are_both_shown_and_neither_is_silently_chosen():
+    """`2026-08/09` means August or September. Picking one would invent timing.
+
+    Both months are shown in Finnish. The item claims no single machine date,
+    because there is no single instant to claim.
+    """
+    html = _timeline_html(
+        [
+            {"date": "2026-08/09", "event": "Scan window", "type": "scan"},
+            {"date": "2026-09/10", "event": "Review window", "type": "appointment"},
+        ]
+    )
+    assert _stop_labels(html) == ["8/2026 or 9/2026", "9/2026 or 10/2026"]
+    # No `<time>` element, because there is no one date to put in it.
+    assert "<time" not in html
+    # And emphatically not narrowed to the first month.
+    assert "8/2026 or 9/2026" in html and ">8/2026<" not in html
+
+
+def test_an_either_or_that_crosses_a_year_boundary_is_refused_rather_than_guessed():
+    """`2026-12/01` cannot be resolved without assuming January is 2027."""
+    html = _timeline_html([{"date": "2026-12/01", "event": "Follow-up", "type": "test"}])
+    assert _stop_labels(html) == ["Timing unclear"]
+    assert "2027" not in html
+    assert not bare_iso_dates(html)
+
+
+def test_a_missing_date_and_an_unreadable_date_are_told_apart():
+    """They are different facts, so they are not collapsed into one phrase."""
+    html = _timeline_html(
+        [
+            {"date": "", "event": "Trial screening", "type": "trial"},
+            {"date": "whenever the team says", "event": "Repeat scan", "type": "scan"},
+        ]
+    )
+    assert _stop_labels(html) == ["Timing not recorded", "Timing unclear"]
+
+
+def test_a_month_containing_today_is_not_filed_as_already_past():
+    """`date < today` is a string compare, and it was wrong twice over.
+
+    `2026-08` sorts below `2026-08-17`, so the whole of August was greyed out
+    mid-month; and a space sorts below a hyphen, so a qualified August did too.
+    A recorded month is compared at the precision it was recorded at.
+    """
+    html = _timeline_html(
+        [
+            {"date": "2026-07", "event": "Past month", "type": "test"},
+            {"date": "2026-08", "event": "This month", "type": "test"},
+            {"date": "2026-08 (approx late Aug)", "event": "Qualified", "type": "test"},
+            {"date": "2026-08-01", "event": "Earlier day", "type": "test"},
+            {"date": "2026-09", "event": "Next month", "type": "test"},
+            {"date": "2025", "event": "Last year", "type": "test"},
+            {"date": "2026", "event": "This year", "type": "test"},
+        ]
+    )
+    past = re.findall(r'<li class="timeline-stop([^"]*)"', html)
+    assert [" past" in flags for flags in past] == [
+        True,  # July is wholly behind us
+        False,  # August still contains today
+        False,  # ...and so does a qualified August
+        True,  # 1 August is behind 17 August
+        False,  # September is ahead
+        True,  # 2025 is wholly behind us
+        False,  # 2026 still contains today
+    ]
+
+
+def test_the_machine_date_attribute_is_only_written_when_there_is_one():
+    """`<time datetime="2026-08 (approx late Aug)">` was not a valid date."""
+    html = _timeline_html(
+        [
+            {"date": "2026-09-01", "event": "Clean day", "type": "appointment"},
+            {"date": "2026-08 (approx late Aug)", "event": "Qualified", "type": "test"},
+            {"date": "2026-08/09", "event": "Either or", "type": "scan"},
+            {"date": "", "event": "None", "type": "trial"},
+        ]
+    )
+    machine = re.findall(r'<time datetime="([^"]*)"', html)
+    assert machine == ["2026-09-01", "2026-08"]
+    for value in machine:
+        assert re.fullmatch(r"\d{4}(-\d{2}(-\d{2})?)?", value), value
+
+
+def test_an_impossible_day_is_treated_as_wording_not_as_a_calendar_date():
+    """A 31st of February is not a date, and must not become one."""
+    html = _timeline_html([{"date": "2026-02-31", "event": "Bad day", "type": "test"}])
+    assert _stop_labels(html) == ["Timing unclear"]
+    assert "<time" not in html
+
+
+def test_the_timeline_reads_left_to_right_and_stays_an_ordered_list():
+    """He asked for the horizontal timeline back, without losing the semantics.
+
+    Position along the axis is proportional to real elapsed time, but the axis
+    carries no text and is hidden from assistive technology, because every fact
+    it shows is written out in the stops. The stops stay a real ordered list.
+    """
+    html = _timeline_html(
+        [
+            {"date": "2026-05-02", "event": "Prior scan", "type": "scan"},
+            {"date": "2026-08-17", "event": "Today's review", "type": "appointment"},
+            {"date": "2026-11-02", "event": "Next scan", "type": "scan"},
+        ]
+    )
+    assert '<ol class="timeline-track">' in html
+    assert html.count('<li class="timeline-stop') == 3
+    assert '<div class="timeline-axis" aria-hidden="true">' in html
+    # The scrolling row is reachable with a keyboard alone and names itself.
+    assert 'role="region"' in html
+    assert 'tabindex="0"' in html
+    assert 'aria-labelledby="summary-timeline-heading"' in html
+    # Offsets are proportional to elapsed time, not one-per-stop steps.
+    offsets = [float(value) for value in re.findall(r"--stop-offset:([\d.]+)%", html)]
+    # today, then the three stops
+    assert offsets[0] == 0.0 or offsets[0] > 0
+    stops = [
+        float(v) for v in re.findall(r'class="timeline-stop"[^>]*--stop-offset:([\d.]+)%', html)
+    ]
+    assert stops == sorted(stops)
+    # May→August is a longer wait than August→November is short; the gaps differ,
+    # which is the whole point of a proportional axis rather than even spacing.
+    assert len(set(stops)) == len(stops)
+
+
+def test_an_undated_stop_is_left_off_the_axis_rather_than_placed_somewhere():
+    html = _timeline_html(
+        [
+            {"date": "2026-05-02", "event": "Prior scan", "type": "scan"},
+            {"date": "", "event": "Unscheduled", "type": "trial"},
+            {"date": "2026-11-02", "event": "Next scan", "type": "scan"},
+        ]
+    )
+    assert html.count('class="timeline-axis-mark') == 2
+    assert 'class="timeline-stop undated"' in html
+
+
+def test_the_provisional_marker_and_type_chip_survive_the_new_layout():
+    html = _timeline_html(
+        [
+            {"date": "2026-09-01", "event": "Dose", "type": "milestone", "provisional": True},
+            {"date": "2026-09-08", "event": "Scan", "type": "scan", "provisional": False},
+        ]
+    )
+    assert html.count("Provisional — confirm with the care team") == 1
+    assert 'class="timeline-type milestone"' in html
+    assert 'class="timeline-type scan"' in html
+
+
+# ── the widened guard ────────────────────────────────────────────────────────
+# The old guard asserted that a hand-picked list of call sites mentioned a
+# formatter. That is why the same field kept leaking somewhere else: a site
+# nobody had thought of was not on the list. These render real surfaces with
+# every date-bearing field set to a machine date and fail if one survives into
+# anything he reads, whatever route it took to get there.
+
+
+def _iso_probe(seed: int) -> str:
+    return f"20{26 + seed % 3}-{(seed % 12) + 1:02d}-{(seed % 27) + 1:02d}"
+
+
+def test_no_assessment_surface_leaks_a_machine_date_into_readable_text():
+    """Every dated and generated field at once, checked on the rendered output."""
+    summary = _timeline_summary(
+        [
+            {"date": "2026-08-14", "event": "Dose on 2026-08-14", "type": "milestone"},
+            {"date": "2026-08 (approx late Aug)", "event": "Bloods", "type": "test"},
+            {"date": "2026-08/09", "event": "Scan window", "type": "scan"},
+            {"date": "2026-12/01", "event": "Ambiguous", "type": "test"},
+            {"date": "", "event": "Unscheduled", "type": "trial"},
+        ],
+        key_concern="CgA rose between 2026-05-02 and 2026-08-14.",
+        status_rationale="Imaging on 2026-07-01 still governs.",
+        summary="Doses run 2026-05 to 2026-08.",
+        cga_trend_detail="CgA 145 on 2026-05-02 rose to 188 on 2026-08-14.",
+        prrt_rationale="DOTATATE PET was done 2026-04-22.",
+        cga_trend="rising",
+        status_confidence="high",
+        prrt_status="likely_eligible",
+        next_actions=[
+            {
+                "id": "act-1",
+                "source_token": "tok-1",
+                "generation_id": "gen-1",
+                "source_profile_revision": 12,
+                "stale": False,
+                "priority": "high",
+                "action": "Book the dose before 2026-09-01",
+                "rationale": "Keeps the 2026-08-14 interval.",
+                "timeframe": "by 2026-09-01",
+                "due_date": "2026-09-01",
+            }
+        ],
+    )
+    rendered = render_summary(summary, today="2026-08-17")
+    for surface, html in rendered.items():
+        assert not bare_iso_dates(html), f"{surface} shows a machine date: {bare_iso_dates(html)}"
+
+
+def test_the_research_record_view_formats_every_date_it_prints():
+    """These fields print a stored date under a plain label he reads."""
+    prelude = "\n".join(
+        [
+            _function_source("escHtml", "fmtDate"),
+            _function_source("researchPlainObject", "researchExactKeys"),
+            APP_JS[
+                APP_JS.index("const RESEARCH_DATE_FIELDS") : APP_JS.index(
+                    "function researchAuthorityMarkup"
+                )
+            ],
+        ]
+    )
+    fields = {
+        "date": "2026-05-02",
+        "date_added": "2026-05-02T06:26:00",
+        "due_date": "2026-09-01",
+        "occurred_on": "2026-07",
+        "recorded_at": "2026-08-14T06:26:00",
+        "registry_last_update": "2026-06-30",
+    }
+    result = _evaluate(
+        {
+            name: f"researchValueMarkup({json.dumps(value)}, {json.dumps(name)})"
+            for name, value in fields.items()
+        },
+        prelude=prelude,
+    )
+    assert result == {
+        "date": "<span>2.5.2026</span>",
+        "date_added": "<span>2.5.2026 09:26</span>",
+        "due_date": "<span>1.9.2026</span>",
+        "occurred_on": "<span>7/2026</span>",
+        "recorded_at": "<span>14.8.2026 09:26</span>",
+        "registry_last_update": "<span>30.6.2026</span>",
+    }
+    # The two distinctions the forensic view exists to keep are untouched.
+    blank = _evaluate(
+        {
+            "null": "researchValueMarkup(null, 'due_date')",
+            "empty": "researchValueMarkup('', 'due_date')",
+        },
+        prelude=prelude,
+    )
+    assert "Nothing recorded" in blank["null"]
+    assert "Recorded as blank" in blank["empty"]
+
+
+def test_every_research_date_field_is_named_in_the_formatting_set():
+    """A dated field the set does not name would print exactly as stored."""
+    declared = set(
+        re.findall(r"'([\w]+)'", APP_JS[APP_JS.index("const RESEARCH_DATE_FIELDS") :][:400])
+    )
+    for field in (
+        "date",
+        "date_added",
+        "due_date",
+        "occurred_on",
+        "recorded_at",
+        "registry_last_update",
+    ):
+        assert field in declared, f"{field} would reach the screen as stored"
+
+
+# ── the static tripwire ──────────────────────────────────────────────────────
+# The behavioural guards above are the real check, because they cannot be fooled
+# by aliasing a value into a local variable first. This is the cheap second net:
+# it reads every `${...}` in the file and fails when a field whose name says it
+# holds a date is interpolated without a formatter. Anything deliberate is listed
+# with the reason it is deliberate, so an exemption is a decision on the record
+# rather than an oversight.
+
+# Field names that hold a date or a timestamp somewhere in the record. The
+# trailing guard keeps `record.date.source_document_date_precision` out of it:
+# that reads a precision enum off a date object, not a date.
+_DATE_FIELD = re.compile(
+    r"\.(?:date|due_date|occurred_on|recorded_at|generated_at|generated_at_timestamp"
+    r"|source_document_date|onset_date|resolved_date|start_date|end_date|date_added"
+    r"|registry_last_update|expires_at|created_at|updated_at|added_at)(?![\w.])"
+)
+
+# Helpers that put a value through Finnish formatting.
+_APPROVED_FORMATTERS = (
+    "fmtDate",
+    "fmtDateTime",
+    "fmtTime",
+    "fmtProseDates",
+    "relativeTime",
+    "formatActionTimestamp",
+    "biomarkerDate",
+    "imagingDate",
+    "symptomDate",
+    "treatmentDatePresentation",
+    "symptomDatePresentation",
+    "caregiverDateFieldValue",
+    "researchValueMarkup",
+    "timelineDateParts",
+    "dueDatePresentation",
+    "receiptValueSummary",
+    "localDateIso",
+)
+
+# Interpolations that read a dated field on purpose without formatting it, and
+# why that is right. Each entry is matched as a substring of the expression.
+_DELIBERATE_RAW_DATES = {
+    # `<input type="date">` is a native control: its value is ISO by
+    # specification and the browser renders it in the reader's own locale.
+    "document.getElementById('research-follow-up-due').value = draft.due_date",
+    "document.getElementById('visit-create-date').value = source.date",
+    # The caregiver's own typed text, restored into the box exactly as typed.
+    "document.getElementById('research-event-date').value = draft.occurred_on",
+    # The machine-readable half of `<time>`, which HTML requires to be ISO. It
+    # is only written when the record really states one date, and the element's
+    # visible text beside it is the Finnish rendering.
+    "escHtml(parts.date)",
+    # Date arithmetic, not display: this builds a `Date` to count days from.
+    "${item.due_date}T12:00:00",
+}
+
+
+def test_no_interpolated_date_field_reaches_markup_without_a_formatter():
+    lines = APP_JS.splitlines()
+    offenders = []
+    for line, expression in javascript_interpolations(APP_JS):
+        if not _DATE_FIELD.search(expression):
+            continue
+        if any(formatter in expression for formatter in _APPROVED_FORMATTERS):
+            continue
+        # An exemption is matched against the whole source line, so the reason
+        # it is exempt stays visible next to the read itself.
+        context = lines[line - 1] if 0 < line <= len(lines) else ""
+        if any(allowed in context for allowed in _DELIBERATE_RAW_DATES):
+            continue
+        offenders.append(f"static/app.js:{line}: {' '.join(expression.split())[:120]}")
+    assert offenders == [], "a stored date reaches markup unformatted:\n" + "\n".join(offenders)
+
+
+def test_the_tripwire_would_actually_catch_a_regression():
+    """A guard that cannot fail is not a guard."""
+    sample = "const html = `<span>${item.due_date}</span>`;"
+    found = [
+        expression
+        for _, expression in javascript_interpolations(sample)
+        if _DATE_FIELD.search(expression) and not any(f in expression for f in _APPROVED_FORMATTERS)
+    ]
+    assert found == ["item.due_date"]
+
+
+def test_the_symptom_follow_up_reads_the_same_date_on_every_surface():
+    """The linked-action copy and the picker printed a stored date as stored.
+
+    One of the three sites that show a follow-up's due date was corrected in an
+    earlier round and pinned by a test; the other two were not, and kept
+    printing `2026-09-01` while the card beside them read `1.9.2026`.
+    """
+    assert "symptomScalar(action.due_date)" not in APP_JS
+    assert "symptomScalar(episode.follow_up.due_date)" not in APP_JS
+    # All three surfaces now agree.
+    assert APP_JS.count("symptomDate(episode.follow_up.due_date)") == 2
+    assert APP_JS.count("symptomDate(action.due_date)") == 1
+    # The linked-action line also stopped printing the stored status code.
+    assert "${episode.follow_up.text} · ${episode.follow_up.status}" not in APP_JS

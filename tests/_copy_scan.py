@@ -258,6 +258,72 @@ def _unescape(text: str) -> str:
     )
 
 
+def javascript_interpolations(source: str) -> list[tuple[int, str]]:
+    """Return `(line number, expression text)` for every `${...}` in a template.
+
+    The copy scanner deliberately throws template expressions away, because it
+    is looking for words. A date guard needs the opposite: the expressions are
+    where a stored value is read, and reading one without a formatter is exactly
+    how a machine date reaches the screen. Nested templates contribute their own
+    expressions too, so a conditional inside an interpolation is still seen.
+    """
+
+    found: list[tuple[int, str]] = []
+    index = 0
+    line = 1
+    length = len(source)
+    previous = ""
+    while index < length:
+        char = source[index]
+        if char == "\n":
+            line += 1
+            index += 1
+            continue
+        if char == "/" and index + 1 < length and source[index + 1] in "/*":
+            index, line = _skip_comment(source, index, line)
+            continue
+        if char == "/" and _regex_may_start_here(source, index, previous):
+            index, line = _skip_regex(source, index, line)
+            previous = "/"
+            continue
+        if char in "'\"":
+            index, line, _ = _read_quoted(source, index, line, char)
+            previous = char
+            continue
+        if char == "`":
+            index, line = _collect_interpolations(source, index, line, found)
+            previous = "`"
+            continue
+        if not char.isspace():
+            previous = char
+        index += 1
+    return found
+
+
+def _collect_interpolations(
+    source: str, index: int, line: int, found: list[tuple[int, str]]
+) -> tuple[int, int]:
+    index += 1
+    while index < len(source):
+        char = source[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == "`":
+            return index + 1, line
+        if char == "$" and index + 1 < len(source) and source[index + 1] == "{":
+            start = index + 2
+            opened = line
+            index, line, _ = _skip_expression(source, start, line)
+            # `_skip_expression` stops just past the closing brace.
+            found.append((opened, source[start : index - 1]))
+            continue
+        if char == "\n":
+            line += 1
+        index += 1
+    return index, line
+
+
 class _VisibleHtml(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)

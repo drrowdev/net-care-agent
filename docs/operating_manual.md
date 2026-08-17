@@ -79,6 +79,35 @@ research and treatment-reconciliation surfaces still show the stored wording,
 because those lists do not carry the origin needed to tell a generated
 recommendation apart from one you wrote.
 
+### The timeline under *What changed / upcoming*
+
+This reads left to right: the further right a stop sits, the further ahead it
+is, and the gaps between stops are proportional to the real time between them.
+The thin strip above the stops is only there to show that spacing — everything
+it indicates is written out in the stops themselves, so nothing is lost if you
+cannot see it. A stop whose date is known only to the month is drawn as a band
+across that whole month, never as a dot on a particular day inside it, because
+the record does not say which day. The row can be scrolled sideways with the
+keyboard alone. On a phone the strip is dropped and the stops simply stack, so
+the page never scrolls sideways.
+
+Each stop says when it happens in the same Finnish form as everywhere else, and
+the assessment is only ever allowed to put a real calendar date there. If it
+recorded something alongside the date — *late in the month*, *before the next
+dose* — that wording is kept and shown next to the date.
+
+Where the assessment could not settle on one month, both are shown, as
+*8/2026 or 9/2026*. **The app never picks one of them for you.** Choosing would
+be the app deciding clinical timing, which it does not do anywhere. If the
+recorded timing cannot be read honestly at all — for example a pair of months
+that would require assuming which year the second one falls in — the stop says
+**Timing unclear** rather than guessing. A stop with no timing recorded says
+**Timing not recorded**, which is a different thing and is shown differently.
+
+A stop is only greyed out as past once the whole of the period it names is
+behind us. An event recorded as *August 2026* is not treated as past partway
+through August, because as far as the record is concerned it may still be ahead.
+
 Stored timestamps are written by the server as naive ISO strings on a UTC host,
 so the interface reads a timestamp without a timezone as UTC and shows it in the
 browser's local zone. A value already carrying `Z` or an offset is honoured as

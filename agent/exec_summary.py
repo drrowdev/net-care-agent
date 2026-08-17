@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import re
 
 from . import config
 from .evidence import evidence_catalog_prompt
@@ -16,6 +17,7 @@ from .profile import (
     get_patient_summary,
     imaging_context_rows,
 )
+from .schema import derive_date_precision
 
 EXECUTIVE_SUMMARY_SYSTEM_TEMPLATE = """\
 You are a clinical summarization agent for [[PATIENT_CONTEXT]].
@@ -55,8 +57,8 @@ Return ONLY valid JSON matching this exact schema (no markdown, no prose outside
   ],
   "timeline": [
     {
-      "date": "YYYY-MM or approximate description",
-      "event": "What should happen or is expected",
+      "date": "YYYY-MM-DD, YYYY-MM or YYYY — a calendar date ONLY, nothing else",
+      "event": "What should happen or is expected, including any timing wording",
       "type": "appointment|scan|test|milestone|trial|deadline",
       "provisional": true|false
     }
@@ -82,7 +84,9 @@ Rules:
 - status_confidence: high = recent imaging AND consistent biomarker trend support the status; medium = one strong signal or mildly conflicting signals; low = sparse, old, or contradictory data.
 - cga_trend: requires ≥2 comparable CgA readings; otherwise "insufficient_data". cga_trend_detail must quote the actual values, units, and dates from the profile (and note it if assay/units changed between readings).
 - next_actions: max 5, ordered urgent→high→medium. Triage: urgent = needs to happen this week regardless of appointment schedule; high = important but can wait for next appointment IF within 2 weeks; medium = worth doing but not time-critical. Do NOT include actions the oncologist has already addressed per clinical judgments. Do NOT include speculative actions without evidence from the profile data. Each action names WHO does WHAT — not just "consider discussing X".
-- timeline: max 6 most relevant upcoming items. Estimate dates where reasonable.
+- timeline: max 6 most relevant upcoming items.
+- timeline[].date is a DATE FIELD, not a sentence. It must hold a bare calendar date at the precision the record actually supports — "2026-08-14", "2026-08" or "2026" — and nothing else. No parenthetical, no qualifier, no "approx", no "late", no "before the next dose", no two alternatives, no range, no slash. Never estimate or invent a date that the record does not state.
+- Any timing wording belongs in timeline[].event, phrased so it reads naturally: date "2026-08" with event "Third dose, expected late in the month". If the record genuinely allows two different months and you cannot tell which, drop to the precision you are sure of (the year) or leave date as "" — and say what the record states in event. An invented date is a clinical error; an honest gap is not.
 - best_trial: this is only a trial to discuss, not a patient match or eligibility finding. Choose ONLY from trials tracked in the profile — never construct, recall, or guess an NCT ID. Set to null if the profile lists no potentially relevant trial or if the oncologist has ruled the candidates out. The treating team and trial site determine eligibility.
 - provisional: true for any timeline item or action NOT explicitly confirmed, agreed, or scheduled in the clinical documents. false only for confirmed appointments, agreed treatment plans, or scheduled tests. When uncertain, default to true.
 - Treat prrt_status as a screening description of potential fit, never a definitive eligibility decision. The treating team confirms candidacy using receptor imaging, pathology, organ function, prior treatment, and the full clinical context.
@@ -107,6 +111,76 @@ _APPT_TYPE_MAP = {
     "test": "test",
     "other": "milestone",
 }
+
+# A timeline date is a date field, not a sentence. The prompt used to describe it
+# as "YYYY-MM or approximate description", so the model wrote qualifiers and
+# alternatives into it — "2026-08 (approx late Aug)", "2026-08/09" — and the
+# display formatter, which only rewrites an exact ISO value, passed them through
+# to the screen verbatim. The prompt now forbids that; this is the deterministic
+# backstop, because a prompt is a request and a model can still drift.
+#
+# A leading calendar date followed by separate wording is split, not discarded:
+# the date keeps its recorded precision and the qualifier moves into the event
+# text, which is where it reads naturally and where prose date handling already
+# reaches it. The lookahead stops "2026-08/09" being read as August with a stray
+# "/09" tacked on — that would silently narrow two months to one.
+_LEADING_DATE = re.compile(r"^\s*(\d{4}(?:-\d{2}(?:-\d{2})?)?)(?![\d\-/.\\])(.*)$", re.DOTALL)
+
+# Leftover wording is only worth moving into the event if it reads as words. A
+# leftover that is itself machine date notation would put on screen exactly what
+# this change exists to remove, so the date is simply dropped and the model's own
+# sentence, which the prompt now requires to carry the timing, is left to say it.
+_MACHINE_DATE_TEXT = re.compile(r"(?<!\d)\d{4}-\d{2}(?!\d)")
+
+
+def _split_timeline_date(value: object) -> tuple[str, str]:
+    """Return ``(calendar date, leftover wording)`` for one recorded date.
+
+    The date is only ever a value ``derive_date_precision`` recognises, so an
+    impossible day such as ``2026-02-31`` is treated as wording rather than
+    silently accepted as a calendar claim.
+    """
+    if not isinstance(value, str):
+        return "", ""
+    text = value.strip()
+    if not text:
+        return "", ""
+    if derive_date_precision(text) != "unknown":
+        return text, ""
+    match = _LEADING_DATE.match(text)
+    if match and derive_date_precision(match.group(1)) != "unknown":
+        return match.group(1), match.group(2).strip()
+    # No calendar date to be sure of: claim no date, and keep the wording only
+    # when it is wording rather than notation.
+    return "", "" if _MACHINE_DATE_TEXT.search(text) else text
+
+
+def _normalise_timeline_dates(summary: dict) -> dict:
+    """Move timing wording out of the date field and into the event text."""
+    try:
+        items = summary.get("timeline")
+        if not isinstance(items, list):
+            return summary
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            date, leftover = _split_timeline_date(item.get("date"))
+            item["date"] = date
+            if not leftover:
+                continue
+            event = str(item.get("event") or "").strip()
+            # The qualifier is appended, never substituted, so the model's own
+            # sentence survives intact and the recorded timing is not lost. A
+            # qualifier that already carries its own brackets keeps just the one
+            # pair rather than being wrapped again.
+            note = (
+                leftover if leftover.startswith("(") and leftover.endswith(")") else f"({leftover})"
+            )
+            item["event"] = f"{event} {note}" if event else leftover
+    except Exception:  # a malformed timeline must not cost him the summary
+        pass
+    return summary
+
 
 _TRIAL_STATUS_PRIORITY = {
     "RECRUITING": 0,
@@ -189,7 +263,9 @@ def _merge_upcoming_appointments(summary: dict, profile: dict) -> dict:
                     "provisional": True,
                 }
             )
-        timeline.sort(key=lambda t: t.get("date") or "9999-99-99")
+        # An item with no usable date sorts last rather than first: an empty
+        # string would otherwise lead the list and read as the nearest event.
+        timeline.sort(key=lambda t: (t.get("date") or "9999-99-99") or "9999-99-99")
         summary["timeline"] = timeline[:12]  # keep bounded, nearest-first
     except Exception:  # never let timeline merge break summary delivery
         pass
@@ -269,7 +345,7 @@ def generate_executive_summary(profile: dict) -> dict:
             summary = json.loads(raw)
             break
         summary["generated_at"] = datetime.date.today().isoformat()
-        return _merge_upcoming_appointments(summary, profile)
+        return _merge_upcoming_appointments(_normalise_timeline_dates(summary), profile)
     except Exception as e:
         if is_timeout_error(e):
             raise

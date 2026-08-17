@@ -24,6 +24,8 @@ import json
 import subprocess
 from pathlib import Path
 
+from tests._ui_render import render_summary
+
 APP_JS = Path("static/app.js").read_text(encoding="utf-8")
 _NODE_STDIN_BOOTSTRAP = "eval(require('fs').readFileSync(0,'utf8'))"
 
@@ -57,72 +59,6 @@ def _render_claim_evidence(items: object) -> str:
         ]
     )
     return _run_node(script)["html"]
-
-
-_SUMMARY_HARNESS = """
-class FakeClassList {
-  add() {}
-  remove() {}
-  toggle() {}
-  contains() { return false; }
-}
-
-function fakeElement() {
-  return {
-    classList: new FakeClassList(),
-    className: '',
-    dataset: {},
-    disabled: false,
-    hidden: false,
-    innerHTML: '',
-    style: {},
-    textContent: '',
-    closest() { return null; },
-    querySelector() { return null; },
-    remove() {},
-    removeAttribute() {},
-    setAttribute() {},
-  };
-}
-
-const elements = new Map();
-const document = {
-  getElementById(id) {
-    if (!elements.has(id)) elements.set(id, fakeElement());
-    return elements.get(id);
-  },
-  querySelectorAll() { return []; },
-};
-
-function renderFreshness() {}
-function summaryIsStale() { return false; }
-function generatedActionAccepted() { return false; }
-function refreshGeneratedActionControls() {}
-function followUpControlsLocked() { return false; }
-function setFollowUpMutationBusy() {}
-function translateType(value) { return value; }
-"""
-
-
-def _render_summary(summary: dict) -> dict:
-    """Render a whole assessment through the real `renderSummary`."""
-    script = "\n".join(
-        [
-            _SUMMARY_HARNESS,
-            _function_source("safeClassToken", "safeExternalUrl"),
-            _function_source("escHtml", "fmtDate"),
-            _function_source("fmtDate", "copyReport"),
-            _function_source("summaryActionIsCurrent", "generatedActionAccepted"),
-            _function_source("renderClaimEvidence", "renderSummary"),
-            _function_source("renderSummary", "researchPlainObject"),
-            f"renderSummary({json.dumps(summary)});",
-            "console.log(JSON.stringify({",
-            "  body: document.getElementById('summary-body').innerHTML,",
-            "  updated: document.getElementById('summary-updated').textContent,",
-            "}));",
-        ]
-    )
-    return _run_node(script)
 
 
 def _current_action(**overrides) -> dict:
@@ -218,7 +154,7 @@ def test_an_unverified_status_never_dresses_itself_up_as_a_link():
 
 
 def test_a_whole_generated_assessment_carries_no_chip_noise():
-    rendered = _render_summary(
+    rendered = render_summary(
         _summary(
             key_concern="Watch the interval between doses.",
             status_rationale="Imaging and CgA agree.",
@@ -251,7 +187,7 @@ def test_a_whole_generated_assessment_carries_no_chip_noise():
 
 
 def test_a_verified_claim_inside_a_full_assessment_keeps_its_link():
-    rendered = _render_summary(
+    rendered = render_summary(
         _summary(
             summary="The plan is holding.",
             next_actions=[_current_action()],
@@ -269,7 +205,7 @@ def test_a_verified_claim_inside_a_full_assessment_keeps_its_link():
 
 
 def test_generated_prose_dates_render_in_the_same_finnish_shape_as_every_field():
-    rendered = _render_summary(
+    rendered = render_summary(
         _summary(
             key_concern="PET-CT on 2026-04-22 confirmed progression.",
             status_rationale="Doses run 2026-05 to 2026-08.",
@@ -308,7 +244,7 @@ def test_generated_prose_dates_render_in_the_same_finnish_shape_as_every_field()
 
 def test_machine_readable_and_server_bound_values_keep_the_stored_iso_text():
     """Only what the caregiver reads is reformatted; the wire stays ISO."""
-    rendered = _render_summary(
+    rendered = render_summary(
         _summary(
             next_actions=[_current_action(action="Confirm the dose booked for 2026-09-01")],
             timeline=[{"date": "2026-09-01", "event": "Third dose", "type": "appointment"}],
@@ -322,7 +258,7 @@ def test_machine_readable_and_server_bound_values_keep_the_stored_iso_text():
 
 
 def test_a_year_alone_and_a_written_out_month_are_left_completely_untouched():
-    rendered = _render_summary(
+    rendered = render_summary(
         _summary(summary="Reviewed in 2026, again in April 2026 and by late August 2026.")
     )
     assert "Reviewed in 2026, again in April 2026 and by late August 2026." in rendered["body"]
@@ -333,18 +269,18 @@ def test_a_date_like_identifier_or_url_in_prose_is_never_rewritten():
         "Report doc-2026-05-07-abc, file report-2026-05-07.pdf, stamp 2026-05-07T10:30:00 "
         "and https://example.org/reports/2026-05-07/summary all stay as recorded."
     )
-    rendered = _render_summary(_summary(summary=prose))
+    rendered = render_summary(_summary(summary=prose))
     assert prose in rendered["body"]
 
 
 def test_an_impossible_calendar_value_is_left_alone_rather_than_guessed_at():
     prose = "Range 1234-56, month 2026-13 and day 2026-05-45 are not dates."
-    assert prose in _render_summary(_summary(summary=prose))["body"]
+    assert prose in render_summary(_summary(summary=prose))["body"]
 
 
 def test_escaping_still_holds_after_the_date_transformation():
     """The rewrite happens on the text value; escaping runs after it, once."""
-    rendered = _render_summary(
+    rendered = render_summary(
         _summary(
             key_concern="<script>alert('x')</script> on 2026-05-07",
             summary='Ampersand & "quote" on 2026-05-07',

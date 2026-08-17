@@ -212,3 +212,95 @@ def test_a_course_in_progress_status_passes_through_untouched(agent, empty_profi
         out = agent.generate_executive_summary(empty_profile)
     assert out["prrt_status"] == "course_in_progress"
     assert "already receiving Series 2" in out["prrt_rationale"]
+# ── the timeline date field ──────────────────────────────────────────────────
+# The prompt used to describe `timeline[].date` as "YYYY-MM or approximate
+# description", so the model wrote qualifiers and alternatives into a date field
+# and they reached the screen as machine text. The prompt now forbids that, and
+# these pin the deterministic backstop, because a prompt is a request and a model
+# can drift back.
+
+
+def test_the_prompt_asks_for_a_calendar_date_and_nothing_else():
+    from agent import exec_summary
+
+    template = exec_summary.EXECUTIVE_SUMMARY_SYSTEM_TEMPLATE
+    assert '"date": "YYYY-MM or approximate description"' not in template
+    assert "a calendar date ONLY, nothing else" in template
+    # The instruction that invited invention is gone.
+    assert "Estimate dates where reasonable" not in template
+    assert "Never estimate or invent a date that the record does not state." in template
+    # And it says where a qualifier belongs instead.
+    assert "Any timing wording belongs in timeline[].event" in template
+
+
+def test_a_qualifier_is_moved_out_of_the_date_field_into_the_event():
+    from agent.exec_summary import _normalise_timeline_dates
+
+    summary = _normalise_timeline_dates(
+        {
+            "timeline": [
+                {"date": "2026-08 (approx late Aug)", "event": "Third dose"},
+                {"date": "2026-08 (before next dose)", "event": "Bloods"},
+                {"date": "2026-09-01", "event": "Review"},
+            ]
+        }
+    )
+    assert summary["timeline"] == [
+        {"date": "2026-08", "event": "Third dose (approx late Aug)"},
+        {"date": "2026-08", "event": "Bloods (before next dose)"},
+        {"date": "2026-09-01", "event": "Review"},
+    ]
+
+
+def test_two_possible_months_never_become_one_and_never_become_prose_notation():
+    """Keeping "2026-08/09" as the date, or pasting it into the sentence, would
+    both put machine notation back on screen. The date is dropped instead, and
+    the model's own sentence is left to carry the timing."""
+    from agent.exec_summary import _normalise_timeline_dates
+
+    summary = _normalise_timeline_dates(
+        {"timeline": [{"date": "2026-08/09", "event": "Scan window"}]}
+    )
+    assert summary["timeline"] == [{"date": "", "event": "Scan window"}]
+    # Emphatically not narrowed to August.
+    assert "2026-08" not in json.dumps(summary)
+
+
+def test_wording_with_no_date_at_all_is_kept_as_wording():
+    from agent.exec_summary import _normalise_timeline_dates
+
+    summary = _normalise_timeline_dates(
+        {"timeline": [{"date": "when the team decides", "event": "Repeat scan"}]}
+    )
+    assert summary["timeline"] == [{"date": "", "event": "Repeat scan (when the team decides)"}]
+
+
+def test_an_impossible_day_is_not_accepted_as_a_calendar_date():
+    from agent.exec_summary import _normalise_timeline_dates
+
+    summary = _normalise_timeline_dates({"timeline": [{"date": "2026-02-31", "event": "Scan"}]})
+    assert summary["timeline"][0]["date"] == ""
+
+
+def test_normalising_a_broken_timeline_never_costs_him_the_summary():
+    from agent.exec_summary import _normalise_timeline_dates
+
+    for timeline in (None, "not a list", [None], [{"date": 5}], [[]]):
+        assert _normalise_timeline_dates({"timeline": timeline}) is not None
+
+
+def test_an_undated_item_sorts_last_rather_than_leading_the_timeline():
+    """An empty date used to sort first, so an unscheduled item read as the
+    nearest thing coming up."""
+    from agent.exec_summary import _merge_upcoming_appointments
+
+    summary = _merge_upcoming_appointments(
+        {
+            "timeline": [
+                {"date": "", "event": "Unscheduled"},
+                {"date": "2026-09-01", "event": "Review"},
+            ]
+        },
+        {"appointments": []},
+    )
+    assert [item["event"] for item in summary["timeline"]] == ["Review", "Unscheduled"]

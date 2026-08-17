@@ -6429,7 +6429,7 @@
       const option = symptomElement(
         'option',
         '',
-        `${action.text} · ${enumLabel(action.status)} · ${symptomScalar(action.owner)} · due ${symptomScalar(action.due_date)}`,
+        `${action.text} · ${enumLabel(action.status)} · ${symptomScalar(action.owner)} · due ${symptomDate(action.due_date)}`,
       );
       option.value = action.id;
       select.append(option);
@@ -6523,9 +6523,9 @@
         submit.hidden = true;
         unlink.hidden = false;
         document.getElementById('symptom-linked-action-copy').textContent =
-          `${episode.follow_up.text} · ${episode.follow_up.status} · ${
+          `${episode.follow_up.text} · ${enumLabel(episode.follow_up.status)} · ${
             symptomScalar(episode.follow_up.owner)
-          } · due ${symptomScalar(episode.follow_up.due_date)}`;
+          } · due ${symptomDate(episode.follow_up.due_date)}`;
         selectedSymptomActionId = episode.follow_up.id;
         selectedSymptomActionToken = episode.follow_up.token;
       } else {
@@ -7632,22 +7632,12 @@
     }
 
 
-    // A linear timeline remains readable with a keyboard, a screen reader, and on phones.
+    // The timeline reads left to right, the way he asked for it back. Position
+    // along the axis is proportional to real elapsed time; the readable text
+    // lives in the cards below, so a label never has to be truncated or
+    // suppressed to avoid a collision the way the old graph did.
     if (d.timeline && d.timeline.length) {
-      const today = new Date().toISOString().slice(0, 10);
-      html += `<div class="summary-section">
-        <div class="summary-section-label">What changed / upcoming</div>
-        <ol class="timeline-list">${d.timeline.map(item => {
-          const date = item.date || '';
-          const past = date && date < today ? ' past' : '';
-          return `<li class="timeline-entry${past}">
-            <time datetime="${escHtml(date)}">${escHtml(fmtDate(date) || 'Date pending')}</time>
-            <span class="timeline-event-copy">${escHtml(fmtProseDates(item.event))}</span>
-            <span class="timeline-type ${safeClassToken(item.type, 'test')}">${escHtml(translateType(item.type || 'Event'))}</span>
-            ${item.provisional ? '<span class="timeline-provisional">Provisional — confirm with the care team</span>' : ''}
-          </li>`;
-        }).join('')}</ol>
-      </div>`;
+      html += renderSummaryTimeline(d.timeline);
     }
 
     if (d.status_confidence || d.cga_trend || d.cga_trend_detail || d.prrt_rationale) {
@@ -7684,6 +7674,111 @@
     body.innerHTML = html;
     refreshGeneratedActionControls();
     if (followUpControlsLocked()) setFollowUpMutationBusy(true);
+  }
+
+  // ── Assessment timeline ─────────────────────────────────────────────────
+  // He asked for the horizontal timeline back. The old one was an SVG graph
+  // with hover-only tooltips, a 400px floor that overflowed a phone, event text
+  // cut to 19 characters, English month abbreviations from the browser locale,
+  // and a parser that invented the 1st of the month for a month-precision date.
+  // Restoring it verbatim would undo work that shipped since, so the horizontal
+  // reading is rebuilt on ordinary accessible markup instead:
+  //
+  //   · an axis strip that encodes position only. It is decorative and hidden
+  //     from assistive technology, because every fact it shows is written out
+  //     in the cards below, so nothing depends on seeing it.
+  //   · an ordered list of stop cards carrying the readable text. Because the
+  //     text is not on the axis, no label ever has to be truncated or dropped
+  //     to avoid a collision.
+  //
+  // Under 720px, the app's existing mobile breakpoint, the axis is hidden and
+  // the cards fall back to the vertical list, which stays the better shape on a
+  // phone. Nothing scrolls sideways at 360px.
+
+  // The window a recorded date occupies, in whole UTC days. A day-precision date
+  // is a point. A month or a year is a band across exactly the span the record
+  // states — that is the recorded fact, not an invented day inside it.
+  function timelineDateWindow(date) {
+    const precision = isoDatePrecision(date);
+    if (!precision) return null;
+    const year = Number(date.slice(0, 4));
+    if (precision === 'year') {
+      return { start: Date.UTC(year, 0, 1), end: Date.UTC(year, 11, 31) };
+    }
+    const month = Number(date.slice(5, 7)) - 1;
+    if (precision === 'month') {
+      return { start: Date.UTC(year, month, 1), end: Date.UTC(year, month + 1, 0) };
+    }
+    const day = Number(date.slice(8, 10));
+    return { start: Date.UTC(year, month, day), end: Date.UTC(year, month, day) };
+  }
+
+  // Proportional offsets for the axis strip, as percentages of the whole window.
+  // Returns null when there is nothing to scale against — a single dated item,
+  // or none at all — so the axis is simply not drawn rather than drawn wrong.
+  function timelineAxisGeometry(items, today) {
+    const windows = items.map(item => timelineDateWindow(timelineDateParts(item.date).date));
+    const dated = windows.filter(Boolean);
+    if (dated.length < 2) return null;
+    const todayPoint = timelineDateWindow(today);
+    const starts = dated.map(w => w.start).concat(todayPoint ? [todayPoint.start] : []);
+    const ends = dated.map(w => w.end).concat(todayPoint ? [todayPoint.end] : []);
+    const from = Math.min(...starts);
+    const to = Math.max(...ends);
+    const span = to - from;
+    if (span <= 0) return null;
+    const percent = value => ((value - from) / span) * 100;
+    return {
+      marks: windows.map(w => (w === null ? null : {
+        offset: percent(w.start),
+        width: percent(w.end) - percent(w.start),
+      })),
+      today: todayPoint ? percent(todayPoint.start) : null,
+    };
+  }
+
+  function renderSummaryTimeline(items) {
+    const today = localDateIso();
+    const geometry = timelineAxisGeometry(items, today);
+    const stops = items.map((item, index) => {
+      const parts = timelineDateParts(item.date);
+      const past = timelineDateIsPast(parts.date, today) ? ' past' : '';
+      const undated = parts.date ? '' : ' undated';
+      // A Finnish date when the record states one, both months when it offers
+      // two, and otherwise a plain statement of what is missing. "Timing not
+      // recorded" and "Timing unclear" are different facts and are not
+      // collapsed into one phrase.
+      const when = parts.date
+        ? `<time datetime="${escHtml(parts.date)}">${escHtml(parts.display)}</time>`
+        : `<span class="timeline-when-text">${escHtml(parts.display
+          || (parts.unclear ? 'Timing unclear' : 'Timing not recorded'))}</span>`;
+      const mark = geometry?.marks[index];
+      const position = mark
+        ? ` style="--stop-offset:${mark.offset.toFixed(3)}%;--stop-span:${mark.width.toFixed(3)}%"`
+        : '';
+      return `<li class="timeline-stop${past}${undated}"${position}>
+        <span class="timeline-stop-when">${when}</span>
+        <span class="timeline-event-copy">${escHtml(fmtProseDates(item.event))}</span>
+        <span class="timeline-type ${safeClassToken(item.type, 'test')}">${escHtml(translateType(item.type || 'Event'))}</span>
+        ${item.provisional ? '<span class="timeline-provisional">Provisional — confirm with the care team</span>' : ''}
+      </li>`;
+    }).join('');
+    const axis = geometry
+      ? `<div class="timeline-axis" aria-hidden="true">
+        <span class="timeline-axis-line"></span>
+        ${geometry.today === null ? '' : `<span class="timeline-axis-today" style="--stop-offset:${geometry.today.toFixed(3)}%"></span>`}
+        ${geometry.marks.map((mark, index) => (mark === null ? '' : `<span class="timeline-axis-mark${timelineDateIsPast(timelineDateParts(items[index].date).date, today) ? ' past' : ''}" style="--stop-offset:${mark.offset.toFixed(3)}%;--stop-span:${mark.width.toFixed(3)}%"></span>`)).join('')}
+      </div>`
+      : '';
+    // The card row scrolls sideways when the stops do not fit, so it is a
+    // focusable landmark: a keyboard alone has to be able to reach and scroll it.
+    return `<div class="summary-section">
+      <div class="summary-section-label" id="summary-timeline-heading">What changed / upcoming</div>
+      <div class="timeline-scroll" role="region" aria-labelledby="summary-timeline-heading" tabindex="0">
+        ${axis}
+        <ol class="timeline-track">${stops}</ol>
+      </div>
+    </div>`;
   }
 
   // ── Research shortlist and disposition workspace ─────────────────────────
@@ -8149,17 +8244,37 @@
     return data;
   }
 
-  function researchValueMarkup(value) {
+  // Stored fields on a research record that hold a date or a timestamp. They
+  // used to reach the screen through the generic value renderer, which prints a
+  // scalar exactly as stored, so "Recorded", "Due date", "Date added",
+  // "Registry last updated" and a paper's publication date all read as machine
+  // dates beside fields that read Finnish. Naming them here means the central
+  // renderer formats them, rather than each call site remembering to.
+  // `fmtDateTime` is used throughout because it keeps a date-only value at its
+  // recorded precision and only adds a clock when the record has one.
+  const RESEARCH_DATE_FIELDS = new Set([
+    'date',
+    'date_added',
+    'due_date',
+    'occurred_on',
+    'recorded_at',
+    'registry_last_update',
+  ]);
+
+  function researchValueMarkup(value, field = '') {
     if (value === null) return '<span class="research-null">Nothing recorded</span>';
     if (value === '') return '<span class="research-empty-value">Recorded as blank</span>';
     if (Array.isArray(value)) {
       if (!value.length) return '<span class="research-empty-value">Recorded as an empty list</span>';
-      return `<ol class="research-value-list">${value.map(item => `<li>${researchValueMarkup(item)}</li>`).join('')}</ol>`;
+      return `<ol class="research-value-list">${value.map(item => `<li>${researchValueMarkup(item, field)}</li>`).join('')}</ol>`;
     }
     if (researchPlainObject(value)) {
       if (!Object.keys(value).length) return '<span class="research-empty-value">Recorded as empty</span>';
       const exact = JSON.stringify(value, null, 2);
       return `<details class="research-exact-details"><summary>Show full details</summary><pre>${escHtml(exact)}</pre></details>`;
+    }
+    if (RESEARCH_DATE_FIELDS.has(field) && typeof value === 'string') {
+      return `<span>${escHtml(fmtDateTime(value))}</span>`;
     }
     const text = String(value);
     if (text.length > 240 || text.includes('\n')) {
@@ -8171,7 +8286,7 @@
   function researchAuthorityMarkup(label, value, allowedFields) {
     const rows = [...allowedFields].map(key => {
       const present = Object.prototype.hasOwnProperty.call(value, key);
-      return `<div class="research-fact-row"><dt>${escHtml(researchFieldLabel(key))}</dt><dd>${present ? researchValueMarkup(value[key]) : '<span class="research-missing-value">Not in the record</span>'}</dd></div>`;
+      return `<div class="research-fact-row"><dt>${escHtml(researchFieldLabel(key))}</dt><dd>${present ? researchValueMarkup(value[key], key) : '<span class="research-missing-value">Not in the record</span>'}</dd></div>`;
     }).join('');
     return `<section class="research-authority-section"><h4>${escHtml(label)}</h4><dl class="research-fact-list">${rows}</dl></section>`;
   }
@@ -8302,7 +8417,7 @@
             <div class="research-history-heading"><strong>${escHtml(RESEARCH_EVENT_LABELS[event.event_type])}</strong><span>${escHtml(event.occurred_on === null ? 'No event date entered' : fmtDate(event.occurred_on))}</span></div>
             <p class="research-attribution">${escHtml(caregiverProvenancePresentation(event.provenance.label))}</p>
             <div class="research-event-note">${researchValueMarkup(event.note)}</div>
-            <dl class="research-event-meta"><div><dt>Who</dt><dd>${researchValueMarkup(event.who)}</dd></div><div><dt>Context</dt><dd>${researchValueMarkup(event.context)}</dd></div><div><dt>Recorded</dt><dd>${researchValueMarkup(event.recorded_at)}</dd></div></dl>
+            <dl class="research-event-meta"><div><dt>Who</dt><dd>${researchValueMarkup(event.who)}</dd></div><div><dt>Context</dt><dd>${researchValueMarkup(event.context)}</dd></div><div><dt>Recorded</dt><dd>${researchValueMarkup(event.recorded_at, 'recorded_at')}</dd></div></dl>
           </li>`).join('')}</ol>` : '<p class="research-empty-value">No caregiver events are recorded.</p>'}
         </section>
         <section class="research-events-section"><h3>Consideration history</h3>
@@ -8316,7 +8431,7 @@
           }[entry.operation] || 'Updated by you')}</strong><span>${escHtml(formatActionTimestamp(entry.at))}</span></div></li>`).join('')}</ol>` : '<p class="research-empty-value">No consideration history is recorded.</p>'}
         </section>
         <section class="research-follow-up-summary"><h3>Linked follow-up</h3>
-          ${consideration.follow_up ? `<dl class="research-event-meta"><div><dt>Text</dt><dd>${researchValueMarkup(consideration.follow_up.text)}</dd></div><div><dt>Status</dt><dd>${researchValueMarkup(consideration.follow_up.status)}</dd></div><div><dt>Owner</dt><dd>${researchValueMarkup(consideration.follow_up.owner)}</dd></div><div><dt>Due date</dt><dd>${researchValueMarkup(consideration.follow_up.due_date)}</dd></div></dl>` : '<p class="research-empty-value">No caregiver follow-up is linked.</p>'}
+          ${consideration.follow_up ? `<dl class="research-event-meta"><div><dt>Text</dt><dd>${researchValueMarkup(consideration.follow_up.text)}</dd></div><div><dt>Status</dt><dd>${researchValueMarkup(consideration.follow_up.status)}</dd></div><div><dt>Owner</dt><dd>${researchValueMarkup(consideration.follow_up.owner)}</dd></div><div><dt>Due date</dt><dd>${researchValueMarkup(consideration.follow_up.due_date, 'due_date')}</dd></div></dl>` : '<p class="research-empty-value">No caregiver follow-up is linked.</p>'}
         </section>
       `);
     }
@@ -10285,6 +10400,92 @@
   // Every displayed date, time and number uses Finnish conventions. Interface
   // copy stays in English; only the numeric formatting is localised.
   const FI_LOCALE = 'fi-FI';
+
+  // A generated timeline date used to be specified as "YYYY-MM or approximate
+  // description", so the model wrote qualifiers and alternatives into a date
+  // field — "2026-08 (approx late Aug)", "2026-08/09". `fmtDate` rewrites only
+  // an exact ISO value, deliberately, so those reached the screen verbatim and
+  // he read machine dates for the third time. The generator no longer produces
+  // them, but assessments already stored still contain them, so the display side
+  // has to improve them on its own without regenerating anything.
+  //
+  // A leading calendar date followed by separate wording is formatted and the
+  // wording kept exactly as recorded beside it.
+  //
+  // "2026-08/09" is two months, and the one thing the app must never do is quietly
+  // pick one of them. Both are shown, in Finnish, and the item claims no single
+  // machine date and is never filed as past. The rewrite is refused outright when
+  // the second month is not plainly later in the same year — "2026-12/01" would
+  // require assuming January means 2027, which is the app inventing clinical
+  // timing. Anything still unreadable is called unclear rather than printed as
+  // machine notation; the stored record itself is never altered.
+  const TIMELINE_LEADING_DATE = /^\s*(\d{4}(?:-\d{2}(?:-\d{2})?)?)(?![\d\-/.\\])(.*)$/;
+  const TIMELINE_MONTH_ALTERNATIVES = /^\s*(\d{4})-(\d{2})\/(\d{2})\s*$/;
+
+  // True only for a value that is a real calendar date at a stated precision.
+  // An impossible day such as 2026-02-31 is wording, not a date.
+  function isoDatePrecision(value) {
+    const str = String(value == null ? '' : value);
+    if (/^\d{4}$/.test(str)) return 'year';
+    const month = str.match(/^(\d{4})-(\d{2})$/);
+    if (month) return Number(month[2]) >= 1 && Number(month[2]) <= 12 ? 'month' : '';
+    const day = str.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!day) return '';
+    const [year, mon, dom] = [Number(day[1]), Number(day[2]), Number(day[3])];
+    if (mon < 1 || mon > 12 || dom < 1) return '';
+    const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    const last = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][mon - 1];
+    return dom <= last ? 'day' : '';
+  }
+
+  // Split one recorded timeline date into what may be shown as a calendar date
+  // and what may only be shown as recorded wording.
+  //   date     ISO text safe for a `<time datetime>` attribute, or '' when the
+  //            record states no single calendar date
+  //   display  what he reads: a Finnish date, optionally followed by the
+  //            recorded qualifier, or both alternative months
+  //   unclear  the value could not be read as timing at all
+  function timelineDateParts(value) {
+    const raw = String(value == null ? '' : value).trim();
+    if (!raw) return { date: '', display: '', unclear: false };
+    if (isoDatePrecision(raw)) return { date: raw, display: fmtDate(raw), unclear: false };
+    // Two months the record could not choose between. Both are shown; neither
+    // is adopted as the item's date.
+    const alternatives = raw.match(TIMELINE_MONTH_ALTERNATIVES);
+    if (alternatives) {
+      const [year, first, second] = [alternatives[1], Number(alternatives[2]), Number(alternatives[3])];
+      if (first >= 1 && first <= 12 && second > first && second <= 12) {
+        return {
+          date: '',
+          display: `${fmtDate(`${year}-${alternatives[2]}`)} or ${fmtDate(`${year}-${alternatives[3]}`)}`,
+          unclear: false,
+        };
+      }
+    }
+    const match = raw.match(TIMELINE_LEADING_DATE);
+    if (match && isoDatePrecision(match[1])) {
+      const note = match[2].trim();
+      return {
+        date: match[1],
+        display: note ? `${fmtDate(match[1])} ${note}` : fmtDate(match[1]),
+        unclear: false,
+      };
+    }
+    return { date: '', display: '', unclear: true };
+  }
+
+  // Whether a recorded date is wholly behind us, compared at the precision it
+  // was actually recorded at. A bare `date < today` string compare marked all of
+  // August past on 14 August, and marked "2026-08 (approx late Aug)" past
+  // because a space sorts below a hyphen. A month or year that still contains
+  // today is neither past nor upcoming, and is left unmarked.
+  function timelineDateIsPast(date, today) {
+    const precision = isoDatePrecision(date);
+    if (precision === 'day') return date < today;
+    if (precision === 'month') return date < today.slice(0, 7);
+    if (precision === 'year') return date < today.slice(0, 4);
+    return false;
+  }
 
   function parseTimestamp(value) {
     if (!value) return null;

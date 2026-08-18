@@ -1996,6 +1996,11 @@ main#main-content {
   color: var(--text2);
   font-size: 11px;
 }
+.biomarker-range-position-tied {
+  grid-column: 1 / -1;
+  color: var(--text2);
+  font-size: 11px;
+}
 .biomarker-chart-diagnostic { text-align: left; }
 .biomarker-chart-diagnostic strong { display: block; margin-bottom: 8px; }
 .biomarker-chart-diagnostic ul { margin: 0 0 9px; padding-left: 20px; }
@@ -4797,6 +4802,7 @@ body.dialog-open { overflow: hidden; }
   .app-view { padding-inline: 24px; }
   .patient-grid,
   .questions-grid { grid-template-columns: 1fr; }
+  .biomarker-table { min-width: 100%; }
   .span-two { grid-column: auto; }
   .activity-actions { grid-template-columns: 1fr; }
   .appointment-two-column { grid-template-columns: 1fr; }

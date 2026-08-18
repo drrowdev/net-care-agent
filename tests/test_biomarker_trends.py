@@ -4,7 +4,25 @@ from __future__ import annotations
 
 
 def _profile_with(readings):
-    return {"biomarkers": readings}
+    rows = []
+    for index, reading in enumerate(readings):
+        row = {
+            "id": f"row-{index}",
+            "marker": reading.get("marker"),
+            "value": reading.get("value"),
+            "unit": "ng/mL",
+            "date": reading.get("date"),
+            "date_precision": "day",
+            "date_kind": "collection",
+            "reference_range": "0-100",
+            "specimen": "Plasma",
+            "assay": "Assay X",
+            "method": None,
+            "evidence_status": "missing",
+        }
+        row.update(reading)
+        rows.append(row)
+    return {"profile_revision": 1, "workflow_revision": 1, "biomarkers": rows}
 
 
 def test_no_data_returns_no_data(agent):
@@ -21,7 +39,9 @@ def test_single_reading_returns_single_reading(agent):
     )
     result = agent.analyze_biomarker_trends("CgA", profile)
     assert result["trend"] == "single_reading"
-    assert result["latest"]["value"] == 100
+    assert result["readings"] == []
+    assert result["recorded_observation_count"] == 1
+    assert result["eligibility"] == "no_comparable_series"
 
 
 def test_increasing_trend_above_threshold(agent):
@@ -72,6 +92,20 @@ def test_marker_lookup_is_case_insensitive(agent):
     )
     result = agent.analyze_biomarker_trends("CgA", profile)
     assert result["number_of_readings"] == 2
+
+
+def test_cga_prefix_aliases_use_the_same_strict_series(agent):
+    profile = _profile_with(
+        [
+            {"marker": "S-CgA", "value": 100, "date": "2026-01-01"},
+            {"marker": "P-CgA", "value": 140, "date": "2026-02-01"},
+        ]
+    )
+
+    result = agent.analyze_biomarker_trends("Chromogranin A", profile)
+
+    assert result["eligibility"] == "one_comparable_series"
+    assert result["trend"] == "increasing"
 
 
 def test_readings_sorted_chronologically(agent):
@@ -133,9 +167,9 @@ def test_mixed_units_are_not_compared_or_converted(agent):
             ]
         ),
     )
-    assert result["trend"] == "incompatible_units"
+    assert result["trend"] == "insufficient_data"
+    assert result["eligibility"] == "no_comparable_series"
     assert result["unit_compatibility"]["conversion_performed"] is False
-    assert set(result["unit_compatibility"]["units"]) == {"ng/ml", "nmol/l"}
 
 
 def test_partly_missing_units_are_not_compared(agent):
@@ -144,12 +178,12 @@ def test_partly_missing_units_are_not_compared(agent):
         _profile_with(
             [
                 {"marker": "CgA", "value": 10, "unit": "ng/mL", "date": "2026-01-01"},
-                {"marker": "CgA", "value": 20, "date": "2026-02-01"},
+                {"marker": "CgA", "value": 20, "unit": None, "date": "2026-02-01"},
             ]
         ),
     )
-    assert result["trend"] == "incompatible_units"
-    assert result["unit_compatibility"]["missing_count"] == 1
+    assert result["trend"] == "insufficient_data"
+    assert result["eligibility"] == "no_comparable_series"
 
 
 def test_full_and_latest_three_windows_surface_reversal(agent):
@@ -192,7 +226,8 @@ def test_reference_range_changes_are_caveated(agent):
             ]
         ),
     )
-    assert "Reference ranges differ" in " ".join(result["data_quality_caveats"])
+    assert result["trend"] == "insufficient_data"
+    assert result["eligibility"] == "no_comparable_series"
 
 
 def test_same_date_readings_retained_but_excluded(agent):
@@ -202,6 +237,7 @@ def test_same_date_readings_retained_but_excluded(agent):
         {"marker": "CgA", "value": 30, "unit": "ng/mL", "date": "2026-02-01"},
     ]
     result = agent.analyze_biomarker_trends("CgA", _profile_with(readings))
-    assert result["readings"] == readings
+    assert sorted(item["value"] for item in result["readings"]) == [10, 20, 30]
     assert result["trend"] == "insufficient_data"
+    assert result["arithmetic_excluded_count"] == 2
     assert "same-date" in " ".join(result["data_quality_caveats"])

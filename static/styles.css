@@ -1949,6 +1949,62 @@ main#main-content {
   text-align: right;
 }
 #biomarker-chart-region { display: grid; gap: 12px; }
+.biomarker-range-position {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+.biomarker-range-position h4 { margin: 0 0 5px; font-size: 14px; }
+.biomarker-range-position p {
+  margin: 0;
+  color: var(--text2);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.biomarker-range-position ol {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.biomarker-range-position-item {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 2px 9px;
+  min-width: 120px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface2);
+}
+.biomarker-range-position-state {
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.biomarker-range-position-item.above .biomarker-range-position-state { color: var(--red); }
+.biomarker-range-position-item.below .biomarker-range-position-state { color: var(--blue); }
+.biomarker-range-position-item.within .biomarker-range-position-state { color: var(--accent); }
+.biomarker-range-position-value { font-weight: 700; }
+.biomarker-range-position-item time {
+  grid-column: 1 / -1;
+  color: var(--text2);
+  font-size: 11px;
+}
+.biomarker-range-position-tied {
+  grid-column: 1 / -1;
+  color: var(--text2);
+  font-size: 11px;
+}
+.biomarker-chart-diagnostic { text-align: left; }
+.biomarker-chart-diagnostic strong { display: block; margin-bottom: 8px; }
+.biomarker-chart-diagnostic ul { margin: 0 0 9px; padding-left: 20px; }
+.biomarker-chart-diagnostic p { margin: 6px 0 0; }
 .biomarker-chart-card {
   min-width: 0;
   overflow: hidden;
@@ -4746,6 +4802,7 @@ body.dialog-open { overflow: hidden; }
   .app-view { padding-inline: 24px; }
   .patient-grid,
   .questions-grid { grid-template-columns: 1fr; }
+  .biomarker-table { min-width: 100%; }
   .span-two { grid-column: auto; }
   .activity-actions { grid-template-columns: 1fr; }
   .appointment-two-column { grid-template-columns: 1fr; }

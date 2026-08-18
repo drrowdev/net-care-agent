@@ -7,7 +7,22 @@ from tests._llm_fake import llm_text, patch_llm
 
 # ── P4: biomarker same-date trend guard ──────────────────────────────────────
 def _prof(readings):
-    return {"biomarkers": readings}
+    rows = []
+    for index, reading in enumerate(readings):
+        row = {
+            "id": f"row-{index}",
+            "unit": "ng/mL",
+            "date_precision": "day",
+            "date_kind": "collection",
+            "reference_range": "0-100",
+            "specimen": "Plasma",
+            "assay": "Assay X",
+            "method": None,
+            "evidence_status": "missing",
+            **reading,
+        }
+        rows.append(row)
+    return {"profile_revision": 1, "workflow_revision": 1, "biomarkers": rows}
 
 
 def test_same_date_cluster_excluded_from_trend_with_caveat(agent):
@@ -30,11 +45,14 @@ def test_mixed_same_date_and_clean_dates(agent):
         {"marker": "CgA", "value": 111, "date": "2026-02-01"},  # duplicate date -> excluded
         {"marker": "CgA", "value": 150, "date": "2026-03-01"},
     ]
-    result = agent.analyze_biomarker_trends("CgA", _prof(readings))
+    profile = _prof(readings)
+    result = agent.analyze_biomarker_trends("CgA", profile)
     # trend computed only from the two clean single-date points (100 -> 150)
     assert result["first_value"] == 100
     assert result["latest_value"] == 150
     assert "data_quality_caveats" in result
+    summary = agent.reconcile_cga_summary({}, profile)
+    assert "same-date entries were excluded" in summary["cga_trend_detail"]
 
 
 def test_clean_series_unaffected_no_caveats(agent):

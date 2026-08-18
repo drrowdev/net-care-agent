@@ -1774,6 +1774,33 @@
         || analyte.observation_count < 0
         || !Number.isSafeInteger(analyte.source_row_count)
         || analyte.source_row_count < 0
+        || !analyte.chart_diagnostics
+        || typeof analyte.chart_diagnostics !== 'object'
+        || !Number.isSafeInteger(analyte.chart_diagnostics.observation_count)
+        || analyte.chart_diagnostics.observation_count < 0
+        || !Number.isSafeInteger(analyte.chart_diagnostics.comparable_series_count)
+        || analyte.chart_diagnostics.comparable_series_count < 0
+        || !Number.isSafeInteger(analyte.chart_diagnostics.comparable_observation_count)
+        || analyte.chart_diagnostics.comparable_observation_count < 0
+        || !Number.isSafeInteger(analyte.chart_diagnostics.unmatched_compatible_count)
+        || analyte.chart_diagnostics.unmatched_compatible_count < 0
+        || !Number.isSafeInteger(analyte.chart_diagnostics.range_position_count)
+        || analyte.chart_diagnostics.range_position_count < 0
+        || analyte.chart_diagnostics.observation_count !== analyte.observation_count
+        || analyte.chart_diagnostics.comparable_observation_count
+          + analyte.chart_diagnostics.unmatched_compatible_count
+          > analyte.observation_count
+        || analyte.chart_diagnostics.range_position_count > analyte.observation_count
+        || !Array.isArray(analyte.chart_diagnostics.requirements)
+        || !analyte.chart_diagnostics.requirements.every(requirement => (
+          requirement
+          && typeof requirement === 'object'
+          && typeof requirement.code === 'string'
+          && typeof requirement.label === 'string'
+          && Number.isSafeInteger(requirement.missing_count)
+          && requirement.missing_count >= 0
+          && requirement.missing_count <= analyte.observation_count
+        ))
         || !Array.isArray(analyte.series)
         || !Array.isArray(analyte.observations)
         || analyte.observation_count !== analyte.observations.length
@@ -1801,6 +1828,14 @@
         ) return false;
         seriesById.set(series.id, series);
       }
+      const comparableSeries = [...seriesById.values()].filter(series => series.comparable);
+      if (
+        analyte.chart_diagnostics.comparable_series_count !== comparableSeries.length
+        || analyte.chart_diagnostics.comparable_observation_count !== comparableSeries.reduce(
+          (total, series) => total + series.observation_ids.length,
+          0,
+        )
+      ) return false;
 
       const observationsById = new Map();
       for (const observation of analyte.observations) {
@@ -1826,6 +1861,23 @@
           || typeof observation.date !== 'object'
           || !observation.value
           || typeof observation.value !== 'object'
+          || !Object.prototype.hasOwnProperty.call(
+            observation,
+            'report_range_comparison',
+          )
+          || !['within', 'above', 'below', null].includes(
+            observation.report_range_comparison ?? null,
+          )
+          || (
+            observation.report_range_comparison != null
+            && (
+              observation.value.kind !== 'numeric'
+              || typeof observation.value.numeric_value !== 'number'
+              || !Number.isFinite(observation.value.numeric_value)
+              || !observation.reference_range_semantics
+              || typeof observation.reference_range_semantics !== 'object'
+            )
+          )
           || !observation.provenance
           || typeof observation.provenance !== 'object'
           || typeof observation.provenance.status !== 'string'
@@ -1845,6 +1897,11 @@
         }
         observationsById.set(observation.id, observation);
       }
+      const rangePositionCount = [...observationsById.values()].filter(observation => (
+        observation.value.kind === 'numeric'
+        && ['within', 'above', 'below'].includes(observation.report_range_comparison)
+      )).length;
+      if (analyte.chart_diagnostics.range_position_count !== rangePositionCount) return false;
       for (const series of analyte.series) {
         for (const observationId of series.observation_ids) {
           const observation = observationsById.get(observationId);
@@ -1963,7 +2020,9 @@
       table.innerHTML = `<tr><td colspan="5"><div class="empty-state">${escHtml(message)}</div></td></tr>`;
     }
     const charts = document.getElementById('biomarker-chart-region');
-    if (charts) charts.innerHTML = '<div class="empty-state">No comparable chart is available.</div>';
+    if (charts) {
+      charts.innerHTML = `<div class="empty-state">${escHtml(message)}</div>`;
+    }
     clearBiomarkerOverview(message);
     setBiomarkerFreshness(state, statusLabel);
     setBiomarkerStatus(message, state, retry);
@@ -2367,6 +2426,58 @@
     return true;
   }
 
+  function biomarkerRangePosition(analyte) {
+    const positions = analyte.observations.filter(observation => (
+      ['within', 'above', 'below'].includes(observation.report_range_comparison)
+      && observation.value?.kind === 'numeric'
+    ));
+    if (!positions.length) return '';
+    const positionItems = positions.map(observation => {
+      const unit = observation.unit == null || observation.unit === ''
+        ? ''
+        : ` ${observation.unit}`;
+      const value = `${biomarkerScalar(observation.value.raw)}${unit}`;
+      const position = observation.report_range_comparison;
+      const sameDate = biomarkerSameDateCount(analyte, observation);
+      return `<li class="biomarker-range-position-item ${safeClassToken(position)}">
+        <span class="biomarker-range-position-state">${escHtml(position)}</span>
+        <span class="biomarker-range-position-value">${escHtml(value)}</span>
+        <time>${escHtml(biomarkerDate(observation.date?.value))}</time>
+        ${sameDate > 1
+          ? `<span class="biomarker-range-position-tied">${sameDate} results carry this date</span>`
+          : ''}
+      </li>`;
+    }).join('');
+    return `<section class="biomarker-range-position" aria-labelledby="biomarker-range-position-heading">
+      <div>
+        <h4 id="biomarker-range-position-heading">Position against each report's own reference range</h4>
+        <p>Each result is checked only against the range printed on that same report. This is not a trend or a comparison of measurement methods. It is a coarse within / above / below signal and does not show magnitude.</p>
+      </div>
+      <ol>${positionItems}</ol>
+    </section>`;
+  }
+
+  function biomarkerChartDiagnostic(analyte) {
+    const diagnostics = analyte.chart_diagnostics;
+    const missing = diagnostics.requirements.filter(item => item.missing_count > 0);
+    const details = missing.map(item => (
+      `<li>${item.missing_count} of ${diagnostics.observation_count} result${
+        diagnostics.observation_count === 1 ? '' : 's'
+      } ${item.missing_count === 1 ? 'does' : 'do'} not record ${escHtml(item.label)}.</li>`
+    )).join('');
+    const matching = diagnostics.unmatched_compatible_count
+      ? `<li>${diagnostics.unmatched_compatible_count} result${
+        diagnostics.unmatched_compatible_count === 1 ? ' has' : 's have'
+      } all required details, but no second result has the same recorded measurement context.</li>`
+      : '';
+    return `<div class="empty-state biomarker-chart-diagnostic">
+      <strong>No comparable point chart for ${escHtml(analyte.display_name)}.</strong>
+      ${details || matching ? `<ul>${details}${matching}</ul>` : ''}
+      <p>A point chart needs at least two numeric results with the same recorded unit, exact collection or result date type, specimen, assay or method, and reference range.</p>
+      <p>Check the original report. If its import receipt is still available in Activity, use its correction action to add only details that the report states. Every result remains in the table.</p>
+    </div>`;
+  }
+
   function renderBiomarkerProjection(owner) {
     if (!biomarkerResponseOwnerIsCurrent(owner)) return false;
     const analyte = selectedBiomarkerAnalyte();
@@ -2408,9 +2519,8 @@
         if (owner.seriesTokens.get(series.id) !== series.token) return '';
         return biomarkerSeriesChart(analyte, series, index);
       }).filter(Boolean).join('');
-      charts.innerHTML = chartMarkup || `<div class="empty-state">
-        No chart is shown because fewer than two results here were recorded in the same way. Every recorded result is still in the table.
-      </div>`;
+      const rangePositionMarkup = biomarkerRangePosition(analyte);
+      charts.innerHTML = `${rangePositionMarkup}${chartMarkup || biomarkerChartDiagnostic(analyte)}`;
     }
 
     if (biomarkerProjectionState === 'stale') {
@@ -2554,7 +2664,11 @@
       if (!biomarkerTransportRequestIsCurrent(request, request.acceptedPhiEpoch)) return null;
 
       const retainedSelection = selectedBiomarkerAnalyteId;
+      const preferredAnalyte = data.analytes.find(
+        item => item.display_name === 'Chromogranin A',
+      );
       const analyte = data.analytes.find(item => item.id === retainedSelection)
+        || preferredAnalyte
         || data.analytes[0]
         || null;
       biomarkerSelectionEpoch += 1;
@@ -2583,7 +2697,9 @@
           table.innerHTML = '<tr><td colspan="5"><div class="empty-state">No biomarker observations are recorded.</div></td></tr>';
         }
         const charts = document.getElementById('biomarker-chart-region');
-        if (charts) charts.innerHTML = '<div class="empty-state">No comparable chart is available.</div>';
+        if (charts) {
+          charts.innerHTML = '<div class="empty-state">No biomarker results are recorded, so there is no chart or report-range position to show.</div>';
+        }
         clearBiomarkerOverview('No biomarker results are recorded.');
         setBiomarkerFreshness('current', 'Current · no results recorded');
         setBiomarkerStatus(
@@ -7962,12 +8078,13 @@
       }
       html += `<span class="s-pill prrt-${safeClassToken(d.prrt_status, 'unknown')}">${escHtml(prrtLabels[d.prrt_status] || 'PRRT: NOT ASSESSED')}</span>`;
       if (d.cga_trend) {
-        const cgaLabels = { rising: 'CgA rising', stable: 'CgA stable', falling: 'CgA falling', insufficient_data: 'CgA: not enough data' };
+        const cgaLabels = { rising: 'CgA rising', stable: 'CgA stable', falling: 'CgA falling', insufficient_data: 'CgA trend unavailable' };
         html += `<span class="s-pill cga-${safeClassToken(d.cga_trend, 'insufficient_data')}">${escHtml(cgaLabels[d.cga_trend] || 'CgA: NO DATA')}</span>`;
       }
       html += '</div>';
       if (d.cga_trend_detail) {
-        html += `<div class="summary-rationale"><strong>CgA trend:</strong> ${escHtml(fmtProseDates(d.cga_trend_detail))}${renderClaimEvidence(d.claim_evidence?.claims?.cga_trend_detail)}</div>`;
+        const cgaHeading = d.cga_trend === 'insufficient_data' ? 'CgA comparison:' : 'CgA trend:';
+        html += `<div class="summary-rationale"><strong>${cgaHeading}</strong> ${escHtml(fmtProseDates(d.cga_trend_detail))}${renderClaimEvidence(d.claim_evidence?.claims?.cga_trend_detail)}</div>`;
       }
       if (d.prrt_rationale) {
         // The heading follows the generated status value, never the prose:

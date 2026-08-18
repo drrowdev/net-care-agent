@@ -46,19 +46,50 @@ def test_groups_boundary_exact_aliases_and_builds_comparable_series(agent):
         agent,
         [
             _row("one", "2026-01-01", marker="CgA", value=10),
-            _row("two", "2026-02-01", marker="Chromogranin A", value=20),
+            _row("two", "2026-02-01", marker="S-CgA", value=20),
+            _row("three", "2026-03-01", marker="P-CgA", value=30),
+            _row("four", "2026-04-01", marker="Chromogranin A", value=40),
         ],
     )
 
     assert projection["profile_revision"] == 3
     assert projection["workflow_revision"] == 4
-    assert projection["source_row_count"] == 2
+    assert projection["source_row_count"] == 4
     assert len(projection["analytes"]) == 1
     analyte = projection["analytes"][0]
     assert analyte["display_name"] == "Chromogranin A"
-    assert analyte["observed_aliases"] == ["CgA", "Chromogranin A"]
+    assert analyte["observed_aliases"] == ["CgA", "Chromogranin A", "P-CgA", "S-CgA"]
     assert analyte["series"][0]["comparable"] is True
-    assert [item["value"]["numeric_value"] for item in analyte["observations"]] == [10, 20]
+    assert [item["value"]["numeric_value"] for item in analyte["observations"]] == [10, 20, 30, 40]
+
+
+def test_analyte_diagnostics_preserve_missing_dimensions_before_singleton_notes(agent):
+    projection = _project(
+        agent,
+        [
+            _row(
+                "one",
+                "2026-01-01",
+                date_kind="clinical_unspecified",
+                specimen=None,
+                assay=None,
+            ),
+            _row(
+                "two",
+                "2026-02-01",
+                date_kind="clinical_unspecified",
+                specimen=None,
+                assay=None,
+            ),
+        ],
+    )
+
+    diagnostics = projection["analytes"][0]["chart_diagnostics"]
+    missing = {item["code"]: item["missing_count"] for item in diagnostics["requirements"]}
+    assert missing["exact_date_kind"] == 2
+    assert missing["specimen"] == 2
+    assert missing["assay_or_method"] == 2
+    assert diagnostics["comparable_series_count"] == 0
 
 
 @pytest.mark.parametrize(

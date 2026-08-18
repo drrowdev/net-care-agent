@@ -55,6 +55,29 @@ incremented when something user-visible or operationally meaningful changes.
   kept separately: a one-line entry neither sends it along nor throws it away.
   Losing authorization empties the one-line entry with everything else.
 
+- **Biomarker history now shows what can be known without pretending unlike
+  tests are comparable.** Patient opens Chromogranin A first when it is recorded
+  and groups the recorded CgA, S-CgA and P-CgA names without inferring specimen
+  or relaxing any chart requirement. Even when no strict point chart can be
+  drawn, it now shows each numeric result's coarse within/above/below position
+  against that result's own report range, in date order, explicitly labelled as
+  neither a trend nor a comparison of methods.
+
+  The empty chart state now uses server-computed counts to name the missing
+  unit, exact collection/result date, specimen, assay/method or parseable range
+  and explains what would make a point chart possible. Offline, sign-in/access,
+  corrupt-record `422`, ordinary load failure and genuinely empty history use
+  distinct wording. The complete endpoint still fails closed on malformed data;
+  no partial record is shown.
+
+  Today can no longer say "CgA rising" from a looser comparison than Patient.
+  Its statement and the biomarker trend tool now use exactly one
+  server-declared comparable series. Otherwise Today keeps the context visible
+  as **CgA trend unavailable**, names why, and directs the caregiver to the
+  complete table and per-report-range positions instead of silently removing a
+  previously generated claim. Assessments created before this comparison policy
+  are shown as outdated and must be regenerated once, so unsupported CgA wording
+  cannot survive elsewhere in an older assessment.
 - **Dates can now be typed the way they are read.** The record has displayed
   Finnish dates everywhere since v0.10.0, but every date box still only accepted
   `2026-08-14`. Now `14.8.2026`, `04.08.2026`, `4.8.2026` and `14.8.2026.` all

@@ -25,6 +25,7 @@ from .serialize import serialized_mutation
 
 log = logging.getLogger(__name__)
 _INITIALIZED_MARKER_NAME = ".profile-initialized"
+EXECUTIVE_SUMMARY_POLICY_VERSION = 2
 
 
 # ── exceptions ────────────────────────────────────────────────────────────────
@@ -781,6 +782,8 @@ def summary_is_current(profile: dict) -> bool:
     if not isinstance(summary, dict) or not summary:
         return False
     if profile.get("summary_stale") is not False or summary.get("stale") is not False:
+        return False
+    if summary.get("policy_version") != EXECUTIVE_SUMMARY_POLICY_VERSION:
         return False
     generation_id = summary.get("generation_id")
     if not isinstance(generation_id, str) or not generation_id.strip():

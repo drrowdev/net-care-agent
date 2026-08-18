@@ -127,7 +127,10 @@ available at every screen size:
   concern/recommendations, bounded recorded update times plus active-alert
   count, treatment status, symptoms logged with a one-line symptom entry,
   follow-ups, appointment preparation,
-  then lower-priority tracked research. The freshness banner holds the only
+  then lower-priority tracked research. The assessment's confidence, PRRT status
+  and CgA trend badges sit directly under its heading, where they can be read at
+  a glance; the longer CgA and PRRT explanations stay in the **Assessment
+  context** panel below them. The freshness banner holds the only
   assessment action at every state: **Refresh assessment** beside **New
   information since this assessment**, **Regenerate assessment** beside **Up to
   date** for a voluntary rerun, and **Generate assessment** when none exists.
@@ -151,11 +154,18 @@ available at every screen size:
 - **Appointments** — appointment questions, visit working mode, and clinical notes
   from the treating team.
 - **Activity** — digest/deep-sweep controls, processing status, and reports.
+  **Run digest** is also in the header, so a routine research update is one
+  click from any view.
 
 If an API request is unauthorized, forbidden, offline, or otherwise fails, the
 page shows an explicit error and retry action instead of replacing the patient
-record with empty states. The phone layout keeps these same views in a fixed
-bottom navigation bar.
+record with empty states. The banner names the part that failed — **Imaging
+could not be loaded** when only imaging failed, and both by name when two did —
+so it can never claim the whole record is gone while the rest of it is on screen
+underneath. It keeps the wider **Patient data could not be loaded** whenever the
+failure genuinely is wider: an area that has no name of its own, three or more
+at once, or any failure that cleared the browser's whole copy of the record. The
+phone layout keeps these same views in a fixed bottom navigation bar.
 Failed status/evidence loads clear their patient metadata, treatment/results/
 alert rows, search caches, and filters so old PHI is not left looking current.
 The research endpoint has its own failure boundary: malformed, `422`, or hard
@@ -483,7 +493,9 @@ this gap.
 Use this when no new document has arrived but you want a fresh literature/trial sweep
 (e.g. once a week):
 
-1. UI → **Activity** → **Run digest**.
+1. UI → header **↻ Run digest**, or **Activity** → **Run digest**. Both start the
+   same job; every digest control on screen is disabled while the request is
+   being submitted and re-enabled together afterwards.
 2. Orchestrator runs without new input; existing biomarker trends are re-analysed,
    new papers / trials added.
 3. The text report is saved to `/home/data/reports/report_digest_*.txt`.
@@ -492,10 +504,14 @@ Only one digest may be active; a duplicate request returns `409`. The report is
 not embedded in job history—it is loaded on demand when the activity item opens.
 At completion, the shared research view reloads from
 `GET /api/patient/research-workspace`; the browser never merges job-result rows
-into display authority. **Today** shows the first three exact current
-latest-batch occurrences in server order, with exact trial/paper totals and an
-omitted count. **Research** remains complete. A digest that finds only
-already-tracked research produces an exact zero-member latest batch.
+into display authority. **Today** leads with how many research entries are
+tracked in total, split into trials and papers, so a run that adds nothing new
+cannot make the card read as though nothing is being followed. Below that it
+shows the first three exact current latest-batch occurrences in server order,
+with exact trial/paper totals and an omitted count. **Research** remains
+complete. A digest that finds only already-tracked research produces an exact
+zero-member latest batch. Every one of those figures is a count of the rows the
+server projected; nothing in the browser decides what is relevant.
 
 ## 2b. Run an ensemble deep-sweep (pre-appointment deep prep)
 
@@ -854,9 +870,12 @@ That label describes what is linked; it is not a to-do. Leaving a recorded row
 unlinked is a perfectly normal resting state, so NET/Care counts recorded entries
 neutrally ("*3 recorded treatment entries are on file*") and never tells you that
 any of them need review. If no treatment is recorded current, Today says so and
-shows a bounded first set. **Review treatment status** opens the
-complete **Patient → Treatments** Overview. Today and Patient use the same
-accepted projection; neither uses `/api/status` treatment data.
+shows a bounded first set — once, not twice: the totals line stays silent when
+it would only repeat the sentence already shown below it, and it says nothing at
+all while the record is still loading. **Review treatment status**, the card's
+one action, opens the complete **Patient → Treatments** Overview and stays
+available while the record loads, because it only navigates. Today and Patient
+use the same accepted projection; neither uses `/api/status` treatment data.
 
 Patient's default Overview combines three kinds of information without inference:
 
@@ -1054,12 +1073,19 @@ rules are unchanged.
 
 ## 5c. See newly discovered research
 
-**Today** shows at most the first three exact trial/paper occurrences that the
-server marks `latest_batch_member`, in the projection's order. It states the
-exact total and omitted count and separately shows at most the first three open
-considerations. A routine digest always replaces latest-batch membership,
-including with zero results. Document processing replaces it only when that run
-adds research, so an unrelated fed document does not erase the prior batch.
+**Today** first states how many research entries are tracked in total, split
+into trials and papers, so the card headed *Research being tracked* answers its
+own question even when the newest run added nothing. It then shows at most the
+first three exact trial/paper occurrences that the server marks
+`latest_batch_member`, in the projection's order. It states the exact total and
+omitted count and separately shows at most the first three open considerations.
+Those totals are counts of the projected rows and their stored type; nothing in
+the browser judges relevance, eligibility, or whether an entry still matters. A
+routine digest always replaces latest-batch membership, including with zero
+results. Document processing replaces it only when that run adds research, so an
+unrelated fed document does not erase the prior batch. While the record is
+loading, or after it has been cleared, these lines are blank rather than showing
+a stale count or a sentence that reads like a fault.
 
 Open **Research** for the complete workspace:
 

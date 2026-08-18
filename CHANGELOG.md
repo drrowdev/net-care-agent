@@ -128,6 +128,61 @@ incremented when something user-visible or operationally meaningful changes.
   to the top of the page and anyone navigating by keyboard lost their place. The
   Today heading is now focusable like the Patient one.
 
+- **A failure banner no longer says the whole record failed when one part did.**
+  When a single section could not load, the top of the page read **Patient data
+  could not be loaded** while the profile, treatments, biomarkers and symptoms
+  were all rendered normally underneath and only imaging was missing. It
+  contradicted the page it sat on, and for someone anxious about the record a
+  red banner claiming the patient data had failed is alarming and untrue.
+
+  The banner now names the part that failed — *Imaging could not be loaded* —
+  and names both when two failed. It deliberately keeps the wider sentence
+  whenever the failure really is wider: an area that has no name of its own,
+  three or more at once, and any failure that clears the browser's whole copy
+  of the record, which is what a server error does. Sign-in, denied access,
+  blocked address and offline keep the wording they already had. Nothing about
+  which loads fail, what is cleared, or how retry works has changed.
+
+- **The badges you read at a glance are back above the fold.** Confidence, the
+  PRRT status and the CgA trend were folded into the closed **Assessment
+  context** panel, so Today showed only those two words. They now sit directly
+  under the assessment heading, as they did before the redesign, and the panel
+  keeps the longer CgA and PRRT explanations. The PRRT badge also renders when
+  the assessment produced a status but no explanation, which previously left it
+  off the page entirely, and *a course recorded as in progress* is now drawn
+  plainly rather than unstyled — a recorded fact, not a verdict in a colour.
+
+- **Run digest is back in the header.** A routine research update was one click
+  from anywhere before the redesign and became navigate-then-click. It is a
+  header action again, beside Add document and Ask Claude, and still available
+  in Activity with its explanation. Because more than one control can now start
+  the same job, every digest control on screen — including one drawn inside an
+  activity record — is disabled while the request is submitted and re-enabled
+  together afterwards.
+
+- **Today says how much research is being tracked, not just the newest batch.**
+  The card headed *Research being tracked* read “0 tracked entries in the latest
+  batch (0 trials, 0 papers)” whenever a run added nothing, while the Research
+  tab listed everything being followed. It now leads with the total and its
+  trial/paper split, and keeps the batch figure underneath. This restores the
+  all-time trial and paper counts the old sidebar had; the old pop-up list is
+  deliberately **not** restored, because its delete buttons removed items by
+  trial or paper identifier and could affect more than the row clicked. Every
+  figure is a count of rows the server projected — nothing in the browser
+  decides what is relevant.
+
+- **Today's treatment card says each thing once, and waiting no longer reads as
+  failure.** Two buttons sat side by side, *Review treatment status* and *Review
+  all treatment information*, implying two destinations when both opened the
+  same page; one remains, and because it only navigates it stays usable while
+  the record loads. An empty record printed *No treatment information is
+  recorded.* twice, one line directly above the other; the totals line is now
+  silent when it would only repeat what is already shown. And an ordinary load
+  showed *Loading…*, *Loading the treatment record…* and *Treatment summary is
+  unavailable.* at the same time, so a normal wait looked like a fault — the
+  totals lines on the treatment and research cards now say nothing until there
+  is something to say.
+
 - **The assessment no longer contradicts itself about PRRT.** The Assessment
   context panel showed the label **PRRT: POTENTIAL FIT** immediately above its
   own explanation that she *is already receiving Series 2 Lu-177-octreotate*,

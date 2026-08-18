@@ -21,6 +21,9 @@
     <span class="status-pill" id="header-status">Connecting…</span>
   </div>
   <div class="header-actions">
+    <button class="button secondary digest-trigger" id="btn-digest-header" type="button" onclick="runDigest()" title="Run digest" aria-label="Run digest">
+      <span aria-hidden="true">↻</span><span class="header-action-label">Run digest</span>
+    </button>
     <button class="button secondary" id="btn-feed-toggle" onclick="toggleFeedPopover()" title="Add a clinical document" aria-label="Add a clinical document">
       <span aria-hidden="true">＋</span><span class="header-action-label">Add document</span>
     </button>
@@ -127,7 +130,7 @@
           <span class="treatment-freshness loading" id="today-treatment-freshness">Not loaded</span>
         </div>
         <div class="treatment-status loading" id="today-treatment-status" role="status" aria-live="polite">Loading treatment information…</div>
-        <p class="treatment-totals" id="today-treatment-totals">No treatment totals are available yet.</p>
+        <p class="treatment-totals" id="today-treatment-totals"></p>
         <div class="treatment-course-list compact" id="today-treatment-list">
           <div class="loading-state">Loading treatment status…</div>
         </div>
@@ -136,8 +139,7 @@
           <button class="button secondary" id="today-treatment-retry-refresh" type="button" onclick="loadTreatmentReconciliation({ force: true })">Retry refresh</button>
         </div>
         <div class="treatment-workflow-actions">
-          <button class="button primary" id="today-treatment-add" type="button" onclick="openPatientTreatments()">Review treatment status</button>
-          <button class="button secondary" type="button" onclick="openPatientTreatments()">Review all treatment information</button>
+          <button class="button primary" id="today-treatment-review" type="button" onclick="openPatientTreatments()">Review treatment status</button>
         </div>
       </section>
 
@@ -211,16 +213,17 @@
           <span class="research-freshness loading" id="today-research-freshness">Not loaded</span>
         </div>
         <div class="research-status loading" id="today-research-status" role="status" aria-live="polite">Loading tracked research…</div>
+        <p class="research-tracked-totals" id="today-research-tracked-totals"></p>
         <section class="research-today-group" aria-labelledby="today-latest-research-heading">
           <h3 id="today-latest-research-heading">Latest research batch</h3>
-          <p class="research-totals" id="today-latest-research-totals">No latest-batch totals are available yet.</p>
+          <p class="research-totals" id="today-latest-research-totals"></p>
           <div class="research-compact-list" id="today-latest-research-list">
             <div class="loading-state">Loading the latest research batch…</div>
           </div>
         </section>
         <section class="research-today-group" aria-labelledby="today-open-considerations-heading">
           <h3 id="today-open-considerations-heading">Open considerations</h3>
-          <p class="research-totals" id="today-open-consideration-totals">No consideration totals are available yet.</p>
+          <p class="research-totals" id="today-open-consideration-totals"></p>
           <div class="research-compact-list" id="today-open-consideration-list">
             <div class="loading-state">Loading saved considerations…</div>
           </div>
@@ -637,7 +640,7 @@
       </div>
 
       <section class="activity-actions" aria-label="Research tools">
-        <div><strong>Routine research update</strong><p>Search for new trials and literature using the current record.</p><button class="button secondary" id="btn-digest" onclick="runDigest()">↻ Run digest</button></div>
+        <div><strong>Routine research update</strong><p>Search for new trials and literature using the current record.</p><button class="button secondary digest-trigger" id="btn-digest" onclick="runDigest()">↻ Run digest</button></div>
         <div><strong>Pre-appointment deep sweep</strong><p>Run a slower, more thorough research check. It does not change what you are tracking.</p><button class="button secondary deep-sweep-button" id="btn-deep-sweep" onclick="runDeepSweep()">⁂ Run deep sweep</button></div>
       </section>
 

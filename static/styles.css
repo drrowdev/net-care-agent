@@ -684,12 +684,21 @@
     padding: 4px 12px;
     border-radius: 20px;
     font-weight: 600;
+    /* A badge with no state of its own — the confidence badge — still has to
+       read as a badge now that these sit above the fold rather than inside a
+       closed panel. Every state below sets its own colours over this. */
+    background: var(--bg3);
+    color: var(--text1);
+    border: 0.5px solid var(--border);
   }
   .s-pill.status-stable      { background: var(--accent-dim); color: var(--accent);  border: 0.5px solid var(--accent-dim); }
   .s-pill.status-responding  { background: #e0f5ef; color: var(--teal); border: 0.5px solid #a0d8c8; }
   .s-pill.status-progressing { background: var(--red-dim); color: var(--red); border: 0.5px solid #e8aaaa; }
   .s-pill.status-insufficient_data { background: var(--bg3); color: var(--text2); border: 0.5px solid var(--border); }
   .s-pill.prrt-eligible      { background: var(--accent-dim); color: var(--accent);  border: 0.5px solid var(--accent-dim); }
+  /* A course already running is a recorded fact, not a screening verdict, so
+     it is shown plainly rather than in a colour that reads as good or bad. */
+  .s-pill.prrt-course_in_progress { background: var(--bg3); color: var(--text1); border: 0.5px solid var(--border); }
   .s-pill.prrt-likely_eligible { background: #e0f5ef; color: var(--teal); border: 0.5px solid #a0d8c8; }
   .s-pill.prrt-pending_dotatate { background: var(--amber-dim); color: var(--amber); border: 0.5px solid #e8c88a; }
   .s-pill.prrt-not_eligible  { background: var(--red-dim); color: var(--red); border: 0.5px solid #e8aaaa; }
@@ -4398,6 +4407,20 @@ body.dialog-open { overflow: hidden; }
 }
 .research-today-group { padding: 16px 18px; border-bottom: 1px solid var(--border); }
 .research-today-group h3 { font-size: 14px; }
+/* The card-level total, between the status strip and the two groups. */
+.research-tracked-totals {
+  margin: 0;
+  padding: 13px 18px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+  color: var(--text1);
+  font-size: 12px;
+  line-height: 1.55;
+}
+/* A totals line with nothing to say takes no room and draws no border. */
+.research-tracked-totals:empty,
+.research-totals:empty,
+.treatment-totals:empty { display: none; }
 .research-totals,
 .research-authority-note {
   margin: 5px 0 12px;
@@ -4936,12 +4959,23 @@ body.dialog-open { overflow: hidden; }
   }
 
   .card-header { min-height: 72px; padding: 15px 16px; }
-  .summary-pills { padding: 16px 16px 2px; }
+  /* Phone density inside the assessment card. The three badges are worth a row
+     of their own at the top, but not at the cost of pushing the first
+     recommended step off the first screen, so the space around them is tighter
+     and the eyebrow that repeats the heading word for word is dropped. */
+  #summary-card .card-header { min-height: 0; padding: 12px 16px; }
+  #summary-card .card-header .eyebrow { display: none; }
+  .summary-heading-row { gap: 6px; }
+  .summary-updated { margin-top: 3px; }
+  .summary-pills { padding: 6px 16px 0; gap: 6px; }
+  .summary-concern { margin-top: 8px; padding: 10px 14px; }
+  .summary-section { margin-top: 10px; }
+  .summary-section-label { padding-top: 8px; }
   .summary-concern,
   .summary-narrative,
   .summary-section { margin-left: 16px; margin-right: 16px; }
   .summary-narrative { font-size: 13px; line-height: 1.65; }
-  .s-pill { font-size: 11px; padding: 3px 8px; }
+  .s-pill { font-size: 11px; padding: 2px 8px; }
   .summary-section-label.prominent,
   .summary-context,
   .summary-feedback { margin-left: 16px; margin-right: 16px; }

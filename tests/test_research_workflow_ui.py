@@ -68,6 +68,37 @@ def _item(
     }
 
 
+def _paper(
+    record_id: str = "research_paper_abcdefghijklmnop",
+    token: str = "paper-token",
+    *,
+    latest: bool = True,
+) -> dict:
+    return {
+        "id": record_id,
+        "token": token,
+        "item_type": "paper",
+        "source_identity": {
+            "external_id": "39123456",
+            "source_key": "pubmed:39123456",
+            "authority": "validated",
+        },
+        "external_facts": {
+            "pmid": "39123456",
+            "title": "Exact publication title",
+            "authors": "Exact author list",
+            "journal": "Exact journal name",
+            "date": "2026-07",
+        },
+        "generated_context": {"relevance_notes": "Machine-generated context"},
+        "discovery_provenance": {"query": "Exact search", "date_added": "2026-08-01"},
+        "external_url": "https://pubmed.ncbi.nlm.nih.gov/39123456/",
+        "latest_batch_member": latest,
+        "shortlist": {"eligible": True, "reason": None},
+        "consideration_id": None,
+    }
+
+
 def _consideration(item: dict) -> dict:
     consideration_id = "research_consideration_exact"
     return {
@@ -325,7 +356,7 @@ def test_research_accessibility_and_phone_layout_contract():
     assert "@media (prefers-reduced-motion: reduce)" in CSS
 
 
-def _open_research_page(playwright, width: int, height: int):
+def _open_research_page(playwright, width: int, height: int, projection: dict | None = None):
     html = re.sub(r"<script[^>]+src=[^>]+></script>", "", INDEX_HTML)
     html = html.replace("<head>", '<head><base href="http://app.test/">', 1)
     browser = playwright.chromium.launch()
@@ -333,19 +364,20 @@ def _open_research_page(playwright, width: int, height: int):
     page = context.new_page()
     page_errors: list[str] = []
     page.on("pageerror", lambda error: page_errors.append(str(error)))
-    projection = _projection()
-    projection["items"] = [
-        projection["items"][0],
-        _item("research_trial_qrstuvwxyzabcdef", "duplicate-token"),
-        _item("research_trial_ghijklmnopqrstuv", "third-token"),
-        _item("research_trial_wxyzabcdefghijkl", "fourth-token"),
-    ]
-    projection["items"][0]["consideration_id"] = "research_consideration_exact"
-    projection["items"][0]["shortlist"] = {
-        "eligible": False,
-        "reason": "already_shortlisted",
-    }
-    projection["item_count"] = len(projection["items"])
+    if projection is None:
+        projection = _projection()
+        projection["items"] = [
+            projection["items"][0],
+            _item("research_trial_qrstuvwxyzabcdef", "duplicate-token"),
+            _item("research_trial_ghijklmnopqrstuv", "third-token"),
+            _item("research_trial_wxyzabcdefghijkl", "fourth-token"),
+        ]
+        projection["items"][0]["consideration_id"] = "research_consideration_exact"
+        projection["items"][0]["shortlist"] = {
+            "eligible": False,
+            "reason": "already_shortlisted",
+        }
+        projection["item_count"] = len(projection["items"])
     requests: list[dict] = []
 
     def fulfill(route):
@@ -513,6 +545,8 @@ def test_live_shared_research_projection_totals_order_and_accessibility(
         browser, context, page, requests = _open_research_page(playwright, width, height)
         try:
             assert page.locator("#today-latest-research-list article").count() == 3
+            tracked = page.locator("#today-research-tracked-totals").inner_text()
+            assert "4 research entries are tracked in total" in tracked
             totals = page.locator("#today-latest-research-totals").inner_text()
             assert "4 tracked entries in the latest batch" in totals
             assert "Showing 3; 1 more in Research" in totals
@@ -558,6 +592,71 @@ def test_live_shared_research_projection_totals_order_and_accessibility(
                 )
                 assert heights
                 assert min(heights) >= 44
+        finally:
+            context.close()
+            browser.close()
+
+
+def test_today_leads_with_everything_tracked_not_only_the_newest_run():
+    """The card is headed "Research being tracked", so it must say how many."""
+    today = INDEX_HTML[INDEX_HTML.index('id="view-today"') : INDEX_HTML.index('id="view-patient"')]
+    assert 'id="today-research-tracked-totals"' in today
+    assert today.index('id="today-research-tracked-totals"') < today.index(
+        'id="today-latest-research-totals"'
+    )
+    renderer = APP_JS[
+        APP_JS.index("function renderResearchWorkspace") : APP_JS.index(
+            "function selectResearchTab"
+        )
+    ]
+    assert "item.item_type === 'trial'" in renderer
+    assert "item.item_type === 'paper'" in renderer
+    assert "tracked in total" in renderer
+    # Nothing may be left over from a record that has since been cleared.
+    assert "today-research-tracked-totals" in renderer.split("if (!researchProjection)")[1]
+    assert ".research-tracked-totals:empty" in CSS
+
+
+@pytest.mark.parametrize("width,height", [(1280, 900), (360, 800)])
+def test_live_today_counts_every_tracked_trial_and_paper(width: int, height: int):
+    """A run that adds nothing used to leave the card reading "0 tracked"."""
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    with playwright_api.sync_playwright() as playwright:
+        if not Path(playwright.chromium.executable_path).exists():
+            pytest.skip("Installed Playwright browser is unavailable")
+        projection = _projection(with_consideration=False)
+        projection["items"] = [
+            _item("research_trial_aaaaaaaaaaaaaaaa", "one", latest=False),
+            _item("research_trial_bbbbbbbbbbbbbbbb", "two", latest=False),
+            _paper("research_paper_cccccccccccccccc", "three", latest=False),
+        ]
+        projection["item_count"] = len(projection["items"])
+        browser, context, page, _requests = _open_research_page(
+            playwright, width, height, projection
+        )
+        try:
+            tracked = page.locator("#today-research-tracked-totals").inner_text()
+            assert "3 research entries are tracked in total: 2 trials and 1 paper." in tracked
+            latest = page.locator("#today-latest-research-totals").inner_text()
+            assert "0 tracked entries in the latest batch" in latest
+            # The total is read before the batch figure, not after it.
+            order = page.evaluate(
+                """() => document.getElementById('today-research-tracked-totals')
+                  .compareDocumentPosition(
+                    document.getElementById('today-latest-research-totals')) & 4"""
+            )
+            assert order == 4
+
+            # A cleared record leaves no count behind.
+            page.evaluate("() => clearResearchProjection({ state: 'error', retry: true })")
+            assert page.locator("#today-research-tracked-totals").inner_text().strip() == ""
+            assert (
+                page.evaluate(
+                    """() => document.documentElement.scrollWidth
+                      - document.documentElement.clientWidth"""
+                )
+                == 0
+            )
         finally:
             context.close()
             browser.close()

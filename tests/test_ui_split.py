@@ -205,6 +205,35 @@ def test_today_has_one_contextual_assessment_action_and_shared_update_buttons():
     assert ".recent-update-item .recent-update-action {" in CSS
 
 
+def test_run_digest_is_one_click_from_anywhere_and_every_copy_stays_in_step():
+    """The manual research update is the trigger this project prefers.
+
+    It left the header in the redesign, so it became navigate-then-click. It is
+    back beside the other header actions, and because more than one control can
+    now start the same job, every one of them is disabled and re-enabled
+    together rather than by a single element id.
+    """
+    header = HTML[HTML.index('class="header-actions"') : HTML.index("</header>")]
+    assert 'id="btn-digest-header"' in header
+    assert 'onclick="runDigest()"' in header
+    # Voice control needs the accessible name to contain the visible label.
+    assert 'aria-label="Run digest"' in header
+    assert '<span class="header-action-label">Run digest</span>' in header
+    assert HTML.count("digest-trigger") == 2
+
+    digest = APP_JS[
+        APP_JS.index("async function runDigest") : APP_JS.index("async function runDeepSweep")
+    ]
+    assert "setDigestTriggersBusy(true)" in digest
+    assert "digestSubmissionsActive" in digest
+    assert "getElementById('btn-digest')" not in digest
+    assert "getElementById('btn-digest')" not in APP_JS
+    helper = APP_JS[
+        APP_JS.index("function setDigestTriggersBusy") : APP_JS.index("async function runDigest")
+    ]
+    assert "document.querySelectorAll('.digest-trigger')" in helper
+
+
 def test_routine_workspace_omits_generic_capability_disclaimers():
     # Reworded copy: wave 3 reworded the three byte-pinned safety paragraphs into plain
     # English. INVARIANTS.md and every pin moved in the same commit; the

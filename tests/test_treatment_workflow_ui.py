@@ -3566,3 +3566,81 @@ def test_live_treatment_workspace_renders_newest_first(width: int, height: int):
         finally:
             context.close()
             browser.close()
+
+
+def test_today_shows_one_way_into_the_treatment_record():
+    """Two buttons side by side implied two destinations; both opened Patient."""
+    today = INDEX_HTML[INDEX_HTML.index('id="view-today"') : INDEX_HTML.index('id="view-patient"')]
+    assert today.count("openPatientTreatments()") == 1
+    assert 'id="today-treatment-review"' in today
+    assert "Review all treatment information" not in today
+    # Reading the record changes nothing, so it is not gated on a current
+    # projection the way the controls that write to the record are.
+    controls = APP_JS[
+        APP_JS.index("function updateTreatmentControls") : APP_JS.index(
+            "function treatmentOverviewSection"
+        )
+    ]
+    assert "today-treatment-review" not in controls
+    assert "patient-treatment-add" in controls
+
+
+def test_a_loading_treatment_card_never_says_the_summary_is_unavailable():
+    """Freshness, status and totals used to say Loading, Loading and failed."""
+    unavailable = APP_JS[
+        APP_JS.index("function renderTreatmentUnavailable") : APP_JS.index(
+            "function treatmentOwnsFocus"
+        )
+    ]
+    assert "state === 'loading' ? '' : 'Treatment summary is unavailable.'" in unavailable
+    assert INDEX_HTML.count('id="today-treatment-totals"></p>') == 1
+    assert "No treatment totals are available yet." not in INDEX_HTML
+    assert ".treatment-totals:empty { display: none; }" in CSS
+
+
+@pytest.mark.parametrize("width,height", [(1280, 900), (360, 800)])
+def test_live_empty_and_loading_treatment_cards_say_each_thing_once(width: int, height: int):
+    """The same sentence twice, one line above the other, read like a fault."""
+    playwright_api = pytest.importorskip("playwright.sync_api")
+    with playwright_api.sync_playwright() as playwright:
+        if not Path(playwright.chromium.executable_path).exists():
+            pytest.skip("Installed Playwright browser is unavailable")
+        empty = _projection()
+        empty.update(
+            {
+                "projection_token": "treatment-empty",
+                "course_count": 0,
+                "courses": [],
+                "legacy_treatment_count": 0,
+                "legacy_treatments": [],
+                "source_fact_count": 0,
+                "source_facts": [],
+                "source_fact_documents": [],
+                "discrepancies": [],
+                "discrepancy_count": 0,
+                "eligible_actions": [],
+            }
+        )
+        _sync_dispositions(empty)
+        browser, context, page, _ = _open_treatment_page(playwright, width, height, empty)
+        try:
+            card = page.locator("#treatment-today-card").inner_text()
+            assert card.count("No treatment information is recorded.") == 1
+            assert page.locator("#today-treatment-totals").inner_text().strip() == ""
+            assert page.get_by_role("button", name="Review treatment status").count() == 1
+
+            # A record still loading says so once, and never calls itself failed.
+            page.evaluate("() => { treatmentProjection = null; renderTreatmentLoading(); }")
+            assert page.locator("#today-treatment-totals").inner_text().strip() == ""
+            loading = page.locator("#treatment-today-card").inner_text()
+            assert "unavailable" not in loading.lower()
+            assert (
+                page.evaluate(
+                    "() => document.documentElement.scrollWidth"
+                    " - document.documentElement.clientWidth"
+                )
+                == 0
+            )
+        finally:
+            context.close()
+            browser.close()

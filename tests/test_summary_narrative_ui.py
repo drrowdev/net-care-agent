@@ -24,7 +24,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from tests._ui_render import render_summary
+from tests._ui_render import bare_iso_dates, render_summary
 
 APP_JS = Path("static/app.js").read_text(encoding="utf-8")
 _NODE_STDIN_BOOTSTRAP = "eval(require('fs').readFileSync(0,'utf8'))"
@@ -366,3 +366,75 @@ def test_a_concern_about_continuing_is_still_shown_beside_a_running_course():
     assert "PRRT: COURSE RECORDED AS IN PROGRESS" in rendered
     assert "Renal dose is close to the agreed limit." in rendered
     assert "asked to review before the next dose" in rendered
+
+
+# ── the badges he reads at a glance ──────────────────────────────────────────
+
+
+def test_the_three_badges_sit_above_the_collapsed_panel():
+    """Live, the Today card showed only the words "Assessment context"."""
+    rendered = render_summary(
+        _summary(
+            status_confidence="moderate",
+            prrt_status="course_in_progress",
+            cga_trend="rising",
+            cga_trend_detail="CgA 145 to 188 nmol/L",
+            prrt_rationale="Series 2 is under way.",
+            key_concern="Watch the interval between doses.",
+        )
+    )
+    body = rendered["body"]
+    pills = body.index('class="summary-pills"')
+    assert pills < body.index("<details")
+    assert pills < body.index("What matters now")
+    assert "CONFIDENCE: MODERATE" in body
+    assert "PRRT: COURSE RECORDED AS IN PROGRESS" in body
+    assert "CgA rising" in body
+    # Each badge is drawn once, and none of them is left inside the panel.
+    assert body.count("summary-pills") == 1
+    assert "s-pill" not in body[body.index("<details") :]
+    assert bare_iso_dates(body) == []
+
+
+def test_the_panel_still_holds_the_longer_explanations():
+    body = render_summary(
+        _summary(
+            status_confidence="moderate",
+            cga_trend="rising",
+            cga_trend_detail="CgA 145 to 188 nmol/L",
+            prrt_rationale="Series 2 is under way.",
+        )
+    )["body"]
+    panel = body[body.index("<details") :]
+    assert "Assessment context" in panel
+    assert "CgA 145 to 188 nmol/L" in panel
+    assert "Series 2 is under way." in panel
+
+
+def test_badges_appear_without_any_explanation_and_the_panel_stays_shut():
+    """A status with no prose behind it must not open an empty panel."""
+    body = render_summary(_summary(status_confidence="high", prrt_status="eligible"))["body"]
+    assert 'class="summary-pills"' in body
+    assert "CONFIDENCE: HIGH" in body
+    assert "PRRT: POTENTIAL FIT" in body
+    assert "<details" not in body
+
+
+def test_a_prrt_status_the_assessment_did_not_produce_draws_no_badge():
+    """Above the fold, "NOT ASSESSED" for a missing field would read as a finding."""
+    for summary in (
+        _summary(status_confidence="high"),
+        _summary(status_confidence="high", prrt_status=None),
+        _summary(status_confidence="high", prrt_status="something_new"),
+    ):
+        body = render_summary(summary)["body"]
+        assert "CONFIDENCE: HIGH" in body
+        assert "PRRT" not in body
+    # An assessment that did say it has not assessed PRRT still says so.
+    assert "PRRT: NOT ASSESSED" in render_summary(_summary(prrt_status="unknown"))["body"]
+
+
+def test_an_assessment_with_nothing_to_badge_draws_no_empty_strip():
+    body = render_summary(_summary(key_concern="Watch the interval between doses."))["body"]
+    assert "summary-pills" not in body
+    assert "<details" not in body

@@ -104,6 +104,10 @@
   let receiptMutationPending = false;
   let taskSelectionEpoch = 0;
   let jobSubmissionEpoch = 0;
+  // Digest submissions in flight. Declared beside the other job state because
+  // controls that start a digest are drawn from several places and all of them
+  // read it — see setDigestTriggersBusy.
+  let digestSubmissionsActive = 0;
   const jobSubmissionControllers = new Set();
   let latestProfileRevision = null;
   let phiEpoch = 0;
@@ -176,6 +180,46 @@
     'clinician_attributed',
   ]);
   const failedLoads = new Map();
+
+  // A failed section names itself. The banner used to say "Patient data could
+  // not be loaded" whenever any single loader failed, so one missing imaging
+  // list claimed the whole record was gone while the profile, treatments,
+  // biomarkers and symptoms were all on screen underneath it. Each scope that
+  // covers exactly one part of the record is listed here with the words that
+  // part is called on screen; anything not listed keeps the wider sentence.
+  const LOAD_FAILURE_LABELS = Object.freeze({
+    biomarkers: 'Biomarkers',
+    imaging: 'Imaging',
+    'symptom-episodes': 'Symptoms',
+    'symptom-mutation': 'Symptoms',
+    'treatment-reconciliation': 'Treatments',
+    'treatment-mutation': 'Treatments',
+    research: 'Research',
+    'follow-ups': 'Follow-ups',
+    'follow-up-mutation': 'Follow-ups',
+    visits: 'Appointments',
+    'appointment-workflow': 'Appointments',
+    'visit-recap': 'Appointment prep',
+    questions: 'Questions for the doctor',
+    judgments: 'Clinical notes',
+    summary: 'The latest assessment',
+    tasks: 'Processing activity',
+    'patient-evidence': 'Documents and sources',
+    'alert-resolution': 'Active alerts',
+  });
+
+  // Set whenever browser-held patient data is cleared wholesale. A section
+  // label would then understate what happened: the imaging call may be what
+  // failed, but everything on screen went with it, so the banner has to keep
+  // saying so until the record has actually loaded again.
+  let wholeRecordCleared = false;
+  // Reloads of the whole record that are still running. One of them finishing
+  // early proves nothing about the others.
+  let recoveryBatchInFlight = 0;
+  // Whether the record itself has been reloaded since it was cleared, by a
+  // retry batch or by the primary record load. Until it has, an empty failure
+  // map means nothing: a wholesale clear can happen with no failure recorded.
+  let recordReloadedSinceClear = false;
 
   // ── UI label localization ───────────────────────────────────────────────
   // Each lookup returns wording written for the caregiver. Unknown values fall
@@ -1323,6 +1367,15 @@
 
   function reportLoadSuccess(scope) {
     failedLoads.delete(scope);
+    // `status` is the load that refills the record, and a retry reloads all of
+    // it, so either one means the record has come back. The wider wording is
+    // released once that has happened and nothing is still failing or still
+    // running — including when the last outstanding section is finally
+    // reloaded from its own Retry, long after the rest of the record returned.
+    if (scope === 'status') recordReloadedSinceClear = true;
+    if (recordReloadedSinceClear && !recoveryBatchInFlight && !failedLoads.size) {
+      wholeRecordCleared = false;
+    }
     renderAppState();
   }
 
@@ -1446,6 +1499,20 @@
     updateAppointmentFormValidity();
   }
 
+  // The sections that failed, in the words they carry on screen. Empty when a
+  // failure is wider than one section — an unlisted scope, more than two at
+  // once, or a failure that cleared the browser's whole copy of the record.
+  function failedSectionNames() {
+    if (wholeRecordCleared) return [];
+    const names = [];
+    for (const scope of failedLoads.keys()) {
+      const label = LOAD_FAILURE_LABELS[scope];
+      if (!label) return [];
+      if (!names.includes(label)) names.push(label);
+    }
+    return names.length > 2 ? [] : names;
+  }
+
   function renderAppState() {
     const banner = document.getElementById('app-state-banner');
     if (!banner) return;
@@ -1493,6 +1560,10 @@
     } else if (offline) {
       title = 'Connection lost';
       message = 'The page cannot reach NET/Care. Patient data has not been removed; reconnect and retry.';
+    } else {
+      const named = failedSectionNames();
+      if (named.length === 1) title = `${named[0]} could not be loaded`;
+      else if (named.length === 2) title = `${named[0]} and ${named[1]} could not be loaded`;
     }
 
     document.getElementById('app-state-title').textContent = title;
@@ -1526,6 +1597,16 @@
 
   async function retryInitialLoad(options = {}) {
     failedLoads.clear();
+    // A retry reloads the whole record at once. Until that batch settles, one
+    // loader finishing early says nothing about the rest, so the wider wording
+    // is held for the duration and released here only if nothing failed.
+    recoveryBatchInFlight += 1;
+    // If the record is cleared again while this batch runs — one loader can
+    // hit a server error and clear everything without recording a failure of
+    // its own — the requests still in flight go stale and settle quietly. The
+    // batch would then look like a clean recovery, so it is only counted as
+    // one if nothing cleared the record underneath it.
+    const batchPhiEpoch = phiEpoch;
     renderAppState();
     const refreshes = [
       loadStatus(),
@@ -1585,6 +1666,12 @@
       refreshes.push(loadVisitRecap());
     }
     await Promise.allSettled(refreshes);
+    recoveryBatchInFlight = Math.max(0, recoveryBatchInFlight - 1);
+    if (!recoveryBatchInFlight && phiEpoch === batchPhiEpoch) {
+      recordReloadedSinceClear = true;
+      if (!failedLoads.size) wholeRecordCleared = false;
+    }
+    renderAppState();
   }
 
   function switchView(name, trigger) {
@@ -3691,6 +3778,10 @@
 
   function evictClientPhi(error = null) {
     phiEpoch += 1;
+    // Everything held here is about to go, so the banner must not name a
+    // single section afterwards even though a single section's call failed.
+    wholeRecordCleared = true;
+    recordReloadedSinceClear = false;
     const authStatus = Number(error?.status);
     const authEviction = authStatus === 401 || authStatus === 403;
     if (authEviction) reportLoadError('authorization', error);
@@ -4080,8 +4171,13 @@
       feedError.textContent = '';
       feedError.hidden = true;
     }
-    for (const id of ['btn-digest', 'btn-deep-sweep']) {
-      const button = document.getElementById(id);
+    // Submissions were cancelled with the rest of the browser's copy of the
+    // record, so nothing is still running to keep these controls held.
+    digestSubmissionsActive = 0;
+    for (const button of [
+      ...document.querySelectorAll('.digest-trigger'),
+      document.getElementById('btn-deep-sweep'),
+    ]) {
       if (button) button.disabled = false;
     }
     updateCharCount();
@@ -4105,6 +4201,11 @@
     setFollowUpMutationBusy(false);
     setAppointmentMutationBusy(false);
     updateAppointmentFormValidity();
+    // The section whose call failed has usually already drawn the banner by
+    // name. Everything it named has now gone with the rest of the record, so
+    // the banner is redrawn with the wider sentence rather than left claiming
+    // that one part is missing from a page that no longer holds any of it.
+    if (typeof renderAppState === 'function') renderAppState();
   }
 
   function renderRecentUpdates(d) {
@@ -7994,8 +8095,8 @@
       ? `Updated ${fmtDateTime(d.generated_at_timestamp || d.generated_at)}${isStale ? ' · new information available' : ''}`
       : '';
 
-    let html = '<section class="summary-primary" aria-labelledby="summary-matters-heading">';
-    html += '<h3 class="summary-section-label prominent" id="summary-matters-heading">What matters now</h3>';
+    let html = '';
+
     // The chip reports the value the generated assessment produced. A course
     // already under way is a recorded fact, so it gets its own label rather
     // than being squeezed into the screening vocabulary, where it read as
@@ -8007,6 +8108,31 @@
       pending_dotatate: 'PRRT: NEEDS RECEPTOR-IMAGING REVIEW',
       not_eligible: 'PRRT: NOT SUPPORTED BY CURRENT RECORD', unknown: 'PRRT: NOT ASSESSED'
     };
+
+    // The three badges he reads at a glance — confidence, PRRT status and the
+    // CgA trend — sit directly under the heading, where they were before the
+    // redesign folded them into a closed panel. Each one prints a value the
+    // generated assessment produced. A status the assessment did not produce,
+    // or one this version does not recognise, draws no badge at all: above the
+    // fold, "NOT ASSESSED" for a missing field would read as a finding.
+    const prrtLabel = prrtLabels[d.prrt_status];
+    if (d.status_confidence || d.cga_trend || prrtLabel) {
+      html += '<div class="summary-pills">';
+      if (d.status_confidence) {
+        html += `<span class="s-pill">CONFIDENCE: ${escHtml(d.status_confidence.toUpperCase())}</span>`;
+      }
+      if (prrtLabel) {
+        html += `<span class="s-pill prrt-${safeClassToken(d.prrt_status, 'unknown')}">${escHtml(prrtLabel)}</span>`;
+      }
+      if (d.cga_trend) {
+        const cgaLabels = { rising: 'CgA rising', stable: 'CgA stable', falling: 'CgA falling', insufficient_data: 'CgA trend unavailable' };
+        html += `<span class="s-pill cga-${safeClassToken(d.cga_trend, 'insufficient_data')}">${escHtml(cgaLabels[d.cga_trend] || 'CgA: NO DATA')}</span>`;
+      }
+      html += '</div>';
+    }
+
+    html += '<section class="summary-primary" aria-labelledby="summary-matters-heading">';
+    html += '<h3 class="summary-section-label prominent" id="summary-matters-heading">What matters now</h3>';
 
     // Key concern
     if (d.key_concern) {
@@ -8068,20 +8194,10 @@
       html += renderSummaryTimeline(d.timeline);
     }
 
-    if (d.status_confidence || d.cga_trend || d.cga_trend_detail || d.prrt_rationale) {
+    if (d.cga_trend_detail || d.prrt_rationale) {
       html += `<details class="summary-context">
         <summary>Assessment context</summary>
         <div>`;
-      html += '<div class="summary-pills">';
-      if (d.status_confidence) {
-        html += `<span class="s-pill">CONFIDENCE: ${escHtml(d.status_confidence.toUpperCase())}</span>`;
-      }
-      html += `<span class="s-pill prrt-${safeClassToken(d.prrt_status, 'unknown')}">${escHtml(prrtLabels[d.prrt_status] || 'PRRT: NOT ASSESSED')}</span>`;
-      if (d.cga_trend) {
-        const cgaLabels = { rising: 'CgA rising', stable: 'CgA stable', falling: 'CgA falling', insufficient_data: 'CgA trend unavailable' };
-        html += `<span class="s-pill cga-${safeClassToken(d.cga_trend, 'insufficient_data')}">${escHtml(cgaLabels[d.cga_trend] || 'CgA: NO DATA')}</span>`;
-      }
-      html += '</div>';
       if (d.cga_trend_detail) {
         const cgaHeading = d.cga_trend === 'insufficient_data' ? 'CgA comparison:' : 'CgA trend:';
         html += `<div class="summary-rationale"><strong>${cgaHeading}</strong> ${escHtml(fmtProseDates(d.cga_trend_detail))}${renderClaimEvidence(d.claim_evidence?.claims?.cga_trend_detail)}</div>`;
@@ -8909,6 +9025,15 @@
     const considerationList = document.getElementById('research-consideration-list');
     const todayLatest = document.getElementById('today-latest-research-list');
     const todayOpen = document.getElementById('today-open-consideration-list');
+    // Every totals line on Today is blank whenever there is no projection to
+    // count. While it loads, a sentence saying totals are unavailable read like
+    // a fault during an ordinary load; after the record is cleared, a leftover
+    // count would be worse still. The status line says what is happening.
+    const todayTotalIds = [
+      'today-research-tracked-totals',
+      'today-latest-research-totals',
+      'today-open-consideration-totals',
+    ];
     if (!researchProjection) {
       const copy = researchProjectionState === 'loading'
         ? 'Loading research…'
@@ -8918,8 +9043,10 @@
       });
       document.getElementById('research-count-current').textContent = '0';
       document.getElementById('research-count-considerations').textContent = '0';
-      document.getElementById('today-latest-research-totals').textContent = 'No latest-batch totals are available.';
-      document.getElementById('today-open-consideration-totals').textContent = 'No consideration totals are available.';
+      todayTotalIds.forEach(id => {
+        const node = document.getElementById(id);
+        if (node) node.textContent = '';
+      });
       return;
     }
     currentList.replaceChildren();
@@ -8935,6 +9062,19 @@
     const open = researchProjection.considerations.filter(item => item.status === 'open');
     const latestVisible = latest.slice(0, 3);
     const openVisible = open.slice(0, 3);
+    // Today leads with everything being tracked, not just the newest run. The
+    // card is headed "Research being tracked", and a run that added nothing
+    // made it read "0 tracked entries" while the Research tab listed several.
+    // These are counts of stored rows by their stored type; nothing here judges
+    // relevance, eligibility or whether an entry still matters.
+    const trackedTrials = researchProjection.items.filter(item => item.item_type === 'trial').length;
+    const trackedPapers = researchProjection.items.filter(item => item.item_type === 'paper').length;
+    const trackedTotal = researchProjection.items.length;
+    document.getElementById('today-research-tracked-totals').textContent = trackedTotal
+      ? `${trackedTotal} research entr${trackedTotal === 1 ? 'y is' : 'ies are'} tracked in total: `
+        + `${trackedTrials} trial${trackedTrials === 1 ? '' : 's'} and `
+        + `${trackedPapers} paper${trackedPapers === 1 ? '' : 's'}.`
+      : 'No research entries are tracked yet.';
     todayLatest.replaceChildren();
     todayOpen.replaceChildren();
     latestVisible.forEach(item => todayLatest.appendChild(renderResearchOccurrence(item, true)));
@@ -10461,7 +10601,7 @@
     let action = '';
     if (artifact.state === 'expired' || artifact.state === 'not_retained') {
       if (task.type === 'digest') {
-        action = '<button class="button secondary" type="button" onclick="runDigest()">Run research update</button>';
+        action = `<button class="button secondary digest-trigger" type="button" onclick="runDigest()"${digestSubmissionsActive ? ' disabled' : ''}>Run research update</button>`;
       } else if (task.type === 'deep-sweep') {
         action = '<button class="button secondary" type="button" onclick="runDeepSweep()">Run deep sweep</button>';
       } else if (task.type === 'summary') {
@@ -11271,10 +11411,21 @@
     }
   }
 
+  // More than one control can start a digest — the header, Activity, and one
+  // drawn inside an activity record whose report is no longer retained. They
+  // are held together by this count rather than by a single element id, so a
+  // control drawn while a request is in flight is disabled from the start and
+  // none is released until every submission has finished.
+  function setDigestTriggersBusy(busy) {
+    document.querySelectorAll('.digest-trigger').forEach(button => {
+      button.disabled = busy;
+    });
+  }
+
   async function runDigest() {
-    const btn = document.getElementById('btn-digest');
     const submission = beginJobSubmission();
-    btn.disabled = true;
+    digestSubmissionsActive += 1;
+    setDigestTriggersBusy(true);
     try {
       const r = await fetch('/api/digest', {
         method: 'POST',
@@ -11298,7 +11449,8 @@
     } finally {
       const ownsRequest = jobSubmissionOwnsRequest(submission);
       finishJobSubmission(submission);
-      if (ownsRequest) btn.disabled = false;
+      digestSubmissionsActive = Math.max(0, digestSubmissionsActive - 1);
+      if (ownsRequest && !digestSubmissionsActive) setDigestTriggersBusy(false);
     }
   }
 
@@ -16125,7 +16277,10 @@
       && treatmentResponseOwnerIsCurrent()
       && !treatmentMutationPending
       && pendingTreatmentCompletion === null;
-    ['today-treatment-add', 'patient-treatment-add', 'treatment-difference-add'].forEach(id => {
+    // Only the controls that change the record are gated on a current
+    // projection. Today's button opens the Patient view and changes nothing,
+    // so reading the record stays possible while it is loading or out of date.
+    ['patient-treatment-add', 'treatment-difference-add'].forEach(id => {
       const control = document.getElementById(id);
       if (control) control.disabled = !mutable;
     });
@@ -16200,6 +16355,12 @@
         ? `No recorded treatment entries are shown.${hiddenSuffix}`
         : '';
     const totals = document.getElementById('today-treatment-totals');
+    // What Today's list says when there is nothing to list. It is computed here
+    // so the totals line can stay silent rather than print the same sentence a
+    // second time, directly above the first.
+    const todayEmptyCopy = pastCount
+      ? 'No treatment is recorded as current. Review finished or past records in Patient.'
+      : 'No treatment information is recorded.';
     if (totals) {
       if (!active.length && treatmentProjection.legacy_treatment_count) {
         totals.textContent = `No treatment is recorded as current. ${recordedSummary}`;
@@ -16214,6 +16375,8 @@
       } else {
         totals.textContent = 'No treatment information is recorded.';
       }
+      const listIsEmpty = !shown.length && !recordedShown.length;
+      if (listIsEmpty && totals.textContent === todayEmptyCopy) totals.textContent = '';
     }
     const today = document.getElementById('today-treatment-list');
     if (today) {
@@ -16222,9 +16385,7 @@
           ? shown.map(course => treatmentCourseCard(course, true))
           : recordedShown.length
             ? recordedShown.map(item => treatmentRecordedCard(item.row, true, item.linkage))
-            : [treatmentElement('div', 'empty-state', pastCount
-              ? 'No treatment is recorded as current. Review finished or past records in Patient.'
-              : 'No treatment information is recorded.')]
+            : [treatmentElement('div', 'empty-state', todayEmptyCopy)]
       ));
     }
     const records = document.getElementById('patient-treatment-list');
@@ -16339,7 +16500,10 @@
     const today = document.getElementById('today-treatment-list');
     if (today) today.replaceChildren(treatmentElement('div', 'empty-state', message));
     const totals = document.getElementById('today-treatment-totals');
-    if (totals) totals.textContent = 'Treatment summary is unavailable.';
+    // An ordinary load used to show "Loading…", "Loading the treatment record…"
+    // and "Treatment summary is unavailable." at the same time, so waiting read
+    // as failure. The totals line says nothing until there is something to say.
+    if (totals) totals.textContent = state === 'loading' ? '' : 'Treatment summary is unavailable.';
     const records = document.getElementById('patient-treatment-list');
     if (records) records.replaceChildren(treatmentElement('div', 'empty-state', message));
     const differences = document.getElementById('treatment-discrepancy-list');

@@ -907,8 +907,16 @@ downgrade to the convenience headers.
 `AUTH_ALLOWED_PRINCIPAL_NAMES` matches only the name candidate. A request passes
 when **either** configured allowlist matches its own typed candidate, so neither
 namespace can authorize the other and an operator can move an entry between the
-two settings without an atomic lockout. With **both** empty, behaviour is
-unchanged from before: Easy Auth alone is the gate.
+two settings without an atomic lockout. With **both** empty the configuration is
+incomplete rather than permissive: hosted `/api/*` fails closed with `503` and
+reason `allowlist_unconfigured`, checked before the principal is even parsed.
+
+This matters because the identity provider is the **consumer Microsoft-account
+tenant**. Easy Auth therefore proves only that *some* Microsoft account
+completed sign-in — it cannot tell the caregiver apart from any other Microsoft
+account holder. These allowlists are the only caregiver-level authorization
+control in the system, so an empty pair would publish the record to anyone
+willing to sign in.
 
 Hosted mode ignores local bypass. Local API use requires
 explicit `ALLOW_LOCAL_AUTH_BYPASS=1`; state-changing hosted methods compare
@@ -922,7 +930,7 @@ token, or payload:
 
 | Field | Values |
 |---|---|
-| `reason` | `principal_absent`, `principal_malformed`, `principal_not_allowed`, `cross_origin`, `hosted_auth_unavailable` |
+| `reason` | `principal_absent`, `principal_malformed`, `principal_not_allowed`, `cross_origin`, `hosted_auth_unavailable`, `allowlist_unconfigured` |
 | `principal_source` (where meaningful) | `encoded_claim`, `provider_id_header`, `principal_name_header`, `provider_id_name_compat`, `absent` |
 
 Authorization is evaluated before the origin check, so a denied account always

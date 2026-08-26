@@ -157,6 +157,17 @@ available at every screen size:
   **Run digest** is also in the header, so a routine research update is one
   click from any view.
 
+The header ends with a small circle carrying the initials of the signed-in
+account. This exists because sign-in here is otherwise invisible: the identity
+provider is the caregiver's own personal Microsoft account, so Microsoft
+recognises the browser and completes the check in a fraction of a second with no
+prompt and no sign-in page. Without a visible marker the app is
+indistinguishable from one that never checked at all. Opening the circle names
+the exact account the session belongs to and offers **Sign out**, which ends the
+session on Easy Auth's own logout page. The name is read from `/api/status`, so
+it appears only for a request the server already authenticated and authorized —
+it is a report of the completed check, never the check itself.
+
 If an API request is unauthorized, forbidden, offline, or otherwise fails, the
 page shows an explicit error and retry action instead of replacing the patient
 record with empty states. The banner names the part that failed — **Imaging
@@ -179,8 +190,11 @@ states that browser-held patient data was cleared while stored patient records
 were not deleted, and does not imply clinical-authority corruption. For `401`,
 choose **Reload to sign in** to use the existing Easy Auth sign-in path. For
 `403`, choose **Sign out and switch account**. That manual same-origin link calls
-`/.auth/logout` with an encoded redirect back to `/`, clearing the current Easy
-Auth session before the caregiver signs in with the permitted account. **Retry**
+`/.auth/logout` and lands on Easy Auth's own logout-complete page. It
+deliberately carries **no** redirect back to `/`: sign-in here uses the
+caregiver's personal Microsoft account, so returning to a protected page would
+re-authenticate silently as the same account and the switch would never happen.
+**Retry**
 remains a separate action for access that was restored without an account switch.
 The app does not start an automatic redirect or reload loop. Current symptom,
 treatment, research, biomarker, and imaging projections return only after their
@@ -1461,7 +1475,9 @@ az webapp config appsettings list -g <resource-group> -n <app-service> `
   never rewritten, so `care.giver@…` and `caregiver@…` are different accounts.
 
 A request is accepted when **either** list matches its own candidate. Leaving
-both empty accepts any account Easy Auth authenticated.
+both empty is a misconfiguration and now blocks everyone: hosted `/api/*`
+returns `503` with reason `allowlist_unconfigured`. At least one list must
+always hold a correct value.
 
 **Step 4 — migrate settings without a lockout.** Never change both settings in
 one step, and never leave the ID list empty while the name list is still
@@ -1724,9 +1740,13 @@ one valid gate:
 - To undo step 1 afterwards: clear the name list
   (`AUTH_ALLOWED_PRINCIPAL_NAMES=`) only once the ID list again contains every
   value that must be accepted.
-- Emergency widening (single-tenant deployment, Easy Auth still enforced): set
-  both lists empty to restore Easy-Auth-only access, then re-narrow once the
-  correct values are confirmed.
+- **Never empty both lists.** That is not an emergency widening — it is a
+  misconfiguration, and the app now refuses every hosted API request with `503`
+  and reason `allowlist_unconfigured` rather than falling back to Easy Auth
+  alone. Sign-in here uses the consumer Microsoft-account tenant, so
+  "Easy-Auth-only" would mean *any* Microsoft account on earth could read the
+  record. To recover access, put a known-correct value **into** a list; never
+  take the last one out.
 
 Each `az webapp config appsettings set` restarts the site, so queued or running
 jobs become `interrupted` and must be re-submitted. Make these changes when no

@@ -573,6 +573,7 @@ def test_biomarker_endpoint_maps_projection_failures_to_bounded_422(app_client, 
 def test_biomarker_endpoint_requires_hosted_identity(app_client, monkeypatch):
     _, client = app_client
     monkeypatch.setenv("WEBSITE_AUTH_ENABLED", "true")
+    monkeypatch.setenv("AUTH_ALLOWED_PRINCIPAL_IDS", "caregiver-id")
     response = client.get("/api/patient/biomarker-series")
     assert response.status_code == 401
 

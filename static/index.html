@@ -30,6 +30,19 @@
     <button class="button primary" id="btn-chat-toggle" onclick="toggleChat()" title="Ask about the patient record" aria-label="Ask Claude about the patient record">
       <span aria-hidden="true">✦</span><span class="header-action-label">Ask Claude</span>
     </button>
+    <div class="account-menu" id="account-menu">
+      <button class="account-trigger" id="account-trigger" type="button" onclick="toggleAccountMenu()" aria-haspopup="dialog" aria-expanded="false" aria-controls="account-popover" title="Your sign-in and sign out">
+        <span class="account-avatar" id="account-avatar" aria-hidden="true">·</span>
+        <span class="account-caret" aria-hidden="true">⌄</span>
+        <span class="sr-only" id="account-trigger-label">Account</span>
+      </button>
+      <div class="account-popover" id="account-popover" role="dialog" aria-labelledby="account-popover-title" hidden>
+        <p class="eyebrow" id="account-popover-title">Signed in</p>
+        <p class="account-identity" id="account-identity">Checking your sign-in…</p>
+        <p class="account-note" id="account-note">Microsoft verified this sign-in before any patient data was shown.</p>
+        <a class="button secondary account-signout" id="account-signout" href="/.auth/logout">Sign out</a>
+      </div>
+    </div>
   </div>
 </header>
 
@@ -43,7 +56,7 @@
   </div>
   <div class="app-state-actions">
     <button class="button secondary" id="app-state-reload" type="button" onclick="window.location.reload()" hidden>Reload to sign in</button>
-    <a class="button secondary" id="app-state-switch-account" href="/.auth/logout?post_logout_redirect_uri=%2F" hidden>Sign out and switch account</a>
+    <a class="button secondary" id="app-state-switch-account" href="/.auth/logout" hidden>Sign out and switch account</a>
     <button class="button secondary" id="app-state-retry" type="button" onclick="retryInitialLoad()">Retry</button>
   </div>
 </div>

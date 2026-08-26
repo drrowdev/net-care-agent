@@ -1220,8 +1220,8 @@ summary:focus-visible,
   transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.15s;
 }
 
-.button:hover { transform: translateY(-1px); }
-.button:active { transform: translateY(0); }
+a.button { text-decoration: none; }
+.button:hover { transform: translateY(-1px); }.button:active { transform: translateY(0); }
 .button:disabled { opacity: 0.48; cursor: not-allowed; transform: none; }
 .button.primary { color: #fff; background: var(--accent); border-color: var(--accent); }
 .button.primary:hover { background: #155c34; border-color: #155c34; }
@@ -1244,6 +1244,107 @@ summary:focus-visible,
 }
 
 .icon-button:hover { color: var(--text0); background: var(--bg2); }
+
+/* ── Account menu ───────────────────────────────────────────────────────── */
+.account-menu {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.account-menu::before {
+  content: "";
+  align-self: center;
+  width: 1px;
+  height: 24px;
+  margin: 0 10px 0 2px;
+  background: var(--border);
+}
+
+.account-trigger {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 5px 7px 5px 5px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text2);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.account-trigger:hover {
+  color: var(--text0);
+  background: var(--bg2);
+  border-color: var(--border);
+}
+
+.account-trigger[aria-expanded="true"] {
+  color: var(--text0);
+  background: var(--accent-dim);
+  border-color: #b9d8c6;
+}
+
+.account-caret {
+  font-size: 13px;
+  line-height: 1;
+  margin-top: -4px;
+  transition: transform 0.15s;
+}
+
+.account-trigger[aria-expanded="true"] .account-caret { transform: rotate(180deg); margin-top: 4px; }
+
+.account-avatar {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--bg1);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.account-popover {
+  position: absolute;
+  z-index: 210;
+  top: calc(100% + 10px);
+  right: 0;
+  width: 286px;
+  padding: 16px 18px 18px;
+  display: grid;
+  gap: 6px;
+  background: var(--bg1);
+  border: 1px solid var(--border2);
+  border-radius: 14px;
+  box-shadow: var(--shadow-lg);
+}
+
+.account-identity {
+  color: var(--text0);
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.account-note {
+  margin-top: 2px;
+  color: var(--text2);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.account-signout {
+  margin-top: 10px;
+  width: 100%;
+}
 
 .running-bar {
   position: fixed;
@@ -4859,6 +4960,13 @@ body.dialog-open { overflow: hidden; }
     width: 44px;
     min-height: 44px;
     padding: 6px;
+  }
+  /* The account popover is a panel, not a header action: its button keeps
+     normal sizing so "Sign out" stays on one readable line. */
+  .header-actions .account-popover .button {
+    min-width: 0;
+    width: 100%;
+    padding: 7px 13px;
   }
 
   .running-bar { top: 57px; }

@@ -43,8 +43,13 @@ For transparency, here is what the project already does to reduce risk:
   `WEBSITE_AUTH_ENABLED` runtime value) and a valid principal.
   An Azure-hosted app without that explicit setting fails closed. External anonymous probing also
   requires matching App Service Easy Auth path exclusions; repository code
-  alone cannot bypass the platform gate. An optional exact principal-ID allowlist can
-  narrow access further. Local bypass is off unless
+  alone cannot bypass the platform gate. Because sign-in runs against the
+  consumer Microsoft-account tenant, Easy Auth proves only that *some* Microsoft
+  account signed in; the `AUTH_ALLOWED_PRINCIPAL_IDS` / `AUTH_ALLOWED_PRINCIPAL_NAMES`
+  allowlists are what identify the caregiver, so at least one must hold a value.
+  A hosted deployment with both empty fails closed (`503`,
+  `allowlist_unconfigured`) instead of accepting every authenticated principal.
+  Local bypass is off unless
   `ALLOW_LOCAL_AUTH_BYPASS=1` is explicitly configured.
 - State-changing hosted API requests compare `Origin` only with exact
   `APP_ORIGIN` or canonical HTTPS `WEBSITE_HOSTNAME`; forwarded headers are not trusted.

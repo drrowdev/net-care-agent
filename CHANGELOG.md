@@ -9,6 +9,43 @@ incremented when something user-visible or operationally meaningful changes.
 ## [Unreleased]
 
 ### Added
+- **You can now see which account you are signed in as, and sign out.** Nothing
+  in the interface previously said the app had checked who you were. Sign-in
+  uses your own personal Microsoft account, so Microsoft recognises the browser
+  and finishes the check in a fraction of a second — no prompt, no sign-in page,
+  nothing on screen. The result was an app that looked exactly like one with no
+  security at all, which is alarming for good reason when a patient record is on
+  the other side of it. The header now ends with a small circle carrying your
+  initials. Opening it names the exact account the session belongs to and offers
+  **Sign out**. The name is read from the same authorized request that loads the
+  patient record, so it is a report of a check that already succeeded, never a
+  check performed in the browser.
+
+### Security
+- **An empty permitted-accounts list no longer means "let everyone in".** The
+  app authorizes the caregiver with `AUTH_ALLOWED_PRINCIPAL_IDS` and
+  `AUTH_ALLOWED_PRINCIPAL_NAMES`. If both were empty it previously accepted any
+  principal the platform had authenticated. Sign-in runs against the consumer
+  Microsoft-account tenant, so that fallback meant that if those settings were
+  ever cleared, **any Microsoft account holder who signed in could read the
+  patient record**. Hosted `/api/*` now refuses every request with `503` and
+  reason `allowlist_unconfigured` until at least one list holds a value. The
+  check runs before the principal is parsed, so it cannot leak anything about
+  who asked. Both settings are populated in the current deployment, so this
+  changes nothing about normal access.
+
+  The operating manual's "emergency widening" step, which advised emptying both
+  lists to restore access, said exactly the wrong thing and has been replaced:
+  recover by putting a known-correct value **into** a list, never by removing
+  the last one.
+
+- **"Sign out and switch account" now actually switches accounts.** The link
+  returned to `/` after signing out, which immediately re-authenticated
+  silently through the same Microsoft account — so the session it had just
+  ended came straight back and the account was never switched. It now ends on
+  the platform's own logout page.
+
+### Added
 - **Every biomarker is back on one screen, and searchable.** The redesign
   replaced the old list of recent results with a single dropdown showing one
   marker at a time, opening on whichever name came first alphabetically. There

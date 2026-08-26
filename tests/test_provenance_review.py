@@ -190,6 +190,7 @@ def test_non_ascii_source_length_is_bytes_and_artifact_is_retrievable(client, ag
 
 def test_source_endpoint_requires_identity_when_hosted(client, monkeypatch):
     monkeypatch.setenv("WEBSITE_AUTH_ENABLED", "true")
+    monkeypatch.setenv("AUTH_ALLOWED_PRINCIPAL_IDS", "caregiver-id")
     assert client.get("/api/sources/doc_" + "0" * 32).status_code == 401
 
 

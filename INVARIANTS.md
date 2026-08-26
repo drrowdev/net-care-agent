@@ -568,11 +568,14 @@ distributed queue and adding distributed coordination.
   `AUTH_ALLOWED_PRINCIPAL_NAMES` only the name candidate. A hosted request is
   authorized when at least one configured allowlist matches its own typed
   candidate; matching both is never required, so an entry can be migrated
-  between settings without a lockout window. Both allowlists empty preserves the
-  historical Easy-Auth-only posture and must not be silently narrowed or
-  widened. Hosted mode never honors local bypass.
+  between settings without a lockout window. Both allowlists empty is treated as
+  unconfigured and **fails closed**: hosted `/api/*` answers `503` with reason
+  `allowlist_unconfigured`. This must never be relaxed back into "any
+  authenticated principal is accepted" — the identity provider is the consumer
+  Microsoft-account tenant, so Easy Auth alone cannot distinguish the caregiver
+  from any other Microsoft account holder. Hosted mode never honors local bypass.
 - Auth failures return fixed PHI-free discriminators only: `reason` in
-  `principal_absent|principal_malformed|principal_not_allowed|cross_origin|hosted_auth_unavailable`
+  `principal_absent|principal_malformed|principal_not_allowed|cross_origin|hosted_auth_unavailable|allowlist_unconfigured`
   and, where meaningful, `principal_source` in
   `encoded_claim|provider_id_header|principal_name_header|provider_id_name_compat|absent`.
   No identifier, claim value, email, token, header name, or payload is logged or

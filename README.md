@@ -125,8 +125,13 @@ Environment variables to set as Application Settings:
   Unicode-safe `casefold()` matching — dots, plus tags, and domains are never
   rewritten. A request passes when **either** configured allowlist matches its
   own candidate, so an operator can move an entry between the two settings
-  without a lockout window. Leaving **both** empty preserves the historical
-  Easy-Auth-only posture: any principal the platform authenticated is accepted.
+  without a lockout window. Leaving **both** empty is a misconfiguration, not
+  open access: hosted `/api/*` then answers `503` with reason
+  `allowlist_unconfigured`. Easy Auth here runs against the consumer
+  Microsoft-account tenant, so it proves only that *some* Microsoft account
+  signed in; these allowlists are the sole caregiver-level authorization
+  control, and an empty pair would expose the record to every Microsoft account
+  holder. Always set at least one before deploying.
   `APP_ORIGIN` (preferred) or `WEBSITE_HOSTNAME` supplies the
   canonical HTTPS browser origin. Never set `ALLOW_LOCAL_AUTH_BYPASS` in hosted
   configuration.
@@ -549,6 +554,7 @@ The most common loops:
 | Generate appointment questions | **Appointments** → **Generate visit questions** | Async result is polled, then the Questions tab renders the current list |
 | Prepare, run, and recap an appointment | **Appointments** → **Appointment prep** | Create or link a visit, order current generated/manual question snapshots, capture answered/unknown clinician-attributed responses, manage immutable decision lifecycles, and create visit-linked follow-ups. Internal routing remains `questions`; visible relationship copy and recap exports do not print opaque IDs. The fourth **Recap** tab retains exact authority preflight, offline revocation, lifecycle, and export safeguards |
 | Chat with the record | Header → **✦ Ask Claude** | Async result grounded in the full profile; chat remains stateless |
+| See who is signed in, and sign out | Header → account circle (initials) | Sign-in is otherwise invisible: the identity provider is the caregiver's own Microsoft account, so Easy Auth completes the check silently and the app can look unauthenticated when it is not. The circle is the persistent "you are signed in" signal; opening it names the exact account and offers **Sign out**, which ends the session on Easy Auth's own logout page rather than returning to a protected page and silently signing in again. The account name comes from `/api/status`, so it is only ever shown for a request the server already authorized |
 
 ## Keeping docs current
 

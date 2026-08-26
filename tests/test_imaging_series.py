@@ -485,6 +485,7 @@ def test_imaging_endpoint_maps_projection_failures_to_bounded_422(app_client, mo
 def test_imaging_endpoint_and_opaque_routes_require_hosted_identity(app_client, monkeypatch):
     _, client = app_client
     monkeypatch.setenv("WEBSITE_AUTH_ENABLED", "true")
+    monkeypatch.setenv("AUTH_ALLOWED_PRINCIPAL_IDS", "caregiver-id")
 
     assert client.get("/api/patient/imaging-series").status_code == 401
     assert client.get("/api/patient/imaging-series/row/source").status_code == 401

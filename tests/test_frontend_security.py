@@ -478,7 +478,9 @@ def test_live_auth_eviction_explains_browser_clear_and_recovers_all_projections(
                 "reloadAction": "window.location.reload()",
                 "switchHidden": status != 403,
                 "switchLabel": "Sign out and switch account",
-                "switchHref": "/.auth/logout?post_logout_redirect_uri=%2F",
+                # Plain logout: a redirect back to `/` would silently re-sign-in
+                # through the same Microsoft account and never switch anything.
+                "switchHref": "/.auth/logout",
                 "retryHidden": False,
                 "retryLabel": "Retry",
             }
@@ -822,7 +824,12 @@ def test_load_failures_distinguish_auth_offline_and_retry_states():
     assert "error?.status === 403" in state
     assert "reloadAction.hidden = false" in state
     assert "switchAccountAction.hidden = false" in state
-    assert "/.auth/logout?post_logout_redirect_uri=%2F" in INDEX_HTML
+    # No `post_logout_redirect_uri` back to `/`: the identity provider is the
+    # caregiver's own Microsoft account, so returning to a protected page
+    # re-authenticates silently and the account is never actually switched.
+    # Landing on Easy Auth's own logout-complete page ends the session visibly.
+    assert 'id="app-state-switch-account" href="/.auth/logout"' in INDEX_HTML
+    assert "post_logout_redirect_uri" not in INDEX_HTML
     assert 'onclick="window.location.reload()"' in INDEX_HTML
     assert "navigator.onLine === false" in state
     assert "Patient data has not been removed" in state

@@ -1290,6 +1290,7 @@
     'principal_not_allowed',
     'cross_origin',
     'hosted_auth_unavailable',
+    'allowlist_unconfigured',
   ]);
   const CROSS_ORIGIN_DENIAL_MESSAGE = 'This request was blocked because it did not come from the app’s own web address. Reload NET/Care from its normal address and try again. Nothing was changed, and no patient data was cleared.';
 
@@ -3785,6 +3786,13 @@
     const authStatus = Number(error?.status);
     const authEviction = authStatus === 401 || authStatus === 403;
     if (authEviction) reportLoadError('authorization', error);
+    // The account chip asserts a live, verified session. Once authorization is
+    // lost that claim is false, and leaving a name on screen is exactly the
+    // false reassurance this control exists to prevent.
+    if (typeof clearAccountMenu === 'function') {
+      clearAccountMenu();
+      if (typeof toggleAccountMenu === 'function') toggleAccountMenu(false);
+    }
     const evictionMessage = subject => {
       if (authStatus === 401) {
         return `${subject} held by this browser was cleared because the sign-in session expired. Stored patient records were not deleted.`;
@@ -4271,6 +4279,7 @@
 
   function renderSidebar(d) {
     const p = d.patient || {};
+    renderAccountMenu(d.signed_in_account);
     renderRecentUpdates(d);
     document.getElementById('patient-dx').textContent = p.diagnosis || 'No diagnosis recorded';
 
@@ -11159,6 +11168,75 @@
     });
   }
 
+  // ── Account ─────────────────────────────────────────────────────────────
+  // Sign-in is invisible by design: the identity provider is the caregiver's
+  // own Microsoft account, so the check completes silently and the app looks
+  // unauthenticated. This names the session and offers a way to end it.
+  // Display only — `_protect_api` already authorized the request server-side.
+  function accountInitials(name) {
+    const local = String(name).split('@')[0];
+    const parts = local.split(/[._\-+\s]+/).filter(Boolean);
+    if (!parts.length) return local.slice(0, 2) || '·';
+    const first = parts[0][0] || '';
+    const second = parts.length > 1 ? (parts[parts.length - 1][0] || '') : (parts[0][1] || '');
+    return (first + second) || '·';
+  }
+
+  function renderAccountMenu(account) {
+    const avatar = document.getElementById('account-avatar');
+    const label = document.getElementById('account-trigger-label');
+    const identity = document.getElementById('account-identity');
+    const note = document.getElementById('account-note');
+    const trigger = document.getElementById('account-trigger');
+    if (!avatar || !label || !identity || !trigger) return;
+    const name = typeof account === 'string' ? account.trim() : '';
+    if (name) {
+      avatar.textContent = accountInitials(name);
+      label.textContent = `Account: signed in as ${name}`;
+      identity.textContent = name;
+      if (note) note.textContent = 'Microsoft verified this sign-in before any patient data was shown.';
+      trigger.title = `Signed in as ${name}. Open to sign out.`;
+    } else {
+      // Local development, or a hosted response without a name candidate.
+      // Sign-out still works, so the control stays usable either way.
+      avatar.textContent = '·';
+      label.textContent = 'Account';
+      identity.textContent = 'Signed in';
+      if (note) note.textContent = 'This session is authenticated, but the account name was not available.';
+      trigger.title = 'Your sign-in and sign out';
+    }
+  }
+
+  function clearAccountMenu() {
+    const avatar = document.getElementById('account-avatar');
+    const label = document.getElementById('account-trigger-label');
+    const identity = document.getElementById('account-identity');
+    const note = document.getElementById('account-note');
+    const trigger = document.getElementById('account-trigger');
+    if (!avatar || !label || !identity || !trigger) return;
+    avatar.textContent = '·';
+    label.textContent = 'Account: session not confirmed';
+    identity.textContent = 'Session not confirmed';
+    if (note) note.textContent = 'This browser no longer has a confirmed sign-in. Reload to sign in again.';
+    trigger.title = 'Session not confirmed. Open to sign out.';
+  }
+
+  function toggleAccountMenu(force) {
+    const popover = document.getElementById('account-popover');
+    const trigger = document.getElementById('account-trigger');
+    if (!popover || !trigger) return;
+    const willShow = (typeof force === 'boolean') ? force : popover.hidden;
+    popover.hidden = !willShow;
+    trigger.setAttribute('aria-expanded', String(willShow));
+    if (willShow) document.getElementById('account-signout')?.focus();
+  }
+
+  document.addEventListener('click', (event) => {
+    const popover = document.getElementById('account-popover');
+    if (!popover || popover.hidden) return;
+    if (!document.getElementById('account-menu')?.contains(event.target)) toggleAccountMenu(false);
+  });
+
   // ── Feed ────────────────────────────────────────────────────────────────
   function toggleFeedPopover(force) {
     const pop = document.getElementById('feed-popover');
@@ -11184,6 +11262,12 @@
   document.addEventListener('keydown', (e) => {
     if (trapDialogFocus(e)) return;
     if (e.key !== 'Escape') return;
+    const accountPopover = document.getElementById('account-popover');
+    if (accountPopover && !accountPopover.hidden) {
+      toggleAccountMenu(false);
+      document.getElementById('account-trigger')?.focus();
+      return;
+    }
     if (researchDialogOpen) {
       closeResearchDialog();
       return;

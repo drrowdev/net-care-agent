@@ -2475,6 +2475,7 @@ _AUTH_REASON_PRINCIPAL_MALFORMED = "principal_malformed"
 _AUTH_REASON_PRINCIPAL_NOT_ALLOWED = "principal_not_allowed"
 _AUTH_REASON_CROSS_ORIGIN = "cross_origin"
 _AUTH_REASON_HOSTED_AUTH_UNAVAILABLE = "hosted_auth_unavailable"
+_AUTH_REASON_ALLOWLIST_UNCONFIGURED = "allowlist_unconfigured"
 _AUTH_FAILURE_REASONS = frozenset(
     {
         _AUTH_REASON_PRINCIPAL_ABSENT,
@@ -2482,6 +2483,7 @@ _AUTH_FAILURE_REASONS = frozenset(
         _AUTH_REASON_PRINCIPAL_NOT_ALLOWED,
         _AUTH_REASON_CROSS_ORIGIN,
         _AUTH_REASON_HOSTED_AUTH_UNAVAILABLE,
+        _AUTH_REASON_ALLOWLIST_UNCONFIGURED,
     }
 )
 
@@ -2663,11 +2665,10 @@ def _configured_allowlist(name: str) -> set[str]:
 def _hosted_principal_allowed(decision: _PrincipalDecision) -> bool:
     """Allow when any configured typed allowlist matches its typed candidate.
 
-    Both allowlists empty preserves the pre-existing Easy-Auth-only posture:
-    any principal the platform authenticated is accepted. Only one typed match
-    is required, so an operator can migrate an entry from
-    ``AUTH_ALLOWED_PRINCIPAL_IDS`` to ``AUTH_ALLOWED_PRINCIPAL_NAMES`` without
-    an atomic lockout window.
+    Both allowlists empty is treated as unconfigured, not as "allow everyone" —
+    see ``_hosted_allowlist_configured``. Only one typed match is required, so
+    an operator can migrate an entry from ``AUTH_ALLOWED_PRINCIPAL_IDS`` to
+    ``AUTH_ALLOWED_PRINCIPAL_NAMES`` without an atomic lockout window.
     """
     id_allowlist = _configured_allowlist("AUTH_ALLOWED_PRINCIPAL_IDS")
     # `casefold()` is Unicode caseless matching, not a normalizer: it never
@@ -2675,14 +2676,27 @@ def _hosted_principal_allowed(decision: _PrincipalDecision) -> bool:
     name_allowlist = {
         item.casefold() for item in _configured_allowlist("AUTH_ALLOWED_PRINCIPAL_NAMES")
     }
-    if not id_allowlist and not name_allowlist:
-        return True
     if id_allowlist and decision.principal_id is not None and decision.principal_id in id_allowlist:
         return True
     return bool(
         name_allowlist
         and decision.principal_name is not None
         and decision.principal_name.casefold() in name_allowlist
+    )
+
+
+def _hosted_allowlist_configured() -> bool:
+    """Whether an operator has named who may reach patient data.
+
+    The identity provider is the consumer Microsoft-account tenant, so Easy Auth
+    proves only that *some* Microsoft account signed in — it cannot prove the
+    account is the caregiver's. These allowlists are the sole caregiver-level
+    authorization control, so an empty pair is a misconfiguration, never a
+    licence to serve PHI to every authenticated principal.
+    """
+    return bool(
+        _configured_allowlist("AUTH_ALLOWED_PRINCIPAL_IDS")
+        or _configured_allowlist("AUTH_ALLOWED_PRINCIPAL_NAMES")
     )
 
 
@@ -2754,6 +2768,15 @@ def _protect_api():
                 503,
                 "Hosted authentication is not enabled.",
                 reason=_AUTH_REASON_HOSTED_AUTH_UNAVAILABLE,
+            )
+        # Configuration-level gate, checked before identity parsing so a wiped
+        # allowlist fails closed for everyone instead of silently admitting
+        # every Microsoft account the consumer tenant will authenticate.
+        if not _hosted_allowlist_configured():
+            return _auth_failure(
+                503,
+                "Access allowlist is not configured.",
+                reason=_AUTH_REASON_ALLOWLIST_UNCONFIGURED,
             )
         decision = _principal_decision()
         if decision.malformed:
@@ -3077,6 +3100,19 @@ def api_health():
     ), http_status
 
 
+def _signed_in_account_label() -> str | None:
+    """The account name to show the caregiver, or ``None`` when unavailable.
+
+    Identity display only — authorization already happened in ``_protect_api``.
+    Prefers the name candidate because that is what the caregiver recognises;
+    an opaque principal ID is not shown, since it tells them nothing.
+    """
+    if not _is_hosted():
+        return None
+    decision = _principal_decision()
+    return decision.principal_name
+
+
 @app.route("/api/status")
 def api_status():
     profile = agent.load_profile()
@@ -3123,6 +3159,7 @@ def api_status():
                 "total_biomarkers": len(profile.get("biomarkers", [])),
             },
             "latest_research_update": agent.public_latest_research_update(profile),
+            "signed_in_account": _signed_in_account_label(),
         }
     )
 

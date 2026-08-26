@@ -1157,6 +1157,7 @@ def test_episode_routes_require_hosted_identity_and_are_no_store(
     assert agent.PROFILE_PATH.read_bytes() == before
 
     monkeypatch.setenv("WEBSITE_AUTH_ENABLED", "true")
+    monkeypatch.setenv("AUTH_ALLOWED_PRINCIPAL_IDS", "caregiver-id")
     assert client.get("/api/patient/symptom-episodes").status_code == 401
     assert client.get("/api/patient/symptom-episodes/observations/opaque/source").status_code == 401
     assert client.post("/api/symptom-episodes", json={}).status_code == 401

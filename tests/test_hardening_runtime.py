@@ -117,8 +117,10 @@ _NAME_ID_CLAIM = "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameiden
 
 
 def test_hosted_api_requires_valid_easy_auth(hardened_app, monkeypatch):
+    object_id = "00000000-0000-4000-8000-000000000000"
     monkeypatch.setenv("WEBSITE_SITE_NAME", "hosted")
     monkeypatch.setenv("WEBSITE_AUTH_ENABLED", "true")
+    monkeypatch.setenv("AUTH_ALLOWED_PRINCIPAL_IDS", object_id)
     client = hardened_app.app.test_client()
 
     assert client.get("/api/status").status_code == 401
@@ -126,9 +128,7 @@ def test_hosted_api_requires_valid_easy_auth(hardened_app, monkeypatch):
         client.get("/api/status", headers={"X-MS-CLIENT-PRINCIPAL": "not-base64"}).status_code
         == 401
     )
-    valid = _principal(
-        {"claims": [{"typ": _OBJECT_ID_CLAIM, "val": "00000000-0000-4000-8000-000000000000"}]}
-    )
+    valid = _principal({"claims": [{"typ": _OBJECT_ID_CLAIM, "val": object_id}]})
     assert client.get("/api/status", headers={"X-MS-CLIENT-PRINCIPAL": valid}).status_code == 200
 
 
@@ -277,6 +277,7 @@ def test_hosted_duplicate_identical_object_id_claims_are_accepted(hardened_app, 
 
 def test_hosted_conflicting_selected_claim_values_fail_authentication(hardened_app, monkeypatch):
     monkeypatch.setenv("WEBSITE_AUTH_ENABLED", "true")
+    monkeypatch.setenv("AUTH_ALLOWED_PRINCIPAL_IDS", "fallback-id")
     principal = _principal(
         {
             "claims": [
@@ -555,24 +556,98 @@ def test_id_allowlist_stays_case_sensitive(hardened_app, monkeypatch):
     assert response.status_code == 403
 
 
-def test_both_allowlists_empty_preserve_easy_auth_only_access(hardened_app, monkeypatch):
-    """Documented, unchanged posture: no allowlist means Easy Auth is the only gate."""
+def test_both_allowlists_empty_denies_every_principal(hardened_app, monkeypatch):
+    """Fail closed: an unset allowlist is a misconfiguration, not open access.
+
+    Easy Auth runs against the consumer Microsoft-account tenant, so it proves
+    only that *some* Microsoft account signed in. With no allowlist there is
+    nothing left that identifies the caregiver, so serving PHI would expose the
+    record to every Microsoft account holder.
+    """
     _hosted(monkeypatch)
     client = hardened_app.app.test_client()
 
-    assert client.get("/api/status").status_code == 401
-    assert (
-        client.get(
-            "/api/status", headers={"X-MS-CLIENT-PRINCIPAL-ID": "any-authenticated-id"}
-        ).status_code
-        == 200
+    assert client.get("/api/status").status_code == 503
+    for headers in (
+        {"X-MS-CLIENT-PRINCIPAL-ID": "any-authenticated-id"},
+        {"X-MS-CLIENT-PRINCIPAL-NAME": "someone@example.invalid"},
+    ):
+        response = client.get("/api/status", headers=headers)
+        assert response.status_code == 503
+        assert response.get_json()["reason"] == "allowlist_unconfigured"
+
+
+def test_blank_allowlist_entries_do_not_count_as_configured(hardened_app, monkeypatch):
+    """Whitespace-only settings are indistinguishable from unset, so deny."""
+    _hosted(monkeypatch, ids="  ", names=" , ")
+
+    response = hardened_app.app.test_client().get(
+        "/api/status", headers={"X-MS-CLIENT-PRINCIPAL-NAME": "someone@example.invalid"}
     )
-    assert (
-        client.get(
-            "/api/status", headers={"X-MS-CLIENT-PRINCIPAL-NAME": "someone@example.invalid"}
-        ).status_code
-        == 200
+
+    assert response.status_code == 503
+    assert response.get_json()["reason"] == "allowlist_unconfigured"
+
+
+def test_allowlist_unconfigured_denies_before_reading_the_profile(hardened_app, monkeypatch):
+    """The 503 is a configuration verdict, so it must not leak PHI-shaped fields."""
+    _hosted(monkeypatch)
+
+    body = (
+        hardened_app.app.test_client()
+        .get("/api/status", headers={"X-MS-CLIENT-PRINCIPAL-NAME": "someone@example.invalid"})
+        .get_json()
     )
+
+    assert set(body) == {"error", "reason"}
+    assert "patient" not in body
+
+
+def test_status_names_the_signed_in_account_for_the_header_control(hardened_app, monkeypatch):
+    """The caregiver must be able to see which account the silent sign-in used."""
+    _hosted(monkeypatch, names=_ACCOUNT_EMAIL)
+
+    body = (
+        hardened_app.app.test_client()
+        .get("/api/status", headers={"X-MS-CLIENT-PRINCIPAL-NAME": _ACCOUNT_EMAIL})
+        .get_json()
+    )
+
+    assert body["signed_in_account"] == _ACCOUNT_EMAIL
+
+
+def test_status_never_shows_an_opaque_principal_id_as_the_account(hardened_app, monkeypatch):
+    """An ID authorizes but identifies nothing to a human, so it is not displayed."""
+    _hosted(monkeypatch, ids=_ACCOUNT_GUID)
+
+    body = (
+        hardened_app.app.test_client()
+        .get(
+            "/api/status",
+            headers={
+                "X-MS-CLIENT-PRINCIPAL": _principal(
+                    {"claims": [{"typ": _OBJECT_ID_CLAIM, "val": _ACCOUNT_GUID}]}
+                )
+            },
+        )
+        .get_json()
+    )
+
+    assert body["signed_in_account"] is None
+    assert _ACCOUNT_GUID not in json.dumps(body)
+
+
+def test_status_reports_no_account_when_not_hosted(hardened_app, monkeypatch):
+    """Local development has no Easy Auth principal, so there is no name to show."""
+    monkeypatch.delenv("WEBSITE_SITE_NAME", raising=False)
+    monkeypatch.delenv("WEBSITE_INSTANCE_ID", raising=False)
+    monkeypatch.delenv("WEBSITE_HOSTNAME", raising=False)
+    monkeypatch.delenv("WEBSITE_AUTH_ENABLED", raising=False)
+    monkeypatch.setenv("ALLOW_LOCAL_AUTH_BYPASS", "1")
+
+    body = hardened_app.app.test_client().get("/api/status").get_json()
+
+    assert body["signed_in_account"] is None
 
 
 def _encode(value: object, *, urlsafe: bool = False, padded: bool = True) -> str:
@@ -885,6 +960,7 @@ def test_hosted_same_origin_uses_canonical_https_origin(
 ):
     monkeypatch.setenv("WEBSITE_AUTH_ENABLED", "true")
     monkeypatch.setenv("WEBSITE_HOSTNAME", hostname)
+    monkeypatch.setenv("AUTH_ALLOWED_PRINCIPAL_IDS", "trusted-id")
     if origin_env:
         monkeypatch.setenv("APP_ORIGIN", origin_env)
     else:
@@ -907,6 +983,7 @@ def test_hosted_same_origin_uses_canonical_https_origin(
 
 def test_hosted_mutation_fails_closed_without_trusted_origin(hardened_app, monkeypatch):
     monkeypatch.setenv("WEBSITE_AUTH_ENABLED", "true")
+    monkeypatch.setenv("AUTH_ALLOWED_PRINCIPAL_IDS", "trusted-id")
     monkeypatch.delenv("WEBSITE_HOSTNAME", raising=False)
     monkeypatch.delenv("APP_ORIGIN", raising=False)
     response = hardened_app.app.test_client().post(
@@ -919,6 +996,7 @@ def test_hosted_mutation_fails_closed_without_trusted_origin(hardened_app, monke
 def test_hosted_mutation_requires_origin_even_with_trusted_hostname(hardened_app, monkeypatch):
     monkeypatch.setenv("WEBSITE_AUTH_ENABLED", "true")
     monkeypatch.setenv("WEBSITE_HOSTNAME", "care.azurewebsites.net")
+    monkeypatch.setenv("AUTH_ALLOWED_PRINCIPAL_IDS", "trusted-id")
     response = hardened_app.app.test_client().post(
         "/api/digest",
         headers={"X-MS-CLIENT-PRINCIPAL-ID": "trusted-id"},

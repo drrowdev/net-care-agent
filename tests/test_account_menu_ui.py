@@ -12,7 +12,7 @@ import json
 
 from tests._ui_render import function_source, run_node
 
-_ACCOUNT = "martin.lagus@outlook.com"
+_ACCOUNT = "care.giver@example.invalid"
 
 _HARNESS = """
 function fakeElement() {
@@ -84,7 +84,7 @@ def test_the_signed_in_account_is_shown_exactly_as_the_platform_reported_it():
 
 def test_the_avatar_carries_initials_a_caregiver_can_recognise_at_a_glance():
     """The chip is the persistent 'you are signed in' signal, so it must read."""
-    assert _render(_ACCOUNT)["avatar"] == "ml"
+    assert _render(_ACCOUNT)["avatar"] == "cg"
     assert _render("first_last@example.invalid")["avatar"] == "fl"
     assert _render("solo@example.invalid")["avatar"] == "so"
 

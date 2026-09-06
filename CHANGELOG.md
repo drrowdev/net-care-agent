@@ -379,6 +379,14 @@ incremented when something user-visible or operationally meaningful changes.
   whole day up front.
 
 ### Operations
+- **A standing project-coordination agreement.** The coordinating assistant
+  can delegate and implement agreed software work, while the owner approves
+  every merge and deployment. `AGENTS.md` records the authority boundaries,
+  independent plan review, and handover expectations without adding another
+  management system. `HANDOFF.md` replaces outdated current-status claims with
+  dated GitHub observations and explicit production unknowns. No app behavior,
+  access settings, or scheduled work changes.
+
 - **Deploying and rolling back are possible again.** `Scripts/deploy.ps1` builds
   an Authorization header for every Kudu request out of an Azure access token. A
   secret-scrubbing placeholder had been committed over the one line that builds

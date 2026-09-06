@@ -22,6 +22,17 @@ learns from every consultation with the treating oncologist.
 | Secrets     | Azure Key Vault + system-assigned managed identity on the webapp |
 | External    | PubMed E-utilities, ClinicalTrials.gov API v2               |
 
+## Project coordination
+
+A user-designated coordinating session acts as the software project's Chief of
+Staff: it keeps the overview, delegates suitable work, and reviews the results.
+It may implement agreed work and prepare pull requests; the user approves every
+merge and every deployment. The
+[working agreement](AGENTS.md#project-coordination-chief-of-staff) and
+[handoff](HANDOFF.md#11-coordination-and-last-observed-status) let another
+session pick up from shared records rather than assumed memory. This does not
+change the app's clinical agents or enable recurring monitoring.
+
 ## Local development
 
 Requires Python 3.11.
@@ -356,7 +367,7 @@ state and withholds the prior clinical content.
 ├── README.md             # This file
 ├── HANDOFF.md            # Single-page primer for new AI assistants — start here
 ├── CHANGELOG.md          # User-visible changes per version
-├── AGENTS.md             # Onboarding + doc-update policy for AI assistants
+├── AGENTS.md             # Onboarding, coordination agreement + doc-update policy
 ├── app.py                # Flask app: HTTP endpoints + background jobs + /api/health
 ├── net_agent.py          # Back-compat shim — re-exports the agent.* package
 ├── INVARIANTS.md         # Load-bearing rules & output contracts (read before editing)

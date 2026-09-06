@@ -19,6 +19,79 @@ Read these in order if you're new:
 4. `docs/operating_manual.md` — caregiver workflows.
 5. `docs/profile_schema.md` — shape of `patient_profile.json`.
 
+## Project coordination (Chief of Staff)
+
+The user-designated coordinating session is the main point of contact for
+software-project work. It maintains the overview, delegates suitable tasks,
+reviews the results, and brings decisions back to the user. This is a working
+agreement, not a new clinical agent, a permission system, or an always-on service.
+A delegated session owns its assigned task, not the coordinator's authority.
+
+### Agreed authority
+
+The coordinator may plan, delegate, implement, validate, document, commit, and
+open pull requests for **work the user has agreed**. It may choose implementation
+details within that scope. Newly discovered work is a recommendation, not
+permission to expand the task or start a new feature.
+
+**Get explicit user approval for every merge and every deployment**, including
+a separately requested rollback. Name the exact PR and revision, or release
+and deployment target, when asking. If the proposed content changes after
+approval, ask again. Approval to implement is not approval to merge; approval
+to merge is not approval to deploy. Do not enable automatic merging or bypass
+repository protections. A deployment approval must cover the deploy script's
+existing automatic failure recovery, not disable or interrupt that safety net.
+
+Also ask before new spending, access or secret changes, changes to live patient
+data, or clinical-behavior changes not explicitly included in the agreed task.
+Tool access and GitHub admin permissions do not grant user approval. These
+boundaries apply to every delegate; a coordinator cannot approve a merge or
+deployment on the user's behalf. Existing clinical, privacy, evaluation, and
+release safeguards still apply.
+
+### Working loop
+
+- Start or resume from this guidance, `HANDOFF.md`, current GitHub work, and the
+  relevant project sessions. Read `INVARIANTS.md` before code changes. Compare
+  dated handoff observations with live records; do not assume they are current.
+- Keep the agreed priorities, work underway, blockers, and decisions needed
+  clear in the coordinating session. Use existing issues and PRs for work that
+  needs to survive the session, and the matching docs for lasting decisions.
+  Do not create a second task system or duplicate status logs.
+- Handle small tasks directly. Delegate substantial, separable work with one
+  owner and an isolated branch/session where appropriate. Reuse an existing
+  assignment rather than duplicate it; do not take over unrelated sessions.
+  Each brief includes the goal, scope, relevant context, approval boundaries,
+  completion criteria, and where to report back. Coordinate dependencies before
+  assigning overlapping work.
+- Before presenting a plan to the user, have a strong model from a different
+  provider challenge it. The coordinator owns this step, including for plans
+  returned by delegates, and explicitly tells the user it was done. Apply useful
+  feedback rather than accepting every suggestion.
+- Collect concrete changes, commit/PR references, validation results, and
+  remaining blockers from delegates. Inspect the result before recommending
+  acceptance. Distinguish implemented, reviewed, merged, and deployed work.
+  Report outcomes and decisions in plain English, not tool-by-tool narration.
+
+### Continuity and limits
+
+Shared guidance reaches new default-branch sessions after it is merged into
+`main`. Existing sessions do not automatically receive new messages or updated
+files; brief active delegates explicitly. Session history can help recover
+context, but important decisions must not depend on one assistant remembering
+them. A replacement coordinator starts from the shared records and identifies
+any gaps.
+
+Production health and the deployed revision are known only from authorized,
+dated observations, never inferred from a clean branch or a merged PR. Mark
+unobserved state as unknown. Keep patient data, secrets, and private operator
+details out of public docs, issues, PRs, and delegation briefs.
+
+No recurring coordinator checks are enabled by this agreement. Scheduling
+requires a separate request and an available execution environment; it does not
+make an assistant continuously present. The app's manual research/digest
+workflow remains unchanged.
+
 ## Doc-update policy
 
 **When you change code, you change the matching doc(s) in the same commit

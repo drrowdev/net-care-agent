@@ -4,8 +4,9 @@
 repo. Read this **first** — it bundles everything you need to be productive on
 day one without re-discovering it from chat history.
 
-**Snapshot date:** 2026-07-11. The code and current branch history are
-authoritative; do not rely on a hard-coded historical HEAD.
+**Coordination/status refresh:** 2026-09-06. Section 11 records the observations
+from that refresh; it is not a production audit. The code and current branch
+history are authoritative; do not rely on a hard-coded historical HEAD.
 
 > If anything here disagrees with the code, **the code wins**. Then update
 > this file in the same PR.
@@ -60,7 +61,7 @@ It is a **decision-support tool**, not a medical device.
 |---|---|
 | `README.md` | Architecture overview, repo layout, "how it works" sequence, operating-loops table |
 | `CHANGELOG.md` | Every user-visible / operationally meaningful change, Keep-a-Changelog format |
-| `AGENTS.md` | **Read this before editing.** Doc-update policy, commit conventions, deploy mechanism, secrets rotation, common pitfalls |
+| `AGENTS.md` | **Read this before editing.** Coordinator agreement and approval boundaries, doc-update policy, commit conventions, deploy mechanism, secrets rotation, common pitfalls |
 | `HANDOFF.md` | This file. Single-page primer for new assistants |
 | `docs/architecture.md` | Component diagram, agent topology, design rationale, **failure-modes table** (resilience checklist) |
 | `docs/operating_manual.md` | Caregiver workflows (Feed → Digest → Judgments → Questions) |
@@ -283,11 +284,13 @@ Recovery Services Vault listed in your operator runbook.
 | HTTPS leakage | App Service `httpsOnly: true`; storage min TLS 1.2 |
 | Secret leakage | `ANTHROPIC_API_KEY` in Key Vault, resolved by managed identity, never in plain `appsettings` output |
 
-**Not yet done:**
-- App Service plan is Basic (B1) → no deployment slots, no built-in webapp
-  config backup. Upgrade to Standard if you need either.
-- GitHub branch protection on `main` was never verified (no PAT). Owner
-  should add: require PR, block force-push, block deletion.
+**Limits of this historical audit:**
+- The recorded App Service plan was Basic (B1), without deployment slots or
+  built-in webapp config backup. The current tier has not been rechecked.
+  Any upgrade needs the owner's approval.
+- Branch protection was not verified in this audit. The later observation in
+  section 11 replaces the old assumption that protection still needs enabling;
+  inspect current rules before relying on particular protections.
 
 ## 9. Conventions that matter
 
@@ -307,35 +310,47 @@ Recovery Services Vault listed in your operator runbook.
   Postgres, Docker, Celery, MSAL, an SDK wrapper around Anthropic, or
   anything else that adds a moving part. The simplicity is deliberate.
 
-## 10. Recent history (last ~10 commits)
+## 10. Finding recent work
 
-```
-f940163  fix: bump max_tokens for sonnet-4-6 verbosity
-f056e49  feat: upgrade Anthropic model to claude-sonnet-4-6
-219e9cc  docs(AGENTS): add Secrets section with Anthropic key rotation runbook
-ce72cef  docs: log Key Vault migration for ANTHROPIC_API_KEY
-5b84624  docs: log resilience hardening (httpsOnly, blob versioning, soft-delete 30d)
-9b7b096  Add CHANGELOG.md and AGENTS.md
-7dab757  Refresh docs to match current UI
-b4a32b9  Unify main column scroll
-928591f  Move feed input into header popover
-e0c9635  Enlarge activity log scroll surface
+Read the current branch history and live GitHub work rather than treating an
+old commit list as the roadmap. These commands are read-only:
+
+```powershell
+git --no-pager log -10 --oneline
+gh api repos/drrowdev/net-care-agent/branches/main --jq .commit.sha
+gh pr list --repo drrowdev/net-care-agent --state open --limit 50
+gh issue list --repo drrowdev/net-care-agent --state open --limit 50
 ```
 
-Older history (Phase 0–6) is summarised in `CHANGELOG.md` v0.1.0–v0.5.0.
+The Git log is for the current branch; the API command identifies live `main`.
+Neither establishes what is deployed. `CHANGELOG.md` explains the lasting
+changes, and the linked PRs carry their implementation history. If a work list
+reaches its limit, fetch the remaining entries before claiming it is complete.
 
-## 11. Open work / nice-to-haves
+## 11. Coordination and last observed status
 
-Nothing in flight. The state at handoff is:
+The user works through a coordinating session for agreed software-project work.
+The standing agreement is in
+[`AGENTS.md`](AGENTS.md#project-coordination-chief-of-staff). The coordinator
+can delegate and implement that work, but the user approves **each merge and
+each deployment**. Do not infer permission from an open PR or an available tool.
 
-- ✅ Full pytest, Ruff, security hooks, and the clinical evaluation gate are the release gates
-- ✅ Production app healthy on Sonnet 4.6
-- ✅ Secrets in Key Vault, storage hardened, RG locked
-- ✅ Working tree clean, `main` pushed to GitHub
-- ⚠️ GitHub branch protection on `main` still needs to be enabled in the UI
-  by the owner (see §8)
-- 💭 Optional next: upgrade to App Service Standard tier to unlock a staging
-  deployment slot (would have prevented the 2026-04-29 stuck-deploy outage)
+**Observed on 2026-09-06 during coordination setup; refresh before acting:**
+
+| Area | Observation |
+|---|---|
+| GitHub `main` | `ead3901`, the merge of PR #87 (account menu and fail-closed allowlists), was the inspected baseline, not a claim about the deployed release. |
+| Open GitHub work | Nine dependency-update PRs and no open issues. These are backlog observations, not approval to update or merge dependencies. |
+| Branch protection | GitHub reported `main` as protected. Individual rules and bypass permissions were not audited. |
+| Production | Current health, deployed revision, model settings, and Azure access were not established in this setup. |
+| Recurring coordination | No scheduled coordinator checks were enabled by this setup. The app's digest remains on demand. |
+
+Use the live [pull requests](https://github.com/drrowdev/net-care-agent/pulls)
+and [issues](https://github.com/drrowdev/net-care-agent/issues), plus the
+project's available sessions, to recover work in progress. Keep ongoing work
+and its next decision with its existing issue or PR instead of maintaining
+another backlog here. Preserve the deployment and clinical evaluation gates
+above; a repository status snapshot does not replace them.
 
 ## 12. Contact
 
